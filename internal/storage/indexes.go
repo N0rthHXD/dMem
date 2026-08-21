@@ -1,0 +1,204 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"syscall"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
+)
+
+const ftsIndexName = "memory_fts"
+
+func (r *Repository) CreateFTSRebuildJob(ctx context.Context, identity WriteIdentity) (domain.JobReference, bool, error) {
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.JobReference{}, false, err
+	}
+	defer tx.Rollback()
+	if status, body, found, err := readIdempotency(ctx, tx, identity); err != nil {
+		return domain.JobReference{}, false, err
+	} else if found {
+		var result domain.JobReference
+		if status != 202 || json.Unmarshal([]byte(body), &result) != nil {
+			return domain.JobReference{}, false, errors.New("invalid stored idempotency response")
+		}
+		return result, true, nil
+	}
+	if err := r.requireDiskWritable(); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	var activeID string
+	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs WHERE job_type='rebuild_fts' AND target_type='index' AND target_id=? AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, ftsIndexName, r.processingVersion).Scan(&activeID)
+	if err == nil {
+		return domain.JobReference{JobID: activeID}, false, ErrJobAlreadyActive
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return domain.JobReference{}, false, err
+	}
+	ids, err := r.newIDs(3)
+	if err != nil {
+		return domain.JobReference{}, false, err
+	}
+	jobID, operationID, auditID := ids[0], ids[1], ids[2]
+	now := formatTime(r.runtime.Now())
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'rebuild_fts', 'index', ?, ?, 'pending', ?, ?, ?)`, jobID, operationID, ftsIndexName, r.processingVersion, r.maxAttempts, now, now); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	result := domain.JobReference{OperationID: operationID, JobID: jobID}
+	body, _ := json.Marshal(result)
+	if err := writeIdempotency(ctx, tx, identity, operationID, 202, body, now); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, created_at) VALUES (?, ?, ?, ?, 'rebuild_fts', 'index', ?, 'accepted', ?)`, auditID, operationID, identity.RequestID, identity.CallerID, ftsIndexName, now); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	return result, false, nil
+}
+
+func (r *Repository) RebuildFTS(ctx context.Context) error {
+	pressure, err := r.DiskPressure()
+	if err != nil {
+		return err
+	}
+	if pressure != "normal" {
+		return errors.New("insufficient disk space for FTS rebuild")
+	}
+	now := formatTime(r.runtime.Now())
+	if _, err := r.store.writer.ExecContext(ctx, `UPDATE index_metadata SET state='rebuilding', updated_at=? WHERE index_name=?`, now, ftsIndexName); err != nil {
+		return err
+	}
+	type projection struct{ memoryID, revisionID, content string }
+	readTx, err := r.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		r.markFTSDegraded()
+		return err
+	}
+	rows, err := readTx.QueryContext(ctx, `SELECT p.memory_id, p.revision_id, p.display_content FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 ORDER BY p.memory_id`)
+	var projections []projection
+	if err == nil {
+		for rows.Next() {
+			var item projection
+			if err = rows.Scan(&item.memoryID, &item.revisionID, &item.content); err != nil {
+				break
+			}
+			projections = append(projections, item)
+		}
+		if closeErr := rows.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if err == nil {
+		err = readTx.Commit()
+	} else {
+		_ = readTx.Rollback()
+	}
+	if err != nil {
+		r.markFTSDegraded()
+		return err
+	}
+
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err == nil {
+		var currentCount int
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1`).Scan(&currentCount)
+		if err == nil && currentCount != len(projections) {
+			err = errors.New("FTS rebuild source changed")
+		}
+	}
+	if err == nil {
+		for _, item := range projections {
+			var exists int
+			err = tx.QueryRowContext(ctx, `SELECT 1 FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 AND p.memory_id=? AND p.revision_id=? AND p.display_content=?`, item.memoryID, item.revisionID, item.content).Scan(&exists)
+			if errors.Is(err, sql.ErrNoRows) {
+				err = errors.New("FTS rebuild source changed")
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `DELETE FROM memory_fts`)
+	}
+	if err == nil {
+		statement, prepareErr := tx.PrepareContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, ?)`)
+		if prepareErr != nil {
+			err = prepareErr
+		} else {
+			for _, item := range projections {
+				if _, err = statement.ExecContext(ctx, item.memoryID, item.revisionID, item.content); err != nil {
+					break
+				}
+			}
+			if closeErr := statement.Close(); err == nil {
+				err = closeErr
+			}
+		}
+	}
+	var indexed int
+	if err == nil {
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_fts`).Scan(&indexed)
+	}
+	if err == nil && len(projections) != indexed {
+		err = errors.New("FTS rebuild validation failed")
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `UPDATE index_metadata SET state='ready', source_revision_count=?, updated_at=? WHERE index_name=?`, len(projections), formatTime(r.runtime.Now()), ftsIndexName)
+	}
+	if err == nil {
+		err = tx.Commit()
+	} else if tx != nil {
+		_ = tx.Rollback()
+	}
+	if err != nil {
+		r.markFTSDegraded()
+	}
+	return err
+}
+
+func (r *Repository) markFTSDegraded() {
+	_, _ = r.store.writer.ExecContext(context.Background(), `UPDATE index_metadata SET state='degraded', updated_at=? WHERE index_name=?`, formatTime(r.runtime.Now()), ftsIndexName)
+}
+
+func (r *Repository) DiskPressure() (string, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(r.store.path, &stat); err != nil {
+		return "", err
+	}
+	free := stat.Bavail * uint64(stat.Bsize)
+	if r.diskHardFree > 0 && free < r.diskHardFree {
+		return "hard", nil
+	}
+	if r.diskSoftFree > 0 && free < r.diskSoftFree {
+		return "soft", nil
+	}
+	return "normal", nil
+}
+
+func (r *Repository) diskHardLimit() (bool, error) {
+	if r.diskHardFree == 0 {
+		return false, nil
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(r.store.path, &stat); err != nil {
+		return false, err
+	}
+	return stat.Bavail*uint64(stat.Bsize) < r.diskHardFree, nil
+}
+
+func (r *Repository) requireDiskWritable() error {
+	hard, err := r.diskHardLimit()
+	if err != nil {
+		return err
+	}
+	if hard {
+		return ErrResourceExhausted
+	}
+	return nil
+}

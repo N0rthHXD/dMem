@@ -1,0 +1,666 @@
+openapi: 3.1.0
+info:
+  title: dMeM Local API
+  version: 1.0.0
+  description: Phase-one HTTP/JSON API served over a Unix Domain Socket.
+servers:
+  - url: http://localhost/v1
+    description: Logical URL; transport is a Unix Domain Socket.
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Daemon health
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /spaces:
+    post:
+      operationId: createSpace
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSpaceRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/SpaceCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    get:
+      operationId: listSpaces
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: parent_space_id, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Space page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SpacePage' }
+  /spaces/{space_id}:
+    get:
+      operationId: getSpace
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/spaceId'
+      responses:
+        '200': { $ref: '#/components/responses/SpaceFound' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /events:
+    post:
+      operationId: ingestEvent
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IngestEventRequest' }
+      responses:
+        '202':
+          description: Event durably accepted
+          headers:
+            Idempotent-Replay: { schema: { type: boolean } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestEventResponse' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '429': { $ref: '#/components/responses/Overloaded' }
+        '507': { $ref: '#/components/responses/ResourceExhausted' }
+    get:
+      operationId: listEvents
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: source_name, in: query, schema: { type: string } }
+        - { name: occurred_from, in: query, schema: { type: string, format: date-time } }
+        - { name: occurred_until, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Event page ordered by occurred_at DESC, event_id DESC
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventPage' }
+  /events/{event_id}:
+    get:
+      operationId: getEvent
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/eventId'
+      responses:
+        '200':
+          description: Raw event
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawEvent' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /events/{event_id}/replay:
+    post:
+      operationId: replayEvent
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/eventId'
+      responses:
+        '202':
+          description: Processing job accepted
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobReference' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /memories:
+    post:
+      operationId: createMemory
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateMemoryRequest' }
+      responses:
+        '201':
+          description: Memory created
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Memory' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    get:
+      operationId: listMemories
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: include_ancestors, in: query, schema: { type: boolean, default: true } }
+        - { name: state, in: query, schema: { $ref: '#/components/schemas/MemoryState' } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Memory page ordered by updated_at DESC, memory_id DESC
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemoryPage' }
+  /memories/{memory_id}:
+    get:
+      operationId: getMemory
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/memoryId'
+      responses:
+        '200':
+          description: Current memory
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Memory' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: reviseMemory
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/memoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviseMemoryRequest' }
+      responses:
+        '200':
+          description: New revision created
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Memory' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /memories/{memory_id}/revisions:
+    get:
+      operationId: listMemoryRevisions
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/memoryId'
+      responses:
+        '200':
+          description: Revisions ordered by created_at DESC
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MemoryRevision' }
+  /memories/{memory_id}/state:
+    post:
+      operationId: changeMemoryState
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/memoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangeMemoryStateRequest' }
+      responses:
+        '200':
+          description: State changed
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Memory' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+  /memories/{memory_id}/state-events:
+    get:
+      operationId: listMemoryStateEvents
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/memoryId'
+      responses:
+        '200':
+          description: State history ordered by created_at DESC, state_event_id DESC
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MemoryStateEvent' }
+  /search:
+    post:
+      operationId: searchMemories
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchRequest' }
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResponse' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+  /jobs/{job_id}:
+    get:
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/jobId'
+      responses:
+        '200':
+          description: Job state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /jobs/{job_id}/cancel:
+    post:
+      operationId: cancelJob
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/jobId'
+      responses:
+        '200':
+          description: Cancellation requested or completed
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /jobs/{job_id}/retry:
+    post:
+      operationId: retryJob
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/jobId'
+      responses:
+        '202':
+          description: Failed job scheduled again
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /indexes/fts/rebuild:
+    post:
+      operationId: rebuildFts
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+      responses:
+        '202':
+          description: Rebuild job accepted
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobReference' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '507': { $ref: '#/components/responses/ResourceExhausted' }
+components:
+  headers:
+    IdempotentReplay:
+      schema: { type: boolean }
+      description: False for first execution and true for a replayed response.
+  parameters:
+    callerId:
+      name: X-Caller-ID
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    spaceId: { name: space_id, in: path, required: true, schema: { type: string, format: uuid } }
+    eventId: { name: event_id, in: path, required: true, schema: { type: string, format: uuid } }
+    memoryId: { name: memory_id, in: path, required: true, schema: { type: string, format: uuid } }
+    jobId: { name: job_id, in: path, required: true, schema: { type: string, format: uuid } }
+  schemas:
+    SpaceType:
+      type: string
+      enum: [user, agent, application, project, task, session]
+    MemoryState:
+      type: string
+      enum: [candidate, active, contested, archived, expired, retracted, deleted]
+    MemoryType:
+      type: string
+      enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience]
+    JobStatus:
+      type: string
+      enum: [pending, waiting, running, retrying, succeeded, failed, cancelled, expired]
+    Content:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, media_type, text]
+          properties:
+            kind: { type: string, enum: [text] }
+            media_type: { type: string }
+            text: { type: string }
+        - type: object
+          additionalProperties: false
+          required: [kind, media_type, value]
+          properties:
+            kind: { type: string, enum: [json] }
+            media_type: { type: string }
+            value: {}
+        - type: object
+          additionalProperties: false
+          required: [kind, media_type, reference_uri]
+          properties:
+            kind: { type: string, enum: [reference] }
+            media_type: { type: string }
+            reference_uri: { type: string, minLength: 1 }
+            declared_size: { type: integer, minimum: 0 }
+            declared_hash: { type: string }
+    CreateSpaceRequest:
+      type: object
+      additionalProperties: false
+      required: [space_type, external_id, display_name]
+      properties:
+        parent_space_id: { type: [string, 'null'], format: uuid }
+        space_type: { $ref: '#/components/schemas/SpaceType' }
+        external_id: { type: string, minLength: 1, maxLength: 128 }
+        display_name: { type: string, minLength: 1, maxLength: 256 }
+    Space:
+      type: object
+      additionalProperties: false
+      required: [space_id, parent_space_id, space_type, external_id, display_name, created_at]
+      properties:
+        space_id: { type: string, format: uuid }
+        parent_space_id: { type: [string, 'null'], format: uuid }
+        space_type: { $ref: '#/components/schemas/SpaceType' }
+        external_id: { type: string }
+        display_name: { type: string }
+        created_at: { type: string, format: date-time }
+    SpacePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Space' } }
+        next_cursor: { type: [string, 'null'] }
+    IngestEventRequest:
+      type: object
+      additionalProperties: false
+      required: [space_id, source_type, source_name, occurred_at, content]
+      properties:
+        space_id: { type: string, format: uuid }
+        source_type: { type: string, enum: [message, conversation, tool_call, tool_result, file_reference, collector_event, manual] }
+        source_name: { type: string, minLength: 1, maxLength: 128 }
+        source_event_id: { type: string, maxLength: 256 }
+        occurred_at: { type: string, format: date-time }
+        content: { $ref: '#/components/schemas/Content' }
+        metadata: { type: object }
+    IngestEventResponse:
+      type: object
+      required: [event_id, operation_id, status, job_ids, accepted_at]
+      properties:
+        event_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, deferred] }
+        job_ids: { type: array, items: { type: string, format: uuid } }
+        accepted_at: { type: string, format: date-time }
+    RawEvent:
+      type: object
+      additionalProperties: false
+      required: [event_id, operation_id, caller_id, space_id, source_type, source_name, occurred_at, received_at, content, metadata, processing_status]
+      properties:
+        event_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        caller_id: { type: string }
+        space_id: { type: string, format: uuid }
+        source_type: { type: string, enum: [message, conversation, tool_call, tool_result, file_reference, collector_event, manual] }
+        source_name: { type: string }
+        source_event_id: { type: [string, 'null'] }
+        occurred_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        content: { $ref: '#/components/schemas/Content' }
+        metadata: { type: object }
+        processing_status: { type: string, enum: [stored, processing, processed, failed] }
+    EventPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/RawEvent' } }
+        next_cursor: { type: [string, 'null'] }
+    EvidenceInput:
+      type: object
+      additionalProperties: false
+      required: [event_id, evidence_type]
+      properties:
+        event_id: { type: string, format: uuid }
+        evidence_type: { type: string, enum: [direct_statement, tool_result, manual_reference] }
+        start_offset: { type: integer, minimum: 0 }
+        end_offset: { type: integer, minimum: 1 }
+    CreateMemoryRequest:
+      type: object
+      additionalProperties: false
+      required: [space_id, memory_type, content, evidence, reason]
+      properties:
+        space_id: { type: string, format: uuid }
+        memory_type: { $ref: '#/components/schemas/MemoryType' }
+        content: { type: string, minLength: 1 }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        sensitivity: { type: string, enum: [normal, sensitive], default: normal }
+        evidence: { type: array, minItems: 1, items: { $ref: '#/components/schemas/EvidenceInput' } }
+        reason: { type: string, minLength: 1, maxLength: 1024 }
+    ReviseMemoryRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_revision_id, content, evidence, reason]
+      properties:
+        expected_revision_id: { type: string, format: uuid }
+        content: { type: string, minLength: 1 }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        evidence: { type: array, minItems: 1, items: { $ref: '#/components/schemas/EvidenceInput' } }
+        reason: { type: string, minLength: 1, maxLength: 1024 }
+    ChangeMemoryStateRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [expected_revision_id, action, restore_revision_id, reason]
+          properties:
+            expected_revision_id: { type: string, format: uuid }
+            action: { type: string, enum: [restore] }
+            restore_revision_id: { type: string, format: uuid }
+            reason: { type: string, minLength: 1, maxLength: 1024 }
+        - type: object
+          additionalProperties: false
+          required: [expected_revision_id, action, reason]
+          properties:
+            expected_revision_id: { type: string, format: uuid }
+            action: { type: string, enum: [confirm, contest, archive, freeze, unfreeze, retract, delete] }
+            reason: { type: string, minLength: 1, maxLength: 1024 }
+    MemoryStateEvent:
+      type: object
+      additionalProperties: false
+      required: [state_event_id, memory_id, revision_id, operation_id, to_state, to_frozen, reason, created_by, created_at]
+      properties:
+        state_event_id: { type: string, format: uuid }
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        from_state: { oneOf: [{ $ref: '#/components/schemas/MemoryState' }, { type: 'null' }] }
+        to_state: { $ref: '#/components/schemas/MemoryState' }
+        from_frozen: { type: [boolean, 'null'] }
+        to_frozen: { type: boolean }
+        reason: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+    MemoryRevision:
+      type: object
+      required: [revision_id, memory_id, content, created_by, created_at]
+      properties:
+        revision_id: { type: string, format: uuid }
+        memory_id: { type: string, format: uuid }
+        parent_revision_id: { type: [string, 'null'], format: uuid }
+        content: { type: string }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        evidence: { type: array, items: { $ref: '#/components/schemas/EvidenceInput' } }
+    Memory:
+      type: object
+      required: [memory_id, space_id, memory_type, current_state, frozen, current_revision, created_at, updated_at]
+      properties:
+        memory_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        memory_type: { $ref: '#/components/schemas/MemoryType' }
+        current_state: { $ref: '#/components/schemas/MemoryState' }
+        frozen: { type: boolean }
+        sensitivity: { type: string, enum: [normal, sensitive] }
+        current_revision: { $ref: '#/components/schemas/MemoryRevision' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MemoryPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Memory' } }
+        next_cursor: { type: [string, 'null'] }
+    SearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query, space_ids]
+      properties:
+        query: { type: string, minLength: 1 }
+        space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
+        include_ancestors: { type: boolean, default: true }
+        memory_types: { type: array, items: { $ref: '#/components/schemas/MemoryType' } }
+        states: { type: array, items: { $ref: '#/components/schemas/MemoryState' }, default: [active] }
+        reference_time: { type: string, format: date-time }
+        mode: { type: string, enum: [keyword, semantic], default: keyword }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        max_chars: { type: integer, minimum: 1, maximum: 100000, default: 12000 }
+        include_evidence: { type: boolean, default: false }
+        cursor: { type: string }
+    SearchResult:
+      type: object
+      required: [memory, rank, keyword_score, selection_reason]
+      properties:
+        memory: { $ref: '#/components/schemas/Memory' }
+        rank: { type: integer, minimum: 1 }
+        keyword_score: { type: number }
+        selection_reason: { type: string }
+    SearchResponse:
+      type: object
+      required: [results, truncated, chars_used, index_state]
+      properties:
+        results: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
+        truncated: { type: boolean }
+        chars_used: { type: integer, minimum: 0 }
+        index_state: { type: string, enum: [ready, degraded, rebuilding] }
+        next_cursor: { type: [string, 'null'] }
+    JobReference:
+      type: object
+      required: [operation_id, job_id]
+      properties:
+        operation_id: { type: string, format: uuid }
+        job_id: { type: string, format: uuid }
+    Job:
+      type: object
+      required: [job_id, operation_id, job_type, target_type, target_id, status, attempt_count, max_attempts, created_at]
+      properties:
+        job_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        job_type: { type: string, enum: [extract_memory, rebuild_fts] }
+        target_type: { type: string, enum: [raw_event, index] }
+        target_id: { type: string }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        attempt_count: { type: integer }
+        max_attempts: { type: integer }
+        result_code: { type: [string, 'null'] }
+        last_error_code: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+    Health:
+      type: object
+      required: [process_alive, mode, ready, accepting_writes, query_available, storage_healthy, storage_writable, schema_compatibility, fts_state, fts_freshness, processor_state, job_queue_depth, oldest_job_age_seconds, disk_pressure]
+      properties:
+        process_alive: { type: boolean }
+        mode: { type: string, enum: [healthy, degraded, read_only, maintenance, unavailable] }
+        ready: { type: boolean }
+        accepting_writes: { type: boolean }
+        query_available: { type: boolean }
+        storage_healthy: { type: boolean }
+        storage_writable: { type: boolean }
+        schema_compatibility: { type: string, enum: [compatible, incompatible, unknown] }
+        fts_state: { type: string, enum: [ready, degraded, rebuilding] }
+        fts_freshness: { type: string, enum: [current, stale, unknown] }
+        processor_state: { type: string, enum: [not_configured, ready, unavailable] }
+        job_queue_depth: { type: integer, minimum: 0 }
+        oldest_job_age_seconds: { type: integer, minimum: 0 }
+        disk_pressure: { type: string, enum: [normal, soft, hard] }
+    Error:
+      type: object
+      required: [error_code, message, request_id, operation_id, retryable]
+      properties:
+        error_code: { type: string }
+        message: { type: string }
+        request_id: { type: string }
+        operation_id: { type: string }
+        retryable: { type: boolean }
+        retry_after: { type: [integer, 'null'], minimum: 0 }
+        details: { type: object }
+  responses:
+    SpaceCreated:
+      description: Space created
+      headers:
+        Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+      content: { application/json: { schema: { $ref: '#/components/schemas/Space' } } }
+    SpaceFound:
+      description: Space found
+      content: { application/json: { schema: { $ref: '#/components/schemas/Space' } } }
+    InvalidRequest:
+      description: Invalid request
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    InvalidJSON:
+      description: Malformed JSON body
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: Revision, state, or idempotency conflict
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Object not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Overloaded:
+      description: Temporary overload
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ResourceExhausted:
+      description: Hard local resource limit reached
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
