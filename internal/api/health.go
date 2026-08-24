@@ -5,36 +5,77 @@ import (
 	"net/http"
 	"sync/atomic"
 
+	"github.com/N0rthHXD/dMem/internal/aggregate"
+	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
 type Health struct {
-	ProcessAlive        bool   `json:"process_alive"`
-	Mode                string `json:"mode"`
-	Ready               bool   `json:"ready"`
-	AcceptingWrites     bool   `json:"accepting_writes"`
-	QueryAvailable      bool   `json:"query_available"`
-	StorageHealthy      bool   `json:"storage_healthy"`
-	StorageWritable     bool   `json:"storage_writable"`
-	SchemaCompatibility string `json:"schema_compatibility"`
-	FTSState            string `json:"fts_state"`
-	FTSFreshness        string `json:"fts_freshness"`
-	ProcessorState      string `json:"processor_state"`
-	JobQueueDepth       int    `json:"job_queue_depth"`
-	OldestJobAgeSeconds int    `json:"oldest_job_age_seconds"`
-	DiskPressure        string `json:"disk_pressure"`
+	ProcessAlive             bool   `json:"process_alive"`
+	Mode                     string `json:"mode"`
+	OverallStatus            string `json:"overall_status"`
+	Ready                    bool   `json:"ready"`
+	AcceptingWrites          bool   `json:"accepting_writes"`
+	QueryAvailable           bool   `json:"query_available"`
+	StorageState             string `json:"storage_state"`
+	StorageHealthy           bool   `json:"storage_healthy"`
+	StorageWritable          bool   `json:"storage_writable"`
+	SchemaCompatibility      string `json:"schema_compatibility"`
+	QueueState               string `json:"queue_state"`
+	FTSState                 string `json:"fts_state"`
+	FTSIndexState            string `json:"fts_index_state"`
+	FTSFreshness             string `json:"fts_freshness"`
+	ProcessorState           string `json:"processor_state"`
+	ProcessorIdentity        string `json:"processor_identity"`
+	SemanticState            string `json:"semantic_state"`
+	SemanticIndexState       string `json:"semantic_index_state"`
+	SemanticIndexVersion     int    `json:"semantic_index_version"`
+	EntityIndexState         string `json:"entity_index_state"`
+	EntityIndexVersion       int64  `json:"entity_index_version"`
+	RelationIndexState       string `json:"relation_index_state"`
+	RelationIndexVersion     int64  `json:"relation_index_version"`
+	FeedbackAggregateState   string `json:"feedback_aggregate_state"`
+	FeedbackAggregateVersion int64  `json:"feedback_aggregate_version"`
+	AggregateState           string `json:"aggregate_state"`
+	AggregateFreshCount      int    `json:"aggregate_fresh_count"`
+	AggregateStaleCount      int    `json:"aggregate_stale_count"`
+	AggregatePendingRebuilds int    `json:"aggregate_pending_rebuilds"`
+	BackupState              string `json:"backup_state"`
+	JobQueueDepth            int    `json:"job_queue_depth"`
+	OldestJobAgeSeconds      int    `json:"oldest_job_age_seconds"`
+	DiskPressure             string `json:"disk_pressure"`
 }
 
 type Handler struct {
-	ready          atomic.Bool
-	ftsState       string
-	repository     *storage.Repository
-	maxRequestSize int64
-	id             func() (string, error)
+	ready           atomic.Bool
+	ftsState        string
+	repository      *storage.Repository
+	memoryService   application.MemoryService
+	aggregates      *aggregate.Service
+	processorHealth interface{ ProcessorHealth() (string, string) }
+	maxRequestSize  int64
+	id              func() (string, error)
 }
 
-func NewHandler(ftsState string) *Handler {
-	h := &Handler{ftsState: ftsState}
+type HandlerDependencies struct {
+	Repository       *storage.Repository
+	MemoryService    application.MemoryService
+	AggregateService *aggregate.Service
+	ProcessorHealth  interface{ ProcessorHealth() (string, string) }
+	MaxRequestSize   int64
+	ID               func() (string, error)
+}
+
+func NewHandler(ftsState string, dependencies HandlerDependencies) *Handler {
+	h := &Handler{
+		ftsState:        ftsState,
+		repository:      dependencies.Repository,
+		memoryService:   dependencies.MemoryService,
+		aggregates:      dependencies.AggregateService,
+		processorHealth: dependencies.ProcessorHealth,
+		maxRequestSize:  dependencies.MaxRequestSize,
+		id:              dependencies.ID,
+	}
 	h.ready.Store(true)
 	return h
 }
@@ -46,6 +87,10 @@ func (h *Handler) SetReady(ready bool) {
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", h.health)
+	mux.HandleFunc("POST /v1/remember", h.remember)
+	mux.HandleFunc("POST /v1/recall", h.recall)
+	mux.HandleFunc("POST /v1/memories/{memory_id}/feedback", h.memoryFeedback)
+	mux.HandleFunc("POST /v1/memories/{memory_id}/forget", h.forget)
 	mux.HandleFunc("GET /v1/spaces", h.spaces)
 	mux.HandleFunc("POST /v1/spaces", h.spaces)
 	mux.HandleFunc("GET /v1/spaces/{space_id}", h.space)
@@ -60,67 +105,141 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/memories/{memory_id}/revisions", h.memoryRevisions)
 	mux.HandleFunc("POST /v1/memories/{memory_id}/state", h.memoryState)
 	mux.HandleFunc("GET /v1/memories/{memory_id}/state-events", h.memoryStateEvents)
+	mux.HandleFunc("GET /v1/candidates", h.candidates)
+	mux.HandleFunc("GET /v1/candidates/{candidate_id}", h.candidate)
+	mux.HandleFunc("POST /v1/candidates/{candidate_id}/{action}", h.candidate)
+	mux.HandleFunc("GET /v1/entity-proposals", h.entityProposals)
+	mux.HandleFunc("POST /v1/entity-proposals", h.entityProposals)
+	mux.HandleFunc("GET /v1/entity-proposals/{proposal_id}", h.entityProposal)
+	mux.HandleFunc("POST /v1/entity-proposals/{proposal_id}/{action}", h.entityProposal)
+	mux.HandleFunc("GET /v1/entities", h.entities)
+	mux.HandleFunc("GET /v1/entities/{entity_id}", h.entity)
+	mux.HandleFunc("POST /v1/entities/{entity_id}/{action}", h.entity)
+	mux.HandleFunc("GET /v1/relation-proposals", h.relationProposals)
+	mux.HandleFunc("POST /v1/relation-proposals", h.relationProposals)
+	mux.HandleFunc("GET /v1/relation-proposals/{proposal_id}", h.relationProposal)
+	mux.HandleFunc("POST /v1/relation-proposals/{proposal_id}/{action}", h.relationProposal)
+	mux.HandleFunc("GET /v1/evolution-proposals", h.evolutionProposals)
+	mux.HandleFunc("POST /v1/evolution-proposals", h.evolutionProposals)
+	mux.HandleFunc("GET /v1/evolution-proposals/{proposal_id}", h.evolutionProposal)
+	mux.HandleFunc("POST /v1/evolution-proposals/{proposal_id}/{action}", h.evolutionProposal)
+	mux.HandleFunc("GET /v1/conflict-cases", h.conflictCases)
+	mux.HandleFunc("GET /v1/conflict-cases/{case_id}", h.conflictCase)
+	mux.HandleFunc("POST /v1/conflict-cases/{case_id}/{action}", h.conflictCase)
+	mux.HandleFunc("GET /v1/relations", h.relations)
+	mux.HandleFunc("GET /v1/relations/{relation_id}", h.relation)
 	mux.HandleFunc("GET /v1/jobs/{job_id}", h.job)
 	mux.HandleFunc("POST /v1/jobs/{job_id}/{action}", h.job)
 	mux.HandleFunc("POST /v1/search", h.search)
 	mux.HandleFunc("POST /v1/indexes/fts/rebuild", h.rebuildFTS)
+	mux.HandleFunc("POST /v1/indexes/semantic/rebuild", h.rebuildSemantic)
+	mux.HandleFunc("POST /v1/indexes/entities/rebuild", h.rebuildEntityIndex)
+	mux.HandleFunc("POST /v1/indexes/relations/rebuild", h.rebuildRelationIndex)
+	mux.HandleFunc("GET /v1/feedback", h.feedback)
+	mux.HandleFunc("POST /v1/feedback", h.feedback)
+	mux.HandleFunc("GET /v1/feedback/aggregates/health", h.feedbackAggregateHealth)
+	mux.HandleFunc("POST /v1/feedback/aggregates/rebuild", h.rebuildFeedbackAggregates)
+	mux.HandleFunc("GET /v1/aggregate-proposals", h.aggregateProposals)
+	mux.HandleFunc("POST /v1/aggregate-proposals", h.aggregateProposals)
+	mux.HandleFunc("GET /v1/aggregate-proposals/{proposal_id}", h.aggregateProposal)
+	mux.HandleFunc("POST /v1/aggregate-proposals/{proposal_id}/{action}", h.aggregateProposal)
+	mux.HandleFunc("GET /v1/aggregates", h.aggregatesList)
+	mux.HandleFunc("GET /v1/aggregates/{aggregate_id}", h.aggregateGet)
+	mux.HandleFunc("GET /v1/aggregates/{aggregate_id}/provenance", h.aggregateGet)
 	mux.HandleFunc("/", h.notFound)
 	return mux
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	ready := h.ready.Load()
-	mode := "healthy"
-	if !ready {
-		mode = "unavailable"
-	}
-	queueDepth, oldestAge := 0, 0
+	storageState, schemaState := "unavailable", "unknown"
+	queueState, queueDepth, oldestAge := "unavailable", 0, 0
 	ftsState := h.ftsState
-	storageHealthy := ready
 	diskPressure := "normal"
+	semanticState, semanticVersion := "not_configured", 0
+	entityState, entityVersion := "unavailable", int64(0)
+	relationState, relationVersion := "unavailable", int64(0)
+	feedbackState, feedbackVersion := "unavailable", int64(0)
+	aggregateState, aggregateFresh, aggregateStale, aggregateRebuilds := "unavailable", 0, 0, 0
 	if h.repository != nil {
-		if depth, age, err := h.repository.QueueStats(r.Context()); err == nil {
-			queueDepth, oldestAge = depth, age
-		} else {
-			storageHealthy = false
-		}
+		storageState, schemaState = h.repository.StorageStatus(r.Context())
+		queueState, queueDepth, oldestAge, _ = h.repository.QueueStatus(r.Context())
 		if state, err := h.repository.IndexState(r.Context()); err == nil {
 			ftsState = state
 		} else {
-			storageHealthy = false
+			ftsState = "unavailable"
 		}
 		if pressure, err := h.repository.DiskPressure(); err == nil {
 			diskPressure = pressure
 		} else {
-			storageHealthy = false
+			storageState = "unavailable"
+		}
+		semanticState, semanticVersion = h.repository.SemanticHealth(r.Context())
+		entityState, entityVersion = h.repository.EntityIndexHealth(r.Context())
+		relationState, relationVersion = h.repository.RelationIndexHealth(r.Context())
+		if status, err := h.repository.FeedbackAggregateHealth(r.Context()); err == nil {
+			feedbackState, feedbackVersion = status.State, status.Generation
+		}
+		if status, err := h.repository.AggregateHealth(r.Context()); err == nil {
+			aggregateState, aggregateFresh, aggregateStale, aggregateRebuilds = status.State, status.FreshCount, status.StaleCount, status.PendingRebuilds
 		}
 	}
-	if !storageHealthy {
+	processorState, processorIdentity := "not_configured", "none"
+	if h.processorHealth != nil {
+		processorState, processorIdentity = h.processorHealth.ProcessorHealth()
+	}
+	storageHealthy := storageState == "ready"
+	serviceReady := ready && storageHealthy && schemaState == "compatible"
+	mode := "healthy"
+	if !serviceReady {
 		mode = "unavailable"
 	} else if diskPressure == "hard" {
 		mode = "read_only"
-	} else if ftsState != "ready" {
-		mode = "degraded"
-	} else if diskPressure == "soft" {
+	} else if ftsState != "ready" || entityState != "ready" || relationState != "ready" || feedbackState != "ready" || aggregateState != "ready" || queueState != "ready" || processorState == "degraded" || processorState == "unavailable" || semanticState == "degraded" || semanticState == "unavailable" || semanticState == "rebuilding" || semanticState == "rebuild_required" || diskPressure == "soft" {
 		mode = "degraded"
 	}
-	acceptingWrites := ready && storageHealthy && diskPressure != "hard"
+	acceptingWrites := serviceReady && diskPressure != "hard"
+	backupState := "ready"
+	if !storageHealthy {
+		backupState = "unavailable"
+	} else if diskPressure != "normal" {
+		backupState = "degraded"
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(Health{
-		ProcessAlive:        true,
-		Mode:                mode,
-		Ready:               ready,
-		AcceptingWrites:     acceptingWrites,
-		QueryAvailable:      ready && storageHealthy,
-		StorageHealthy:      storageHealthy,
-		StorageWritable:     acceptingWrites,
-		SchemaCompatibility: "compatible",
-		FTSState:            ftsState,
-		FTSFreshness:        map[bool]string{true: "current", false: "stale"}[ftsState == "ready"],
-		ProcessorState:      "not_configured",
-		JobQueueDepth:       queueDepth,
-		OldestJobAgeSeconds: oldestAge,
-		DiskPressure:        diskPressure,
+		ProcessAlive:             true,
+		Mode:                     mode,
+		OverallStatus:            mode,
+		Ready:                    serviceReady,
+		AcceptingWrites:          acceptingWrites,
+		QueryAvailable:           serviceReady,
+		StorageState:             storageState,
+		StorageHealthy:           storageHealthy,
+		StorageWritable:          acceptingWrites,
+		SchemaCompatibility:      schemaState,
+		QueueState:               queueState,
+		FTSState:                 ftsState,
+		FTSIndexState:            ftsState,
+		FTSFreshness:             map[bool]string{true: "current", false: "stale"}[ftsState == "ready"],
+		ProcessorState:           processorState,
+		ProcessorIdentity:        processorIdentity,
+		SemanticState:            semanticState,
+		SemanticIndexState:       semanticState,
+		SemanticIndexVersion:     semanticVersion,
+		EntityIndexState:         entityState,
+		EntityIndexVersion:       entityVersion,
+		RelationIndexState:       relationState,
+		RelationIndexVersion:     relationVersion,
+		FeedbackAggregateState:   feedbackState,
+		FeedbackAggregateVersion: feedbackVersion,
+		AggregateState:           aggregateState,
+		AggregateFreshCount:      aggregateFresh,
+		AggregateStaleCount:      aggregateStale,
+		AggregatePendingRebuilds: aggregateRebuilds,
+		BackupState:              backupState,
+		JobQueueDepth:            queueDepth,
+		OldestJobAgeSeconds:      oldestAge,
+		DiskPressure:             diskPressure,
 	})
 }
 

@@ -20,6 +20,8 @@
 - provider 返回维度、NaN/Inf 或批次数量不符时视为 invalid output。
 - revision 或状态改变后，旧 embedding 立即在权威复核中失效。
 - embedding job 使用 durable queue、attempt、取消和 fencing，不单独引入消息队列。
+- searchable projection 的 revision、space、content hash 或 searchable 变化时，在权威写事务内创建 embedding job 并合并调度一个 waiting rebuild；不改变语义源的生命周期操作保留当前 embedding。
+- processing provider 和 embedding provider 独立配置。processing 配置变化不改变语义 identity；embedding provider/model 变化触发当前 projection 的恢复任务。
 
 ## 3. VectorIndex 端口
 
@@ -28,7 +30,7 @@
 ```text
 Upsert(memory_id, revision_id, vector, metadata)
 Delete(memory_id, revision_id)
-Search(vector, allowed_space_ids, limit, index_version)
+Search(vector, allowed_space_ids, eligible_revision_hashes, limit, index_version)
 Build(version, snapshot)
 Activate(version)
 Drop(version)
@@ -59,7 +61,7 @@ stale
 4. 原子切换 active version。
 5. 在保留窗口后清理旧 version。
 
-构建失败保留旧 active version；没有旧版本时 semantic unavailable。重建任务可重试，但同一目标 version 只能有一个活跃任务。
+构建失败保留旧 active version；没有旧版本时 semantic unavailable。重建任务可重试，同一 provider/model identity 最多有一个活跃 rebuild。若构建激活后 projection 再次变化，完成事务创建一个 waiting 后继任务，避免遗漏并发写入。
 
 ## 5. 候选召回
 
@@ -73,7 +75,7 @@ stale
 - active FTS/semantic index version；
 - ranking version。
 
-Keyword 和 semantic 各自返回有界候选。候选使用 `(memory_id, revision_id)` 去重，并保留：
+Keyword 和 semantic 各自返回有界候选。SQLite 在有界截断前应用 space、state、type、reference time 和 current revision 过滤，并为向量索引提供 `(memory_id, revision_id, content_hash)` 合格集合；向量层在 cosine 排序和 top-k 前应用该集合。候选使用 `(memory_id, revision_id)` 去重，并保留：
 
 ```text
 keyword_score
@@ -83,6 +85,8 @@ index_versions
 ```
 
 关键词命中不得因为不在 semantic top-k 中被丢弃，语义命中也不得要求同时命中 FTS。
+
+查询 embedding 在 SQLite read transaction 之外执行。短事务只做通道预检；provider 返回后使用新的权威快照解析 scope、过滤、FTS/semantic version 和候选。向量查询始终指定该快照记录的 index version，返回阶段仍执行权威复核。
 
 ## 6. 分数融合
 
@@ -168,4 +172,4 @@ ranking_version
 - keyword、semantic、hybrid p50/p95；
 - rebuild 时间、峰值内存和磁盘放大。
 
-具体数值在向量实现和基准数据确定后写入测试配置，不允许只用人工示例作为发布依据。
+具体数值在向量实现和基准数据确定后写入测试配置，不允许只用人工示例作为阶段完成依据。

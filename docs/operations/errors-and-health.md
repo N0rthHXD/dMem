@@ -29,7 +29,7 @@ details
 | incompatible_version | 否 | 客户端、配置或数据版本不兼容 |
 | resource_exhausted | 视状态 | 磁盘、内存或预算不足 |
 | not_found | 否 | 对象不存在或已不可见 |
-| unsupported | 否 | 第一阶段不支持请求的能力或内容类型 |
+| unsupported | 否 | 当前契约明确不支持的能力或内容类型 |
 | idempotency_conflict | 否 | 相同幂等键对应不同请求 |
 
 ## 3. 处理状态不是错误
@@ -60,9 +60,15 @@ oldest_job_age
 processor_state
 disk_pressure
 schema_compatibility
+entity_index_state/version
+relation_index_state/version
+feedback_aggregate_state/version
+aggregate_state/fresh/stale/pending_rebuilds
 ```
 
 健康响应不得包含密钥、原始内容和不必要的本地路径。
+
+健康维度描述当前可查询的组件状态。单次 worker claim、维护或终态持久化失败属于结构化运维日志事件，不形成 sticky health 状态；当前 storage/queue 探测失败仍通过已有维度报告 unavailable。
 
 ## 5. 整体运行模式
 
@@ -80,6 +86,9 @@ unavailable   无法安全提供核心服务
 | --- | --- | --- |
 | processor 未配置 | healthy | no-op 完成提取任务，手工记忆可用 |
 | FTS 不可用 | degraded | get/list 可用，search 返回 index_degraded |
+| Entity/relation index 不可用 | degraded | 权威 get/list 可用，search 报告 degraded channel，可通过对应 rebuild API 恢复 |
+| Feedback aggregate 不可用 | degraded | feedback event 保持权威，排序不应伪装成使用当前 aggregate |
+| Aggregate stale/pending rebuild | degraded | provenance 可查询，health 报告 fresh/stale/pending 数量 |
 | SQLite 只读 | read_only | 拒绝持久化写入 |
 | schema 版本不兼容 | unavailable | 拒绝普通启动，不自动修改数据库 |
 | 权威数据库损坏 | unavailable/maintenance | 不返回未经确认的记忆 |

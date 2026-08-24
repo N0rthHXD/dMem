@@ -1,0 +1,57 @@
+name: Phase 2
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: "1"
+  GOFLAGS: "-tags=sqlite_fts5"
+  DMEM_PROCESSING_PROVIDER_API_KEY: ""
+  DMEM_EMBEDDING_PROVIDER_API_KEY: ""
+
+jobs:
+  checks:
+    name: Linux amd64 / Go ${{ matrix.go }} / offline gates
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go:
+          - minimum
+          - stable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up minimum Go from go.mod
+        if: matrix.go == 'minimum'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up stable Go
+        if: matrix.go == 'stable'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: Download dependencies
+        run: go mod download
+      - name: Run phase-2 checks
+        run: make phase-2/check
+
+  vulnerability-scan:
+    name: Linux amd64 / govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Scan
+        run: make govulncheck

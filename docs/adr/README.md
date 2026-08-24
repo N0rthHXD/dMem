@@ -16,13 +16,20 @@
 | [0012](0012-orm-boundaries.md) | 允许 ORM 并限制使用边界 |
 | [0013](0013-local-http-over-unix-socket.md) | HTTP/JSON over Unix Domain Socket |
 | [0014](0014-sqlite-extension-policy.md) | SQLite 扩展白名单 |
-| [0015](0015-no-schema-migration-in-phase-one.md) | 第一阶段不实现 SQLite schema migration |
-| [0016](0016-phase-two-schema-migrations.md) | 第二阶段前向事务 migration |
+| [0015](0015-no-schema-migration-in-phase-one.md) | 未发布开发阶段不实现 SQLite schema migration |
+| [0016](0016-phase-two-schema-migrations.md) | 第二阶段前向事务 migration（rejected） |
 | [0017](0017-independent-review-candidates.md) | 独立候选记忆与人工审核 |
 | [0018](0018-in-process-provider-ports.md) | 进程内强类型 provider 端口 |
 | [0019](0019-go-vector-index.md) | Go 内置可重建向量索引 |
 | [0020](0020-versioned-rrf-ranking.md) | 固定版本 RRF 混合排序与 cursor |
 | [0021](0021-offline-backup-restore.md) | 一致性备份与离线 staging restore |
 | [0022](0022-explicit-openai-compatible-providers.md) | 显式 OpenAI-compatible provider |
+| [0023](0023-entity-identity-and-mentions.md) | 稳定 Entity identity 与 revision-level mention |
+| [0024](0024-authoritative-revision-relations.md) | 独立权威 revision relation |
+| [0025](0025-conflict-cases-and-contested-state.md) | Conflict case 与 contested projection 分工 |
+| [0026](0026-distinct-evolution-proposals.md) | 独立 Evolution proposal resource |
+| [0027](0027-feedback-and-ranking-v2.md) | Feedback aggregate v1 与 ranking v2 |
+| [0028](0028-aggregate-memories-and-freshness.md) | 普通 Aggregate memory 与 freshness descriptor |
+| [0029](0029-logical-format-v1.md) | 确定性 Logical format v1 |
 
 ADR 状态使用：`proposed`、`accepted`、`superseded` 或 `rejected`。

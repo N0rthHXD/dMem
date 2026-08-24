@@ -1,12 +1,8 @@
-# dMeM 第一阶段配置
+# dMeM 生产配置
 
 ## 1. 来源和校验
 
-```text
-内置默认值 → 配置文件 → 环境变量 → 启动参数
-```
-
-未知字段、非法类型和越界值导致启动失败。持续时间使用 Go duration，容量使用整数 bytes。最终配置可查看，但敏感值脱敏。
+配置来源为内置默认值、指定的环境变量和启动参数；启动参数优先。当前版本不读取配置文件，也不提供运行时配置查看接口。未知参数、非法类型和越界值导致启动失败。持续时间使用 Go duration，容量使用整数 bytes。
 
 ## 2. 路径
 
@@ -74,16 +70,44 @@ queue soft limit 统计 pending、waiting 和 retrying；queue hard limit 统计
 | default_max_chars | 12000 | 1..100000 |
 | retrieval_timeout | 5s | 100ms..30s |
 
-第一阶段 FTS 始终启用；semantic、entity 和 relation 配置不存在。
+FTS 始终启用。semantic/hybrid 仅在 embedding provider 显式启用且当前语义索引可用时执行；entity 和 relation 配置不存在。
 
-## 7. Processor
+## 7. Processor 与 Embedding Provider
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
-| processor | none | no-op processor |
-| processing_version | phase1-noop-v1 | 进入 job identity |
+| processing_provider | disabled | 自动提取使用的 OpenAI-compatible provider |
+| embedding_provider | disabled | embedding 和 semantic/hybrid 查询使用的 OpenAI-compatible provider |
+| processing_version | phase2-noop-v1 | `--processing-version` / `DMEM_PROCESSING_VERSION`；进入 job identity |
 
-远程 provider 不属于第一阶段。
+`processing_version` 必须是 1 到 128 个 ASCII 字母、数字、点、下划线或连字符组成的稳定标识，且首字符必须是字母或数字。优先级为启动参数、非空环境变量、内置默认值。默认值只标识第二阶段 no-op processor；启用 processing provider 时必须通过启动参数或非空环境变量显式配置非默认稳定版本，并在 processor 规则、model 或影响候选结果的配置变化时更新。只启用 embedding provider 不要求修改 processing version。
+
+两类 provider 独立启用并使用独立 client、endpoint、model、secret 引用、并发限制和速率限制。processing 配置使用 `--processing-provider-*`，embedding 配置使用 `--embedding-provider-*`。两者共同支持：
+
+```text
+enabled
+kind
+endpoint
+model
+secret-env
+allowed-spaces
+allowed-content-types
+allowed-source-types
+allowed-sensitivities
+telemetry-disabled
+egress-policy-version
+max-content-chars
+max-response-size
+request-timeout
+max-concurrent
+requests-per-minute
+```
+
+只有 processing provider 额外支持 `--processing-provider-max-context-items`。旧的 `--provider-*` 参数不再接受，也不作为兼容别名。`secret-env` 保存的是环境变量名称；secret 值只在实际请求前解析，provider 禁用时不读取。
+
+四种组合均有效：两者都关闭、仅 processing、仅 embedding、两者都开启。processing provider 的变化不使现有 embedding 失效；embedding kind/model 的变化形成新的 semantic job identity，并通过恢复任务重新生成 embedding 和索引。
+
+daemon 重启不改变已创建 job 固定的版本。使用新版本重启后 replay 同一 event 会创建独立 job 和结果；相同版本 replay 返回该版本已有的 active job 或终态结果，不执行版本兼容或迁移逻辑。
 
 ## 8. 磁盘阈值
 

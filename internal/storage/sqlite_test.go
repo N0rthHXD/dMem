@@ -90,6 +90,63 @@ func TestOpenRejectsIncompatibleSchemaWithoutModification(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsStaleSchemaWithCurrentVersionNumber(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "dmem.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE schema_metadata (singleton INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, initialized_at TEXT NOT NULL); INSERT INTO schema_metadata VALUES (1, 1, 'before')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(context.Background(), path, Options{})
+	if store != nil {
+		store.Close()
+	}
+	if !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("Open() error = %v; want ErrIncompatibleSchema", err)
+	}
+}
+
+func TestOpenRejectsAlmostCurrentCatalogWithoutModification(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dmem.db")
+	store, err := Open(ctx, path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.writer.ExecContext(ctx, `DROP INDEX audit_operation_idx`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, path, Options{})
+	if store != nil {
+		store.Close()
+	}
+	if !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("Open() error = %v; want ErrIncompatibleSchema", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("almost-current database was modified")
+	}
+}
+
 func TestOpenRejectsFailedIntegrityCheck(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "dmem.db")

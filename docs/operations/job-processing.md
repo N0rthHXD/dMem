@@ -1,13 +1,20 @@
 # dMeM 异步任务处理
 
-## 1. 第一阶段任务
+## 1. 任务类型
 
 ```text
 extract_memory
 rebuild_fts
+embed_memory
+rebuild_semantic
+rebuild_entity_index
+rebuild_relation_index
+aggregate_feedback
+rebuild_feedback_aggregates
+rebuild_aggregate
 ```
 
-其他任务类型延期。任务状态持久化在 SQLite。
+任务状态持久化在 SQLite。`embed_memory` 绑定 memory revision 和 embedding provider/model identity；`rebuild_semantic` 绑定语义索引和相同 identity。Phase 3 rebuild job 分别从 entity/relation authority、feedback events 或 aggregate frozen inputs 重建派生状态，并使用相同 lease generation fencing。
 
 ## 2. 状态机
 
@@ -26,7 +33,7 @@ running → cancelled
 failed → pending（仅显式 retry）
 ```
 
-第一阶段不使用 `partially_succeeded`。部分信息放在 result 中，终态仍为 succeeded 或 failed。
+当前 job 状态机不使用 `partially_succeeded`。部分信息放在 result 中，终态仍为 succeeded 或 failed。Logical import 使用独立 `import_operations` 状态和 batch checkpoints，不伪装成单个 job。
 
 ## 3. 任务记录
 
@@ -89,7 +96,11 @@ job_id + lease_owner + lease_generation + status=running
 任务处理和 processor 调用 = 事务之外
 ```
 
-原始事件接收事务同时创建 extract job。FTS 物化更新与记忆当前状态变更在同一事务完成；全量 rebuild 使用独立任务。
+原始事件接收事务同时创建 extract job。FTS 物化更新与记忆当前状态变更在同一事务完成。可检索 projection 的语义源发生变化时，同一事务创建 embedding job，并确保当前 embedding identity 最多有一个 waiting/runnable semantic rebuild。rebuild 只有在当前 projection 的 embedding 全部可用后才能领取。
+
+若 projection 在 rebuild 激活后、任务完成前再次变化，rebuild 的完成事务会在关闭当前任务后检查 semantic 状态，并创建一个后继 rebuild。这样并发写入不会因 active job 唯一约束而丢失重建请求。freeze/unfreeze 等不改变 revision、space、content hash 或 searchable 的操作保留现有 embedding，不创建无效任务。
+
+worker 的非预期 claim、周期维护和终态持久化错误写入结构化日志，字段限于 operation、job ID、attempt/generation 和错误。空队列、lease lost 及正常关闭不作为错误记录。终态事务提交失败后不盲目重试，由 lease fencing 和过期恢复处理；日志不包含原始事件、候选、provider 响应或 secret。
 
 ## 6. 幂等和重试
 

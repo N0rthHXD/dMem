@@ -63,18 +63,18 @@
 
 ORM 候选必须通过 SQLite 事务、批量写入、条件更新、自定义类型、JSON 元数据和 FTS 共存验证后才能采用。
 
-## 4. 第一阶段 Schema 策略
+## 4. 未发布开发阶段 Schema 策略
 
-第一阶段不实现 SQLite schema migration：
+项目明确完成并发布前，所有开发阶段都不实现 SQLite schema migration：
 
 - 新数据库通过一份版本化初始化 SQL 创建完整 schema。
 - 数据库保存单一 `schema_version`。
 - daemon 打开已有数据库时只校验版本是否完全匹配。
 - 版本不匹配时拒绝普通启动并返回 `incompatible_version`。
 - 不使用 ORM AutoMigrate，也不在启动时自动修改已有表。
-- 开发阶段发生不兼容 schema 变化时，使用新数据库重新初始化；需要保留的数据通过明确的导出和导入处理。
+- 开发阶段发生不兼容 schema 变化时，使用新数据库重新初始化。
 
-正式 schema migration 属于后续阶段，届时通过独立 ADR 和设计文档引入。
+阶段编号不触发 migration、兼容或适配义务。只有项目负责人明确声明项目开发完成并发布后，才通过独立 ADR 重新评估这些能力。
 
 ## 5. 本地服务协议
 

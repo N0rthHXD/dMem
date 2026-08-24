@@ -15,17 +15,18 @@ import (
 )
 
 type searchRequest struct {
-	Query            string          `json:"query"`
-	SpaceIDs         []string        `json:"space_ids"`
-	IncludeAncestors json.RawMessage `json:"include_ancestors"`
-	MemoryTypes      json.RawMessage `json:"memory_types"`
-	States           json.RawMessage `json:"states"`
-	ReferenceTime    json.RawMessage `json:"reference_time"`
-	Mode             json.RawMessage `json:"mode"`
-	Limit            json.RawMessage `json:"limit"`
-	MaxChars         json.RawMessage `json:"max_chars"`
-	IncludeEvidence  json.RawMessage `json:"include_evidence"`
-	Cursor           json.RawMessage `json:"cursor"`
+	Query                  string          `json:"query"`
+	SpaceIDs               []string        `json:"space_ids"`
+	IncludeAncestors       json.RawMessage `json:"include_ancestors"`
+	MemoryTypes            json.RawMessage `json:"memory_types"`
+	States                 json.RawMessage `json:"states"`
+	ReferenceTime          json.RawMessage `json:"reference_time"`
+	Mode                   json.RawMessage `json:"mode"`
+	Limit                  json.RawMessage `json:"limit"`
+	MaxChars               json.RawMessage `json:"max_chars"`
+	IncludeEvidence        json.RawMessage `json:"include_evidence"`
+	Cursor                 json.RawMessage `json:"cursor"`
+	ExcludeStaleAggregates json.RawMessage `json:"exclude_stale_aggregates"`
 }
 
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
@@ -39,11 +40,7 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	}
 	params, err := h.validateSearch(request)
 	if err != nil {
-		code := "invalid_request"
-		if errors.Is(err, errSemanticUnsupported) {
-			code = "unsupported"
-		}
-		h.writeError(w, http.StatusUnprocessableEntity, code, err.Error(), requestID, "", false, nil)
+		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error(), requestID, "", false, nil)
 		return
 	}
 	result, err := h.repository.SearchMemories(r.Context(), params)
@@ -57,8 +54,6 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	}
 	h.writeJSON(w, http.StatusOK, result)
 }
-
-var errSemanticUnsupported = errors.New("semantic search is unsupported")
 
 func (h *Handler) validateSearch(request searchRequest) (storage.SearchParams, error) {
 	if strings.TrimSpace(request.Query) == "" || utf8.RuneCountInString(request.Query) < 1 {
@@ -77,13 +72,13 @@ func (h *Handler) validateSearch(request searchRequest) (storage.SearchParams, e
 		}
 		seen[id] = true
 	}
-	params := storage.SearchParams{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 12000}
+	params := storage.SearchParams{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Mode: "keyword", Limit: 10, MaxChars: 12000}
 	if request.IncludeAncestors != nil {
 		if isNull(request.IncludeAncestors) || json.Unmarshal(request.IncludeAncestors, &params.IncludeAncestors) != nil {
 			return storage.SearchParams{}, errors.New("include_ancestors must be a boolean")
 		}
 	}
-	validTypes := map[string]bool{"fact": true, "preference": true, "constraint": true, "decision": true, "task": true, "event": true, "project_context": true, "agent_experience": true}
+	validTypes := map[string]bool{"fact": true, "preference": true, "constraint": true, "decision": true, "task": true, "event": true, "project_context": true, "agent_experience": true, "aggregate": true}
 	if request.MemoryTypes != nil {
 		params.MemoryTypesSet = true
 		if isNull(request.MemoryTypes) || json.Unmarshal(request.MemoryTypes, &params.MemoryTypes) != nil || !validValues(params.MemoryTypes, validTypes) {
@@ -108,12 +103,9 @@ func (h *Handler) validateSearch(request searchRequest) (storage.SearchParams, e
 		params.ReferenceTime, params.ReferenceTimeSet = formatAPITime(parsed), true
 	}
 	if request.Mode != nil {
-		if isNull(request.Mode) || json.Unmarshal(request.Mode, &params.Mode) != nil || params.Mode != "keyword" && params.Mode != "semantic" {
+		if isNull(request.Mode) || json.Unmarshal(request.Mode, &params.Mode) != nil || params.Mode != "keyword" && params.Mode != "semantic" && params.Mode != "hybrid" {
 			return storage.SearchParams{}, errors.New("mode is invalid")
 		}
-	}
-	if params.Mode == "semantic" {
-		return storage.SearchParams{}, errSemanticUnsupported
 	}
 	if err := decodeRange(request.Limit, &params.Limit, 1, 100, "limit"); err != nil {
 		return storage.SearchParams{}, err
@@ -126,6 +118,9 @@ func (h *Handler) validateSearch(request searchRequest) (storage.SearchParams, e
 	}
 	if request.Cursor != nil && (isNull(request.Cursor) || json.Unmarshal(request.Cursor, &params.Cursor) != nil) {
 		return storage.SearchParams{}, errors.New("cursor must be a string")
+	}
+	if request.ExcludeStaleAggregates != nil && (isNull(request.ExcludeStaleAggregates) || json.Unmarshal(request.ExcludeStaleAggregates, &params.ExcludeStaleAggregates) != nil) {
+		return storage.SearchParams{}, errors.New("exclude_stale_aggregates must be a boolean")
 	}
 	params.States = sortedUnique(params.States)
 	params.MemoryTypes = sortedUnique(params.MemoryTypes)
@@ -147,6 +142,30 @@ func (h *Handler) rebuildFTS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, storage.ErrJobAlreadyActive) {
 			h.writeError(w, http.StatusConflict, "job_already_active", "an active FTS rebuild job already exists", requestID, "", false, map[string]any{"job_id": result.JobID})
+			return
+		}
+		h.repositoryError(w, err, requestID)
+		return
+	}
+	w.Header().Set("Idempotent-Replay", strconv.FormatBool(replay))
+	h.writeJSON(w, http.StatusAccepted, result)
+}
+
+func (h *Handler) rebuildSemantic(w http.ResponseWriter, r *http.Request) {
+	requestID := h.requestID()
+	caller, ok := h.requireCaller(w, r, requestID)
+	if !ok {
+		return
+	}
+	key, ok := h.requireIdempotency(w, r, requestID)
+	if !ok {
+		return
+	}
+	identity := writeIdentity(caller, key, requestID, r.Method, "/v1/indexes/semantic/rebuild", struct{}{})
+	result, replay, err := h.repository.CreateSemanticRebuildJob(r.Context(), identity)
+	if err != nil {
+		if errors.Is(err, storage.ErrJobAlreadyActive) {
+			h.writeError(w, http.StatusConflict, "job_already_active", "an active semantic rebuild job already exists", requestID, "", false, map[string]any{"job_id": result.JobID})
 			return
 		}
 		h.repositoryError(w, err, requestID)

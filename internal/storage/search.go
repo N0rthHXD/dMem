@@ -20,37 +20,83 @@ import (
 )
 
 type SearchParams struct {
-	Query            string
-	SpaceIDs         []string
-	IncludeAncestors bool
-	MemoryTypes      []string
-	MemoryTypesSet   bool
-	States           []string
-	ReferenceTime    string
-	ReferenceTimeSet bool
-	Mode             string
-	Limit            int
-	MaxChars         int
-	IncludeEvidence  bool
-	Cursor           string
+	Query                  string
+	SpaceIDs               []string
+	IncludeAncestors       bool
+	MemoryTypes            []string
+	MemoryTypesSet         bool
+	States                 []string
+	ReferenceTime          string
+	ReferenceTimeSet       bool
+	Mode                   string
+	RequestedMode          string
+	SemanticVersion        int
+	Limit                  int
+	MaxChars               int
+	IncludeEvidence        bool
+	ExcludeStaleAggregates bool
+	Cursor                 string
 }
 
 type searchCursor struct {
-	Version       int    `json:"v"`
-	QueryHash     string `json:"q"`
-	ScoreBits     string `json:"s"`
-	UpdatedAt     string `json:"u"`
-	MemoryID      string `json:"m"`
-	ReferenceTime string `json:"rt"`
+	Version                  int    `json:"v"`
+	QueryHash                string `json:"q"`
+	RequestedMode            string `json:"rm"`
+	ExecutedMode             string `json:"em"`
+	RankingVersion           string `json:"rv"`
+	FTSVersion               int    `json:"fv"`
+	SemanticVersion          int    `json:"sv"`
+	CorpusGeneration         int64  `json:"cg"`
+	FeedbackAggregateVersion int64  `json:"av"`
+	EntityIndexVersion       int64  `json:"ev"`
+	RelationIndexVersion     int64  `json:"lv"`
+	Limit                    int    `json:"l"`
+	MaxChars                 int    `json:"b"`
+	ScoreBits                string `json:"s"`
+	UpdatedAt                string `json:"u"`
+	MemoryID                 string `json:"m"`
+	RevisionID               string `json:"r"`
+	ReferenceTime            string `json:"rt"`
 }
 
 type searchCandidate struct {
-	memoryID, revisionID, updatedAt string
-	ftsContent, projectionContent   string
-	score                           float64
+	memoryID, revisionID, updatedAt       string
+	ftsContent, projectionContent         string
+	keywordScore, rrfScore, score         float64
+	keywordRank, entityRank, relationRank int
+	entity, relation                      bool
 }
 
 func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
+	if params.Cursor != "" && !params.ReferenceTimeSet {
+		if params.Mode == "semantic" {
+			cursor, err := decodeHybridCursor(params.Cursor)
+			if err != nil {
+				return domain.SearchResponse{}, ErrInvalidCursor
+			}
+			params.ReferenceTime = cursor.ReferenceTime
+		} else if params.Mode == "hybrid" {
+			cursor, hybridErr := decodeHybridCursor(params.Cursor)
+			if hybridErr == nil && cursor.ReferenceTime != "" {
+				params.ReferenceTime = cursor.ReferenceTime
+			} else {
+				keywordCursor, keywordErr := decodeSearchCursor(params.Cursor)
+				if keywordErr != nil || keywordCursor.RequestedMode != "hybrid" || keywordCursor.ExecutedMode != "keyword" {
+					return domain.SearchResponse{}, ErrInvalidCursor
+				}
+				params.ReferenceTime = keywordCursor.ReferenceTime
+			}
+		} else {
+			cursor, err := decodeSearchCursor(params.Cursor)
+			if err != nil {
+				return domain.SearchResponse{}, ErrInvalidCursor
+			}
+			params.ReferenceTime = cursor.ReferenceTime
+		}
+	}
+	if params.Mode == "semantic" || params.Mode == "hybrid" {
+		return r.searchSemanticHybrid(ctx, params)
+	}
 	if params.ReferenceTime == "" {
 		params.ReferenceTime = formatTime(r.runtime.Now())
 	}
@@ -61,7 +107,12 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 	defer tx.Rollback()
 
 	var indexState string
-	if err := tx.QueryRowContext(ctx, `SELECT state FROM index_metadata WHERE index_name='memory_fts'`).Scan(&indexState); err != nil {
+	var ftsVersion int
+	if err := tx.QueryRowContext(ctx, `SELECT state, index_version FROM index_metadata WHERE index_name='memory_fts'`).Scan(&indexState, &ftsVersion); err != nil {
+		return domain.SearchResponse{}, err
+	}
+	metadata, err := readSearchMetadata(ctx, tx)
+	if err != nil {
 		return domain.SearchResponse{}, err
 	}
 	spaces, err := searchScope(ctx, tx, params.SpaceIDs, params.IncludeAncestors)
@@ -80,10 +131,14 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		after = &cursor
 	}
 	hash := searchQueryHash(params)
-	if after != nil && (after.QueryHash != hash || after.ReferenceTime != params.ReferenceTime) {
+	requestedMode := params.RequestedMode
+	if requestedMode == "" {
+		requestedMode = params.Mode
+	}
+	if after != nil && (after.QueryHash != hash || after.ReferenceTime != params.ReferenceTime || after.RequestedMode != requestedMode || after.ExecutedMode != "keyword" || after.FTSVersion != ftsVersion || after.SemanticVersion != params.SemanticVersion || after.CorpusGeneration != metadata.corpusGeneration || after.FeedbackAggregateVersion != metadata.feedbackAggregateVersion || after.EntityIndexVersion != metadata.entityIndexVersion || after.RelationIndexVersion != metadata.relationIndexVersion || after.Limit != params.Limit || after.MaxChars != params.MaxChars) {
 		return domain.SearchResponse{}, ErrInvalidCursor
 	}
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, IndexState: indexState}
+	response := domain.SearchResponse{Results: []domain.SearchResult{}, IndexState: indexState, RequestedMode: requestedMode, ExecutedMode: "keyword", DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion}
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
 		if err := tx.Commit(); err != nil {
 			return domain.SearchResponse{}, err
@@ -115,11 +170,6 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?)`
 	args = append(args, params.ReferenceTime, params.ReferenceTime)
 	query += `) SELECT memory_id, revision_id, content, display_content, updated_at, score FROM ranked`
-	if after != nil {
-		score := math.Float64frombits(parseScoreBits(after.ScoreBits))
-		query += ` WHERE score>? OR (score=? AND updated_at<?) OR (score=? AND updated_at=? AND memory_id>?)`
-		args = append(args, score, score, after.UpdatedAt, score, after.UpdatedAt, after.MemoryID)
-	}
 	query += ` ORDER BY score ASC, updated_at DESC, memory_id ASC`
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -137,24 +187,114 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 	var candidates []searchCandidate
 	for rows.Next() {
 		var item searchCandidate
-		if err := rows.Scan(&item.memoryID, &item.revisionID, &item.ftsContent, &item.projectionContent, &item.updatedAt, &item.score); err != nil {
+		if err := rows.Scan(&item.memoryID, &item.revisionID, &item.ftsContent, &item.projectionContent, &item.updatedAt, &item.keywordScore); err != nil {
 			rows.Close()
 			return domain.SearchResponse{}, err
 		}
-		if math.IsNaN(item.score) || math.IsInf(item.score, 0) {
+		if math.IsNaN(item.keywordScore) || math.IsInf(item.keywordScore, 0) {
 			rows.Close()
 			return domain.SearchResponse{}, ErrInvalidSearchQuery
 		}
+		item.keywordRank = len(candidates) + 1
 		candidates = append(candidates, item)
 	}
 	if err := rows.Close(); err != nil {
 		return domain.SearchResponse{}, err
 	}
+	entityCandidates, err := entityKeywordRecall(ctx, tx, params.Query, spaces, params.Limit*10)
+	if err != nil {
+		return domain.SearchResponse{}, err
+	}
+	for i := range entityCandidates {
+		entityCandidates[i].entityRank = i + 1
+	}
+	relationCandidates, relationErr := relationKeywordRecall(ctx, tx, params.Query, spaces, params.Limit*10)
+	if errors.Is(relationErr, ErrIndexDegraded) {
+		response.Degraded = true
+		response.DegradationReasons = append(response.DegradationReasons, "relation_unavailable")
+	} else if relationErr != nil {
+		return domain.SearchResponse{}, relationErr
+	}
+	all := make(map[string]*searchCandidate, len(candidates)+len(entityCandidates)+len(relationCandidates))
+	for i := range candidates {
+		item := candidates[i]
+		all[item.memoryID+"\x00"+item.revisionID] = &item
+	}
+	for i := range entityCandidates {
+		item := entityCandidates[i]
+		key := item.memoryID + "\x00" + item.revisionID
+		if existing := all[key]; existing != nil {
+			existing.entity = true
+			existing.entityRank = item.entityRank
+		} else {
+			all[key] = &item
+		}
+	}
+	if relationErr == nil {
+		for i := range relationCandidates {
+			item := relationCandidates[i]
+			item.relationRank = i + 1
+			key := item.memoryID + "\x00" + item.revisionID
+			if existing := all[key]; existing != nil {
+				existing.relation = true
+				existing.relationRank = item.relationRank
+			} else {
+				all[key] = &item
+			}
+		}
+	}
+	candidates = candidates[:0]
+	for _, item := range all {
+		if item.keywordRank > 0 {
+			item.rrfScore += 1 / float64(60+item.keywordRank)
+		}
+		if item.entityRank > 0 {
+			item.rrfScore += 1 / float64(60+item.entityRank)
+		}
+		if item.relationRank > 0 {
+			item.rrfScore += 1 / float64(60+item.relationRank)
+		}
+		usage, err := feedbackUsageScore(ctx, tx, item.revisionID, metadata.feedbackAggregateVersion)
+		if err != nil {
+			return domain.SearchResponse{}, err
+		}
+		item.score = item.rrfScore + 0.001*usage
+		candidates = append(candidates, *item)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		if candidates[i].rrfScore != candidates[j].rrfScore {
+			return candidates[i].rrfScore > candidates[j].rrfScore
+		}
+		bi, bj := candidateBestRank(candidates[i]), candidateBestRank(candidates[j])
+		if bi != bj {
+			return bi < bj
+		}
+		if candidates[i].memoryID != candidates[j].memoryID {
+			return candidates[i].memoryID < candidates[j].memoryID
+		}
+		return candidates[i].revisionID < candidates[j].revisionID
+	})
+	start := 0
+	if after != nil {
+		found := false
+		for i := range candidates {
+			if candidates[i].memoryID == after.MemoryID && candidates[i].revisionID == after.RevisionID && strconv.FormatUint(math.Float64bits(candidates[i].score), 16) == after.ScoreBits {
+				start, found = i+1, true
+				break
+			}
+		}
+		if !found {
+			return domain.SearchResponse{}, ErrInvalidCursor
+		}
+	}
 
 	var lastInspected *searchCandidate
 	hasMore := false
 	returned := make(map[string]struct{})
-	for i := range candidates {
+	for i := start; i < len(candidates); i++ {
 		candidate := candidates[i]
 		if _, duplicate := returned[candidate.memoryID]; duplicate {
 			continue
@@ -197,18 +337,50 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		if !params.IncludeEvidence {
 			memory.CurrentRevision.Evidence = nil
 		}
-		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordScore: candidate.score, SelectionReason: "keyword_match"})
+		score := candidate.keywordScore
+		channels, reason := []string{"keyword"}, "keyword_match"
+		var relevance *float64 = &score
+		if candidate.entity && candidate.keywordRank > 0 {
+			channels, reason = []string{"keyword", "entity"}, "hybrid_fusion"
+		} else if candidate.entity {
+			channels, reason, relevance = []string{"entity"}, "entity_match", nil
+		}
+		if candidate.relation {
+			channels = append(channels, "relation")
+			reason = "relation_match"
+			if len(channels) > 1 {
+				reason = "hybrid_fusion"
+			}
+			if candidate.keywordRank == 0 {
+				relevance = nil
+			}
+		}
+		refs, err := conflictRefs(ctx, tx, memory.MemoryID, memory.CurrentRevision.RevisionID)
+		if err != nil {
+			return domain.SearchResponse{}, err
+		}
+		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordScore: score, KeywordRelevance: relevance, MatchedChannels: channels, SelectionReason: reason, ConflictRefs: refs})
 		returned[memory.MemoryID] = struct{}{}
 		response.CharsUsed += chars
 	}
 	if hasMore && lastInspected != nil {
-		next := encodeSearchCursor(hash, params.ReferenceTime, *lastInspected)
+		next := encodeSearchCursor(hash, params, ftsVersion, metadata, *lastInspected)
 		response.NextCursor = &next
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.SearchResponse{}, err
 	}
 	return response, nil
+}
+
+func candidateBestRank(candidate searchCandidate) int {
+	best := 0
+	for _, rank := range []int{candidate.keywordRank, candidate.entityRank, candidate.relationRank} {
+		if rank > 0 && (best == 0 || rank < best) {
+			best = rank
+		}
+	}
+	return best
 }
 
 func searchCandidateCurrent(memory domain.Memory, candidate searchCandidate, spaces []string, params SearchParams) bool {
@@ -238,6 +410,9 @@ func searchScope(ctx context.Context, tx *sql.Tx, starts []string, ancestors boo
 }
 
 func searchMemoryCurrent(memory domain.Memory, spaces []string, params SearchParams) bool {
+	if params.ExcludeStaleAggregates && memory.MemoryType == "aggregate" && memory.AggregateStale {
+		return false
+	}
 	if !contains(spaces, memory.SpaceID) || !contains(params.States, memory.CurrentState) {
 		return false
 	}
@@ -272,26 +447,33 @@ func searchQueryHash(params SearchParams) string {
 	sort.Strings(types)
 	sort.Strings(states)
 	canonical := struct {
-		Version   int      `json:"v"`
-		Query     string   `json:"query"`
-		Spaces    []string `json:"space_ids"`
-		Ancestors bool     `json:"include_ancestors"`
-		Types     []string `json:"memory_types"`
-		TypesSet  bool     `json:"memory_types_set"`
-		States    []string `json:"states"`
-		Reference string   `json:"reference_time"`
-		Mode      string   `json:"mode"`
-		Limit     int      `json:"limit"`
-		MaxChars  int      `json:"max_chars"`
-		Evidence  bool     `json:"include_evidence"`
-	}{1, params.Query, spaces, params.IncludeAncestors, types, params.MemoryTypesSet, states, params.ReferenceTime, params.Mode, params.Limit, params.MaxChars, params.IncludeEvidence}
+		Version                int      `json:"v"`
+		Query                  string   `json:"query"`
+		Spaces                 []string `json:"space_ids"`
+		Ancestors              bool     `json:"include_ancestors"`
+		Types                  []string `json:"memory_types"`
+		TypesSet               bool     `json:"memory_types_set"`
+		States                 []string `json:"states"`
+		Reference              string   `json:"reference_time"`
+		Mode                   string   `json:"mode"`
+		Requested              string   `json:"requested_mode"`
+		Semantic               int      `json:"semantic_version"`
+		Limit                  int      `json:"limit"`
+		MaxChars               int      `json:"max_chars"`
+		Evidence               bool     `json:"include_evidence"`
+		ExcludeStaleAggregates bool     `json:"exclude_stale_aggregates"`
+	}{1, params.Query, spaces, params.IncludeAncestors, types, params.MemoryTypesSet, states, params.ReferenceTime, params.Mode, params.RequestedMode, params.SemanticVersion, params.Limit, params.MaxChars, params.IncludeEvidence, params.ExcludeStaleAggregates}
 	encoded, _ := json.Marshal(canonical)
 	hash := sha256.Sum256(encoded)
 	return hex.EncodeToString(hash[:])
 }
 
-func encodeSearchCursor(hash, reference string, candidate searchCandidate) string {
-	value := searchCursor{Version: 1, QueryHash: hash, ScoreBits: strconv.FormatUint(math.Float64bits(candidate.score), 16), UpdatedAt: candidate.updatedAt, MemoryID: candidate.memoryID, ReferenceTime: reference}
+func encodeSearchCursor(hash string, params SearchParams, ftsVersion int, metadata searchMetadata, candidate searchCandidate) string {
+	requestedMode := params.RequestedMode
+	if requestedMode == "" {
+		requestedMode = params.Mode
+	}
+	value := searchCursor{Version: 3, QueryHash: hash, RequestedMode: requestedMode, ExecutedMode: "keyword", RankingVersion: rankingVersion, FTSVersion: ftsVersion, SemanticVersion: params.SemanticVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, Limit: params.Limit, MaxChars: params.MaxChars, ScoreBits: strconv.FormatUint(math.Float64bits(candidate.score), 16), UpdatedAt: candidate.updatedAt, MemoryID: candidate.memoryID, RevisionID: candidate.revisionID, ReferenceTime: params.ReferenceTime}
 	encoded, _ := json.Marshal(value)
 	return base64.RawURLEncoding.EncodeToString(encoded)
 }
@@ -299,7 +481,7 @@ func encodeSearchCursor(hash, reference string, candidate searchCandidate) strin
 func decodeSearchCursor(value string) (searchCursor, error) {
 	var cursor searchCursor
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.Version != 1 || cursor.QueryHash == "" || cursor.UpdatedAt == "" || cursor.MemoryID == "" || cursor.ReferenceTime == "" {
+	if err != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.Version != 3 || cursor.QueryHash == "" || cursor.RequestedMode == "" || cursor.ExecutedMode != "keyword" || cursor.RankingVersion != rankingVersion || cursor.FTSVersion < 1 || cursor.UpdatedAt == "" || cursor.MemoryID == "" || cursor.RevisionID == "" || cursor.ReferenceTime == "" {
 		return searchCursor{}, ErrInvalidCursor
 	}
 	bits, err := strconv.ParseUint(cursor.ScoreBits, 16, 64)

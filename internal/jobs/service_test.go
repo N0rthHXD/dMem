@@ -3,6 +3,8 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -20,14 +22,48 @@ type fakeJob struct {
 }
 
 type fakeRepository struct {
-	mu          sync.Mutex
-	jobs        []*fakeJob
-	recovered   int
-	expired     int
-	promoted    int
-	heartbeats  int
-	failures    []storage.JobFailure
-	maintenance chan struct{}
+	mu           sync.Mutex
+	jobs         []*fakeJob
+	recovered    int
+	expired      int
+	promoted     int
+	heartbeats   int
+	heartbeatErr error
+	failures     []storage.JobFailure
+	maintenance  chan struct{}
+}
+
+type capturedLog struct {
+	message string
+	attrs   map[string]any
+}
+
+type captureHandler struct {
+	mu      sync.Mutex
+	records []capturedLog
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, record slog.Record) error {
+	attrs := make(map[string]any)
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	h.records = append(h.records, capturedLog{message: record.Message, attrs: attrs})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *captureHandler) snapshot() []capturedLog {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]capturedLog(nil), h.records...)
 }
 
 func (r *fakeRepository) ClaimJob(_ context.Context, params storage.ClaimJobParams) (storage.ClaimedJob, error) {
@@ -52,7 +88,28 @@ func (r *fakeRepository) HeartbeatJob(_ context.Context, claim storage.ClaimedJo
 		return false, storage.ErrLeaseLost
 	}
 	r.heartbeats++
+	if r.heartbeatErr != nil {
+		return false, r.heartbeatErr
+	}
 	return item.cancelRequested, nil
+}
+
+func (r *fakeRepository) PrepareProcessing(_ context.Context, claim storage.ClaimedJob, params storage.ProcessingPreparationParams) (domain.ProcessingInput, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.find(claim.Job.JobID)
+	if !validClaim(item, claim) {
+		return domain.ProcessingInput{}, storage.ErrLeaseLost
+	}
+	return domain.ProcessingInput{ProcessorIdentity: params.ProcessorIdentity, ProcessingVersion: claim.ProcessingVersion, JobID: claim.Job.JobID, Attempt: claim.Job.AttemptCount, Target: domain.ProcessingEvent{EventID: claim.Job.TargetID}, Policy: domain.ProcessingPolicy{AllowedMemoryTypes: params.AllowedMemoryTypes, MaxCandidates: params.MaxCandidates, MaxContentChars: params.MaxContentChars}}, nil
+}
+
+func (r *fakeRepository) CommitProcessing(_ context.Context, claim storage.ClaimedJob, _ domain.ProcessingInput, commit storage.ProcessingCommit) error {
+	return r.CompleteJob(context.Background(), claim, storage.JobResult{Code: string(commit.Result.Code)})
+}
+
+func (r *fakeRepository) FailProcessing(_ context.Context, claim storage.ClaimedJob, _ domain.ProcessingInput, failure storage.JobFailure) error {
+	return r.FailJob(context.Background(), claim, failure)
 }
 
 func (r *fakeRepository) CompleteJob(_ context.Context, claim storage.ClaimedJob, result storage.JobResult) error {
@@ -165,7 +222,7 @@ func pendingJob(id string, maxAttempts int) *fakeJob {
 
 func startService(t *testing.T, repository Repository, processor Processor) *Service {
 	t.Helper()
-	service, err := NewService(repository, testConfig(), processor)
+	service, err := NewService(repository, testConfig(), processor, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,20 +257,58 @@ func TestNoopProcessorCompletesWithoutMemoryOutput(t *testing.T) {
 		defer repository.mu.Unlock()
 		return item.job.Status == "succeeded"
 	})
-	if item.job.ResultCode == nil || *item.job.ResultCode != string(OutcomeNoProcessor) {
+	if item.job.ResultCode == nil || *item.job.ResultCode != string(domain.ProcessingNoProcessor) {
 		t.Fatalf("result code = %v", item.job.ResultCode)
 	}
 }
 
-type processorFunc func(context.Context, domain.Job) Outcome
+func TestProcessorHealthTracksConfiguredOutcomes(t *testing.T) {
+	service, err := NewService(&fakeRepository{}, testConfig(), processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		return domain.ProcessingResult{Code: domain.ProcessingNoMemory}
+	}), Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, identity := service.ProcessorHealth(); state != "degraded" || identity != "processor/in-process" {
+		t.Fatalf("initial health = %q/%q", state, identity)
+	}
+	service.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingNoMemory})
+	if state, _ := service.ProcessorHealth(); state != "ready" {
+		t.Fatalf("successful health = %q", state)
+	}
+	service.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingTransientFailure})
+	if state, _ := service.ProcessorHealth(); state != "unavailable" {
+		t.Fatalf("failed health = %q", state)
+	}
+	service.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingInvalidOutput})
+	if state, _ := service.ProcessorHealth(); state != "degraded" {
+		t.Fatalf("invalid-output health = %q", state)
+	}
 
-func (f processorFunc) Process(ctx context.Context, job domain.Job) Outcome { return f(ctx, job) }
+	noop, err := NewService(&fakeRepository{}, testConfig(), NoopProcessor{}, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noop.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingTransientFailure})
+	if state, identity := noop.ProcessorHealth(); state != "not_configured" || identity != "none" {
+		t.Fatalf("noop health = %q/%q", state, identity)
+	}
+}
+
+type processorFunc func(context.Context, domain.ProcessingInput) domain.ProcessingResult
+
+func (processorFunc) Enabled() bool    { return true }
+func (processorFunc) Identity() string { return "processor/in-process" }
+
+func (f processorFunc) Process(ctx context.Context, input domain.ProcessingInput) domain.ProcessingResult {
+	return f(ctx, input)
+}
 
 func TestTransientFailureUsesBoundedBackoffAndAttemptLimit(t *testing.T) {
 	item := pendingJob("transient", 3)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	startService(t, repository, processorFunc(func(context.Context, domain.Job) Outcome {
-		return Outcome{Code: OutcomeTransientFailure, Message: "busy"}
+	startService(t, repository, processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure, Message: "busy"}
 	}))
 	waitFor(t, func() bool {
 		repository.mu.Lock()
@@ -227,9 +322,222 @@ func TestTransientFailureUsesBoundedBackoffAndAttemptLimit(t *testing.T) {
 	}
 	want := []time.Duration{10 * time.Millisecond, 15 * time.Millisecond, 15 * time.Millisecond}
 	for i, failure := range repository.failures {
-		if failure.Code != string(OutcomeTransientFailure) || failure.Backoff != want[i] {
+		if failure.Code != string(domain.ProcessingTransientFailure) || failure.Backoff != want[i] {
 			t.Fatalf("failure %d = %+v", i, failure)
 		}
+	}
+}
+
+func TestProcessorMessageIsNeverPersisted(t *testing.T) {
+	item := pendingJob("malicious", 1)
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	startService(t, repository, processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure, Message: "secret\nforged audit entry"}
+	}))
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "failed"
+	})
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if item.failure.Message != "processor transient failure" {
+		t.Fatalf("persisted failure message = %q", item.failure.Message)
+	}
+}
+
+type blockingIndexRepository struct {
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+type failingIndexRepository struct{ err error }
+
+type rebuildRecorder struct{ calls chan string }
+
+func (r rebuildRecorder) RebuildEntityIndexClaimed(context.Context, storage.ClaimedJob) error {
+	r.calls <- "entity"
+	return nil
+}
+
+func (r rebuildRecorder) RebuildRelationIndexClaimed(context.Context, storage.ClaimedJob) error {
+	r.calls <- "relation"
+	return nil
+}
+
+func (r rebuildRecorder) RebuildFeedbackAggregatesClaimed(context.Context, storage.ClaimedJob) error {
+	r.calls <- "feedback"
+	return nil
+}
+
+func (r rebuildRecorder) RebuildClaimed(context.Context, storage.ClaimedJob) error {
+	r.calls <- "aggregate"
+	return nil
+}
+
+func (r failingIndexRepository) RebuildFTSClaimed(context.Context, storage.ClaimedJob) error {
+	return r.err
+}
+
+func (r failingIndexRepository) EmbedMemoryClaimed(context.Context, storage.ClaimedJob, string) error {
+	return r.err
+}
+
+func (r failingIndexRepository) RebuildSemanticClaimed(context.Context, storage.ClaimedJob) error {
+	return r.err
+}
+
+func TestEmbeddingPolicyRejectionIsStableTerminalOutcome(t *testing.T) {
+	item := pendingJob("embedding-policy", 3)
+	item.job.JobType, item.job.TargetType, item.job.TargetID = "embed_memory", "memory_revision", "revision-1"
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	service, err := NewService(repository, testConfig(), nil, Dependencies{Indexes: failingIndexRepository{err: storage.ErrEmbeddingPolicy}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "succeeded"
+	})
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if item.job.AttemptCount != 1 || item.job.ResultCode == nil || *item.job.ResultCode != string(domain.ProcessingPolicyRejected) || len(repository.failures) != 0 {
+		t.Fatalf("job = %+v, failures = %+v", item.job, repository.failures)
+	}
+}
+
+func TestExplicitRebuildDependenciesDispatchIndependently(t *testing.T) {
+	tests := []struct {
+		name, jobType, targetType, targetID, call string
+		dependencies                              func(rebuildRecorder) Dependencies
+	}{
+		{"entity", "rebuild_entity_index", "index", "entity_recall", "entity", func(r rebuildRecorder) Dependencies { return Dependencies{EntityIndexes: r} }},
+		{"relation", "rebuild_relation_index", "index", "relation_recall", "relation", func(r rebuildRecorder) Dependencies { return Dependencies{RelationIndexes: r} }},
+		{"feedback", "aggregate_feedback", "feedback_revision", "revision-1", "feedback", func(r rebuildRecorder) Dependencies { return Dependencies{FeedbackAggregates: r} }},
+		{"feedback rebuild", "rebuild_feedback_aggregates", "index", "feedback_aggregates", "feedback", func(r rebuildRecorder) Dependencies { return Dependencies{FeedbackAggregates: r} }},
+		{"aggregate", "rebuild_aggregate", "aggregate", "aggregate-1", "aggregate", func(r rebuildRecorder) Dependencies { return Dependencies{AggregateRebuilder: r} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			item := pendingJob(test.name, 1)
+			item.job.JobType, item.job.TargetType, item.job.TargetID = test.jobType, test.targetType, test.targetID
+			repository := &fakeRepository{jobs: []*fakeJob{item}}
+			calls := make(chan string, 1)
+			service, err := NewService(repository, testConfig(), nil, test.dependencies(rebuildRecorder{calls: calls}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				_ = service.Shutdown(ctx)
+			})
+			select {
+			case call := <-calls:
+				if call != test.call {
+					t.Fatalf("call = %q, want %q", call, test.call)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("rebuild dependency was not called")
+			}
+			waitFor(t, func() bool {
+				repository.mu.Lock()
+				defer repository.mu.Unlock()
+				return item.job.Status == "succeeded"
+			})
+		})
+	}
+}
+
+func (r *blockingIndexRepository) run(ctx context.Context) error {
+	close(r.started)
+	<-ctx.Done()
+	close(r.cancelled)
+	return ctx.Err()
+}
+
+func (r *blockingIndexRepository) RebuildFTSClaimed(ctx context.Context, _ storage.ClaimedJob) error {
+	return r.run(ctx)
+}
+
+func (r *blockingIndexRepository) EmbedMemoryClaimed(ctx context.Context, _ storage.ClaimedJob, _ string) error {
+	return r.run(ctx)
+}
+
+func (r *blockingIndexRepository) RebuildSemanticClaimed(ctx context.Context, _ storage.ClaimedJob) error {
+	return r.run(ctx)
+}
+
+func TestIndexClaimHeartbeatsAndCancellationStopsOperation(t *testing.T) {
+	item := pendingJob("index-cancel", 2)
+	item.job.JobType, item.job.TargetType, item.job.TargetID = "rebuild_fts", "index", "memory_fts"
+	item.cancelRequested = true
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	indexes := &blockingIndexRepository{started: make(chan struct{}), cancelled: make(chan struct{})}
+	service, err := NewService(repository, testConfig(), nil, Dependencies{Indexes: indexes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	<-indexes.started
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "cancelled" && repository.heartbeats > 0
+	})
+	select {
+	case <-indexes.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("index operation context was not cancelled")
+	}
+}
+
+func TestIndexClaimLeaseLossCancelsWithoutTerminalMutation(t *testing.T) {
+	item := pendingJob("index-lease-loss", 2)
+	item.job.JobType, item.job.TargetType, item.job.TargetID = "embed_memory", "memory_revision", "revision-1"
+	repository := &fakeRepository{jobs: []*fakeJob{item}, heartbeatErr: storage.ErrLeaseLost}
+	indexes := &blockingIndexRepository{started: make(chan struct{}), cancelled: make(chan struct{})}
+	service, err := NewService(repository, testConfig(), nil, Dependencies{Indexes: indexes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	<-indexes.started
+	select {
+	case <-indexes.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("index operation was not cancelled after lease loss")
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if item.job.Status != "running" || len(repository.failures) != 0 || item.job.ResultCode != nil {
+		t.Fatalf("job mutated after lease loss: %+v, failures=%d", item.job, len(repository.failures))
 	}
 }
 
@@ -238,10 +546,10 @@ func TestRunningCancellationCancelsProcessor(t *testing.T) {
 	item.cancelRequested = true
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
 	cancelled := make(chan struct{})
-	startService(t, repository, processorFunc(func(ctx context.Context, _ domain.Job) Outcome {
+	startService(t, repository, processorFunc(func(ctx context.Context, _ domain.ProcessingInput) domain.ProcessingResult {
 		<-ctx.Done()
 		close(cancelled)
-		return Outcome{Code: OutcomeTransientFailure}
+		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure}
 	}))
 	waitFor(t, func() bool {
 		repository.mu.Lock()
@@ -259,10 +567,10 @@ func TestGracefulShutdownRetriesInterruptedClaim(t *testing.T) {
 	item := pendingJob("shutdown", 2)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
 	started := make(chan struct{})
-	service := startService(t, repository, processorFunc(func(ctx context.Context, _ domain.Job) Outcome {
+	service := startService(t, repository, processorFunc(func(ctx context.Context, _ domain.ProcessingInput) domain.ProcessingResult {
 		close(started)
 		<-ctx.Done()
-		return Outcome{Code: OutcomeTransientFailure}
+		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure}
 	}))
 	<-started
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -280,8 +588,8 @@ func TestGracefulShutdownRetriesInterruptedClaim(t *testing.T) {
 func TestStartupAndPeriodicMaintenance(t *testing.T) {
 	waiting := &fakeJob{job: domain.Job{JobID: "waiting", Status: "waiting", MaxAttempts: 1}}
 	repository := &fakeRepository{jobs: []*fakeJob{waiting}, maintenance: make(chan struct{}, 4)}
-	service := startService(t, repository, processorFunc(func(context.Context, domain.Job) Outcome {
-		return Outcome{Code: OutcomeNoMemory}
+	service := startService(t, repository, processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		return domain.ProcessingResult{Code: domain.ProcessingNoMemory}
 	}))
 
 	waitFor(t, func() bool {
@@ -304,5 +612,76 @@ func TestStartupAndPeriodicMaintenance(t *testing.T) {
 	defer cancel()
 	if err := service.Shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+func TestPersistenceErrorLoggingIsStructured(t *testing.T) {
+	handler := &captureHandler{}
+	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{Logger: slog.New(handler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistErr := errors.New("database unavailable")
+	claim := storage.ClaimedJob{
+		Job:             domain.Job{JobID: "job-123", TargetID: "private-target"},
+		LeaseOwner:      "private-worker",
+		LeaseGeneration: 7,
+	}
+
+	service.logPersistenceError(context.Background(), "commit_processing", claim, persistErr)
+
+	records := handler.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log count = %d", len(records))
+	}
+	record := records[0]
+	if record.message != "jobs persistence operation failed" {
+		t.Fatalf("message = %q", record.message)
+	}
+	if record.attrs["component"] != "jobs" || record.attrs["operation"] != "commit_processing" {
+		t.Fatalf("base attrs = %#v", record.attrs)
+	}
+	if record.attrs["job_id"] != "job-123" || record.attrs["lease_generation"] != int64(7) {
+		t.Fatalf("claim attrs = %#v", record.attrs)
+	}
+	if record.attrs["error"] != persistErr {
+		t.Fatalf("error attr = %#v", record.attrs["error"])
+	}
+	if _, ok := record.attrs["lease_owner"]; ok {
+		t.Fatalf("lease owner was logged: %#v", record.attrs)
+	}
+	if _, ok := record.attrs["target_id"]; ok {
+		t.Fatalf("target ID was logged: %#v", record.attrs)
+	}
+}
+
+func TestPersistenceErrorLoggingSuppressesExpectedErrors(t *testing.T) {
+	handler := &captureHandler{}
+	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{Logger: slog.New(handler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range []error{
+		nil,
+		storage.ErrNotFound,
+		fmt.Errorf("wrapped: %w", storage.ErrLeaseLost),
+	} {
+		service.logPersistenceError(context.Background(), "claim_job", storage.ClaimedJob{}, err)
+	}
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	service.logPersistenceError(shutdownCtx, "claim_job", storage.ClaimedJob{}, fmt.Errorf("shutdown: %w", context.Canceled))
+	if records := handler.snapshot(); len(records) != 0 {
+		t.Fatalf("unexpected logs = %#v", records)
+	}
+}
+
+func TestNewServiceDefaultsLogger(t *testing.T) {
+	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.logger != slog.Default() {
+		t.Fatal("service did not use slog.Default")
 	}
 }

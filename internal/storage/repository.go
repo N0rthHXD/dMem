@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/provider"
+	"github.com/N0rthHXD/dMem/internal/vector"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -27,6 +29,7 @@ var (
 	ErrInvalidCursor       = errors.New("invalid cursor")
 	ErrInvalidSearchQuery  = errors.New("invalid search query")
 	ErrIndexDegraded       = errors.New("index degraded")
+	ErrEmbeddingPolicy     = errors.New("embedding policy rejected")
 )
 
 type WriteIdentity struct {
@@ -65,14 +68,35 @@ type EventFilter struct {
 }
 
 type Repository struct {
-	store             *Store
-	runtime           domain.Runtime
-	queueSoftLimit    int
-	queueHardLimit    int
-	maxAttempts       int
-	processingVersion string
-	diskSoftFree      uint64
-	diskHardFree      uint64
+	store                     *Store
+	runtime                   domain.Runtime
+	queueSoftLimit            int
+	queueHardLimit            int
+	maxAttempts               int
+	processingVersion         string
+	diskSoftFree              uint64
+	diskHardFree              uint64
+	embeddingProvider         provider.EmbeddingProvider
+	vectorIndex               semanticVectorIndex
+	embeddingProviderIdentity string
+	embeddingModelIdentity    string
+}
+
+type semanticVectorIndex interface {
+	Build(int, vector.Snapshot) error
+	Activate(int) error
+	Deactivate(int) error
+	Search([]float64, []string, []vector.Identity, int, int) ([]vector.Result, error)
+	Status(int) vector.Status
+}
+
+func (r *Repository) ConfigureSemantic(embedding provider.EmbeddingProvider, index *vector.Index, providerIdentity, modelIdentity string) {
+	r.embeddingProvider, r.vectorIndex = embedding, index
+	r.embeddingProviderIdentity, r.embeddingModelIdentity = providerIdentity, modelIdentity
+}
+
+func (r *Repository) embeddingIdentity() string {
+	return r.embeddingProviderIdentity + "/" + r.embeddingModelIdentity
 }
 
 func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, maxAttempts int, processingVersion string) *Repository {
@@ -80,6 +104,12 @@ func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, m
 		store: store, runtime: runtime, queueSoftLimit: softLimit, queueHardLimit: hardLimit,
 		maxAttempts: maxAttempts, processingVersion: processingVersion,
 	}
+}
+
+// BeginReadSnapshot starts a read-only transaction for consumers that must scan
+// multiple authority tables from one SQLite snapshot.
+func (r *Repository) BeginReadSnapshot(ctx context.Context) (*sql.Tx, error) {
+	return r.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 }
 
 func (r *Repository) SetDiskFreeThresholds(soft, hard uint64) {
@@ -93,7 +123,7 @@ func (r *Repository) IndexState(ctx context.Context) (string, error) {
 func (r *Repository) QueueStats(ctx context.Context) (int, int, error) {
 	var depth int
 	var oldest sql.NullString
-	err := r.store.reader.QueryRowContext(ctx, `SELECT count(*), min(created_at) FROM jobs WHERE status IN ('pending','waiting','running','retrying')`).Scan(&depth, &oldest)
+	err := r.store.reader.QueryRowContext(ctx, `SELECT count(*), min(created_at) FROM jobs WHERE status IN ('pending','waiting','running','retrying') AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?)`, r.embeddingIdentity()).Scan(&depth, &oldest)
 	if err != nil || !oldest.Valid {
 		return depth, 0, err
 	}
@@ -106,6 +136,31 @@ func (r *Repository) QueueStats(ctx context.Context) (int, int, error) {
 		age = 0
 	}
 	return depth, age, nil
+}
+
+func (r *Repository) QueueStatus(ctx context.Context) (string, int, int, error) {
+	depth, age, err := r.QueueStats(ctx)
+	if err != nil {
+		return "unavailable", depth, age, err
+	}
+	state := "ready"
+	if depth >= r.queueHardLimit {
+		state = "unavailable"
+	} else if depth >= r.queueSoftLimit {
+		state = "degraded"
+	}
+	return state, depth, age, nil
+}
+
+func (r *Repository) StorageStatus(ctx context.Context) (string, string) {
+	var version int
+	if err := r.store.reader.QueryRowContext(ctx, `SELECT schema_version FROM schema_metadata WHERE singleton=1`).Scan(&version); err != nil {
+		return "unavailable", "unknown"
+	}
+	if version != SchemaVersion {
+		return "unavailable", "incompatible"
+	}
+	return "ready", "compatible"
 }
 
 func (r *Repository) CreateSpace(ctx context.Context, identity WriteIdentity, params CreateSpaceParams) (domain.Space, bool, error) {
@@ -257,7 +312,7 @@ func (r *Repository) IngestEvent(ctx context.Context, identity WriteIdentity, pa
 		return domain.IngestResponse{}, false, err
 	}
 	var activeJobs, backlog int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(status IN ('pending','waiting','retrying')), 0) FROM jobs WHERE status IN ('pending','waiting','running','retrying')`).Scan(&activeJobs, &backlog); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(status IN ('pending','waiting','retrying')), 0) FROM jobs WHERE status IN ('pending','waiting','running','retrying') AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?)`, r.embeddingIdentity()).Scan(&activeJobs, &backlog); err != nil {
 		return domain.IngestResponse{}, false, err
 	}
 	if activeJobs >= r.queueHardLimit {
@@ -447,10 +502,18 @@ func (r *Repository) ReplayEvent(ctx context.Context, identity WriteIdentity, ev
 	} else if err != nil {
 		return domain.JobReference{}, false, err
 	}
-	var activeID string
-	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs WHERE job_type='extract_memory' AND target_type='raw_event' AND target_id=? AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, eventID, r.processingVersion).Scan(&activeID)
+	var existingID, existingOperationID, existingStatus string
+	err = tx.QueryRowContext(ctx, `SELECT job_id,operation_id,status FROM jobs WHERE job_type='extract_memory' AND target_type='raw_event' AND target_id=? AND processing_version=? ORDER BY created_at DESC,job_id DESC LIMIT 1`, eventID, r.processingVersion).Scan(&existingID, &existingOperationID, &existingStatus)
 	if err == nil {
-		return domain.JobReference{JobID: activeID}, false, ErrJobAlreadyActive
+		result := domain.JobReference{OperationID: existingOperationID, JobID: existingID}
+		body, _ := json.Marshal(result)
+		if err := writeIdempotency(ctx, tx, identity, existingOperationID, 202, body, formatTime(r.runtime.Now())); err != nil {
+			return domain.JobReference{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.JobReference{}, false, err
+		}
+		return result, existingStatus == "succeeded" || existingStatus == "failed" || existingStatus == "cancelled" || existingStatus == "expired", nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return domain.JobReference{}, false, err

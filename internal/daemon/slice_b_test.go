@@ -14,7 +14,6 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/api"
 	"github.com/N0rthHXD/dMem/internal/domain"
-	"github.com/N0rthHXD/dMem/internal/jobs"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -104,7 +103,14 @@ func TestSpaceAndEventAPI(t *testing.T) {
 	}
 
 	response = requestJSON(t, client, http.MethodPost, "/v1/events/"+accepted.EventID+"/replay", "replay-active", nil)
-	assertError(t, response, http.StatusConflict, "job_already_active")
+	if response.StatusCode != http.StatusAccepted || response.Header.Get("Idempotent-Replay") != "false" {
+		t.Fatalf("active replay status/header = %d/%q", response.StatusCode, response.Header.Get("Idempotent-Replay"))
+	}
+	var activeReplay domain.JobReference
+	decodeResponse(t, response, &activeReplay)
+	if activeReplay.JobID != accepted.JobIDs[0] {
+		t.Fatalf("active replay = %+v", activeReplay)
+	}
 
 	close(processor.release)
 	waitForJobStatus(t, client, accepted.JobIDs[0], "succeeded")
@@ -115,7 +121,7 @@ func TestSpaceAndEventAPI(t *testing.T) {
 	}
 	var job domain.JobReference
 	decodeResponse(t, response, &job)
-	if job.JobID == accepted.JobIDs[0] || job.OperationID == "" {
+	if job.JobID != accepted.JobIDs[0] || job.OperationID == "" {
 		t.Fatalf("replay job = %+v", job)
 	}
 }
@@ -170,12 +176,15 @@ type heldProcessor struct {
 	release chan struct{}
 }
 
-func (p *heldProcessor) Process(ctx context.Context, _ domain.Job) jobs.Outcome {
+func (*heldProcessor) Enabled() bool    { return true }
+func (*heldProcessor) Identity() string { return "processor/in-process" }
+
+func (p *heldProcessor) Process(ctx context.Context, _ domain.ProcessingInput) domain.ProcessingResult {
 	select {
 	case <-p.release:
-		return jobs.Outcome{Code: jobs.OutcomeNoProcessor}
+		return domain.ProcessingResult{Code: domain.ProcessingNoProcessor}
 	case <-ctx.Done():
-		return jobs.Outcome{Code: jobs.OutcomeTransientFailure, Message: ctx.Err().Error()}
+		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure, Message: ctx.Err().Error()}
 	}
 }
 

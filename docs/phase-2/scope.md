@@ -13,7 +13,8 @@ deferred       第二阶段不提供接口和实现
 
 ## 2. 阶段原则
 
-- 以第一阶段现有数据库和 API 行为为兼容基线，不重写可靠接入与任务基础设施。
+- 复用第一阶段可靠接入与任务基础设施，但不承担旧数据库、旧 API 或旧内部实现的兼容义务。
+- 第二阶段仍是未发布开发阶段；不兼容变更直接更新初始化 Schema、OpenAPI 和实现，开发数据库重新初始化。
 - 默认离线、默认 no-op；自动处理和数据外发必须显式配置。
 - 自动结果先成为可审核候选，不默认改写 active 记忆。
 - 语义索引是可重建派生数据，SQLite 继续保存权威记忆、版本和处理状态。
@@ -24,9 +25,8 @@ deferred       第二阶段不提供接口和实现
 
 | 能力 | 状态 | 第二阶段契约 |
 | --- | --- | --- |
-| 第一阶段 API 与数据兼容 | required | 已有 v1 行为保持兼容；破坏性变化必须版本化 |
 | OpenAPI 自动合约校验 | required | 所有公开 request/response、错误和 header 在测试中校验 |
-| Schema migration | required | 支持从仓库发布的 Schema v1 前向升级，失败不留下半迁移数据库 |
+| Schema migration | deferred | 未发布开发阶段不升级旧数据库；Schema 变化后重新初始化 |
 | 一致性备份 | required | 使用 SQLite 一致性快照并生成版本、校验值和任务清单 |
 | 恢复与验证 | required | 在 staging 位置恢复、检查后切换；索引可重建 |
 | Processor 抽象端口 | required | 强类型输入输出、deadline、取消、identity、version 和错误分类 |
@@ -68,7 +68,7 @@ ingest raw event
   → raw event processing_status=processed
 ```
 
-`no_memory` 是成功结果并将事件标为 `processed`；`no_processor` 保持第一阶段兼容行为并将事件保留为 `stored`；非法输出不得伪装成 `no_memory`。
+`no_memory` 是成功结果并将事件标为 `processed`；未配置 processor 时使用 no-op 并将事件保留为 `stored`；非法输出不得伪装成 `no_memory`。
 
 ### 4.2 候选审核
 
@@ -108,8 +108,8 @@ hybrid 请求在语义索引不可用时允许返回关键词结果，但必须�
 ## 6. 完成标准
 
 - [测试矩阵](test-matrix.md)中所有 `required` 场景通过。
-- 第一阶段 required 测试继续通过，兼容性变化已在 OpenAPI 和 migration 中明确记录。
-- 现有 Schema v1 数据库可升级；故障注入证明迁移失败可安全恢复。
+- 第一阶段基础能力的回归测试继续通过；若契约被第二阶段设计替换，则测试和 OpenAPI 同步更新，不保留适配层。
+- 初始化 Schema 包含第二阶段所需对象，新建数据库可以直接启动并通过完整性检查。
 - provider 默认关闭，未配置时第一阶段 no-op 行为不变。
 - processor 输出无法绕过校验、作用域、evidence、幂等和 fencing 写入权威数据。
 - candidate confirm/reject 在超时和重试后不重复创建 memory、revision 或审核事件。
@@ -118,6 +118,6 @@ hybrid 请求在语义索引不可用时允许返回关键词结果，但必须�
 - 远程 provider 测试证明默认无外发、allowlist 生效、日志不包含完整内容或凭据。
 - 至少完成一次自动化备份恢复演练，并在恢复库上通过完整性、引用和索引重建检查。
 
-## 7. 数据兼容承诺
+## 7. 开发期数据策略
 
-从第二阶段开始，仓库发布的数据库不再默认视为可丢弃。Schema 变化必须通过已提交、可重复测试的 migration 前向升级。降级到不支持新 Schema 的旧 daemon 不属于承诺范围，旧 daemon 必须拒绝打开新数据库而不是尝试修改。
+第二阶段及后续未发布开发阶段的数据库都视为可丢弃。Schema 变化直接更新完整初始化 SQL；已有开发数据库删除后重新初始化，不提供 migration、旧 Schema 读取、双写、兼容视图或版本适配。只有项目负责人明确声明项目开发完成并发布后，才重新评估这些能力。

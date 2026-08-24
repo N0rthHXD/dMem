@@ -7,8 +7,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,8 +66,8 @@ func TestSliceEKeywordScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 	if got := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "states": []string{"contested"}, "reference_time": "2026-08-21T11:00:00Z"}); len(got.Results) != 1 || got.Results[0].Memory.CurrentState != "contested" {
 		t.Fatalf("explicit contested result = %+v", got)
 	}
-	if got := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "reference_time": "2026-08-21T11:00:00Z"}); len(got.Results) != 0 {
-		t.Fatalf("default states returned contested: %+v", got)
+	if got := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "reference_time": "2026-08-21T11:00:00Z"}); len(got.Results) != 1 || got.Results[0].Memory.CurrentState != "contested" {
+		t.Fatalf("default states omitted contested: %+v", got)
 	}
 	taskMemory, _ = changeMemoryState(t, client, taskMemory, "e-confirm", "confirm", nil)
 	revised, _ := reviseMemory(t, client, taskMemory.MemoryID, "e-revise", memoryReviseBody(taskMemory.CurrentRevision.RevisionID, taskMemory.CurrentRevision.Evidence[0].EventID, "aurora replacement"))
@@ -155,7 +153,16 @@ func TestSliceEBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 		assertSafeError(t, special, http.StatusUnprocessableEntity, "invalid_request")
 	}
 	semantic := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}, "mode": "semantic"})
-	assertSafeError(t, semantic, http.StatusUnprocessableEntity, "unsupported")
+	if semantic.StatusCode != http.StatusServiceUnavailable {
+		data, _ := io.ReadAll(semantic.Body)
+		semantic.Body.Close()
+		t.Fatalf("semantic unavailable status = %d: %s", semantic.StatusCode, data)
+	}
+	var semanticError api.Error
+	decodeResponse(t, semantic, &semanticError)
+	if semanticError.ErrorCode != "index_degraded" || !semanticError.Retryable || semanticError.Message == "" || semanticError.RequestID == "" {
+		t.Fatalf("semantic unavailable error = %+v", semanticError)
+	}
 
 	db, err := sql.Open("sqlite3", cfg.DatabasePath)
 	if err != nil {
@@ -275,109 +282,6 @@ func TestSliceEDiskHardLimitAndCommittedReplay(t *testing.T) {
 	decodeResponse(t, response, &health)
 	if health.DiskPressure != "hard" || health.AcceptingWrites || health.Mode != "read_only" {
 		t.Fatalf("hard-limit health = %+v", health)
-	}
-}
-
-func TestPhaseOneOpenAPIGoldenContractIsLoaded(t *testing.T) {
-	path := filepath.Join("..", "..", "docs", "api", "openapi.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := string(data)
-	for _, declaration := range []string{"openapi: 3.1.0", "  /search:", "      operationId: searchMemories", "  /indexes/fts/rebuild:", "      operationId: rebuildFts", "required: [query, space_ids]", "required: [results, truncated, chars_used, index_state]", "required: [memory, rank, keyword_score, selection_reason]", "Idempotent-Replay", "X-Caller-ID", "Idempotency-Key", "'202':", "'507':"} {
-		if !strings.Contains(spec, declaration) {
-			t.Fatalf("OpenAPI contract is missing %q", declaration)
-		}
-	}
-	for _, operation := range []struct {
-		path, method, operationID, success, schema string
-		headers                                    []string
-	}{
-		{"/health", "get", "getHealth", "200", "Health", nil},
-		{"/spaces", "post", "createSpace", "201", "CreateSpaceRequest", []string{"callerId", "idempotencyKey"}},
-		{"/events", "post", "ingestEvent", "202", "IngestEventRequest", []string{"callerId", "idempotencyKey"}},
-		{"/memories", "post", "createMemory", "201", "CreateMemoryRequest", []string{"callerId", "idempotencyKey"}},
-		{"/search", "post", "searchMemories", "200", "SearchRequest", []string{"callerId"}},
-		{"/indexes/fts/rebuild", "post", "rebuildFts", "202", "JobReference", []string{"callerId", "idempotencyKey"}},
-	} {
-		assertOpenAPIOperation(t, spec, operation.path, operation.method, operation.operationID, operation.success, operation.schema, operation.headers)
-	}
-	var response domain.SearchResponse
-	golden := `{"results":[],"truncated":false,"chars_used":0,"index_state":"ready","next_cursor":null}`
-	decoder := json.NewDecoder(strings.NewReader(golden))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&response); err != nil || response.Results == nil || response.IndexState != "ready" {
-		t.Fatalf("golden SearchResponse does not match executable model: %+v, %v", response, err)
-	}
-	assertJSONFields(t, []byte(golden), []string{"results", "truncated", "chars_used", "index_state", "next_cursor"})
-	resultGolden := `{"memory":{"memory_id":"11111111-1111-4111-8111-111111111111","space_id":"22222222-2222-4222-8222-222222222222","memory_type":"fact","current_state":"active","frozen":false,"sensitivity":"normal","current_revision":{"revision_id":"33333333-3333-4333-8333-333333333333","memory_id":"11111111-1111-4111-8111-111111111111","content":"golden","created_by":"test","created_at":"2026-08-21T00:00:00Z"},"created_at":"2026-08-21T00:00:00Z","updated_at":"2026-08-21T00:00:00Z"},"rank":1,"keyword_score":-1,"selection_reason":"keyword_match"}`
-	assertJSONFields(t, []byte(resultGolden), []string{"memory", "rank", "keyword_score", "selection_reason"})
-	requestGolden := `{"query":"golden","space_ids":["22222222-2222-4222-8222-222222222222"],"include_ancestors":true,"memory_types":["fact"],"states":["active"],"reference_time":"2026-08-21T00:00:00Z","mode":"keyword","limit":10,"max_chars":12000,"include_evidence":false,"cursor":"opaque"}`
-	var request searchRequestGolden
-	requestDecoder := json.NewDecoder(strings.NewReader(requestGolden))
-	requestDecoder.DisallowUnknownFields()
-	if err := requestDecoder.Decode(&request); err != nil || request.Query == "" || len(request.SpaceIDs) != 1 {
-		t.Fatalf("golden SearchRequest does not match executable contract: %+v, %v", request, err)
-	}
-	assertJSONFields(t, []byte(requestGolden), []string{"query", "space_ids", "include_ancestors", "memory_types", "states", "reference_time", "mode", "limit", "max_chars", "include_evidence", "cursor"})
-}
-
-func assertOpenAPIOperation(t *testing.T, spec, path, method, operationID, success, schema string, headers []string) {
-	t.Helper()
-	start := strings.Index(spec, "  "+path+":\n")
-	if start < 0 {
-		t.Fatalf("OpenAPI path %s is missing", path)
-	}
-	rest := spec[start+1:]
-	end := strings.Index(rest, "\n  /")
-	if end >= 0 {
-		rest = rest[:end]
-	}
-	methodStart := strings.Index(rest, "    "+method+":\n")
-	if methodStart < 0 {
-		t.Fatalf("OpenAPI operation %s %s is missing", method, path)
-	}
-	operation := rest[methodStart:]
-	for _, required := range []string{"operationId: " + operationID, "'" + success + "'", schema} {
-		if !strings.Contains(operation, required) {
-			t.Fatalf("OpenAPI operation %s %s is missing %q", method, path, required)
-		}
-	}
-	for _, header := range headers {
-		if !strings.Contains(operation, "#/components/parameters/"+header) {
-			t.Fatalf("OpenAPI operation %s %s is missing header ref %s", method, path, header)
-		}
-	}
-}
-
-type searchRequestGolden struct {
-	Query            string   `json:"query"`
-	SpaceIDs         []string `json:"space_ids"`
-	IncludeAncestors bool     `json:"include_ancestors"`
-	MemoryTypes      []string `json:"memory_types"`
-	States           []string `json:"states"`
-	ReferenceTime    string   `json:"reference_time"`
-	Mode             string   `json:"mode"`
-	Limit            int      `json:"limit"`
-	MaxChars         int      `json:"max_chars"`
-	IncludeEvidence  bool     `json:"include_evidence"`
-	Cursor           string   `json:"cursor"`
-}
-
-func assertJSONFields(t *testing.T, data []byte, want []string) {
-	t.Helper()
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil {
-		t.Fatal(err)
-	}
-	if len(object) != len(want) {
-		t.Fatalf("JSON fields = %v; want %v", object, want)
-	}
-	for _, field := range want {
-		if _, ok := object[field]; !ok {
-			t.Fatalf("JSON is missing %q: %s", field, data)
-		}
 	}
 }
 

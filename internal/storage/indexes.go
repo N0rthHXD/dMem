@@ -8,9 +8,147 @@ import (
 	"syscall"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/vector"
 )
 
 const ftsIndexName = "memory_fts"
+
+func (r *Repository) enqueueSemanticRebuild(ctx context.Context, tx *sql.Tx, now string) (bool, error) {
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE job_type='rebuild_semantic' AND target_type='index' AND target_id=? AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, semanticIndexName, r.embeddingIdentity()).Scan(&active); err != nil {
+		return false, err
+	}
+	if active > 0 {
+		return false, nil
+	}
+	ids, err := r.newIDs(2)
+	if err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,created_at) VALUES (?,?,'rebuild_semantic','index',?,?,'waiting',-100,?,?,?) ON CONFLICT DO NOTHING`, ids[0], ids[1], semanticIndexName, r.embeddingIdentity(), r.maxAttempts, now, now)
+	if err != nil {
+		return false, err
+	}
+	return oneRow(result), nil
+}
+
+func (r *Repository) semanticIndexDirty(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var dirty int
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM semantic_index_metadata
+		WHERE singleton=1 AND (
+			state<>'ready' OR coalesce(provider_identity,'')<>? OR coalesce(model_identity,'')<>?
+			OR source_revision_count<>(SELECT count(*) FROM memory_projections WHERE searchable=1)
+		)
+	) OR EXISTS (
+		SELECT 1 FROM memory_projections
+		WHERE searchable=1 AND (embedding_state<>'current' OR coalesce(embedding_provider,'')<>? OR coalesce(embedding_model,'')<>?)
+	)`, r.embeddingProviderIdentity, r.embeddingModelIdentity, r.embeddingProviderIdentity, r.embeddingModelIdentity).Scan(&dirty)
+	return dirty != 0, err
+}
+
+func (r *Repository) CreateSemanticRebuildJob(ctx context.Context, identity WriteIdentity) (domain.JobReference, bool, error) {
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.JobReference{}, false, err
+	}
+	defer tx.Rollback()
+	if status, body, found, err := readIdempotency(ctx, tx, identity); err != nil {
+		return domain.JobReference{}, false, err
+	} else if found {
+		var result domain.JobReference
+		if status != 202 || json.Unmarshal([]byte(body), &result) != nil {
+			return result, false, errors.New("invalid stored idempotency response")
+		}
+		return result, true, nil
+	}
+	if err := r.requireDiskWritable(); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	var active string
+	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs WHERE job_type='rebuild_semantic' AND target_type='index' AND target_id=? AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, semanticIndexName, r.embeddingIdentity()).Scan(&active)
+	if err == nil {
+		return domain.JobReference{JobID: active}, false, ErrJobAlreadyActive
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return domain.JobReference{}, false, err
+	}
+	ids, err := r.newIDs(3)
+	if err != nil {
+		return domain.JobReference{}, false, err
+	}
+	now := formatTime(r.runtime.Now())
+	if _, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, priority, max_attempts, next_run_at, created_at) VALUES (?, ?, 'rebuild_semantic', 'index', ?, ?, 'waiting', -100, ?, ?, ?)`, ids[0], ids[1], semanticIndexName, r.embeddingIdentity(), r.maxAttempts, now, now); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	result := domain.JobReference{OperationID: ids[1], JobID: ids[0]}
+	body, _ := json.Marshal(result)
+	if err = writeIdempotency(ctx, tx, identity, ids[1], 202, body, now); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, created_at) VALUES (?, ?, ?, ?, 'rebuild_semantic', 'index', ?, 'accepted', ?)`, ids[2], ids[1], identity.RequestID, identity.CallerID, semanticIndexName, now); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return domain.JobReference{}, false, err
+	}
+	return result, false, nil
+}
+
+func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
+	if r.embeddingProvider == nil || r.vectorIndex == nil {
+		return nil
+	}
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := formatTime(r.runtime.Now())
+	identity := r.embeddingIdentity()
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='cancelled', finished_at=?, last_error_code='provider_changed', last_error_message='semantic provider identity changed' WHERE job_type IN ('embed_memory','rebuild_semantic') AND processing_version<>? AND status IN ('pending','waiting','retrying')`, now, identity); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT revision_id FROM memory_projections WHERE searchable=1 AND (embedding_state<>'current' OR embedding_provider<>? OR embedding_model<>?) ORDER BY memory_id`, r.embeddingProviderIdentity, r.embeddingModelIdentity)
+	if err != nil {
+		return err
+	}
+	var revisions []string
+	for rows.Next() {
+		var revision string
+		if err := rows.Scan(&revision); err != nil {
+			rows.Close()
+			return err
+		}
+		revisions = append(revisions, revision)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, revision := range revisions {
+		ids, err := r.newIDs(2)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,created_at) VALUES (?,?,'embed_memory','memory_revision',?,?,'pending',100,?,?,?) ON CONFLICT DO NOTHING`, ids[0], ids[1], revision, identity, r.maxAttempts, now, now); err != nil {
+			return err
+		}
+	}
+	var searchable, activeVersion, sourceCount int
+	var state string
+	var currentProvider, currentModel sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM memory_projections WHERE searchable=1), coalesce(active_version,0), state, provider_identity, model_identity, source_revision_count FROM semantic_index_metadata WHERE singleton=1`).Scan(&searchable, &activeVersion, &state, &currentProvider, &currentModel, &sourceCount); err != nil {
+		return err
+	}
+	indexState := r.vectorIndex.Status(activeVersion).State
+	needsRebuild := searchable > 0 && (len(revisions) > 0 || state != "ready" || currentProvider.String != r.embeddingProviderIdentity || currentModel.String != r.embeddingModelIdentity || sourceCount != searchable || indexState != vector.StateReady && indexState != vector.StateStale)
+	if needsRebuild {
+		if _, err := r.enqueueSemanticRebuild(ctx, tx, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 
 func (r *Repository) CreateFTSRebuildJob(ctx context.Context, identity WriteIdentity) (domain.JobReference, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
@@ -62,6 +200,14 @@ func (r *Repository) CreateFTSRebuildJob(ctx context.Context, identity WriteIden
 }
 
 func (r *Repository) RebuildFTS(ctx context.Context) error {
+	return r.rebuildFTS(ctx, nil)
+}
+
+func (r *Repository) RebuildFTSClaimed(ctx context.Context, claim ClaimedJob) error {
+	return r.rebuildFTS(ctx, &claim)
+}
+
+func (r *Repository) rebuildFTS(ctx context.Context, claim *ClaimedJob) error {
 	pressure, err := r.DiskPressure()
 	if err != nil {
 		return err
@@ -70,7 +216,20 @@ func (r *Repository) RebuildFTS(ctx context.Context) error {
 		return errors.New("insufficient disk space for FTS rebuild")
 	}
 	now := formatTime(r.runtime.Now())
-	if _, err := r.store.writer.ExecContext(ctx, `UPDATE index_metadata SET state='rebuilding', updated_at=? WHERE index_name=?`, now, ftsIndexName); err != nil {
+	initial, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer initial.Rollback()
+	if claim != nil {
+		if err := r.requireJobClaim(ctx, initial, *claim); err != nil {
+			return err
+		}
+	}
+	if _, err := initial.ExecContext(ctx, `UPDATE index_metadata SET state='rebuilding', updated_at=? WHERE index_name=?`, now, ftsIndexName); err != nil {
+		return err
+	}
+	if err := initial.Commit(); err != nil {
 		return err
 	}
 	type projection struct{ memoryID, revisionID, content string }
@@ -104,6 +263,9 @@ func (r *Repository) RebuildFTS(ctx context.Context) error {
 	}
 
 	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err == nil && claim != nil {
+		err = r.requireJobClaim(ctx, tx, *claim)
+	}
 	if err == nil {
 		var currentCount int
 		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1`).Scan(&currentCount)
@@ -148,15 +310,18 @@ func (r *Repository) RebuildFTS(ctx context.Context) error {
 	if err == nil && len(projections) != indexed {
 		err = errors.New("FTS rebuild validation failed")
 	}
+	if err == nil && claim != nil {
+		err = r.requireJobClaim(ctx, tx, *claim)
+	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE index_metadata SET state='ready', source_revision_count=?, updated_at=? WHERE index_name=?`, len(projections), formatTime(r.runtime.Now()), ftsIndexName)
+		_, err = tx.ExecContext(ctx, `UPDATE index_metadata SET index_version=index_version+1, state='ready', source_revision_count=?, updated_at=? WHERE index_name=?`, len(projections), formatTime(r.runtime.Now()), ftsIndexName)
 	}
 	if err == nil {
 		err = tx.Commit()
 	} else if tx != nil {
 		_ = tx.Rollback()
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrLeaseLost) {
 		r.markFTSDegraded()
 	}
 	return err

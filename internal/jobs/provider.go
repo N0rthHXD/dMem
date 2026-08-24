@@ -1,0 +1,93 @@
+package jobs
+
+import (
+	"context"
+	"errors"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/provider"
+)
+
+type ProviderProcessor struct {
+	client *provider.Client
+}
+
+func NewProviderProcessor(client *provider.Client) *ProviderProcessor {
+	return &ProviderProcessor{client: client}
+}
+
+func (p *ProviderProcessor) Enabled() bool { return p != nil && p.client != nil && p.client.Enabled() }
+
+func (p *ProviderProcessor) Identity() string { return p.client.Identity() }
+
+func (p *ProviderProcessor) Process(ctx context.Context, input domain.ProcessingInput) domain.ProcessingResult {
+	request := provider.NewProcessRequest(
+		input.ProcessorIdentity, input.ProcessingVersion, input.JobID, input.Attempt,
+		providerEvent(input.Target), providerEvents(input.ContextEvents), providerMemories(input.ContextMemories), input.Policy.AllowedMemoryTypes, input.Policy.MaxCandidates, input.Policy.MaxContentChars,
+	)
+	output, err := p.client.Process(ctx, request)
+	if err != nil {
+		result := domain.ProcessingResult{Code: domain.ProcessingPermanentFailure, Message: "provider request failed", ProviderIdentity: p.client.Identity(), ModelIdentity: p.client.ModelIdentity(), PolicyVersion: p.client.EgressPolicyVersion()}
+		var providerErr *provider.Error
+		if errors.As(err, &providerErr) {
+			result.ReasonCode = providerErr.Code()
+			switch providerErr.Class() {
+			case provider.ErrorDisabled:
+				result.Code = domain.ProcessingNoProcessor
+			case provider.ErrorPolicy:
+				result.Code = domain.ProcessingPolicyRejected
+			case provider.ErrorTransient:
+				result.Code = domain.ProcessingTransientFailure
+			case provider.ErrorInvalidInput, provider.ErrorInvalidOutput:
+				result.Code = domain.ProcessingInvalidOutput
+			}
+		}
+		return result
+	}
+	result := domain.ProcessingResult{
+		Code: domain.ProcessingOutcome(output.Category()), ProviderIdentity: p.client.Identity(), ModelIdentity: p.client.ModelIdentity(),
+		PolicyVersion: p.client.EgressPolicyVersion(), ProviderRequestID: output.ProviderRequestID(),
+		Usage: domain.ProcessingUsage{InputTokens: output.Usage().InputTokens(), OutputTokens: output.Usage().OutputTokens()},
+	}
+	for _, candidate := range output.Candidates() {
+		item := domain.ProcessingCandidate{
+			Content: candidate.Content(), MemoryType: candidate.MemoryType(), SpaceID: candidate.SpaceID(),
+			ValidFrom: candidate.ValidFrom(), ValidUntil: candidate.ValidUntil(), Confidence: candidate.Confidence(),
+			Sensitivity: candidate.Sensitivity(), SuggestionKind: candidate.SuggestionKind(), RelatedMemoryIDs: candidate.RelatedMemoryIDs(),
+		}
+		for _, evidence := range candidate.Evidence() {
+			item.Evidence = append(item.Evidence, domain.ProcessingEvidence{EventID: evidence.EventID(), EvidenceType: evidence.EvidenceType(), StartOffset: evidence.StartOffset(), EndOffset: evidence.EndOffset()})
+		}
+		result.Candidates = append(result.Candidates, item)
+	}
+	return result
+}
+
+func providerMemories(values []domain.ProcessingMemory) []provider.Memory {
+	result := make([]provider.Memory, len(values))
+	for i, value := range values {
+		result[i] = provider.NewMemory(value.MemoryID, value.RevisionID, value.SpaceID, value.Content, value.CurrentState, value.Sensitivity, value.ValidFrom, value.ValidUntil)
+	}
+	return result
+}
+
+func providerEvents(values []domain.ProcessingEvent) []provider.Event {
+	result := make([]provider.Event, len(values))
+	for i := range values {
+		result[i] = providerEvent(values[i])
+	}
+	return result
+}
+
+func providerEvent(value domain.ProcessingEvent) provider.Event {
+	var content provider.Content
+	switch value.Content.Kind {
+	case "json":
+		content = provider.NewJSONContent(value.Content.Text)
+	case "reference":
+		content = provider.NewReferenceContent(value.Content.MediaType, value.Content.DeclaredSize, value.Content.DeclaredHash)
+	default:
+		content = provider.NewTextContent(value.Content.MediaType, value.Content.Text)
+	}
+	return provider.NewEvent(value.EventID, value.SpaceID, value.SourceType, value.SourceName, value.Sensitivity, value.OccurredAt, content)
+}

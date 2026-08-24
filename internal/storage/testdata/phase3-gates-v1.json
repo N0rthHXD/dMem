@@ -1,0 +1,25 @@
+{
+  "config_version": "phase3-gates-v1",
+  "corpus_version": "phase3-corpus-v1",
+  "ranking_version": "rrf-v2",
+  "quality": {
+    "maximum_sibling_contamination": 0,
+    "maximum_stale_revision_recall": 0,
+    "minimum_conflict_recall": 1.0,
+    "minimum_conflict_reference_completeness": 1.0
+  },
+  "performance": {
+    "target_memory_count": 300,
+    "query_samples": 25,
+    "maximum_query_p95_ms": 200,
+    "maximum_query_heap_bytes": 67108864,
+    "maximum_candidates": 20,
+    "maximum_authority_rebuild_ms": 10000,
+    "maximum_authority_rebuild_heap_bytes": 134217728,
+    "maximum_authority_disk_amplification": 4.0,
+    "portability_object_count": 200,
+    "minimum_portability_objects_per_second": 20.0,
+    "maximum_portability_temp_amplification": 4.0,
+    "maximum_portability_checkpoints": 25
+  }
+}

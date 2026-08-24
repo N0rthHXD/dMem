@@ -2,7 +2,7 @@
 
 ## 1. 规范来源
 
-第一阶段字段、类型、约束、索引和 FTS 定义以 [`schema-v1.sql`](schema-v1.sql) 为唯一可执行规范。本文只解释表的职责和事务边界，不重复维护伪 schema。
+当前字段、类型、约束、索引和 FTS 定义以 [`schema-v1.sql`](schema-v1.sql) 为唯一可执行规范。本文只解释主要表职责和事务边界，不重复维护伪 schema。
 
 ## 2. SQLite 基线
 
@@ -12,7 +12,7 @@
 - ID 存储为 UUID 文本。
 - JSON 字段使用 `json_valid` 约束。
 - 启用 foreign keys。
-- 第一阶段不使用 ORM AutoMigrate，不实现 schema migration。
+- 当前未发布基线不使用 ORM AutoMigrate，不实现 schema migration。
 
 ## 3. 表职责
 
@@ -34,7 +34,7 @@
 | audit_events | 权威 | 非敏感操作审计 |
 | index_metadata | 派生状态 | FTS 版本、新鲜度和重建状态 |
 
-第一阶段没有 attachments、relations、entities、feedback、job dependencies 和向量表。
+Phase 3 在同一 Schema v1 初始化契约中增加 entity/alias/mention、relation/evidence、conflict case/resolution、evolution proposal、feedback event/aggregate、aggregate descriptor/freshness/provenance 和 logical import operation/mapping/checkpoint 表。完整清单及约束以 `schema-v1.sql` 为准；FTS、semantic、entity/relation metadata、feedback aggregate 和 aggregate freshness 属于可重建派生状态，feedback event 和 import mapping/provenance 属于权威数据。
 
 ## 4. 权威状态
 

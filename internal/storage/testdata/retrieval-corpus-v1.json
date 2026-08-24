@@ -1,0 +1,31 @@
+{
+  "version": "retrieval-corpus-v1",
+  "documents": [
+    {"id":"travel-kyoto","space":"primary","content":"Flight booking reference ZXQ-1847 for a journey to Kyoto","exact_identifier":"ZXQ-1847","concepts":["travel"]},
+    {"id":"travel-osaka","space":"primary","content":"Rail itinerary code RAIL-5521 for an Osaka holiday","exact_identifier":"RAIL-5521","concepts":["travel"]},
+    {"id":"vehicle-service","space":"primary","content":"Automobile service appointment ticket CAR-9082 at the garage","exact_identifier":"CAR-9082","concepts":["vehicle"]},
+    {"id":"vehicle-insurance","space":"primary","content":"Motor insurance policy identifier AUTO-4410 renews in October","exact_identifier":"AUTO-4410","concepts":["vehicle"]},
+    {"id":"food-pasta","space":"primary","content":"Dinner recipe card FOOD-7319 uses pasta tomato and basil","exact_identifier":"FOOD-7319","concepts":["food"]},
+    {"id":"food-bakery","space":"primary","content":"Bakery order receipt BREAD-6204 is ready Saturday morning","exact_identifier":"BREAD-6204","concepts":["food"]},
+    {"id":"finance-rent","space":"primary","content":"Monthly apartment rent transfer reference RENT-3108","exact_identifier":"RENT-3108","concepts":["finance"]},
+    {"id":"finance-tax","space":"primary","content":"Annual tax filing confirmation TAX-7765 was accepted","exact_identifier":"TAX-7765","concepts":["finance"]},
+    {"id":"health-dentist","space":"primary","content":"Dental clinic appointment confirmation DENT-2094","exact_identifier":"DENT-2094","concepts":["health"]},
+    {"id":"health-running","space":"primary","content":"Marathon training schedule RUN-8830 starts with short sessions","exact_identifier":"RUN-8830","concepts":["health"]},
+    {"id":"work-release","space":"primary","content":"Software deployment checklist RELEASE-6642 requires approval","exact_identifier":"RELEASE-6642","concepts":["work"]},
+    {"id":"work-review","space":"primary","content":"Quarterly performance review note REVIEW-1186 is due Friday","exact_identifier":"REVIEW-1186","concepts":["work"]},
+    {"id":"sibling-private","space":"sibling","content":"Private sibling journey secret SIBLING-9999 vacation travel","concepts":["travel"]}
+  ],
+  "semantic_queries": [
+    {"id":"q-travel","text":"vacation transportation plans","relevant":["travel-kyoto","travel-osaka"]},
+    {"id":"q-vehicle","text":"car maintenance and driving paperwork","relevant":["vehicle-service","vehicle-insurance"]},
+    {"id":"q-food","text":"meal cooking and baked goods","relevant":["food-pasta","food-bakery"]},
+    {"id":"q-finance","text":"money payments and government filing","relevant":["finance-rent","finance-tax"]},
+    {"id":"q-health","text":"wellness exercise and medical care","relevant":["health-dentist","health-running"]},
+    {"id":"q-work","text":"job project delivery and appraisal","relevant":["work-release","work-review"]}
+  ],
+  "no_answer_queries": [
+    {"id":"q-astronomy","text":"telescope observations of distant galaxies"},
+    {"id":"q-gardening","text":"soil compost for growing orchids"},
+    {"id":"q-music","text":"violin rehearsal and orchestral harmony"}
+  ]
+}

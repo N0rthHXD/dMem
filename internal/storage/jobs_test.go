@@ -374,6 +374,32 @@ func TestJOB007ExpiredLeaseRecoveryClosesAttemptAndFencesWorker(t *testing.T) {
 	}
 }
 
+func TestExpiredLeaseCannotCompleteOrFailBeforeRecovery(t *testing.T) {
+	ctx := context.Background()
+	repository, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	insertTestJob(t, repository, "expired-fence", "pending", 0, 0, 3, now, now)
+	claim, err := repository.ClaimJob(ctx, ClaimJobParams{WorkerID: "late-worker", LeaseDuration: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = clock.now.Add(time.Second)
+
+	if err := repository.CompleteJob(ctx, claim, JobResult{Code: "late"}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("expired CompleteJob() error = %v", err)
+	}
+	if err := repository.FailJob(ctx, claim, JobFailure{Code: "late", Message: "late", Transient: true}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("expired FailJob() error = %v", err)
+	}
+	job, err := repository.GetJob(ctx, claim.Job.JobID)
+	if err != nil || job.Status != "running" || job.ResultCode != nil || job.LastError != nil {
+		t.Fatalf("job before recovery = %+v, %v", job, err)
+	}
+	if count, err := repository.RecoverExpiredLeases(ctx); err != nil || count != 1 {
+		t.Fatalf("RecoverExpiredLeases() = %d, %v", count, err)
+	}
+}
+
 func TestJobMaintenancePromotionRecoveryTerminalStatesAndExpiration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

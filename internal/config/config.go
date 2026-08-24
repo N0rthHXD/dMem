@@ -7,10 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
 const (
+	DefaultProcessingVersion   = "phase2-noop-v1"
 	defaultRequestTimeout      = 30 * time.Second
 	defaultShutdownGracePeriod = 15 * time.Second
 	defaultMaxConnections      = 64
@@ -25,7 +29,15 @@ const (
 	defaultRetryMaxBackoff     = 5 * time.Minute
 	defaultDiskSoftFree        = 1 << 30
 	defaultDiskHardFree        = 256 << 20
+	defaultProviderTimeout     = 30 * time.Second
+	defaultProviderMaxContent  = 12000
+	defaultProviderMaxContext  = 8
+	defaultProviderMaxResponse = 1 << 20
+	defaultProviderConcurrent  = 2
+	defaultProviderRate        = 60
 )
+
+type ProviderConfig = provider.Config
 
 type Config struct {
 	DataDir             string
@@ -47,6 +59,8 @@ type Config struct {
 	ProcessingVersion   string
 	DiskSoftFree        uint64
 	DiskHardFree        uint64
+	ProcessingProvider  ProviderConfig
+	EmbeddingProvider   ProviderConfig
 }
 
 func Default() (Config, error) {
@@ -81,9 +95,25 @@ func Default() (Config, error) {
 		PerJobTimeout:       defaultPerJobTimeout,
 		RetryInitialBackoff: defaultRetryInitialBackoff,
 		RetryMaxBackoff:     defaultRetryMaxBackoff,
-		ProcessingVersion:   "phase1-noop-v1",
+		ProcessingVersion:   DefaultProcessingVersion,
 		DiskSoftFree:        defaultDiskSoftFree,
 		DiskHardFree:        defaultDiskHardFree,
+		ProcessingProvider: ProviderConfig{
+			MaxContentChars:   defaultProviderMaxContent,
+			MaxContextItems:   defaultProviderMaxContext,
+			MaxResponseSize:   defaultProviderMaxResponse,
+			RequestTimeout:    defaultProviderTimeout,
+			MaxConcurrent:     defaultProviderConcurrent,
+			RequestsPerMinute: defaultProviderRate,
+		},
+		EmbeddingProvider: ProviderConfig{
+			MaxContentChars:   defaultProviderMaxContent,
+			MaxContextItems:   defaultProviderMaxContext,
+			MaxResponseSize:   defaultProviderMaxResponse,
+			RequestTimeout:    defaultProviderTimeout,
+			MaxConcurrent:     defaultProviderConcurrent,
+			RequestsPerMinute: defaultProviderRate,
+		},
 	}, nil
 }
 
@@ -108,14 +138,23 @@ func Parse(fs *flag.FlagSet, args []string) (Config, error) {
 	perJobTimeout := fs.Duration("per-job-timeout", cfg.PerJobTimeout, "job processing timeout")
 	retryInitialBackoff := fs.Duration("retry-initial-backoff", cfg.RetryInitialBackoff, "initial job retry backoff")
 	retryMaxBackoff := fs.Duration("retry-max-backoff", cfg.RetryMaxBackoff, "maximum job retry backoff")
+	processingVersionExplicit := os.Getenv("DMEM_PROCESSING_VERSION") != ""
+	processingVersion := fs.String("processing-version", envOr("DMEM_PROCESSING_VERSION", cfg.ProcessingVersion), "stable processing identity")
 	diskSoftFree := fs.Uint64("disk-soft-free", cfg.DiskSoftFree, "soft minimum filesystem free bytes")
 	diskHardFree := fs.Uint64("disk-hard-free", cfg.DiskHardFree, "hard minimum filesystem free bytes")
+	processingProvider := registerProviderFlags(fs, "processing-provider", cfg.ProcessingProvider, true)
+	embeddingProvider := registerProviderFlags(fs, "embedding-provider", cfg.EmbeddingProvider, false)
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
 	if fs.NArg() != 0 {
 		return Config{}, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
+	fs.Visit(func(value *flag.Flag) {
+		if value.Name == "processing-version" {
+			processingVersionExplicit = true
+		}
+	})
 
 	cfg.DataDir = *dataDir
 	cfg.RuntimeDir = *runtimeDir
@@ -141,8 +180,14 @@ func Parse(fs *flag.FlagSet, args []string) (Config, error) {
 	cfg.PerJobTimeout = *perJobTimeout
 	cfg.RetryInitialBackoff = *retryInitialBackoff
 	cfg.RetryMaxBackoff = *retryMaxBackoff
+	cfg.ProcessingVersion = *processingVersion
 	cfg.DiskSoftFree = *diskSoftFree
 	cfg.DiskHardFree = *diskHardFree
+	cfg.ProcessingProvider = processingProvider.config()
+	cfg.EmbeddingProvider = embeddingProvider.config()
+	if cfg.ProcessingProvider.Enabled && !processingVersionExplicit {
+		return Config{}, errors.New("enabled processing provider requires an explicit processing version")
+	}
 	return cfg.normalized()
 }
 
@@ -208,7 +253,124 @@ func (c Config) normalized() (Config, error) {
 	if len(c.Endpoint) > 107 {
 		return Config{}, errors.New("Unix socket path exceeds Linux limit")
 	}
+	if !validStableVersion(c.ProcessingVersion) {
+		return Config{}, errors.New("processing version must be a stable identifier of 1 to 128 ASCII letters, digits, dots, underscores, or hyphens")
+	}
+	if c.ProcessingProvider.Enabled && c.ProcessingVersion == DefaultProcessingVersion {
+		return Config{}, errors.New("enabled processing provider requires a non-default processing version")
+	}
+	if err := validateProvider(c.ProcessingProvider); err != nil {
+		return Config{}, fmt.Errorf("processing provider: %w", err)
+	}
+	if err := validateProvider(c.EmbeddingProvider); err != nil {
+		return Config{}, fmt.Errorf("embedding provider: %w", err)
+	}
 	return c, nil
+}
+
+type providerFlags struct {
+	enabled              *bool
+	kind                 *string
+	endpoint             *string
+	model                *string
+	secretEnv            *string
+	allowedSpaces        *string
+	allowedContentTypes  *string
+	allowedSourceTypes   *string
+	allowedSensitivities *string
+	telemetryDisabled    *bool
+	policyVersion        *string
+	maxContent           *int
+	maxContext           *int
+	maxResponse          *int64
+	timeout              *time.Duration
+	concurrent           *int
+	rate                 *int
+}
+
+func registerProviderFlags(fs *flag.FlagSet, prefix string, defaults ProviderConfig, includeMaxContext bool) providerFlags {
+	flags := providerFlags{
+		enabled:              fs.Bool(prefix+"-enabled", false, "enable the "+prefix),
+		kind:                 fs.String(prefix+"-kind", "", "provider kind"),
+		endpoint:             fs.String(prefix+"-endpoint", "", "provider HTTPS base endpoint"),
+		model:                fs.String(prefix+"-model", "", "provider model identity"),
+		secretEnv:            fs.String(prefix+"-secret-env", "", "environment variable containing the provider secret"),
+		allowedSpaces:        fs.String(prefix+"-allowed-spaces", "", "comma-separated spaces allowed for egress"),
+		allowedContentTypes:  fs.String(prefix+"-allowed-content-types", "", "comma-separated content types allowed for egress"),
+		allowedSourceTypes:   fs.String(prefix+"-allowed-source-types", "", "comma-separated source types allowed for egress"),
+		allowedSensitivities: fs.String(prefix+"-allowed-sensitivities", "", "comma-separated sensitivities allowed for egress"),
+		telemetryDisabled:    fs.Bool(prefix+"-telemetry-disabled", false, "confirm provider telemetry is disabled"),
+		policyVersion:        fs.String(prefix+"-egress-policy-version", "", "egress policy version"),
+		maxContent:           fs.Int(prefix+"-max-content-chars", defaults.MaxContentChars, "maximum egress content characters"),
+		maxResponse:          fs.Int64(prefix+"-max-response-size", defaults.MaxResponseSize, "maximum provider response bytes"),
+		timeout:              fs.Duration(prefix+"-request-timeout", defaults.RequestTimeout, "provider request timeout"),
+		concurrent:           fs.Int(prefix+"-max-concurrent", defaults.MaxConcurrent, "maximum concurrent provider requests"),
+		rate:                 fs.Int(prefix+"-requests-per-minute", defaults.RequestsPerMinute, "maximum provider requests per minute"),
+	}
+	if includeMaxContext {
+		flags.maxContext = fs.Int(prefix+"-max-context-items", defaults.MaxContextItems, "maximum egress context items")
+	}
+	return flags
+}
+
+func (f providerFlags) config() ProviderConfig {
+	maxContext := defaultProviderMaxContext
+	if f.maxContext != nil {
+		maxContext = *f.maxContext
+	}
+	return ProviderConfig{
+		Enabled: *f.enabled, Kind: *f.kind, Endpoint: *f.endpoint, Model: *f.model, SecretEnv: *f.secretEnv,
+		AllowedSpaces: splitList(*f.allowedSpaces), AllowedContentTypes: splitList(*f.allowedContentTypes),
+		AllowedSourceTypes: splitList(*f.allowedSourceTypes), AllowedSensitivities: splitList(*f.allowedSensitivities),
+		TelemetryDisabled: *f.telemetryDisabled, EgressPolicyVersion: *f.policyVersion,
+		MaxContentChars: *f.maxContent, MaxContextItems: maxContext, MaxResponseSize: *f.maxResponse,
+		RequestTimeout: *f.timeout, MaxConcurrent: *f.concurrent, RequestsPerMinute: *f.rate,
+	}
+}
+
+func validStableVersion(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for i := range value {
+		character := value[i]
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || (i > 0 && (character == '.' || character == '_' || character == '-')) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validateProvider(p ProviderConfig) error {
+	if err := provider.ValidateConfig(p); err != nil {
+		return err
+	}
+	if p.Enabled && p.RequestTimeout < time.Second {
+		return errors.New("provider request timeout must be at least 1s")
+	}
+	return nil
+}
+
+func splitList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, ok := seen[part]; ok {
+			continue
+		}
+		seen[part] = struct{}{}
+		result = append(result, part)
+	}
+	return result
 }
 
 func envOr(name, fallback string) string {

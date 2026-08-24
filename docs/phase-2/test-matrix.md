@@ -2,22 +2,22 @@
 
 ## 1. 测试约定
 
-- `required` 是阶段发布门槛，`optional` 用于评估或环境相关测试。
+- `required` 是阶段完成门槛，`optional` 用于评估或环境相关测试。
 - 所有第一阶段测试继续运行。
 - Processor、EmbeddingProvider、VectorIndex 和 clock/ID 均可注入确定性 fake。
 - Provider contract test 不访问真实外部服务；真实 provider 使用显式凭据的独立集成环境。
-- SQLite、FTS 和向量实现使用与发布相同的 build profile。
+- SQLite、FTS 和向量实现使用项目固定的 build profile。
 - HTTP request/response 使用真实 OpenAPI validator 校验。
 - 故障注入覆盖 provider 返回后、权威事务提交前和提交后的边界。
 
-## 2. 契约与兼容
+## 2. 契约与回归
 
 | ID | 状态 | 场景 | 预期 |
 | --- | --- | --- | --- |
-| P2-COMPAT-001 | required | 运行第一阶段测试 | 全部通过 |
-| P2-COMPAT-002 | required | OpenAPI request/response/error/header | 所有公开样例和端到端响应通过 Schema 校验 |
-| P2-COMPAT-003 | required | 未配置 provider | no-op 行为与第一阶段一致，无网络请求 |
-| P2-COMPAT-004 | required | 旧 semantic 请求 | 新契约按版本明确支持，不静默改变 keyword 语义 |
+| P2-CONTRACT-001 | required | 运行基础能力回归测试 | 未被新设计替换的能力全部通过 |
+| P2-CONTRACT-002 | required | OpenAPI request/response/error/header | 所有公开样例和端到端响应通过 Schema 校验 |
+| P2-CONTRACT-003 | required | 未配置 provider | 使用 no-op，无网络请求 |
+| P2-CONTRACT-004 | required | 初始化数据库 | 当前完整 Schema 一次性创建并通过不变量检查 |
 
 ## 3. Processor
 
@@ -92,37 +92,37 @@
 | P2-SEARCH-012 | required | cursor 后索引切换 | invalid_request，不跨版本续页 |
 | P2-SEARCH-013 | required | limit + max_chars | 同时满足第一阶段硬限制 |
 
-## 8. Migration、备份与恢复
+## 8. 开发期 Schema、备份与恢复
 
 | ID | 状态 | 场景 | 预期 |
 | --- | --- | --- | --- |
-| P2-DATA-001 | required | 真实 Schema v1 fixture 升级 | 权威数据和幂等响应保留 |
-| P2-DATA-002 | required | migration 中途故障 | 回滚或可从迁移前备份恢复，无半版本 |
-| P2-DATA-003 | required | 未知新 Schema | daemon 拒绝打开且不修改 |
+| P2-DATA-001 | required | 不兼容旧 Schema | daemon 拒绝打开且不修改，不执行 migration |
+| P2-DATA-002 | required | 当前 Schema 新库初始化 | 一次性包含第二阶段全部表、索引和约束 |
+| P2-DATA-003 | required | 非当前 Schema 备份 restore | 明确拒绝，不升级、降级或转换 |
 | P2-DATA-004 | required | 活动数据库备份 | 快照通过 integrity 和 checksum 校验 |
 | P2-DATA-005 | required | 磁盘不足/目标故障 | 不发布不完整备份 |
-| P2-DATA-006 | required | staging restore | 验证完成前不替换当前 data directory |
+| P2-DATA-006 | required | staging restore | readiness/一致性/隔离验证完成前不替换当前 data directory，探测失败时原数据不变 |
 | P2-DATA-007 | required | restore running jobs | 旧 attempt 关闭且 generation 被 fence |
-| P2-DATA-008 | required | restore 后索引重建 | keyword/semantic 结果与备份时权威 projection 一致 |
+| P2-DATA-008 | required | restore 后索引重建 | keyword 与权威 projection 一致；无 provider 时 semantic 为 absent/rebuild-required 且 hybrid 显式降级 |
 | P2-DATA-009 | required | manifest/checksum 损坏 | restore 拒绝，原数据库不变 |
-| P2-DATA-010 | required | 自动化恢复演练 | staging daemon health 达到预期且隔离测试通过 |
+| P2-DATA-010 | required | 自动化恢复演练 | 无网络/provider/worker 的 staging daemon 在隔离 UDS ready，keyword、hybrid 降级和 sibling-space 隔离测试通过 |
 
 ## 9. 质量与性能
 
 | ID | 状态 | 场景 | 预期 |
 | --- | --- | --- | --- |
 | P2-QUAL-001 | required | 固定检索语料 | exact keyword recall 不低于第一阶段 |
-| P2-QUAL-002 | required | 固定语义语料 | 达到发布配置中声明的 recall@k 和 nDCG/MRR 门槛 |
+| P2-QUAL-002 | required | 固定语义语料 | 达到阶段配置中声明的 recall@k 和 nDCG/MRR 门槛 |
 | P2-QUAL-003 | required | 无答案语料 | 无关召回率不超过声明门槛 |
 | P2-QUAL-004 | required | 空间隔离语料 | 跨同级空间返回为 0 |
-| P2-PERF-001 | required | 目标规模查询 | keyword/semantic/hybrid p95 达到发布门槛 |
-| P2-PERF-002 | required | 目标规模 rebuild | 时间、内存、磁盘放大达到发布门槛 |
+| P2-PERF-001 | required | 目标规模查询 | keyword/semantic/hybrid p95 达到阶段完成门槛 |
+| P2-PERF-002 | required | 目标规模 rebuild | 时间、内存、磁盘放大达到阶段完成门槛 |
 | P2-PERF-003 | optional | 真实远程 provider | 记录延迟、限流和恢复行为，不进入默认离线 CI |
 
 ## 10. CI 最小矩阵
 
 - Linux amd64，最低支持 Go 版本和当前稳定 Go 版本。
 - CGO 开启，固定 SQLite 和向量 build profile。
-- unit、integration、race、OpenAPI validation、migration fixtures、restore drill 和 vulnerability scan。
+- unit、integration、race、OpenAPI validation、Schema initialization、restore drill 和 vulnerability scan。
 - 默认 CI 禁止外网；所有 provider 使用本地 fake/server。
-- 向量实现的许可证、固定版本和可重建测试是发布门槛。
+- 向量实现的许可证、固定版本和可重建测试是阶段完成门槛。

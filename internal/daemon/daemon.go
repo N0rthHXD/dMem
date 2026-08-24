@@ -12,13 +12,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/N0rthHXD/dMem/internal/aggregate"
 	"github.com/N0rthHXD/dMem/internal/api"
+	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/identity"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/jobs"
+	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/storage"
+	"github.com/N0rthHXD/dMem/internal/vector"
 )
 
 type Daemon struct {
@@ -35,10 +39,31 @@ type Daemon struct {
 }
 
 func Start(ctx context.Context, cfg config.Config) (_ *Daemon, err error) {
-	return start(ctx, cfg, jobs.NoopProcessor{})
+	processor := jobs.Processor(jobs.NoopProcessor{})
+	var aggregateProvider domain.AggregateProvider
+	if cfg.ProcessingProvider.Enabled {
+		client, err := provider.New(cfg.ProcessingProvider, nil)
+		if err != nil {
+			return nil, err
+		}
+		processor = jobs.NewProviderProcessor(client)
+		aggregateProvider = client
+	}
+	return startService(ctx, cfg, processor, aggregateProvider, true)
 }
 
 func start(ctx context.Context, cfg config.Config, processor jobs.Processor) (_ *Daemon, err error) {
+	return startService(ctx, cfg, processor, nil, true)
+}
+
+// StartStaging starts the production service assembly without workers or providers.
+func StartStaging(ctx context.Context, cfg config.Config) (_ *Daemon, err error) {
+	cfg.ProcessingProvider = config.ProviderConfig{}
+	cfg.EmbeddingProvider = config.ProviderConfig{}
+	return startService(ctx, cfg, jobs.NoopProcessor{}, nil, false)
+}
+
+func startService(ctx context.Context, cfg config.Config, processor jobs.Processor, aggregateProvider domain.AggregateProvider, startWorkers bool) (_ *Daemon, err error) {
 	if err := prepareDir(cfg.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("prepare data directory: %w", err)
 	}
@@ -67,12 +92,32 @@ func start(ctx context.Context, cfg config.Config, processor jobs.Processor) (_ 
 	}
 	repository := storage.NewRepository(d.store, domain.Runtime{Now: time.Now, ID: identity.UUID}, cfg.QueueSoftLimit, cfg.QueueHardLimit, cfg.MaxAttempts, cfg.ProcessingVersion)
 	repository.SetDiskFreeThresholds(cfg.DiskSoftFree, cfg.DiskHardFree)
-	d.jobs, err = jobs.NewService(repository, cfg, jobs.DispatchProcessor{Extract: processor, Indexes: repository})
+	index, err := vector.Open(filepath.Join(cfg.DataDir, "semantic-index"))
 	if err != nil {
 		return nil, err
 	}
-	if err := d.jobs.Start(ctx); err != nil {
+	if cfg.EmbeddingProvider.Enabled {
+		embedding, providerErr := provider.New(cfg.EmbeddingProvider, nil)
+		if providerErr != nil {
+			return nil, providerErr
+		}
+		repository.ConfigureSemantic(embedding, index, cfg.EmbeddingProvider.Kind, cfg.EmbeddingProvider.Model)
+		if err := repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
+			return nil, fmt.Errorf("prepare semantic recovery: %w", err)
+		}
+	}
+	aggregateService := aggregate.NewService(repository, aggregateProvider, "aggregate/provider", cfg.ProcessingProvider.EgressPolicyVersion, cfg.ProcessingVersion, cfg.ProcessingProvider.MaxContextItems)
+	d.jobs, err = jobs.NewService(repository, cfg, processor, jobs.Dependencies{
+		Indexes: repository, EntityIndexes: repository, RelationIndexes: repository,
+		FeedbackAggregates: repository, AggregateRebuilder: aggregateService, DiskPressure: repository,
+	})
+	if err != nil {
 		return nil, err
+	}
+	if startWorkers {
+		if err := d.jobs.Start(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if err := clearStaleSocket(cfg.Endpoint); err != nil {
 		return nil, err
@@ -89,8 +134,11 @@ func start(ctx context.Context, cfg config.Config, processor jobs.Processor) (_ 
 		return nil, fmt.Errorf("inspect Unix socket: %w", err)
 	}
 	d.listener = limitListener(d.listener, cfg.MaxConnections)
-	d.handler = api.NewHandler(ftsState)
-	d.handler.UseRepository(repository, cfg.MaxRequestSize, identity.UUID)
+	d.handler = api.NewHandler(ftsState, api.HandlerDependencies{
+		Repository: repository, AggregateService: aggregateService, ProcessorHealth: d.jobs,
+		MemoryService:  application.NewService(repository),
+		MaxRequestSize: cfg.MaxRequestSize, ID: identity.UUID,
+	})
 	d.server = &http.Server{
 		Handler:           d.handler.Routes(),
 		ReadHeaderTimeout: cfg.RequestTimeout,

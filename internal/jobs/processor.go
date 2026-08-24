@@ -4,62 +4,48 @@ import (
 	"context"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
-type OutcomeCode string
-
-const (
-	OutcomeNoProcessor         OutcomeCode = "no_processor"
-	OutcomeNoMemory            OutcomeCode = "no_memory"
-	OutcomeCandidatesExtracted OutcomeCode = "candidates_extracted"
-	OutcomeTransientFailure    OutcomeCode = "transient_failure"
-	OutcomePermanentFailure    OutcomeCode = "permanent_failure"
-	OutcomeInvalidOutput       OutcomeCode = "invalid_output"
-	OutcomePolicyRejected      OutcomeCode = "policy_rejected"
-	OutcomeIndexRebuilt        OutcomeCode = "index_rebuilt"
-)
-
-type Outcome struct {
-	Code    OutcomeCode
-	Value   any
-	Message string
-}
+const outcomeIndexRebuilt = "index_rebuilt"
 
 type Processor interface {
-	Process(context.Context, domain.Job) Outcome
+	Enabled() bool
+	Identity() string
+	Process(context.Context, domain.ProcessingInput) domain.ProcessingResult
 }
 
 type NoopProcessor struct{}
 
-func (NoopProcessor) Process(context.Context, domain.Job) Outcome {
-	return Outcome{Code: OutcomeNoProcessor}
+func (NoopProcessor) Enabled() bool    { return false }
+func (NoopProcessor) Identity() string { return "none" }
+
+func (NoopProcessor) Process(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+	return domain.ProcessingResult{Code: domain.ProcessingNoProcessor}
 }
 
 type IndexRepository interface {
-	RebuildFTS(context.Context) error
+	RebuildFTSClaimed(context.Context, storage.ClaimedJob) error
+	EmbedMemoryClaimed(context.Context, storage.ClaimedJob, string) error
+	RebuildSemanticClaimed(context.Context, storage.ClaimedJob) error
 }
 
-type DispatchProcessor struct {
-	Extract Processor
-	Indexes IndexRepository
+type EntityIndexRepository interface {
+	RebuildEntityIndexClaimed(context.Context, storage.ClaimedJob) error
 }
 
-func (p DispatchProcessor) Process(ctx context.Context, job domain.Job) Outcome {
-	switch job.JobType {
-	case "extract_memory":
-		if p.Extract == nil {
-			return Outcome{Code: OutcomeNoProcessor}
-		}
-		return p.Extract.Process(ctx, job)
-	case "rebuild_fts":
-		if p.Indexes == nil || job.TargetType != "index" || job.TargetID != "memory_fts" {
-			return Outcome{Code: OutcomeInvalidOutput, Message: "invalid index rebuild target"}
-		}
-		if err := p.Indexes.RebuildFTS(ctx); err != nil {
-			return Outcome{Code: OutcomeTransientFailure, Message: "FTS rebuild failed"}
-		}
-		return Outcome{Code: OutcomeIndexRebuilt}
-	default:
-		return Outcome{Code: OutcomeInvalidOutput, Message: "unsupported job type"}
-	}
+type RelationIndexRepository interface {
+	RebuildRelationIndexClaimed(context.Context, storage.ClaimedJob) error
+}
+
+type FeedbackAggregateRepository interface {
+	RebuildFeedbackAggregatesClaimed(context.Context, storage.ClaimedJob) error
+}
+
+type AggregateRebuilder interface {
+	RebuildClaimed(context.Context, storage.ClaimedJob) error
+}
+
+type DiskPressureSource interface {
+	DiskPressure() (string, error)
 }

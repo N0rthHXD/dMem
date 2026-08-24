@@ -16,6 +16,12 @@ import (
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
+func unmarshalStrict(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target)
+}
+
 type Error struct {
 	ErrorCode   string         `json:"error_code"`
 	Message     string         `json:"message"`
@@ -82,12 +88,6 @@ func (c *contentRequest) UnmarshalJSON(data []byte) error {
 	}
 	c.Value = value.Value
 	return nil
-}
-
-func (h *Handler) UseRepository(repository *storage.Repository, maxRequestSize int64, id func() (string, error)) {
-	h.repository = repository
-	h.maxRequestSize = maxRequestSize
-	h.id = id
 }
 
 func (h *Handler) spaces(w http.ResponseWriter, r *http.Request) {
@@ -416,8 +416,26 @@ func (h *Handler) repositoryError(w http.ResponseWriter, err error, requestID st
 		h.writeError(w, http.StatusConflict, "invalid_state_transition", "memory state transition is not allowed", requestID, "", false, nil)
 	case errors.Is(err, storage.ErrInvalidEvidence):
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "memory evidence is invalid", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrCandidateReviewed):
+		h.writeError(w, http.StatusConflict, "candidate_already_reviewed", "candidate review state is terminal", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrEntityProposalReviewed):
+		h.writeError(w, http.StatusConflict, "proposal_already_reviewed", "entity proposal review state is terminal", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrInvalidRelationProposal):
+		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "relation proposal is invalid", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrRelationProposalReviewed):
+		h.writeError(w, http.StatusConflict, "proposal_already_reviewed", "relation proposal review state is terminal", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrInvalidAggregateProposal):
+		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "aggregate proposal is invalid", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrAggregateProposalReviewed):
+		h.writeError(w, http.StatusConflict, "proposal_already_reviewed", "aggregate proposal review state is terminal", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrInvalidEvolutionProposal):
+		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "evolution proposal is invalid", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrEvolutionReviewed), errors.Is(err, storage.ErrConflictResolved):
+		h.writeError(w, http.StatusConflict, "proposal_already_reviewed", "review state is terminal", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrUnsupportedAction):
+		h.writeError(w, http.StatusUnprocessableEntity, "unsupported", "automatic destructive action is unsupported", requestID, "", false, nil)
 	case errors.Is(err, storage.ErrIndexDegraded):
-		h.writeError(w, http.StatusServiceUnavailable, "index_degraded", "keyword index is unavailable", requestID, "", true, map[string]any{"index_state": "degraded"})
+		h.writeError(w, http.StatusServiceUnavailable, "index_degraded", "requested search index is unavailable", requestID, "", true, map[string]any{"index_state": "degraded"})
 	default:
 		h.writeError(w, http.StatusServiceUnavailable, "storage_unavailable", "storage operation failed", requestID, "", true, nil)
 	}

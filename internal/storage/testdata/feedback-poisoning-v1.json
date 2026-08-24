@@ -1,0 +1,6 @@
+{
+  "version": "feedback-poisoning-v1",
+  "repeated_events": 64,
+  "single_caller_max_absolute_score": 0.125,
+  "ranking_signal_weight": 0.001
+}

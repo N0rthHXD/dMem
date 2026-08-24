@@ -1,0 +1,39 @@
+{
+  "config_version": "retrieval-gates-v1",
+  "corpus_version": "retrieval-corpus-v1",
+  "provider_version": "deterministic-concepts-v1",
+  "provider_model": "concept-axis-12-v1",
+  "index_format_version": 1,
+  "ranking_version": "rrf-v2",
+  "quality": {
+    "semantic_k": 2,
+    "minimum_keyword_exact_recall": 1.0,
+    "minimum_semantic_recall_at_k": 1.0,
+    "minimum_hybrid_recall_at_k": 1.0,
+    "minimum_hybrid_mrr": 1.0,
+    "maximum_no_answer_irrelevant_recall": 0.0,
+    "maximum_sibling_contamination": 0
+  },
+  "performance": {
+    "target_memory_count": 500,
+    "query_samples_per_mode": 25,
+    "maximum_keyword_p95_ms": 100,
+    "maximum_semantic_p95_ms": 250,
+    "maximum_hybrid_p95_ms": 300,
+    "maximum_rebuild_ms": 15000,
+    "maximum_rebuild_peak_heap_bytes": 134217728,
+    "maximum_rebuild_disk_amplification": 16.0
+  },
+  "concept_vocabulary": {
+    "travel":["flight","journey","kyoto","rail","itinerary","osaka","holiday","vacation","transportation","plans"],
+    "vehicle":["automobile","car","motor","garage","driving","maintenance","insurance","paperwork"],
+    "food":["dinner","recipe","pasta","tomato","basil","bakery","bread","meal","cooking","baked","goods"],
+    "finance":["rent","transfer","tax","filing","money","payments","government"],
+    "health":["dental","clinic","marathon","training","wellness","exercise","medical","care"],
+    "work":["software","deployment","release","performance","review","job","project","delivery","appraisal"],
+    "astronomy":["telescope","galaxies","astronomy"],
+    "gardening":["soil","compost","orchids","gardening"],
+    "music":["violin","orchestral","harmony","music"],
+    "weather":["weather","rainfall","climate"]
+  }
+}

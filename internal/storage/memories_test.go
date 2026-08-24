@@ -295,6 +295,7 @@ func TestMEMEvidenceOffsetConstraintsRollbackWholeCreate(t *testing.T) {
 		{"negative start", int64Pointer(-1), int64Pointer(2)},
 		{"missing end", int64Pointer(1), nil},
 		{"non-increasing", int64Pointer(3), int64Pointer(3)},
+		{"past rune length", int64Pointer(1), int64Pointer(11)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, _ := newMemoryTestRepository(t)
@@ -307,6 +308,46 @@ func TestMEMEvidenceOffsetConstraintsRollbackWholeCreate(t *testing.T) {
 				t.Fatalf("invalid offsets left rows: before=%v after=%v", before, after)
 			}
 		})
+	}
+}
+
+func TestMEMEvidenceScopeAndContentKindValidation(t *testing.T) {
+	t.Parallel()
+	repository, _ := newMemoryTestRepository(t)
+	now := "2026-08-21T11:00:00Z"
+	statements := []string{
+		`INSERT INTO memory_spaces(space_id, parent_space_id, space_type, external_id, display_name, created_at) VALUES ('space-child', 'space-1', 'project', 'child', 'Child', '` + now + `'), ('space-sibling', 'space-1', 'project', 'sibling', 'Sibling', '` + now + `')`,
+		`INSERT INTO raw_contents(content_id, content_kind, content_text, reference_uri, media_type, content_hash, size_bytes, created_at) VALUES ('content-child', 'text', '你好a', NULL, 'text/plain', 'child-hash', 7, '` + now + `'), ('content-sibling', 'text', 'sibling', NULL, 'text/plain', 'sibling-hash', 7, '` + now + `'), ('content-reference', 'reference', NULL, 'https://example.test/source', 'text/plain', 'reference-hash', 0, '` + now + `')`,
+		`INSERT INTO raw_events(event_id, operation_id, space_id, content_id, source_type, source_name, caller_id, occurred_at, received_at, created_at) VALUES ('event-child', 'op-child', 'space-child', 'content-child', 'manual', 'test', 'seed', '` + now + `', '` + now + `', '` + now + `'), ('event-sibling', 'op-sibling', 'space-sibling', 'content-sibling', 'manual', 'test', 'seed', '` + now + `', '` + now + `', '` + now + `'), ('event-reference', 'op-reference', 'space-child', 'content-reference', 'file_reference', 'test', 'seed', '` + now + `', '` + now + `', '` + now + `')`,
+	}
+	for _, statement := range statements {
+		if _, err := repository.store.writer.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create := func(key, spaceID string, evidence EvidenceParams) error {
+		params := CreateMemoryParams{SpaceID: spaceID, MemoryType: "fact", Content: key, Sensitivity: "normal", Evidence: []EvidenceParams{evidence}, Reason: key}
+		_, _, err := repository.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
+		return err
+	}
+	start, runeEnd, pastEnd := int64(0), int64(3), int64(4)
+	if err := create("ancestor evidence", "space-child", EvidenceParams{EventID: "event-1", EvidenceType: "direct_statement"}); err != nil {
+		t.Fatalf("ancestor evidence rejected: %v", err)
+	}
+	if err := create("unicode range", "space-child", EvidenceParams{EventID: "event-child", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &runeEnd}); err != nil {
+		t.Fatalf("rune-bounded evidence rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name     string
+		evidence EvidenceParams
+	}{
+		{"cross-space", EvidenceParams{EventID: "event-sibling", EvidenceType: "direct_statement"}},
+		{"out-of-range", EvidenceParams{EventID: "event-child", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &pastEnd}},
+		{"reference-offset", EvidenceParams{EventID: "event-reference", EvidenceType: "manual_reference", StartOffset: &start, EndOffset: &runeEnd}},
+	} {
+		if err := create(test.name, "space-child", test.evidence); !errors.Is(err, ErrInvalidEvidence) {
+			t.Fatalf("%s error = %v; want ErrInvalidEvidence", test.name, err)
+		}
 	}
 }
 
@@ -409,6 +450,32 @@ func TestMEMCurrentLifecycleMatchesLatestEventAndNoopIsRecordedWithoutEvent(t *t
 	}
 	if after := memoryTableCounts(t, repository); !reflect.DeepEqual(after, before) {
 		t.Fatalf("noop replay changed table counts: before=%v after=%v", before, after)
+	}
+}
+
+func TestP3CONTRACT005CorpusGenerationAdvancesOnlyWithCommittedProjectionChanges(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	var generation int64
+	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 1 {
+		t.Fatalf("initial generation = %d, %v", generation, err)
+	}
+	memory := createTestMemory(t, repository, "p3-generation-create")
+	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {
+		t.Fatalf("generation after create = %d, %v", generation, err)
+	}
+	invalid := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "invalid", Evidence: directEvidence("missing-event"), Reason: "rollback"}
+	if _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("p3-generation-invalid", "/v1/memories/{memory_id}/revisions", invalid), memory.MemoryID, invalid); !errors.Is(err, ErrInvalidEvidence) {
+		t.Fatalf("invalid revise error = %v", err)
+	}
+	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {
+		t.Fatalf("generation after rollback = %d, %v", generation, err)
+	}
+	noop := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "confirm", Reason: "already active"}
+	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("p3-generation-noop", "/v1/memories/{memory_id}/state", noop), memory.MemoryID, noop); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {
+		t.Fatalf("generation after no-op = %d, %v", generation, err)
 	}
 }
 

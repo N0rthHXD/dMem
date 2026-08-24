@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mattn/go-sqlite3"
 )
@@ -80,7 +81,7 @@ func Open(ctx context.Context, path string, options Options) (*Store, error) {
 		return nil, fmt.Errorf("SQLite integrity check failed: %w", err)
 	}
 
-	reader, err := sql.Open(driverName, dsn)
+	reader, err := sql.Open(driverName, databaseReadDSN(path))
 	if err != nil {
 		writer.Close()
 		return nil, fmt.Errorf("open SQLite reader: %w", err)
@@ -117,7 +118,7 @@ func checkCompatibility(ctx context.Context, path string) error {
 		return fmt.Errorf("open database for compatibility check: %w", err)
 	}
 	defer db.Close()
-	return verifySchema(ctx, db)
+	return ValidateExactSchema(ctx, db)
 }
 
 func verifySchema(ctx context.Context, db *sql.DB) error {
@@ -133,7 +134,111 @@ func verifySchema(ctx context.Context, db *sql.DB) error {
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM schema_metadata").Scan(&rows); err != nil || rows != 1 {
 		return fmt.Errorf("%w: schema metadata must contain exactly one row", ErrIncompatibleSchema)
 	}
+	for _, table := range []string{
+		"aggregate_descriptors",
+		"aggregate_freshness",
+		"aggregate_proposal_inputs",
+		"aggregate_proposal_reviews",
+		"aggregate_proposals",
+		"candidate_evidence",
+		"candidate_related_memories",
+		"candidate_reviews",
+		"candidates",
+		"conflict_case_participants",
+		"conflict_case_relations",
+		"conflict_cases",
+		"conflict_resolution_events",
+		"conflict_resolution_result_refs",
+		"corpus_metadata",
+		"entities",
+		"entity_alias_events",
+		"entity_aliases",
+		"entity_events",
+		"entity_index_metadata",
+		"entity_mentions",
+		"entity_merge_proposals",
+		"entity_proposal_reviews",
+		"entity_proposals",
+		"evolution_proposal_evidence",
+		"evolution_proposal_reviews",
+		"evolution_proposal_targets",
+		"evolution_proposals",
+		"evolution_result_refs",
+		"export_operations",
+		"feedback_aggregate_metadata",
+		"feedback_aggregates",
+		"feedback_events",
+		"import_checkpoints",
+		"import_object_mappings",
+		"import_operations",
+		"import_sources",
+		"import_space_mappings",
+		"imported_provenance",
+		"memory_embeddings",
+		"memory_relations",
+		"relation_evidence",
+		"relation_index_metadata",
+		"relation_proposal_reviews",
+		"relation_proposals",
+		"relation_state_events",
+		"semantic_index_metadata",
+	} {
+		var name string
+		if err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil {
+			return fmt.Errorf("%w: required table %s is missing", ErrIncompatibleSchema, table)
+		}
+	}
 	return nil
+}
+
+// ValidateExactSchema requires the database catalog to match the current initialization schema.
+func ValidateExactSchema(ctx context.Context, db *sql.DB) error {
+	if err := verifySchema(ctx, db); err != nil {
+		return err
+	}
+	expected, err := sql.Open(driverName, ":memory:")
+	if err != nil {
+		return fmt.Errorf("%w: initialize expected catalog", ErrIncompatibleSchema)
+	}
+	defer expected.Close()
+	expected.SetMaxOpenConns(1)
+	if _, err := expected.ExecContext(ctx, schemaV1); err != nil {
+		return fmt.Errorf("%w: initialize expected catalog", ErrIncompatibleSchema)
+	}
+	want, err := readSchemaCatalog(ctx, expected)
+	if err != nil {
+		return fmt.Errorf("%w: read expected catalog", ErrIncompatibleSchema)
+	}
+	got, err := readSchemaCatalog(ctx, db)
+	if err != nil {
+		return fmt.Errorf("%w: read database catalog", ErrIncompatibleSchema)
+	}
+	if len(got) != len(want) {
+		return fmt.Errorf("%w: database catalog differs", ErrIncompatibleSchema)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			return fmt.Errorf("%w: database catalog differs", ErrIncompatibleSchema)
+		}
+	}
+	return nil
+}
+
+func readSchemaCatalog(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT type || char(0) || name || char(0) || tbl_name || char(0) || coalesce(sql, '') FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var catalog []string
+	for rows.Next() {
+		var entry string
+		if err := rows.Scan(&entry); err != nil {
+			return nil, err
+		}
+		catalog = append(catalog, entry)
+	}
+	return catalog, rows.Err()
 }
 
 func quickCheck(ctx context.Context, db *sql.DB) error {
@@ -158,6 +263,10 @@ func databaseDSN(path string) string {
 	return "file:" + url.PathEscape(path) + "?_txlock=immediate"
 }
 
+func databaseReadDSN(path string) string {
+	return "file:" + url.PathEscape(path) + "?_txlock=deferred"
+}
+
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	var version int
 	err := s.reader.QueryRowContext(ctx, "SELECT schema_version FROM schema_metadata WHERE singleton = 1").Scan(&version)
@@ -168,6 +277,66 @@ func (s *Store) IndexState(ctx context.Context) (string, error) {
 	var state string
 	err := s.reader.QueryRowContext(ctx, "SELECT state FROM index_metadata WHERE index_name = 'memory_fts'").Scan(&state)
 	return state, err
+}
+
+// OnlineBackup writes a consistent snapshot of the store using SQLite's backup API.
+func (s *Store) OnlineBackup(ctx context.Context, destination string) error {
+	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	destinationDB, err := sql.Open("sqlite3", "file:"+url.PathEscape(destination)+"?mode=rwc")
+	if err != nil {
+		return err
+	}
+	destinationDB.SetMaxOpenConns(1)
+	defer destinationDB.Close()
+
+	sourceConn, err := s.writer.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer sourceConn.Close()
+	destinationConn, err := destinationDB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer destinationConn.Close()
+
+	return sourceConn.Raw(func(sourceDriver any) error {
+		source, ok := sourceDriver.(*sqlite3.SQLiteConn)
+		if !ok {
+			return errors.New("unexpected SQLite source connection")
+		}
+		return destinationConn.Raw(func(destinationDriver any) error {
+			destination, ok := destinationDriver.(*sqlite3.SQLiteConn)
+			if !ok {
+				return errors.New("unexpected SQLite destination connection")
+			}
+			backup, err := destination.Backup("main", source, "main")
+			if err != nil {
+				return err
+			}
+			defer backup.Finish()
+			for {
+				done, err := backup.Step(256)
+				if err != nil {
+					return err
+				}
+				if done {
+					return backup.Finish()
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Millisecond):
+				}
+			}
+		})
+	})
 }
 
 func (s *Store) Close() error {

@@ -22,7 +22,7 @@ Ports
 
 SQLite repositories
   ├─ raw events / jobs / memories（现有权威数据）
-  ├─ candidates / reviews / migrations（新增权威数据）
+  ├─ candidates / reviews（新增权威数据）
   └─ embedding metadata / index metadata（新增派生数据元数据）
 
 Derived indexes
@@ -162,4 +162,4 @@ Processor 不可用不影响 ingest、手工 memory 和 keyword search。Semanti
 - 同一 candidate 只能从 pending 转为 confirmed 或 rejected；并发审核只有一个成功。
 - confirm 失败不得留下无 memory 的 confirmed candidate，或无 confirmed candidate 的 processor-created memory。
 - 索引切换只在新版本构建和验证完成后发生。
-- backup 与 migration 使用 data directory 单实例锁及维护状态，不能与 restore 并发写入。
+- backup 与 restore 使用 data directory 单实例锁及维护状态，不能并发写入。

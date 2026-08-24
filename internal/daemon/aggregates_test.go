@@ -1,0 +1,125 @@
+package daemon
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"testing"
+
+	"github.com/N0rthHXD/dMem/internal/api"
+	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/jobs"
+)
+
+func TestAggregateDaemonBuildConfirmProvenanceStaleAndHealth(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ProcessingVersion = "aggregate-v1"
+	cfg.ProcessingProvider.EgressPolicyVersion = "aggregate-policy-v1"
+	provider := &fakeAggregateProvider{result: domain.AggregateProviderResult{Content: "scene output", Sensitivity: "normal", ProviderIdentity: "fake/local", ModelIdentity: "fake-v1"}}
+	d, err := startService(context.Background(), cfg, jobs.NoopProcessor{}, provider, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(context.Background())
+	client := unixClient(cfg.Endpoint)
+	space := createSpace(t, client, "aggregate-space", map[string]any{"space_type": "user", "external_id": "aggregate", "display_name": "Aggregate"})
+	response := requestJSON(t, client, http.MethodPost, "/v1/events", "aggregate-event", map[string]any{"space_id": space.SpaceID, "source_type": "manual", "source_name": "test", "occurred_at": "2026-08-25T00:00:00Z", "content": map[string]any{"kind": "text", "media_type": "text/plain", "text": "Alpha and Beta"}})
+	var event domain.IngestResponse
+	decodeResponse(t, response, &event)
+	a, _ := createMemory(t, client, "aggregate-a", memoryCreateBody(space.SpaceID, event.EventID, "Alpha"))
+	b, _ := createMemory(t, client, "aggregate-b", memoryCreateBody(space.SpaceID, event.EventID, "Beta"))
+	build := map[string]any{"space_id": space.SpaceID, "aggregate_kind": "scene", "input_revision_ids": []string{b.CurrentRevision.RevisionID, a.CurrentRevision.RevisionID}}
+	response = requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals", "aggregate-build", build)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("build status=%d", response.StatusCode)
+	}
+	var proposal domain.AggregateProposal
+	decodeResponse(t, response, &proposal)
+	if len(provider.calls) != 1 || proposal.ProviderIdentity == nil || proposal.ModelIdentity == nil || proposal.InputFingerprint == "" {
+		t.Fatalf("proposal=%+v calls=%+v", proposal, provider.calls)
+	}
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregate-proposals?space_id="+url.QueryEscape(space.SpaceID), "", nil)
+	var proposals domain.AggregateProposalPage
+	decodeResponse(t, response, &proposals)
+	if len(proposals.Items) != 1 {
+		t.Fatalf("proposals=%+v", proposals)
+	}
+	response = requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals/"+proposal.ProposalID+"/confirm", "aggregate-confirm", map[string]any{"reason_code": "confirmed"})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("confirm status=%d", response.StatusCode)
+	}
+	decodeResponse(t, response, &proposal)
+	if proposal.ResultMemoryID == nil {
+		t.Fatalf("confirmed=%+v", proposal)
+	}
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates?space_id="+url.QueryEscape(space.SpaceID), "", nil)
+	var aggregates domain.AggregatePage
+	decodeResponse(t, response, &aggregates)
+	if len(aggregates.Items) != 1 || len(aggregates.Items[0].Provenance) != 2 || aggregates.Items[0].AggregateStale {
+		t.Fatalf("aggregates=%+v", aggregates)
+	}
+	aggregateID := aggregates.Items[0].AggregateID
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates/"+aggregateID+"/provenance", "", nil)
+	var provenance []domain.AggregateProvenance
+	decodeResponse(t, response, &provenance)
+	if len(provenance) != 2 {
+		t.Fatalf("provenance=%+v", provenance)
+	}
+	revise := memoryReviseBody(a.CurrentRevision.RevisionID, event.EventID, "Alpha changed")
+	response = requestJSON(t, client, http.MethodPatch, "/v1/memories/"+a.MemoryID, "aggregate-input-revise", revise)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("revise status=%d", response.StatusCode)
+	}
+	response.Body.Close()
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates/"+aggregateID, "", nil)
+	var result domain.Aggregate
+	decodeResponse(t, response, &result)
+	if !result.AggregateStale || len(result.StaleReasons) == 0 {
+		t.Fatalf("stale aggregate=%+v", result)
+	}
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates?space_id="+url.QueryEscape(space.SpaceID)+"&exclude_stale=true", "", nil)
+	decodeResponse(t, response, &aggregates)
+	if len(aggregates.Items) != 0 {
+		t.Fatalf("excluded stale=%+v", aggregates)
+	}
+	response = requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
+	var health api.Health
+	decodeResponse(t, response, &health)
+	if health.AggregateState != "stale" || health.AggregateStaleCount != 1 || health.AggregatePendingRebuilds != 1 {
+		t.Fatalf("health=%+v", health)
+	}
+}
+
+func TestP3CONTRACT004AggregateOfflineAndP3AGG007ProfileUnsupported(t *testing.T) {
+	cfg := testConfig(t)
+	d, err := StartStaging(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(context.Background())
+	client := unixClient(cfg.Endpoint)
+	space := createSpace(t, client, "aggregate-profile-space", map[string]any{"space_type": "user", "external_id": "aggregate-profile", "display_name": "Aggregate Profile"})
+	response := requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals", "aggregate-offline", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "scene", "input_revision_ids": []string{"00000000-0000-4000-8000-000000000001"}})
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("P3-CONTRACT-004 offline aggregate status=%d", response.StatusCode)
+	}
+	var apiError api.Error
+	decodeResponse(t, response, &apiError)
+	if apiError.ErrorCode != "unsupported" {
+		t.Fatalf("P3-CONTRACT-004 offline aggregate error=%+v", apiError)
+	}
+	response = requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals", "aggregate-profile", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "profile", "input_revision_ids": []string{"00000000-0000-4000-8000-000000000001"}})
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("profile status=%d", response.StatusCode)
+	}
+	decodeResponse(t, response, &apiError)
+	if apiError.ErrorCode != "unsupported" {
+		t.Fatalf("profile error=%+v", apiError)
+	}
+	response = requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
+	var health api.Health
+	decodeResponse(t, response, &health)
+	if health.AggregateState != "ready" || health.AggregateFreshCount != 0 || health.AggregateStaleCount != 0 || health.AggregatePendingRebuilds != 0 {
+		t.Fatalf("aggregate health=%+v", health)
+	}
+}

@@ -2,11 +2,87 @@ openapi: 3.1.0
 info:
   title: dMeM Local API
   version: 1.0.0
-  description: Phase-one HTTP/JSON API served over a Unix Domain Socket.
+  description: Phase-three HTTP/JSON API served over a Unix Domain Socket. Logical portability remains an offline service per ADR 0029; filesystem paths are not accepted by this API.
+x-traceability: [P3-CONTRACT-002]
 servers:
   - url: http://localhost/v1
     description: Logical URL; transport is a Unix Domain Socket.
 paths:
+  /remember:
+    post:
+      operationId: remember
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RememberRequest' }
+      responses:
+        '201':
+          description: Memory and its source event were durably created
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RememberResponse' }
+  /recall:
+    post:
+      operationId: recall
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecallRequest' }
+      responses:
+        '200':
+          description: Agent-ready memory search results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResponse' }
+  /memories/{memory_id}/feedback:
+    post:
+      operationId: feedbackMemory
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/memoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MemoryFeedbackRequest' }
+      responses:
+        '201':
+          description: Feedback attached to the current memory revision
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedbackAppendResponse' }
+  /memories/{memory_id}/forget:
+    post:
+      operationId: forgetMemory
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/memoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgetRequest' }
+      responses:
+        '200':
+          description: Memory was logically deleted and removed from recall
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ForgetResponse' }
   /health:
     get:
       operationId: getHealth
@@ -45,6 +121,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SpacePage' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /spaces/{space_id}:
     get:
       operationId: getSpace
@@ -54,6 +131,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SpaceFound' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /events:
     post:
       operationId: ingestEvent
@@ -94,6 +172,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EventPage' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /events/{event_id}:
     get:
       operationId: getEvent
@@ -107,6 +186,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RawEvent' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /events/{event_id}/replay:
     post:
       operationId: replayEvent
@@ -116,7 +196,7 @@ paths:
         - $ref: '#/components/parameters/eventId'
       responses:
         '202':
-          description: Processing job accepted
+          description: Processing job accepted. The daemon's current processing version selects identity; replay after a configured version change creates a distinct job and result.
           headers:
             Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
           content:
@@ -124,6 +204,7 @@ paths:
               schema: { $ref: '#/components/schemas/JobReference' }
         '409': { $ref: '#/components/responses/Conflict' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /memories:
     post:
       operationId: createMemory
@@ -161,6 +242,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MemoryPage' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /memories/{memory_id}:
     get:
       operationId: getMemory
@@ -174,6 +256,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Memory' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
     patch:
       operationId: reviseMemory
       parameters:
@@ -196,6 +279,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '400': { $ref: '#/components/responses/InvalidJSON' }
         '422': { $ref: '#/components/responses/InvalidRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /memories/{memory_id}/revisions:
     get:
       operationId: listMemoryRevisions
@@ -210,6 +294,8 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/MemoryRevision' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /memories/{memory_id}/state:
     post:
       operationId: changeMemoryState
@@ -232,6 +318,8 @@ paths:
               schema: { $ref: '#/components/schemas/Memory' }
         '409': { $ref: '#/components/responses/Conflict' }
         '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /memories/{memory_id}/state-events:
     get:
       operationId: listMemoryStateEvents
@@ -246,6 +334,91 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/MemoryStateEvent' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /candidates:
+    get:
+      operationId: listCandidates
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: review_state, in: query, schema: { $ref: '#/components/schemas/CandidateReviewState' } }
+        - { name: memory_type, in: query, schema: { $ref: '#/components/schemas/MemoryType' } }
+        - { name: processor_identity, in: query, schema: { type: string } }
+        - { name: processing_version, in: query, schema: { type: string } }
+        - { name: created_from, in: query, schema: { type: string, format: date-time } }
+        - { name: created_until, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Candidate page ordered by created_at DESC, candidate_id DESC
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CandidatePage' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /candidates/{candidate_id}:
+    get:
+      operationId: getCandidate
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/candidateId'
+      responses:
+        '200':
+          description: Candidate, evidence, related suggestions, and review history
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Candidate' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /candidates/{candidate_id}/confirm:
+    post:
+      operationId: confirmCandidate
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/candidateId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewCandidateRequest' }
+      responses:
+        '201':
+          description: Candidate confirmed and active memory created atomically
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Memory' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /candidates/{candidate_id}/reject:
+    post:
+      operationId: rejectCandidate
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/candidateId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewCandidateRequest' }
+      responses:
+        '200':
+          description: Candidate rejected without creating a memory
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Candidate' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /search:
     post:
       operationId: searchMemories
@@ -264,6 +437,11 @@ paths:
               schema: { $ref: '#/components/schemas/SearchResponse' }
         '422': { $ref: '#/components/responses/InvalidRequest' }
         '400': { $ref: '#/components/responses/InvalidJSON' }
+        '503':
+          description: Requested search index is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /jobs/{job_id}:
     get:
       operationId: getJob
@@ -277,6 +455,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Job' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /jobs/{job_id}/cancel:
     post:
       operationId: cancelJob
@@ -293,6 +472,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Job' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /jobs/{job_id}/retry:
     post:
       operationId: retryJob
@@ -309,6 +490,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Job' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
   /indexes/fts/rebuild:
     post:
       operationId: rebuildFts
@@ -326,6 +509,411 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/InvalidRequest' }
         '507': { $ref: '#/components/responses/ResourceExhausted' }
+  /indexes/semantic/rebuild:
+    post:
+      operationId: rebuildSemantic
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/idempotencyKey'
+      responses:
+        '202':
+          description: Semantic rebuild job accepted
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobReference' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '507': { $ref: '#/components/responses/ResourceExhausted' }
+  /entity-proposals:
+    post:
+      operationId: createEntityProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateEntityProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/EntityProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    get:
+      operationId: listEntityProposals
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: review_state, in: query, schema: { $ref: '#/components/schemas/ReviewState' } }
+        - { name: proposal_kind, in: query, schema: { $ref: '#/components/schemas/EntityProposalKind' } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Entity proposal page, content: { application/json: { schema: { $ref: '#/components/schemas/EntityProposalPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /entity-proposals/{proposal_id}:
+    get:
+      operationId: getEntityProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/proposalId' }]
+      responses:
+        '200': { description: Entity proposal, content: { application/json: { schema: { $ref: '#/components/schemas/EntityProposal' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /entity-proposals/{proposal_id}/confirm:
+    post:
+      operationId: confirmEntityProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/EntityProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /entity-proposals/{proposal_id}/reject:
+    post:
+      operationId: rejectEntityProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '200': { $ref: '#/components/responses/EntityProposalOK' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /entities:
+    get:
+      operationId: listEntities
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: entity_type, in: query, schema: { type: string } }
+        - { name: include_mentions, in: query, schema: { type: boolean, default: false } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Entity page, content: { application/json: { schema: { $ref: '#/components/schemas/EntityPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /entities/{entity_id}:
+    get:
+      operationId: getEntity
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/entityId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: include_mentions, in: query, schema: { type: boolean, default: true } }
+      responses:
+        '200': { description: Entity, content: { application/json: { schema: { $ref: '#/components/schemas/Entity' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /entities/{entity_id}/merge:
+    post:
+      operationId: mergeEntity
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/entityId' }]
+      responses:
+        '501': { $ref: '#/components/responses/UnsupportedOperation' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /indexes/entities/rebuild:
+    post:
+      operationId: rebuildEntities
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      responses:
+        '202': { $ref: '#/components/responses/RebuildAccepted' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '507': { $ref: '#/components/responses/ResourceExhausted' }
+  /relation-proposals:
+    post:
+      operationId: createRelationProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateRelationProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/RelationProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    get:
+      operationId: listRelationProposals
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: review_state, in: query, schema: { $ref: '#/components/schemas/ReviewState' } }
+        - { name: relation_type, in: query, schema: { $ref: '#/components/schemas/RelationType' } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Relation proposal page, content: { application/json: { schema: { $ref: '#/components/schemas/RelationProposalPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /relation-proposals/{proposal_id}:
+    get:
+      operationId: getRelationProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/proposalId' }]
+      responses:
+        '200': { description: Relation proposal, content: { application/json: { schema: { $ref: '#/components/schemas/RelationProposal' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /relation-proposals/{proposal_id}/confirm:
+    post:
+      operationId: confirmRelationProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/RelationProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /relation-proposals/{proposal_id}/reject:
+    post:
+      operationId: rejectRelationProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '200': { $ref: '#/components/responses/RelationProposalOK' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /relations:
+    get:
+      operationId: listRelations
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: state, in: query, schema: { type: string, enum: [active, dismissed] } }
+        - { name: relation_type, in: query, schema: { $ref: '#/components/schemas/RelationType' } }
+        - { name: type, in: query, deprecated: true, schema: { $ref: '#/components/schemas/RelationType' } }
+        - { name: memory_id, in: query, schema: { type: string, format: uuid } }
+        - { name: revision_id, in: query, schema: { type: string, format: uuid } }
+        - { name: direction, in: query, schema: { type: string, enum: [incoming, outgoing, both] } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: One-hop relation page, content: { application/json: { schema: { $ref: '#/components/schemas/RelationPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /relations/{relation_id}:
+    get:
+      operationId: getRelation
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - $ref: '#/components/parameters/relationId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Relation, content: { application/json: { schema: { $ref: '#/components/schemas/Relation' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /indexes/relations/rebuild:
+    post:
+      operationId: rebuildRelations
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      responses:
+        '202': { $ref: '#/components/responses/RebuildAccepted' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '507': { $ref: '#/components/responses/ResourceExhausted' }
+  /evolution-proposals:
+    post:
+      operationId: createEvolutionProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateEvolutionProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/EvolutionProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    get:
+      operationId: listEvolutionProposals
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: review_state, in: query, schema: { $ref: '#/components/schemas/ReviewState' } }
+        - { name: action, in: query, schema: { $ref: '#/components/schemas/EvolutionAction' } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Evolution proposal page, content: { application/json: { schema: { $ref: '#/components/schemas/EvolutionProposalPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /evolution-proposals/{proposal_id}:
+    get:
+      operationId: getEvolutionProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/proposalId' }]
+      responses:
+        '200': { description: Evolution proposal, content: { application/json: { schema: { $ref: '#/components/schemas/EvolutionProposal' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /evolution-proposals/{proposal_id}/confirm:
+    post:
+      operationId: confirmEvolutionProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewEvolutionProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/EvolutionProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /evolution-proposals/{proposal_id}/reject:
+    post:
+      operationId: rejectEvolutionProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewEvolutionProposalRequest' } } } }
+      responses:
+        '200': { $ref: '#/components/responses/EvolutionProposalOK' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /conflict-cases:
+    get:
+      operationId: listConflictCases
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: state, in: query, schema: { $ref: '#/components/schemas/ConflictState' } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Conflict case page, content: { application/json: { schema: { $ref: '#/components/schemas/ConflictCasePage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /conflict-cases/{case_id}:
+    get:
+      operationId: getConflictCase
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/caseId' }]
+      responses:
+        '200': { description: Conflict case, content: { application/json: { schema: { $ref: '#/components/schemas/ConflictCase' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /conflict-cases/{case_id}/resolve:
+    post:
+      operationId: resolveConflictCase
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/caseId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ResolveConflictRequest' } } } }
+      responses:
+        '200': { $ref: '#/components/responses/ConflictCaseOK' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /feedback:
+    post:
+      operationId: appendFeedback
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AppendFeedbackRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/FeedbackCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    get:
+      operationId: listFeedback
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: memory_id, in: query, schema: { type: string, format: uuid } }
+        - { name: revision_id, in: query, schema: { type: string, format: uuid } }
+        - { name: feedback_type, in: query, schema: { $ref: '#/components/schemas/FeedbackType' } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Feedback page, content: { application/json: { schema: { $ref: '#/components/schemas/FeedbackPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /feedback/aggregates/health:
+    get:
+      operationId: getFeedbackAggregateHealth
+      parameters: [{ $ref: '#/components/parameters/callerId' }]
+      responses:
+        '200': { description: Feedback aggregate health, content: { application/json: { schema: { $ref: '#/components/schemas/FeedbackAggregateHealth' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /feedback/aggregates/rebuild:
+    post:
+      operationId: rebuildFeedbackAggregates
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      responses:
+        '202': { $ref: '#/components/responses/RebuildAccepted' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '507': { $ref: '#/components/responses/ResourceExhausted' }
+  /aggregate-proposals:
+    post:
+      operationId: createAggregateProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateAggregateProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/AggregateProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    get:
+      operationId: listAggregateProposals
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: review_state, in: query, schema: { $ref: '#/components/schemas/ReviewState' } }
+        - { name: aggregate_kind, in: query, schema: { $ref: '#/components/schemas/AggregateKind' } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Aggregate proposal page, content: { application/json: { schema: { $ref: '#/components/schemas/AggregateProposalPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /aggregate-proposals/{proposal_id}:
+    get:
+      operationId: getAggregateProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/proposalId' }]
+      responses:
+        '200': { description: Aggregate proposal, content: { application/json: { schema: { $ref: '#/components/schemas/AggregateProposal' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /aggregate-proposals/{proposal_id}/confirm:
+    post:
+      operationId: confirmAggregateProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/AggregateProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /aggregate-proposals/{proposal_id}/reject:
+    post:
+      operationId: rejectAggregateProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/proposalId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '200': { $ref: '#/components/responses/AggregateProposalOK' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /aggregates:
+    get:
+      operationId: listAggregates
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: aggregate_kind, in: query, schema: { $ref: '#/components/schemas/AggregateKind' } }
+        - { name: freshness, in: query, schema: { type: string, enum: [fresh, stale] } }
+        - { name: exclude_stale, in: query, schema: { type: boolean, default: false } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Aggregate page, content: { application/json: { schema: { $ref: '#/components/schemas/AggregatePage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /aggregates/{aggregate_id}:
+    get:
+      operationId: getAggregate
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/aggregateId' }]
+      responses:
+        '200': { description: Aggregate, content: { application/json: { schema: { $ref: '#/components/schemas/Aggregate' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /aggregates/{aggregate_id}/provenance:
+    get:
+      operationId: getAggregateProvenance
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/aggregateId' }]
+      responses:
+        '200': { description: Aggregate provenance, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AggregateProvenance' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
 components:
   headers:
     IdempotentReplay:
@@ -345,17 +933,98 @@ components:
     spaceId: { name: space_id, in: path, required: true, schema: { type: string, format: uuid } }
     eventId: { name: event_id, in: path, required: true, schema: { type: string, format: uuid } }
     memoryId: { name: memory_id, in: path, required: true, schema: { type: string, format: uuid } }
+    candidateId: { name: candidate_id, in: path, required: true, schema: { type: string, format: uuid } }
     jobId: { name: job_id, in: path, required: true, schema: { type: string, format: uuid } }
+    proposalId: { name: proposal_id, in: path, required: true, schema: { type: string, format: uuid } }
+    entityId: { name: entity_id, in: path, required: true, schema: { type: string, format: uuid } }
+    relationId: { name: relation_id, in: path, required: true, schema: { type: string, format: uuid } }
+    caseId: { name: case_id, in: path, required: true, schema: { type: string, format: uuid } }
+    aggregateId: { name: aggregate_id, in: path, required: true, schema: { type: string, format: uuid } }
+    limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    cursor: { name: cursor, in: query, schema: { type: string } }
   schemas:
+    RememberRequest:
+      type: object
+      additionalProperties: false
+      required: [space_id, content]
+      properties:
+        space_id: { type: string, format: uuid }
+        content: { type: string, minLength: 1 }
+        memory_type: { $ref: '#/components/schemas/MemoryType' }
+        sensitivity: { type: string, enum: [normal, sensitive], default: normal }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        source_name: { type: string, minLength: 1, maxLength: 128 }
+        source_event_id: { type: [string, 'null'], maxLength: 256 }
+        occurred_at: { type: string, format: date-time }
+        metadata: { type: object, additionalProperties: true }
+        reason: { type: string, minLength: 1, maxLength: 1024 }
+    RememberResponse:
+      type: object
+      additionalProperties: false
+      required: [memory, event_id]
+      properties:
+        memory: { $ref: '#/components/schemas/Memory' }
+        event_id: { type: string, format: uuid }
+    RecallRequest:
+      type: object
+      additionalProperties: false
+      required: [query, space_ids]
+      properties:
+        query: { type: string, minLength: 1 }
+        space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
+        include_ancestors: { type: boolean, default: true }
+        memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }
+        reference_time: { type: string, format: date-time }
+        mode: { type: string, enum: [keyword, semantic, hybrid], default: hybrid }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        max_chars: { type: integer, minimum: 1, maximum: 100000, default: 12000 }
+        include_evidence: { type: boolean, default: false }
+        cursor: { type: string }
+        exclude_stale_aggregates: { type: boolean, default: false }
+    MemoryFeedbackRequest:
+      type: object
+      additionalProperties: false
+      required: [space_id, type, reason_code]
+      properties:
+        space_id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/FeedbackType' }
+        reason_code: { $ref: '#/components/schemas/FeedbackReason' }
+        note: { type: [string, 'null'], maxLength: 2000 }
+        search: { $ref: '#/components/schemas/FeedbackSearchContext' }
+        create_proposal: { type: boolean, default: false }
+        source_event_id: { type: string, format: uuid }
+        proposed_content: { type: string, maxLength: 100000 }
+    ForgetRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 1024 }
+    ForgetResponse:
+      type: object
+      additionalProperties: false
+      required: [memory]
+      properties:
+        memory: { $ref: '#/components/schemas/Memory' }
     SpaceType:
       type: string
       enum: [user, agent, application, project, task, session]
     MemoryState:
       type: string
       enum: [candidate, active, contested, archived, expired, retracted, deleted]
+    StoredMemoryState:
+      type: string
+      enum: [candidate, active, contested, archived, expired, retracted, deleted, superseded]
     MemoryType:
       type: string
       enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience]
+    StoredMemoryType:
+      type: string
+      enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience, aggregate]
+    CandidateReviewState:
+      type: string
+      enum: [pending, confirmed, rejected]
     JobStatus:
       type: string
       enum: [pending, waiting, running, retrying, succeeded, failed, cancelled, expired]
@@ -513,7 +1182,7 @@ components:
         memory_id: { type: string, format: uuid }
         revision_id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
-        from_state: { oneOf: [{ $ref: '#/components/schemas/MemoryState' }, { type: 'null' }] }
+        from_state: { type: [string, 'null'], enum: [candidate, active, contested, archived, expired, retracted, deleted, null] }
         to_state: { $ref: '#/components/schemas/MemoryState' }
         from_frozen: { type: [boolean, 'null'] }
         to_frozen: { type: boolean }
@@ -530,6 +1199,7 @@ components:
         content: { type: string }
         valid_from: { type: [string, 'null'], format: date-time }
         valid_until: { type: [string, 'null'], format: date-time }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
         evidence: { type: array, items: { $ref: '#/components/schemas/EvidenceInput' } }
@@ -539,19 +1209,630 @@ components:
       properties:
         memory_id: { type: string, format: uuid }
         space_id: { type: string, format: uuid }
-        memory_type: { $ref: '#/components/schemas/MemoryType' }
-        current_state: { $ref: '#/components/schemas/MemoryState' }
+        memory_type: { $ref: '#/components/schemas/StoredMemoryType' }
+        current_state: { $ref: '#/components/schemas/StoredMemoryState' }
         frozen: { type: boolean }
         sensitivity: { type: string, enum: [normal, sensitive] }
         current_revision: { $ref: '#/components/schemas/MemoryRevision' }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        conflict_refs: { type: array, items: { $ref: '#/components/schemas/ConflictRef' } }
+        aggregate_stale: { type: boolean }
+        aggregate_stale_reasons: { type: array, items: { type: string } }
+        aggregate_provenance_refs: { type: array, items: { type: string, format: uuid } }
     MemoryPage:
       type: object
       required: [items]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Memory' } }
         next_cursor: { type: [string, 'null'] }
+    ReviewCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        reason_code: { type: string, minLength: 1, maxLength: 128 }
+        note: { type: [string, 'null'], maxLength: 1024 }
+    CandidateReview:
+      type: object
+      additionalProperties: false
+      required: [review_id, from_state, to_state, reason_code, reviewer_id, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        from_state: { type: string, enum: [pending] }
+        to_state: { type: string, enum: [confirmed, rejected] }
+        reason_code: { type: string }
+        note: { type: [string, 'null'] }
+        reviewer_id: { type: string }
+        memory_id: { type: [string, 'null'], format: uuid }
+        revision_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+    Candidate:
+      type: object
+      additionalProperties: false
+      required: [candidate_id, event_id, space_id, memory_type, content, sensitivity, suggestion_kind, processor_identity, processing_version, specification_hash, review_state, evidence, related_memory_ids, reviews, created_at]
+      properties:
+        candidate_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        memory_type: { $ref: '#/components/schemas/MemoryType' }
+        content: { type: string }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        sensitivity: { type: string, enum: [normal, sensitive] }
+        suggestion_kind: { type: string, enum: [new, duplicate, supplement, replacement, conflict] }
+        processor_identity: { type: string }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+        processing_version: { type: string }
+        specification_hash: { type: string }
+        review_state: { $ref: '#/components/schemas/CandidateReviewState' }
+        confirmed_memory_id: { type: [string, 'null'], format: uuid }
+        confirmed_revision_id: { type: [string, 'null'], format: uuid }
+        evidence: { type: array, items: { $ref: '#/components/schemas/EvidenceInput' } }
+        related_memory_ids: { type: array, items: { type: string, format: uuid } }
+        reviews: { type: array, items: { $ref: '#/components/schemas/CandidateReview' } }
+        created_at: { type: string, format: date-time }
+        reviewed_at: { type: [string, 'null'], format: date-time }
+    CandidatePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Candidate' } }
+        next_cursor: { type: [string, 'null'] }
+    ReviewState: { type: string, enum: [pending, confirmed, rejected] }
+    Sensitivity: { type: string, enum: [normal, sensitive] }
+    EntityProposalKind: { type: string, enum: [entity, alias, mention] }
+    RelationType: { type: string, enum: [supports, contradicts, supersedes, derived_from, related_to] }
+    EvolutionAction: { type: string, enum: [duplicate, supplement, replacement, conflict] }
+    ConflictState: { type: string, enum: [open, resolved, dismissed] }
+    AggregateKind: { type: string, enum: [scene, topic, profile] }
+    ReviewProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        reason_code: { type: string, minLength: 1, maxLength: 128 }
+        note: { type: [string, 'null'], maxLength: 1024 }
+    CreateEntityProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [event_id, space_id, proposal_kind, processor_identity, processing_version]
+      properties:
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        proposal_kind: { $ref: '#/components/schemas/EntityProposalKind' }
+        entity_id: { type: [string, 'null'], format: uuid }
+        entity_type: { type: string }
+        canonical_name: { type: string }
+        alias: { type: string }
+        normalization_version: { type: string }
+        mention_memory_id: { type: [string, 'null'], format: uuid }
+        mention_revision_id: { type: [string, 'null'], format: uuid }
+        mention_event_id: { type: [string, 'null'], format: uuid }
+        start_offset: { type: [integer, 'null'], minimum: 0 }
+        end_offset: { type: [integer, 'null'], minimum: 0 }
+        mention_type: { type: string }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+        processor_identity: { type: string, minLength: 1 }
+        processing_version: { type: string, minLength: 1 }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+    EntityProposalReview:
+      type: object
+      additionalProperties: false
+      required: [review_id, from_state, to_state, reason_code, reviewer_id, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        from_state: { $ref: '#/components/schemas/ReviewState' }
+        to_state: { $ref: '#/components/schemas/ReviewState' }
+        reason_code: { type: string }
+        note: { type: [string, 'null'] }
+        reviewer_id: { type: string }
+        result_entity_id: { type: [string, 'null'], format: uuid }
+        result_canonical_alias_id: { type: [string, 'null'], format: uuid }
+        result_alias_id: { type: [string, 'null'], format: uuid }
+        result_mention_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+    EntityProposal:
+      type: object
+      additionalProperties: false
+      required: [proposal_id, event_id, space_id, proposal_kind, sensitivity, processor_identity, processing_version, specification_hash, review_state, created_at, reviews]
+      properties:
+        proposal_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        proposal_kind: { $ref: '#/components/schemas/EntityProposalKind' }
+        entity_id: { type: [string, 'null'], format: uuid }
+        entity_type: { type: [string, 'null'] }
+        canonical_name: { type: [string, 'null'] }
+        alias: { type: [string, 'null'] }
+        normalization_version: { type: [string, 'null'] }
+        mention_memory_id: { type: [string, 'null'], format: uuid }
+        mention_revision_id: { type: [string, 'null'], format: uuid }
+        mention_event_id: { type: [string, 'null'], format: uuid }
+        start_offset: { type: [integer, 'null'] }
+        end_offset: { type: [integer, 'null'] }
+        mention_type: { type: [string, 'null'] }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+        processor_identity: { type: string }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+        processing_version: { type: string }
+        specification_hash: { type: string }
+        review_state: { $ref: '#/components/schemas/ReviewState' }
+        result_entity_id: { type: [string, 'null'], format: uuid }
+        result_canonical_alias_id: { type: [string, 'null'], format: uuid }
+        result_alias_id: { type: [string, 'null'], format: uuid }
+        result_mention_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+        reviewed_at: { type: [string, 'null'], format: date-time }
+        reviews: { type: array, items: { $ref: '#/components/schemas/EntityProposalReview' } }
+    EntityProposalPage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/EntityProposal' } }, next_cursor: { type: [string, 'null'] } } }
+    EntityAlias:
+      type: object
+      additionalProperties: false
+      required: [alias_id, entity_id, alias, normalized_alias, normalization_version, source, state, created_by, created_at]
+      properties:
+        alias_id: { type: string, format: uuid }
+        entity_id: { type: string, format: uuid }
+        alias: { type: string }
+        normalized_alias: { type: string }
+        normalization_version: { type: string }
+        source: { type: string }
+        state: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+    EntityMention:
+      type: object
+      additionalProperties: false
+      required: [mention_id, entity_id, start_offset, end_offset, mention_type, source, created_by, processing_version, created_at]
+      properties:
+        mention_id: { type: string, format: uuid }
+        entity_id: { type: string, format: uuid }
+        memory_id: { type: [string, 'null'], format: uuid }
+        revision_id: { type: [string, 'null'], format: uuid }
+        event_id: { type: [string, 'null'], format: uuid }
+        start_offset: { type: integer }
+        end_offset: { type: integer }
+        mention_type: { type: string }
+        source: { type: string }
+        surface_text: { type: [string, 'null'] }
+        created_by: { type: string }
+        processing_version: { type: string }
+        created_at: { type: string, format: date-time }
+    Entity:
+      type: object
+      additionalProperties: false
+      required: [entity_id, space_id, entity_type, canonical_name, normalized_name, normalization_version, state, sensitivity, created_by, processing_version, created_at, updated_at, aliases]
+      properties:
+        entity_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        entity_type: { type: string }
+        canonical_name: { type: string }
+        normalized_name: { type: string }
+        normalization_version: { type: string }
+        state: { type: string }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+        created_by: { type: string }
+        processing_version: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        aliases: { type: array, items: { $ref: '#/components/schemas/EntityAlias' } }
+        mentions: { type: array, items: { $ref: '#/components/schemas/EntityMention' } }
+    EntityPage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Entity' } }, next_cursor: { type: [string, 'null'] } } }
+    RelationEvidence:
+      type: object
+      additionalProperties: false
+      required: [evidence_type]
+      properties:
+        evidence_id: { type: string, format: uuid }
+        evidence_type: { type: string }
+        event_id: { type: [string, 'null'], format: uuid }
+        memory_id: { type: [string, 'null'], format: uuid }
+        revision_id: { type: [string, 'null'], format: uuid }
+        start_offset: { type: [integer, 'null'] }
+        end_offset: { type: [integer, 'null'] }
+        note: { type: [string, 'null'] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+    CreateRelationProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [event_id, space_id, relation_type, source_memory_id, source_revision_id, target_memory_id, target_revision_id, evidence, processor_identity, processing_version]
+      properties:
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        relation_type: { $ref: '#/components/schemas/RelationType' }
+        source_memory_id: { type: string, format: uuid }
+        source_revision_id: { type: string, format: uuid }
+        target_memory_id: { type: string, format: uuid }
+        target_revision_id: { type: string, format: uuid }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RelationEvidence' } }
+        processor_identity: { type: string, minLength: 1 }
+        processing_version: { type: string, minLength: 1 }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+    RelationStateEvent:
+      type: object
+      additionalProperties: false
+      required: [state_event_id, operation_id, to_state, reason, created_by, created_at]
+      properties:
+        state_event_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        from_state: { type: [string, 'null'] }
+        to_state: { type: string }
+        reason: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+    Relation:
+      type: object
+      additionalProperties: false
+      required: [relation_id, space_id, relation_type, source_memory_id, source_revision_id, target_memory_id, target_revision_id, state, source, specification_hash, created_by, processing_version, created_at, updated_at, evidence, state_events]
+      properties:
+        relation_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        relation_type: { $ref: '#/components/schemas/RelationType' }
+        source_memory_id: { type: string, format: uuid }
+        source_revision_id: { type: string, format: uuid }
+        target_memory_id: { type: string, format: uuid }
+        target_revision_id: { type: string, format: uuid }
+        state: { type: string, enum: [active, dismissed] }
+        source: { type: string }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        specification_hash: { type: string }
+        created_by: { type: string }
+        processing_version: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RelationEvidence' } }
+        state_events: { type: array, items: { $ref: '#/components/schemas/RelationStateEvent' } }
+    RelationPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Relation' } }
+        next_cursor: { type: [string, 'null'] }
+        index_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
+        degraded: { type: boolean }
+    RelationProposalReview:
+      type: object
+      additionalProperties: false
+      required: [review_id, from_state, to_state, reason_code, reviewer_id, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        from_state: { $ref: '#/components/schemas/ReviewState' }
+        to_state: { $ref: '#/components/schemas/ReviewState' }
+        reason_code: { type: string }
+        note: { type: [string, 'null'] }
+        reviewer_id: { type: string }
+        relation_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+    RelationProposal:
+      type: object
+      additionalProperties: false
+      required: [proposal_id, event_id, space_id, relation_type, source_memory_id, source_revision_id, target_memory_id, target_revision_id, evidence, processor_identity, processing_version, specification_hash, review_state, created_at, reviews]
+      properties:
+        proposal_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        relation_type: { $ref: '#/components/schemas/RelationType' }
+        source_memory_id: { type: string, format: uuid }
+        source_revision_id: { type: string, format: uuid }
+        target_memory_id: { type: string, format: uuid }
+        target_revision_id: { type: string, format: uuid }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RelationEvidence' } }
+        processor_identity: { type: string }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+        processing_version: { type: string }
+        specification_hash: { type: string }
+        review_state: { $ref: '#/components/schemas/ReviewState' }
+        result_relation_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+        reviewed_at: { type: [string, 'null'], format: date-time }
+        reviews: { type: array, items: { $ref: '#/components/schemas/RelationProposalReview' } }
+    RelationProposalPage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/RelationProposal' } }, next_cursor: { type: [string, 'null'] } } }
+    EvolutionTarget:
+      type: object
+      additionalProperties: false
+      required: [memory_id, expected_revision_id]
+      properties:
+        memory_id: { type: string, format: uuid }
+        expected_revision_id: { type: string, format: uuid }
+    CreateEvolutionProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [event_id, space_id, action, sensitivity, processor_identity, processing_version, targets, evidence]
+      properties:
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        action: { $ref: '#/components/schemas/EvolutionAction' }
+        proposed_content: { type: [string, 'null'] }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        memory_type: { type: [string, 'null'], enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience, null] }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+        relation_specs: {}
+        mention_specs: {}
+        processor_identity: { type: string }
+        processing_version: { type: string }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+        targets: { type: array, items: { $ref: '#/components/schemas/EvolutionTarget' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RelationEvidence' } }
+    ReviewEvolutionProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        expected_targets: { type: array, items: { $ref: '#/components/schemas/EvolutionTarget' } }
+        replacement_mode: { type: [string, 'null'] }
+        supersede_targets: { type: boolean, default: false }
+        reason_code: { type: string, minLength: 1, maxLength: 128 }
+        note: { type: [string, 'null'], maxLength: 1024 }
+    EvolutionResultRef:
+      type: object
+      additionalProperties: false
+      required: [result_type, result_id]
+      properties:
+        result_type: { type: string, enum: [memory, revision, evidence, projection, relation, state_event, job, conflict_case] }
+        result_id: { type: string, format: uuid }
+    EvolutionReview:
+      type: object
+      additionalProperties: false
+      required: [review_id, from_state, to_state, reason_code, reviewer_id, created_at, results]
+      properties:
+        review_id: { type: string, format: uuid }
+        from_state: { $ref: '#/components/schemas/ReviewState' }
+        to_state: { $ref: '#/components/schemas/ReviewState' }
+        replacement_mode: { type: [string, 'null'] }
+        reason_code: { type: string }
+        note: { type: [string, 'null'] }
+        reviewer_id: { type: string }
+        created_at: { type: string, format: date-time }
+        results: { type: array, items: { $ref: '#/components/schemas/EvolutionResultRef' } }
+    EvolutionProposal:
+      type: object
+      additionalProperties: false
+      required: [proposal_id, event_id, space_id, action, sensitivity, relation_specs, mention_specs, processor_identity, processing_version, specification_hash, review_state, created_at, targets, evidence, reviews]
+      properties:
+        proposal_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        action: { $ref: '#/components/schemas/EvolutionAction' }
+        proposed_content: { type: [string, 'null'] }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        memory_type: { type: [string, 'null'] }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+        relation_specs: {}
+        mention_specs: {}
+        processor_identity: { type: string }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+        processing_version: { type: string }
+        specification_hash: { type: string }
+        review_state: { $ref: '#/components/schemas/ReviewState' }
+        created_at: { type: string, format: date-time }
+        reviewed_at: { type: [string, 'null'], format: date-time }
+        targets: { type: array, items: { $ref: '#/components/schemas/EvolutionTarget' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RelationEvidence' } }
+        reviews: { type: array, items: { $ref: '#/components/schemas/EvolutionReview' } }
+    EvolutionProposalPage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/EvolutionProposal' } }, next_cursor: { type: [string, 'null'] } } }
+    ConflictParticipant:
+      type: object
+      additionalProperties: false
+      required: [memory_id, revision_id]
+      properties:
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+    ConflictResolutionEvent:
+      type: object
+      additionalProperties: false
+      required: [resolution_event_id, resolution_type, from_state, to_state, reason, resolved_by, created_at, results]
+      properties:
+        resolution_event_id: { type: string, format: uuid }
+        resolution_type: { type: string, enum: [keep_both, dismiss, revise_one, supersede, reconcile] }
+        from_state: { $ref: '#/components/schemas/ConflictState' }
+        to_state: { $ref: '#/components/schemas/ConflictState' }
+        reason: { type: string }
+        resolved_by: { type: string }
+        created_at: { type: string, format: date-time }
+        results: { type: array, items: { $ref: '#/components/schemas/EvolutionResultRef' } }
+    ConflictCase:
+      type: object
+      additionalProperties: false
+      required: [case_id, space_id, state, opened_by, processing_version, created_at, participants, relations]
+      properties:
+        case_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        state: { $ref: '#/components/schemas/ConflictState' }
+        opened_by: { type: string }
+        processing_version: { type: string }
+        created_at: { type: string, format: date-time }
+        closed_at: { type: [string, 'null'], format: date-time }
+        participants: { type: array, items: { $ref: '#/components/schemas/ConflictParticipant' } }
+        relations: { type: array, items: { $ref: '#/components/schemas/Relation' } }
+        resolution: { anyOf: [{ $ref: '#/components/schemas/ConflictResolutionEvent' }, { type: 'null' }] }
+    ConflictCasePage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/ConflictCase' } }, next_cursor: { type: [string, 'null'] } } }
+    ResolveConflictRequest:
+      type: object
+      additionalProperties: false
+      required: [resolution_type, expected_targets, result_states, reason]
+      properties:
+        resolution_type: { type: string, enum: [keep_both, dismiss, revise_one, supersede, reconcile] }
+        expected_targets: { type: array, items: { $ref: '#/components/schemas/EvolutionTarget' } }
+        selected_target: { anyOf: [{ $ref: '#/components/schemas/EvolutionTarget' }, { type: 'null' }] }
+        proposed_content: { type: [string, 'null'], minLength: 1 }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        evidence: { type: array, minItems: 1, items: { $ref: '#/components/schemas/EvidenceInput' } }
+        replacement_mode: { type: [string, 'null'], enum: [same_memory_revision, new_memory, null] }
+        result_states: { type: object, additionalProperties: { type: string, enum: [active, archived, contested, superseded] } }
+        reason: { type: string, minLength: 1, maxLength: 1024 }
+    FeedbackType: { type: string, enum: [useful, irrelevant, correct, supplement, contest] }
+    FeedbackReason: { type: string, enum: [answered_query, relevant_context, not_relevant, fact_incorrect, fact_incomplete, fact_outdated, conflicts_with_evidence, duplicate, other] }
+    FeedbackSearchContext:
+      type: object
+      additionalProperties: false
+      required: [search_operation_id, query_hash, result_rank, ranking_version, matched_channels]
+      properties:
+        search_operation_id: { type: string, format: uuid }
+        query_hash: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        result_rank: { type: integer, minimum: 1 }
+        ranking_version: { type: string, minLength: 1 }
+        matched_channels: { type: array, minItems: 1, uniqueItems: true, items: { type: string, enum: [keyword, semantic, entity, relation] } }
+    AppendFeedbackRequest:
+      type: object
+      additionalProperties: false
+      required: [space_id, memory_id, revision_id, feedback_type, reason_code]
+      properties:
+        space_id: { type: string, format: uuid }
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+        feedback_type: { $ref: '#/components/schemas/FeedbackType' }
+        reason_code: { $ref: '#/components/schemas/FeedbackReason' }
+        note: { type: string, maxLength: 2000 }
+        search: { $ref: '#/components/schemas/FeedbackSearchContext' }
+        create_proposal: { type: boolean, default: false }
+        source_event_id: { type: string, format: uuid }
+        proposed_content: { type: string, maxLength: 100000 }
+    FeedbackEvent:
+      type: object
+      additionalProperties: false
+      required: [feedback_id, operation_id, caller_id, memory_id, revision_id, feedback_type, reason_code, created_at]
+      properties:
+        feedback_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        caller_id: { type: string }
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+        feedback_type: { $ref: '#/components/schemas/FeedbackType' }
+        reason_code: { $ref: '#/components/schemas/FeedbackReason' }
+        note: { type: [string, 'null'] }
+        search: { anyOf: [{ $ref: '#/components/schemas/FeedbackSearchContext' }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+    ProposalOutcome:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [not_requested, created, skipped, unsupported] }
+        proposal_id: { type: [string, 'null'], format: uuid }
+        reason: { type: string }
+    FeedbackAppendResponse:
+      type: object
+      additionalProperties: false
+      required: [feedback, proposal]
+      properties:
+        feedback: { $ref: '#/components/schemas/FeedbackEvent' }
+        proposal: { $ref: '#/components/schemas/ProposalOutcome' }
+    FeedbackPage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/FeedbackEvent' } }, next_cursor: { type: [string, 'null'] } } }
+    FeedbackAggregateHealth:
+      type: object
+      additionalProperties: false
+      required: [state, algorithm_version, generation, window_days]
+      properties:
+        state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
+        algorithm_version: { type: string }
+        generation: { type: integer, minimum: 0 }
+        source_watermark: { type: [string, 'null'] }
+        window_days: { type: integer, minimum: 1 }
+    CreateAggregateProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [space_id, aggregate_kind, input_revision_ids]
+      properties:
+        space_id: { type: string, format: uuid }
+        aggregate_kind: { $ref: '#/components/schemas/AggregateKind' }
+        input_revision_ids: { type: array, minItems: 1, items: { type: string, format: uuid } }
+    AggregateInput:
+      type: object
+      additionalProperties: false
+      required: [memory_id, revision_id]
+      properties:
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        content: { type: string }
+        current_state: { $ref: '#/components/schemas/StoredMemoryState' }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+    AggregateProposalReview:
+      type: object
+      additionalProperties: false
+      required: [review_id, from_state, to_state, reason_code, reviewer_id, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        from_state: { $ref: '#/components/schemas/ReviewState' }
+        to_state: { $ref: '#/components/schemas/ReviewState' }
+        reason_code: { type: string }
+        note: { type: [string, 'null'] }
+        reviewer_id: { type: string }
+        memory_id: { type: [string, 'null'], format: uuid }
+        revision_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+    AggregateProposal:
+      type: object
+      additionalProperties: false
+      required: [proposal_id, space_id, aggregate_kind, content, input_fingerprint, sensitivity, policy_version, processor_identity, processing_version, specification_hash, review_state, inputs, reviews, created_at]
+      properties:
+        proposal_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        aggregate_kind: { $ref: '#/components/schemas/AggregateKind' }
+        content: { type: string }
+        input_fingerprint: { type: string }
+        valid_from: { type: [string, 'null'], format: date-time }
+        valid_until: { type: [string, 'null'], format: date-time }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+        policy_version: { type: string }
+        processor_identity: { type: string }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+        processing_version: { type: string }
+        specification_hash: { type: string }
+        review_state: { $ref: '#/components/schemas/ReviewState' }
+        result_memory_id: { type: [string, 'null'], format: uuid }
+        result_revision_id: { type: [string, 'null'], format: uuid }
+        inputs: { type: array, items: { $ref: '#/components/schemas/AggregateInput' } }
+        reviews: { type: array, items: { $ref: '#/components/schemas/AggregateProposalReview' } }
+        created_at: { type: string, format: date-time }
+        reviewed_at: { type: [string, 'null'], format: date-time }
+    AggregateProposalPage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/AggregateProposal' } }, next_cursor: { type: [string, 'null'] } } }
+    AggregateProvenance:
+      type: object
+      additionalProperties: false
+      required: [relation_id, memory_id, revision_id, current_revision_id, current_state, sensitivity]
+      properties:
+        relation_id: { type: string, format: uuid }
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+        current_revision_id: { type: string, format: uuid }
+        current_state: { $ref: '#/components/schemas/StoredMemoryState' }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+    Aggregate:
+      type: object
+      additionalProperties: false
+      required: [aggregate_id, memory, aggregate_kind, policy_version, processing_version, sensitivity, freshness, aggregate_stale, stale_reasons, input_fingerprint, generation, provenance, checked_at]
+      properties:
+        aggregate_id: { type: string, format: uuid }
+        memory: { $ref: '#/components/schemas/Memory' }
+        aggregate_kind: { $ref: '#/components/schemas/AggregateKind' }
+        policy_version: { type: string }
+        processing_version: { type: string }
+        sensitivity: { $ref: '#/components/schemas/Sensitivity' }
+        freshness: { type: string, enum: [fresh, stale] }
+        aggregate_stale: { type: boolean }
+        stale_reasons: { type: array, items: { type: string } }
+        input_fingerprint: { type: string }
+        generation: { type: integer, minimum: 0 }
+        provenance: { type: array, items: { $ref: '#/components/schemas/AggregateProvenance' } }
+        checked_at: { type: string, format: date-time }
+    AggregatePage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Aggregate' } }, next_cursor: { type: [string, 'null'] } } }
     SearchRequest:
       type: object
       additionalProperties: false
@@ -560,31 +1841,56 @@ components:
         query: { type: string, minLength: 1 }
         space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
         include_ancestors: { type: boolean, default: true }
-        memory_types: { type: array, items: { $ref: '#/components/schemas/MemoryType' } }
+        memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }
         states: { type: array, items: { $ref: '#/components/schemas/MemoryState' }, default: [active] }
         reference_time: { type: string, format: date-time }
-        mode: { type: string, enum: [keyword, semantic], default: keyword }
+        mode: { type: string, enum: [keyword, semantic, hybrid], default: keyword }
         limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
         max_chars: { type: integer, minimum: 1, maximum: 100000, default: 12000 }
         include_evidence: { type: boolean, default: false }
         cursor: { type: string }
+        exclude_stale_aggregates: { type: boolean, default: false }
     SearchResult:
       type: object
-      required: [memory, rank, keyword_score, selection_reason]
+      required: [memory, rank, keyword_score, matched_channels, selection_reason]
       properties:
         memory: { $ref: '#/components/schemas/Memory' }
         rank: { type: integer, minimum: 1 }
         keyword_score: { type: number }
+        keyword_relevance: { type: number }
+        semantic_relevance: { type: number }
+        matched_channels: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, entity, relation] } }
         selection_reason: { type: string }
+        conflict_refs: { type: array, items: { $ref: '#/components/schemas/ConflictRef' } }
+    ConflictRef:
+      type: object
+      additionalProperties: false
+      required: [case_id, relation_id, other_memory_id, other_revision_id]
+      properties:
+        case_id: { type: string, format: uuid }
+        relation_id: { type: string, format: uuid }
+        other_memory_id: { type: string, format: uuid }
+        other_revision_id: { type: string, format: uuid }
     SearchResponse:
       type: object
-      required: [results, truncated, chars_used, index_state]
+      required: [results, truncated, chars_used, index_state, next_cursor, requested_mode, executed_mode, degraded, degradation_reasons, fts_index_version, semantic_index_version, ranking_version, corpus_generation, feedback_aggregate_version, entity_index_version, relation_index_version]
       properties:
         results: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
         truncated: { type: boolean }
         chars_used: { type: integer, minimum: 0 }
         index_state: { type: string, enum: [ready, degraded, rebuilding] }
         next_cursor: { type: [string, 'null'] }
+        requested_mode: { type: string, enum: [keyword, semantic, hybrid] }
+        executed_mode: { type: string, enum: [keyword, semantic, hybrid] }
+        degraded: { type: boolean }
+        degradation_reasons: { type: array, items: { type: string } }
+        fts_index_version: { type: integer, minimum: 1 }
+        semantic_index_version: { type: integer, minimum: 0 }
+        ranking_version: { type: string }
+        corpus_generation: { type: integer, minimum: 0 }
+        feedback_aggregate_version: { type: integer, minimum: 0 }
+        entity_index_version: { type: integer, minimum: 0 }
+        relation_index_version: { type: integer, minimum: 0 }
     JobReference:
       type: object
       required: [operation_id, job_id]
@@ -597,8 +1903,8 @@ components:
       properties:
         job_id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
-        job_type: { type: string, enum: [extract_memory, rebuild_fts] }
-        target_type: { type: string, enum: [raw_event, index] }
+        job_type: { type: string, enum: [extract_memory, embed_memory, rebuild_fts, rebuild_semantic, rebuild_entity_index, rebuild_relation_index, aggregate_feedback, rebuild_feedback_aggregates, rebuild_aggregate] }
+        target_type: { type: string, enum: [raw_event, memory_revision, index, aggregate] }
         target_id: { type: string }
         status: { $ref: '#/components/schemas/JobStatus' }
         attempt_count: { type: integer }
@@ -610,19 +1916,39 @@ components:
         finished_at: { type: [string, 'null'], format: date-time }
     Health:
       type: object
-      required: [process_alive, mode, ready, accepting_writes, query_available, storage_healthy, storage_writable, schema_compatibility, fts_state, fts_freshness, processor_state, job_queue_depth, oldest_job_age_seconds, disk_pressure]
+      additionalProperties: false
+      required: [process_alive, mode, overall_status, ready, accepting_writes, query_available, storage_state, storage_healthy, storage_writable, schema_compatibility, queue_state, fts_state, fts_index_state, fts_freshness, processor_state, processor_identity, semantic_state, semantic_index_state, semantic_index_version, entity_index_state, entity_index_version, relation_index_state, relation_index_version, feedback_aggregate_state, feedback_aggregate_version, aggregate_state, aggregate_fresh_count, aggregate_stale_count, aggregate_pending_rebuilds, backup_state, job_queue_depth, oldest_job_age_seconds, disk_pressure]
       properties:
         process_alive: { type: boolean }
         mode: { type: string, enum: [healthy, degraded, read_only, maintenance, unavailable] }
+        overall_status: { type: string, enum: [healthy, degraded, read_only, maintenance, unavailable] }
         ready: { type: boolean }
         accepting_writes: { type: boolean }
         query_available: { type: boolean }
+        storage_state: { type: string, enum: [ready, degraded, unavailable] }
         storage_healthy: { type: boolean }
         storage_writable: { type: boolean }
         schema_compatibility: { type: string, enum: [compatible, incompatible, unknown] }
-        fts_state: { type: string, enum: [ready, degraded, rebuilding] }
+        queue_state: { type: string, enum: [ready, degraded, unavailable] }
+        fts_state: { type: string, enum: [ready, degraded, unavailable, rebuilding] }
+        fts_index_state: { type: string, enum: [ready, degraded, unavailable, rebuilding] }
         fts_freshness: { type: string, enum: [current, stale, unknown] }
-        processor_state: { type: string, enum: [not_configured, ready, unavailable] }
+        processor_state: { type: string, enum: [not_configured, ready, degraded, unavailable] }
+        processor_identity: { type: string }
+        semantic_state: { type: string, enum: [not_configured, rebuild_required, ready, degraded, unavailable, rebuilding] }
+        semantic_index_state: { type: string, enum: [not_configured, rebuild_required, ready, degraded, unavailable, rebuilding] }
+        semantic_index_version: { type: integer, minimum: 0 }
+        entity_index_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
+        entity_index_version: { type: integer, minimum: 0 }
+        relation_index_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
+        relation_index_version: { type: integer, minimum: 0 }
+        feedback_aggregate_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
+        feedback_aggregate_version: { type: integer, minimum: 0 }
+        aggregate_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
+        aggregate_fresh_count: { type: integer, minimum: 0 }
+        aggregate_stale_count: { type: integer, minimum: 0 }
+        aggregate_pending_rebuilds: { type: integer, minimum: 0 }
+        backup_state: { type: string, enum: [ready, degraded, unavailable] }
         job_queue_depth: { type: integer, minimum: 0 }
         oldest_job_age_seconds: { type: integer, minimum: 0 }
         disk_pressure: { type: string, enum: [normal, soft, hard] }
@@ -664,3 +1990,50 @@ components:
     ResourceExhausted:
       description: Hard local resource limit reached
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    UnsupportedOperation:
+      description: Operation is not implemented
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    RebuildAccepted:
+      description: Rebuild job accepted
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/JobReference' } } }
+    EntityProposalCreated:
+      description: Entity proposal created or confirmed
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/EntityProposal' } } }
+    EntityProposalOK:
+      description: Entity proposal rejected
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/EntityProposal' } } }
+    RelationProposalCreated:
+      description: Relation proposal created or confirmed
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/RelationProposal' } } }
+    RelationProposalOK:
+      description: Relation proposal rejected
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/RelationProposal' } } }
+    EvolutionProposalCreated:
+      description: Evolution proposal created or confirmed
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/EvolutionProposal' } } }
+    EvolutionProposalOK:
+      description: Evolution proposal rejected
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/EvolutionProposal' } } }
+    ConflictCaseOK:
+      description: Conflict resolved
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/ConflictCase' } } }
+    FeedbackCreated:
+      description: Feedback appended
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/FeedbackAppendResponse' } } }
+    AggregateProposalCreated:
+      description: Aggregate proposal created or confirmed
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/AggregateProposal' } } }
+    AggregateProposalOK:
+      description: Aggregate proposal rejected
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/AggregateProposal' } } }
