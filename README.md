@@ -68,4 +68,5 @@ removes it from recall. See [API usage](docs/api/usage.md) and the
 - [Logical portability](docs/storage/logical-portability.md)
 - [Operations](docs/operations/runbook.md)
 - [Testing](docs/development/testing-and-evaluation.md)
+- [LongMemEval evaluation](docs/development/longmemeval.md)
 - [Architecture decisions](docs/adr/README.md)
