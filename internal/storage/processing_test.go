@@ -46,11 +46,11 @@ func TestProcessingCommitAtomicallyStoresCandidatesEvidenceAuditAttemptAndStatus
 	}
 }
 
-func TestP3CONTRACT003PrepareProcessingIncludesBoundedCurrentMemoryContract(t *testing.T) {
+func TestPrepareProcessingIncludesBoundedCurrentMemoryContract(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	validFrom, validUntil := "2026-08-20T00:00:00Z", "2026-09-20T00:00:00Z"
 	params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: "context contract", ValidFrom: &validFrom, ValidUntil: &validUntil, Sensitivity: "sensitive", Evidence: directEvidence("event-1"), Reason: "context"}
-	memory, _, err := repository.CreateMemory(context.Background(), memoryIdentity("p3-context", "/v1/memories", params), params)
+	memory, _, err := repository.CreateMemory(context.Background(), memoryIdentity("context-memory", "/v1/memories", params), params)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
-func TestP3CONTRACT004EntityManualCapabilityWithoutProvider(t *testing.T) {
+func TestEntityManualCapabilityWithoutProvider(t *testing.T) {
 	cfg := testConfig(t)
 	d, err := StartStaging(context.Background(), cfg)
 	if err != nil {

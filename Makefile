@@ -2,7 +2,7 @@ GO ?= go
 GO_TAGS := sqlite_fts5
 GOVULNCHECK ?= govulncheck
 
-.PHONY: build test test-race vet openapi schema schema-init schema-check restore-drill export-import-drill retrieval-gates offline-default govulncheck phase-2/check phase-3/traceability phase-3/check
+.PHONY: build test test-race vet openapi schema schema-init schema-check restore-drill portability-drill quality performance offline-default govulncheck check
 
 build:
 	CGO_ENABLED=1 $(GO) build -tags '$(GO_TAGS)' ./...
@@ -20,7 +20,7 @@ openapi:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/daemon -run '^TestOpenAPIContract$$'
 
 schema:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^TestP3CONTRACT002DocumentedSchemaMatchesEmbeddedSchema$$'
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^TestDocumentedSchemaMatchesEmbeddedSchema$$'
 
 schema-init:
 	@test -n "$(DATA_DIR)" || (printf '%s\n' 'DATA_DIR is required' >&2; exit 2)
@@ -31,13 +31,17 @@ schema-check: schema
 		$(MAKE) --no-print-directory schema-init DATA_DIR="$$data_dir"
 
 restore-drill:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/maintenance -run '^Test(BackupRestoreDrill|P3DATA)' -count=1
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/maintenance -run '^Test(BackupRestoreDrill|ManifestInventoriesAuthority|RestoreFencesRunningWork|RestoreRebuildsDerivedHealthFromAuthority)$$' -count=1
 
-export-import-drill:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestP3(PORT010|PERF003)' -count=1 -v
+portability-drill:
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval$$' -count=1 -v
 
-retrieval-gates:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^TestP[23](QUAL|PERF)' -count=1 -v
+quality:
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalQuality|SearchQuality|FeedbackPoisoningSingleCaller)' -count=1 -v
+
+performance:
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalPerformance|SearchPerformance)' -count=1 -v
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestPortabilityPerformanceAtTargetScale$$' -count=1 -v
 
 offline-default:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestProvidersDisabledByDefault$$' -count=1
@@ -46,20 +50,13 @@ offline-default:
 govulncheck:
 	CGO_ENABLED=1 $(GOVULNCHECK) -tags '$(GO_TAGS)' ./...
 
-phase-2/check:
+check:
 	$(MAKE) --no-print-directory test
 	$(MAKE) --no-print-directory test-race
 	$(MAKE) --no-print-directory vet
 	$(MAKE) --no-print-directory openapi
 	$(MAKE) --no-print-directory schema-check
 	$(MAKE) --no-print-directory restore-drill
-	$(MAKE) --no-print-directory retrieval-gates
+	$(MAKE) --no-print-directory portability-drill
+	$(MAKE) --no-print-directory quality
 	$(MAKE) --no-print-directory offline-default
-
-phase-3/traceability:
-	@CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^TestP3TraceabilityRequiredIDs$$' -count=1
-
-phase-3/check:
-	$(MAKE) --no-print-directory phase-3/traceability
-	$(MAKE) --no-print-directory phase-2/check
-	$(MAKE) --no-print-directory export-import-drill

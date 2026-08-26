@@ -443,7 +443,7 @@ func lifecycleTarget(state string, frozen bool, action string) (string, bool, bo
 		if state == "active" {
 			return state, frozen, true, nil
 		}
-		if state != "candidate" && state != "contested" {
+		if state != "contested" {
 			return "", false, false, ErrInvalidStateTransition
 		}
 		return "active", frozen, false, nil
@@ -451,7 +451,7 @@ func lifecycleTarget(state string, frozen bool, action string) (string, bool, bo
 		if state == "contested" {
 			return state, frozen, true, nil
 		}
-		if state != "candidate" && state != "active" {
+		if state != "active" {
 			return "", false, false, ErrInvalidStateTransition
 		}
 		return "contested", frozen, false, nil

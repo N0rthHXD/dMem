@@ -390,7 +390,7 @@ func TestRestoreRejectsFailedStagingProbeAndPreservesOriginal(t *testing.T) {
 	}
 }
 
-func TestP3DATA001ManifestInventoriesNewAuthority(t *testing.T) {
+func TestManifestInventoriesAuthority(t *testing.T) {
 	ctx := context.Background()
 	root := secureTempDir(t)
 	backupParent := secureSubdir(t, root, "backups")
@@ -400,43 +400,43 @@ func TestP3DATA001ManifestInventoriesNewAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	seedPhase3RecoveryData(t, filepath.Join(dataDirectory, "dmem.db"))
-	manifest, err := Backup(ctx, store, filepath.Join(backupParent, "p3"), BackupOptions{DaemonVersion: "p3-test", ID: func() (string, error) { return "p3", nil }})
+	seedRecoveryAuthorityData(t, filepath.Join(dataDirectory, "dmem.db"))
+	manifest, err := Backup(ctx, store, filepath.Join(backupParent, "authority"), BackupOptions{DaemonVersion: "recovery-test", ID: func() (string, error) { return "authority", nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.AuthorityCounts) != len(phase3AuthorityTables) || manifest.AuthorityCounts["entities"] != 1 || manifest.AuthorityCounts["entity_mentions"] != 1 || manifest.AuthorityCounts["memory_relations"] != 1 || manifest.AuthorityCounts["feedback_events"] != 1 || manifest.AuthorityCounts["import_sources"] != 1 || manifest.RunningImportCount != 1 {
-		t.Fatalf("P3-DATA-001 manifest inventory = %+v running imports=%d", manifest.AuthorityCounts, manifest.RunningImportCount)
+	if len(manifest.AuthorityCounts) != len(authorityTables) || manifest.AuthorityCounts["entities"] != 1 || manifest.AuthorityCounts["entity_mentions"] != 1 || manifest.AuthorityCounts["memory_relations"] != 1 || manifest.AuthorityCounts["feedback_events"] != 1 || manifest.AuthorityCounts["import_sources"] != 1 || manifest.RunningImportCount != 1 {
+		t.Fatalf("backup manifest authority inventory = %+v, running imports=%d", manifest.AuthorityCounts, manifest.RunningImportCount)
 	}
 }
 
-func TestP3DATA002RestoreFencesNewRunningWork(t *testing.T) {
-	db, path := phase3RecoveryDatabase(t)
+func TestRestoreFencesRunningWork(t *testing.T) {
+	db, path := recoveryTestDatabase(t)
 	normalizedJobs, normalizedImports, err := validateAndPrepare(context.Background(), db, time.Date(2026, 8, 25, 13, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if normalizedJobs != 1 || normalizedImports != 1 {
-		t.Fatalf("P3-DATA-002 normalized jobs/imports = %d/%d", normalizedJobs, normalizedImports)
+		t.Fatalf("normalized running jobs/imports = %d/%d, want 1/1", normalizedJobs, normalizedImports)
 	}
 	var jobState, outcome, importState string
 	var jobGeneration, importGeneration, committed, checkpoint int
-	if err := db.QueryRow(`SELECT status,lease_generation FROM jobs WHERE job_id='p3-job'`).Scan(&jobState, &jobGeneration); err != nil {
+	if err := db.QueryRow(`SELECT status,lease_generation FROM jobs WHERE job_id='recovery-job'`).Scan(&jobState, &jobGeneration); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT outcome FROM job_attempts WHERE attempt_id='p3-attempt'`).Scan(&outcome); err != nil {
+	if err := db.QueryRow(`SELECT outcome FROM job_attempts WHERE attempt_id='recovery-attempt'`).Scan(&outcome); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT state,generation,committed_objects,(SELECT coalesce(max(committed_objects),0) FROM import_checkpoints WHERE import_operation_id='p3-import') FROM import_operations WHERE import_operation_id='p3-import'`).Scan(&importState, &importGeneration, &committed, &checkpoint); err != nil {
+	if err := db.QueryRow(`SELECT state,generation,committed_objects,(SELECT coalesce(max(committed_objects),0) FROM import_checkpoints WHERE import_operation_id='recovery-import') FROM import_operations WHERE import_operation_id='recovery-import'`).Scan(&importState, &importGeneration, &committed, &checkpoint); err != nil {
 		t.Fatal(err)
 	}
 	if jobState != "retrying" || jobGeneration != 5 || outcome != "lease_lost" || importState != "waiting" || importGeneration != 4 || committed != checkpoint {
-		t.Fatalf("P3-DATA-002 fenced state = %s/%d %s %s/%d checkpoint=%d/%d (%s)", jobState, jobGeneration, outcome, importState, importGeneration, committed, checkpoint, path)
+		t.Fatalf("restored running work was not fenced: job=%s/%d attempt=%s import=%s/%d committed=%d checkpoint=%d (%s)", jobState, jobGeneration, outcome, importState, importGeneration, committed, checkpoint, path)
 	}
 }
 
-func TestP3DATA003RestoreRebuildsDerivedHealthFromAuthority(t *testing.T) {
-	db, _ := phase3RecoveryDatabase(t)
+func TestRestoreRebuildsDerivedHealthFromAuthority(t *testing.T) {
+	db, _ := recoveryTestDatabase(t)
 	if _, _, err := validateAndPrepare(context.Background(), db, time.Date(2026, 8, 25, 13, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
@@ -446,13 +446,13 @@ func TestP3DATA003RestoreRebuildsDerivedHealthFromAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	if entityState != "ready" || entities != 1 || mentions != 1 || relationState != "ready" || relations != 1 || feedbackState != "ready" || feedback != 1 || semanticState != "absent" || fts != 2 {
-		t.Fatalf("P3-DATA-003 health/counts = %s %d/%d, %s %d, %s %d, %s, fts=%d", entityState, entities, mentions, relationState, relations, feedbackState, feedback, semanticState, fts)
+		t.Fatalf("rebuilt derived health/counts = entities %s %d/%d, relations %s %d, feedback %s %d, semantic %s, fts=%d", entityState, entities, mentions, relationState, relations, feedbackState, feedback, semanticState, fts)
 	}
 }
 
-func phase3RecoveryDatabase(t *testing.T) (*sql.DB, string) {
+func recoveryTestDatabase(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "p3-recovery.db")
+	path := filepath.Join(t.TempDir(), "recovery.db")
 	store, err := storage.Open(context.Background(), path, storage.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -460,7 +460,7 @@ func phase3RecoveryDatabase(t *testing.T) (*sql.DB, string) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	seedPhase3RecoveryData(t, path)
+	seedRecoveryAuthorityData(t, path)
 	db, err := openMaintenanceDB(path)
 	if err != nil {
 		t.Fatal(err)
@@ -469,7 +469,7 @@ func phase3RecoveryDatabase(t *testing.T) (*sql.DB, string) {
 	return db, path
 }
 
-func seedPhase3RecoveryData(t *testing.T, path string) {
+func seedRecoveryAuthorityData(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
@@ -477,28 +477,28 @@ func seedPhase3RecoveryData(t *testing.T, path string) {
 	}
 	defer db.Close()
 	statements := []string{
-		`INSERT INTO memory_spaces(space_id,space_type,external_id,display_name,created_at) VALUES ('p3-space','user','p3','P3','2026-08-25T10:00:00Z')`,
-		`INSERT INTO raw_contents(content_id,content_kind,content_text,media_type,content_hash,size_bytes,created_at) VALUES ('p3-content','text','Alice source','text/plain','p3-content-hash',12,'2026-08-25T10:00:00Z')`,
-		`INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,caller_id,occurred_at,received_at,created_at) VALUES ('p3-event','p3-op','p3-space','p3-content','manual','test','caller','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES ('p3-memory-a','p3-space','fact','p3-revision-a','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('p3-revision-a','p3-memory-a','Alice owns project','p3-a','test','p3-v1','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES ('p3-memory-a','p3-revision-a','p3-space','fact','active',1,'Alice owns project','p3-a','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES ('p3-memory-b','p3-space','fact','p3-revision-b','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('p3-revision-b','p3-memory-b','Project deadline Friday','p3-b','test','p3-v1','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES ('p3-memory-b','p3-revision-b','p3-space','fact','active',1,'Project deadline Friday','p3-b','2026-08-25T10:00:00Z')`,
-		`INSERT INTO entities(entity_id,space_id,entity_type,canonical_name,normalized_name,normalization_version,state,created_by,processing_version,created_at,updated_at) VALUES ('p3-entity','p3-space','person','Alice','alice','v1','active','test','p3-v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO entity_aliases(alias_id,entity_id,alias,normalized_alias,normalization_version,source,state,created_by,created_at,updated_at) VALUES ('p3-alias','p3-entity','Alice','alice','v1','human_confirmation','active','test','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO entity_mentions(mention_id,entity_id,memory_id,revision_id,start_offset,end_offset,mention_type,source,surface_text,created_by,processing_version,created_at) VALUES ('p3-mention','p3-entity','p3-memory-a','p3-revision-a',0,5,'explicit','human_confirmation','Alice','test','p3-v1','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES ('p3-relation','p3-space','supports','p3-memory-a','p3-revision-a','p3-memory-b','p3-revision-b','human_confirmation','p3-spec','test','p3-v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO feedback_events(feedback_id,operation_id,caller_id,memory_id,revision_id,feedback_type,reason_code,created_at) VALUES ('p3-feedback','p3-feedback-op','caller','p3-memory-a','p3-revision-a','useful','answered_query','2026-08-25T11:00:00Z')`,
-		`INSERT INTO import_sources(source_id,source_identity,format_family,format_version,first_export_id,created_at) VALUES ('p3-source','source:p3','dmem-logical',1,'p3-export','2026-08-25T10:00:00Z')`,
-		`INSERT INTO import_operations(import_operation_id,operation_id,source_id,export_id,target_space_id,package_hash,plan_hash,state,generation,total_objects,committed_objects,created_by,created_at,started_at,updated_at) VALUES ('p3-import','p3-import-op','p3-source','p3-export','p3-space','package','plan','running',3,0,0,'test','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,attempt_count,max_attempts,next_run_at,lease_owner,lease_until,lease_generation,created_at) VALUES ('p3-job','p3-job-op','extract_entity','raw_event','p3-event','p3-v1','running',1,3,'2026-08-25T10:00:00Z','worker','2099-01-01T00:00:00Z',4,'2026-08-25T10:00:00Z')`,
-		`INSERT INTO job_attempts(attempt_id,job_id,lease_generation,worker_id,started_at) VALUES ('p3-attempt','p3-job',4,'worker','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_spaces(space_id,space_type,external_id,display_name,created_at) VALUES ('recovery-space','user','recovery','Recovery','2026-08-25T10:00:00Z')`,
+		`INSERT INTO raw_contents(content_id,content_kind,content_text,media_type,content_hash,size_bytes,created_at) VALUES ('recovery-content','text','Alice source','text/plain','recovery-content-hash',12,'2026-08-25T10:00:00Z')`,
+		`INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,caller_id,occurred_at,received_at,created_at) VALUES ('recovery-event','recovery-op','recovery-space','recovery-content','manual','test','caller','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES ('recovery-memory-a','recovery-space','fact','recovery-revision-a','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('recovery-revision-a','recovery-memory-a','Alice owns project','recovery-a','test','recovery-v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES ('recovery-memory-a','recovery-revision-a','recovery-space','fact','active',1,'Alice owns project','recovery-a','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES ('recovery-memory-b','recovery-space','fact','recovery-revision-b','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('recovery-revision-b','recovery-memory-b','Project deadline Friday','recovery-b','test','recovery-v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES ('recovery-memory-b','recovery-revision-b','recovery-space','fact','active',1,'Project deadline Friday','recovery-b','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entities(entity_id,space_id,entity_type,canonical_name,normalized_name,normalization_version,state,created_by,processing_version,created_at,updated_at) VALUES ('recovery-entity','recovery-space','person','Alice','alice','v1','active','test','recovery-v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entity_aliases(alias_id,entity_id,alias,normalized_alias,normalization_version,source,state,created_by,created_at,updated_at) VALUES ('recovery-alias','recovery-entity','Alice','alice','v1','human_confirmation','active','test','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entity_mentions(mention_id,entity_id,memory_id,revision_id,start_offset,end_offset,mention_type,source,surface_text,created_by,processing_version,created_at) VALUES ('recovery-mention','recovery-entity','recovery-memory-a','recovery-revision-a',0,5,'explicit','human_confirmation','Alice','test','recovery-v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES ('recovery-relation','recovery-space','supports','recovery-memory-a','recovery-revision-a','recovery-memory-b','recovery-revision-b','human_confirmation','recovery-spec','test','recovery-v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO feedback_events(feedback_id,operation_id,caller_id,memory_id,revision_id,feedback_type,reason_code,created_at) VALUES ('recovery-feedback','recovery-feedback-op','caller','recovery-memory-a','recovery-revision-a','useful','answered_query','2026-08-25T11:00:00Z')`,
+		`INSERT INTO import_sources(source_id,source_identity,format_family,format_version,first_export_id,created_at) VALUES ('recovery-source','source:recovery','dmem-logical',1,'recovery-export','2026-08-25T10:00:00Z')`,
+		`INSERT INTO import_operations(import_operation_id,operation_id,source_id,export_id,target_space_id,package_hash,plan_hash,state,generation,total_objects,committed_objects,created_by,created_at,started_at,updated_at) VALUES ('recovery-import','recovery-import-op','recovery-source','recovery-export','recovery-space','package','plan','running',3,0,0,'test','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,attempt_count,max_attempts,next_run_at,lease_owner,lease_until,lease_generation,created_at) VALUES ('recovery-job','recovery-job-op','extract_entity','raw_event','recovery-event','recovery-v1','running',1,3,'2026-08-25T10:00:00Z','worker','2099-01-01T00:00:00Z',4,'2026-08-25T10:00:00Z')`,
+		`INSERT INTO job_attempts(attempt_id,job_id,lease_generation,worker_id,started_at) VALUES ('recovery-attempt','recovery-job',4,'worker','2026-08-25T10:00:00Z')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("seed Phase 3 recovery: %v", err)
+			t.Fatalf("seed recovery authority data: %v", err)
 		}
 	}
 }

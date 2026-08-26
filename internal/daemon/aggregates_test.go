@@ -90,7 +90,7 @@ func TestAggregateDaemonBuildConfirmProvenanceStaleAndHealth(t *testing.T) {
 	}
 }
 
-func TestP3CONTRACT004AggregateOfflineAndP3AGG007ProfileUnsupported(t *testing.T) {
+func TestAggregateOfflineAndProfileUnsupported(t *testing.T) {
 	cfg := testConfig(t)
 	d, err := StartStaging(context.Background(), cfg)
 	if err != nil {
@@ -101,12 +101,12 @@ func TestP3CONTRACT004AggregateOfflineAndP3AGG007ProfileUnsupported(t *testing.T
 	space := createSpace(t, client, "aggregate-profile-space", map[string]any{"space_type": "user", "external_id": "aggregate-profile", "display_name": "Aggregate Profile"})
 	response := requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals", "aggregate-offline", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "scene", "input_revision_ids": []string{"00000000-0000-4000-8000-000000000001"}})
 	if response.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("P3-CONTRACT-004 offline aggregate status=%d", response.StatusCode)
+		t.Fatalf("offline aggregate endpoint status=%d, want %d", response.StatusCode, http.StatusNotFound)
 	}
 	var apiError api.Error
 	decodeResponse(t, response, &apiError)
 	if apiError.ErrorCode != "unsupported" {
-		t.Fatalf("P3-CONTRACT-004 offline aggregate error=%+v", apiError)
+		t.Fatalf("offline aggregate endpoint error=%+v, want code not_found", apiError)
 	}
 	response = requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals", "aggregate-profile", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "profile", "input_revision_ids": []string{"00000000-0000-4000-8000-000000000001"}})
 	if response.StatusCode != http.StatusUnprocessableEntity {

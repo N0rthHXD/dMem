@@ -2,8 +2,7 @@ openapi: 3.1.0
 info:
   title: dMeM Local API
   version: 1.0.0
-  description: Phase-three HTTP/JSON API served over a Unix Domain Socket. Logical portability remains an offline service per ADR 0029; filesystem paths are not accepted by this API.
-x-traceability: [P3-CONTRACT-002]
+  description: HTTP/JSON API served over a Unix Domain Socket. Logical portability remains an offline service per ADR 0029; filesystem paths are not accepted by this API.
 servers:
   - url: http://localhost/v1
     description: Logical URL; transport is a Unix Domain Socket.
@@ -680,7 +679,6 @@ paths:
         - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: state, in: query, schema: { type: string, enum: [active, dismissed] } }
         - { name: relation_type, in: query, schema: { $ref: '#/components/schemas/RelationType' } }
-        - { name: type, in: query, deprecated: true, schema: { $ref: '#/components/schemas/RelationType' } }
         - { name: memory_id, in: query, schema: { type: string, format: uuid } }
         - { name: revision_id, in: query, schema: { type: string, format: uuid } }
         - { name: direction, in: query, schema: { type: string, enum: [incoming, outgoing, both] } }
@@ -1012,10 +1010,12 @@ components:
       enum: [user, agent, application, project, task, session]
     MemoryState:
       type: string
-      enum: [candidate, active, contested, archived, expired, retracted, deleted]
+      description: Memory lifecycle state. Superseded is assigned only by supersede or reconcile conflict resolution and is not searchable.
+      enum: [active, contested, superseded, archived, expired, retracted, deleted]
     StoredMemoryState:
       type: string
-      enum: [candidate, active, contested, archived, expired, retracted, deleted, superseded]
+      description: Stored memory lifecycle state. Superseded is assigned only by supersede or reconcile conflict resolution and is not searchable.
+      enum: [active, contested, superseded, archived, expired, retracted, deleted]
     MemoryType:
       type: string
       enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience]
@@ -1182,8 +1182,8 @@ components:
         memory_id: { type: string, format: uuid }
         revision_id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
-        from_state: { type: [string, 'null'], enum: [candidate, active, contested, archived, expired, retracted, deleted, null] }
-        to_state: { $ref: '#/components/schemas/MemoryState' }
+        from_state: { type: [string, 'null'], enum: [active, contested, superseded, archived, expired, retracted, deleted, null] }
+        to_state: { $ref: '#/components/schemas/StoredMemoryState' }
         from_frozen: { type: [boolean, 'null'] }
         to_frozen: { type: boolean }
         reason: { type: string }
@@ -1842,7 +1842,7 @@ components:
         space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
         include_ancestors: { type: boolean, default: true }
         memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }
-        states: { type: array, items: { $ref: '#/components/schemas/MemoryState' }, default: [active] }
+        states: { type: array, items: { $ref: '#/components/schemas/MemoryState' }, default: [active, contested] }
         reference_time: { type: string, format: date-time }
         mode: { type: string, enum: [keyword, semantic, hybrid], default: keyword }
         limit: { type: integer, minimum: 1, maximum: 100, default: 10 }

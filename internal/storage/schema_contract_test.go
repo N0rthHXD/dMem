@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestP3CONTRACT002DocumentedSchemaMatchesEmbeddedSchema(t *testing.T) {
+func TestDocumentedSchemaMatchesEmbeddedSchema(t *testing.T) {
 	documented, err := os.ReadFile(filepath.Join("..", "..", "docs", "storage", "schema-v1.sql"))
 	if err != nil {
 		t.Fatal(err)
@@ -18,20 +18,20 @@ func TestP3CONTRACT002DocumentedSchemaMatchesEmbeddedSchema(t *testing.T) {
 	}
 }
 
-func TestP3CONTRACT002InitializationCatalogAndEnums(t *testing.T) {
+func TestSchemaInitializationCatalogAndEnums(t *testing.T) {
 	t.Parallel()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "p3-contract.db"), Options{})
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "schema-contract.db"), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
 
 	for _, statement := range []string{
-		`INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES ('p3-job', 'op', 'build_aggregate', 'aggregate', 'aggregate-1', 'v1', 'pending', 1, 'now', 'now')`,
-		`INSERT INTO memory_spaces(space_id, space_type, external_id, display_name, created_at) VALUES ('p3-user', 'user', 'p3-user', 'P3 User', 'now')`,
+		`INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES ('aggregate-job', 'op', 'build_aggregate', 'aggregate', 'aggregate-1', 'v1', 'pending', 1, 'now', 'now')`,
+		`INSERT INTO memory_spaces(space_id, space_type, external_id, display_name, created_at) VALUES ('schema-user', 'user', 'schema-user', 'Schema User', 'now')`,
 	} {
 		if _, err := store.writer.Exec(statement); err != nil {
-			t.Fatalf("valid Phase 3 enum rejected: %v", err)
+			t.Fatalf("valid schema enum rejected: %v", err)
 		}
 	}
 	for _, statement := range []string{
@@ -39,14 +39,14 @@ func TestP3CONTRACT002InitializationCatalogAndEnums(t *testing.T) {
 		`INSERT INTO feedback_events(feedback_id, operation_id, caller_id, memory_id, revision_id, feedback_type, reason_code, created_at) VALUES ('bad-feedback', 'op', 'caller', 'missing', 'missing', 'click', 'other', 'now')`,
 	} {
 		if _, err := store.writer.Exec(statement); err == nil {
-			t.Fatalf("invalid Phase 3 enum accepted: %s", statement)
+			t.Fatalf("invalid schema enum accepted: %s", statement)
 		}
 	}
 }
 
-func TestP3CONTRACT002AggregateProposalInputsFreezeObservedState(t *testing.T) {
+func TestAggregateProposalInputsFreezeObservedState(t *testing.T) {
 	t.Parallel()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "p3-aggregate-contract.db"), Options{})
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "aggregate-contract.db"), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,9 +76,9 @@ func TestP3CONTRACT002AggregateProposalInputsFreezeObservedState(t *testing.T) {
 	}
 }
 
-func TestP3CONTRACT002DeferredRevisionFKAndAuthorityGuards(t *testing.T) {
+func TestDeferredRevisionFKAndAuthorityGuards(t *testing.T) {
 	t.Parallel()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "p3-guards.db"), Options{})
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "authority-guards.db"), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

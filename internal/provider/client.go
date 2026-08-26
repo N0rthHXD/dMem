@@ -673,7 +673,7 @@ func validSourceType(value string) bool {
 }
 func validMemoryState(value string) bool {
 	switch value {
-	case "candidate", "active", "contested", "archived", "expired", "retracted":
+	case "active", "contested", "superseded", "archived", "expired", "retracted":
 		return true
 	}
 	return false

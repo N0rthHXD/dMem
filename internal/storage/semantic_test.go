@@ -879,13 +879,13 @@ func TestFTSRebuildAdvancesVersionAndRejectsOldKeywordCursor(t *testing.T) {
 	}
 }
 
-func TestP3CONTRACT005KeywordCursorBindsCorpusAndPhase3Versions(t *testing.T) {
+func TestKeywordCursorBindsCorpusAndRankingVersions(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	if _, err := repository.store.writer.Exec(`UPDATE feedback_aggregate_metadata SET generation=7 WHERE singleton=1; UPDATE entity_index_metadata SET active_version=8 WHERE singleton=1; UPDATE relation_index_metadata SET active_version=9 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
-	createMemoryWithContent(t, repository, "p3-cursor-a", "contractword one")
-	createMemoryWithContent(t, repository, "p3-cursor-b", "contractword two")
+	createMemoryWithContent(t, repository, "cursor-contract-a", "contractword one")
+	createMemoryWithContent(t, repository, "cursor-contract-b", "contractword two")
 	params := SearchParams{Query: "contractword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 1, MaxChars: 1000}
 	first, err := repository.SearchMemories(context.Background(), params)
 	if err != nil || first.NextCursor == nil || first.CorpusGeneration != 3 || first.FeedbackAggregateVersion != 7 || first.EntityIndexVersion != 8 || first.RelationIndexVersion != 9 {
@@ -910,11 +910,11 @@ func TestP3CONTRACT005KeywordCursorBindsCorpusAndPhase3Versions(t *testing.T) {
 	}
 }
 
-func TestP3CONTRACT005HybridCursorBindsCorpusAndPhase3Versions(t *testing.T) {
+func TestHybridCursorBindsCorpusAndRankingVersions(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	configureSemanticTest(t, repository, &semanticTestProvider{})
-	createMemoryWithContent(t, repository, "p3-hybrid-a", "hybridcontract one")
-	createMemoryWithContent(t, repository, "p3-hybrid-b", "hybridcontract two")
+	createMemoryWithContent(t, repository, "hybrid-contract-a", "hybridcontract one")
+	createMemoryWithContent(t, repository, "hybrid-contract-b", "hybridcontract two")
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}

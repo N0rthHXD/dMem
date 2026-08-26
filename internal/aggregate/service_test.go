@@ -56,7 +56,7 @@ func aggregateTestRepository(t *testing.T) (*storage.Repository, string) {
 
 func uuid(n int) string { return "00000000-0000-4000-8000-" + fmt.Sprintf("%012d", n) }
 
-func TestP3AGG001BuildSceneTopicBoundedOutsideWriteTransactionIdentity(t *testing.T) {
+func TestBuildSceneTopicBoundedOutsideWriteTransactionIdentity(t *testing.T) {
 	repository, space := aggregateTestRepository(t)
 	page, err := repository.ListMemories(context.Background(), storage.MemoryFilter{SpaceID: space, Limit: 10})
 	if err != nil {
@@ -81,7 +81,7 @@ func TestP3AGG001BuildSceneTopicBoundedOutsideWriteTransactionIdentity(t *testin
 	}
 }
 
-func TestP3AGG007ProfileUnsupportedNeverCallsProvider(t *testing.T) {
+func TestProfileUnsupportedNeverCallsProvider(t *testing.T) {
 	repository, space := aggregateTestRepository(t)
 	provider := &fakeProvider{result: domain.AggregateProviderResult{Content: "must not happen", Sensitivity: "normal"}}
 	service := NewService(repository, provider, "aggregate/fake", "policy-v1", "aggregate-v1", 2)

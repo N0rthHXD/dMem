@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	DefaultProcessingVersion   = "phase2-noop-v1"
+	DefaultProcessingVersion   = "builtin-noop-v1"
 	defaultRequestTimeout      = 30 * time.Second
 	defaultShutdownGracePeriod = 15 * time.Second
 	defaultMaxConnections      = 64

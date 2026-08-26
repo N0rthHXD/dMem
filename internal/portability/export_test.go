@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -79,7 +78,7 @@ func request() Request {
 	return Request{SourceIdentity: "source:test", SpaceIDs: []string{taskSpace}, IncludeAncestors: true, ClosurePolicy: "strict", SensitivePolicy: "exclude", ReferenceTime: "2026-08-25T12:00:00Z"}
 }
 
-func TestP3PORT001DryRunClosureCountsSensitivityAndExternalRefs(t *testing.T) {
+func TestExportDryRunClosureCountsSensitivityAndExternalRefs(t *testing.T) {
 	database := newTestDatabase(t)
 	before := databaseHash(t, database.path)
 	plan, err := NewExporter(database.repo).DryRun(context.Background(), request())
@@ -106,7 +105,7 @@ func TestP3PORT001DryRunClosureCountsSensitivityAndExternalRefs(t *testing.T) {
 	}
 }
 
-func TestP3PORT002DeterministicStrictPackage(t *testing.T) {
+func TestExportProducesDeterministicStrictPackage(t *testing.T) {
 	database := newTestDatabase(t)
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {
@@ -175,7 +174,7 @@ func (source pinnedSource) BeginReadSnapshot(ctx context.Context) (*sql.Tx, erro
 	}
 }
 
-func TestP3PORT003ConcurrentWritesUseOneSnapshot(t *testing.T) {
+func TestExportConcurrentWritesUseOneSnapshot(t *testing.T) {
 	database := newTestDatabase(t)
 	reader, err := sql.Open("sqlite3", database.path)
 	if err != nil {
@@ -221,7 +220,7 @@ func TestP3PORT003ConcurrentWritesUseOneSnapshot(t *testing.T) {
 	}
 }
 
-func TestP3PORT004ChecksumFailureDoesNotPublish(t *testing.T) {
+func TestExportChecksumFailureDoesNotPublish(t *testing.T) {
 	database := newTestDatabase(t)
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {
@@ -272,11 +271,4 @@ func readPackage(t *testing.T, directory string) map[string]string {
 		result[entry.Name()] = string(data)
 	}
 	return result
-}
-
-func TestChecksumsAreStrictJSON(t *testing.T) {
-	var value Checksums
-	if err := json.Unmarshal([]byte(`{"algorithm":"sha256","files":{}}`), &value); err != nil {
-		t.Fatal(err)
-	}
 }

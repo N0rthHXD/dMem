@@ -16,15 +16,15 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func TestSliceDMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
+func TestMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	defer func() { close(release); _ = d.Close(context.Background()) }()
 
-	space := createSpace(t, client, "slice-d-basic-space", map[string]any{
-		"space_type": "user", "external_id": "slice-d-basic", "display_name": "Slice D Basic",
+	space := createSpace(t, client, "memory-basic-space", map[string]any{
+		"space_type": "user", "external_id": "memory-basic", "display_name": "Memory Basic",
 	})
-	event := ingestManualEvent(t, client, "slice-d-basic-event", space.SpaceID, "Original evidence")
+	event := ingestManualEvent(t, client, "memory-basic-event", space.SpaceID, "Original evidence")
 	createBody := memoryCreateBody(space.SpaceID, event.EventID, "The launch is Friday")
 	createBody["memory_type"] = "decision"
 	createBody["sensitivity"] = "sensitive"
@@ -34,7 +34,7 @@ func TestSliceDMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 		"event_id": event.EventID, "evidence_type": "manual_reference", "start_offset": 0, "end_offset": 8,
 	}}
 
-	created, response := createMemory(t, client, "slice-d-create", createBody)
+	created, response := createMemory(t, client, "memory-create", createBody)
 	if response.Header.Get("Idempotent-Replay") != "false" {
 		t.Fatalf("create replay header = %q", response.Header.Get("Idempotent-Replay"))
 	}
@@ -70,7 +70,7 @@ func TestSliceDMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 		}},
 		"reason": "Schedule changed",
 	}
-	revised, response := reviseMemory(t, client, created.MemoryID, "slice-d-revise", reviseBody)
+	revised, response := reviseMemory(t, client, created.MemoryID, "memory-revise", reviseBody)
 	if response.Header.Get("Idempotent-Replay") != "false" || revised.CurrentRevision.RevisionID == created.CurrentRevision.RevisionID {
 		t.Fatalf("revise response = replay %q, revision %+v", response.Header.Get("Idempotent-Replay"), revised.CurrentRevision)
 	}
@@ -93,14 +93,14 @@ func TestSliceDMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 	}
 }
 
-func TestSliceDMemoryValidationIsAtomicAndErrorsAreSafe(t *testing.T) {
+func TestMemoryValidationIsAtomicAndErrorsAreSafe(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	defer func() { close(release); _ = d.Close(context.Background()) }()
-	space := createSpace(t, client, "slice-d-validation-space", map[string]any{
-		"space_type": "user", "external_id": "slice-d-validation", "display_name": "Slice D Validation",
+	space := createSpace(t, client, "memory-validation-space", map[string]any{
+		"space_type": "user", "external_id": "memory-validation", "display_name": "Memory Validation",
 	})
-	event := ingestManualEvent(t, client, "slice-d-validation-event", space.SpaceID, "Evidence")
+	event := ingestManualEvent(t, client, "memory-validation-event", space.SpaceID, "Evidence")
 
 	for name, body := range map[string]map[string]any{
 		"empty": {
@@ -162,14 +162,14 @@ func TestSliceDMemoryValidationIsAtomicAndErrorsAreSafe(t *testing.T) {
 	}
 }
 
-func TestSliceDMemoryIdempotencyAndRevisionConflict(t *testing.T) {
+func TestMemoryIdempotencyAndRevisionConflict(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	defer func() { close(release); _ = d.Close(context.Background()) }()
-	space := createSpace(t, client, "slice-d-idempotency-space", map[string]any{
-		"space_type": "user", "external_id": "slice-d-idempotency", "display_name": "Slice D Idempotency",
+	space := createSpace(t, client, "memory-idempotency-space", map[string]any{
+		"space_type": "user", "external_id": "memory-idempotency", "display_name": "Memory Idempotency",
 	})
-	event := ingestManualEvent(t, client, "slice-d-idempotency-event", space.SpaceID, "Evidence")
+	event := ingestManualEvent(t, client, "memory-idempotency-event", space.SpaceID, "Evidence")
 	createBody := memoryCreateBody(space.SpaceID, event.EventID, "Version one")
 	created, _ := createMemory(t, client, "memory-create-replay", createBody)
 	replayed, response := createMemory(t, client, "memory-create-replay", createBody)
@@ -196,14 +196,14 @@ func TestSliceDMemoryIdempotencyAndRevisionConflict(t *testing.T) {
 	}
 }
 
-func TestSliceDMemoryLifecycleFrozenAndVisibility(t *testing.T) {
+func TestMemoryLifecycleFrozenAndVisibility(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	defer func() { close(release); _ = d.Close(context.Background()) }()
-	space := createSpace(t, client, "slice-d-lifecycle-space", map[string]any{
-		"space_type": "user", "external_id": "slice-d-lifecycle", "display_name": "Slice D Lifecycle",
+	space := createSpace(t, client, "memory-lifecycle-space", map[string]any{
+		"space_type": "user", "external_id": "memory-lifecycle", "display_name": "Memory Lifecycle",
 	})
-	event := ingestManualEvent(t, client, "slice-d-lifecycle-event", space.SpaceID, "Evidence")
+	event := ingestManualEvent(t, client, "memory-lifecycle-event", space.SpaceID, "Evidence")
 	memory, _ := createMemory(t, client, "lifecycle-create", memoryCreateBody(space.SpaceID, event.EventID, "Original"))
 	originalRevision := memory.CurrentRevision.RevisionID
 
@@ -289,7 +289,7 @@ func TestSliceDMemoryLifecycleFrozenAndVisibility(t *testing.T) {
 	}
 }
 
-func TestSliceDMemoryListPaginationAndScope(t *testing.T) {
+func TestMemoryListPaginationAndScope(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	defer func() { close(release); _ = d.Close(context.Background()) }()
@@ -340,7 +340,7 @@ func TestSliceDMemoryListPaginationAndScope(t *testing.T) {
 	}
 }
 
-func TestSliceDRestartIdempotentReviseDoesNotDuplicateRevisions(t *testing.T) {
+func TestRestartIdempotentReviseDoesNotDuplicateRevisions(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	space := createSpace(t, client, "restart-space", map[string]any{"space_type": "user", "external_id": "restart", "display_name": "Restart"})
@@ -380,10 +380,10 @@ func startHeldDaemon(t *testing.T, cfg config.Config) (*Daemon, chan struct{}, *
 func ingestManualEvent(t *testing.T, client *http.Client, key, spaceID, text string) domain.IngestResponse {
 	t.Helper()
 	response := requestJSON(t, client, http.MethodPost, "/v1/events", key, map[string]any{
-		"space_id": spaceID, "source_type": "manual", "source_name": "slice-d-test",
+		"space_id": spaceID, "source_type": "manual", "source_name": "memory-api-test",
 		"occurred_at": "2026-08-21T00:00:00Z",
 		"content":     map[string]any{"kind": "text", "media_type": "text/plain", "text": text},
-		"metadata":    map[string]any{"slice": "D"},
+		"metadata":    map[string]any{"suite": "memory-api"},
 	})
 	if response.StatusCode != http.StatusAccepted {
 		data, _ := io.ReadAll(response.Body)

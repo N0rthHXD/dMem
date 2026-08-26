@@ -51,7 +51,7 @@ func (r *interruptAfterBatchRepository) CommitImportBatch(ctx context.Context, o
 	return err
 }
 
-func TestP3PORT011RejectsMaliciousPackageBeforeAuthorityWrite(t *testing.T) {
+func TestImportRejectsMaliciousPackageBeforeAuthorityWrite(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		mutate func(*testing.T, string) string
@@ -102,16 +102,16 @@ func TestP3PORT011RejectsMaliciousPackageBeforeAuthorityWrite(t *testing.T) {
 			directory = test.mutate(t, directory)
 			_, err := NewImporter(database.repo, test.limits).Import(context.Background(), directory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "test"})
 			if !errors.Is(err, test.want) {
-				t.Fatalf("P3-PORT-011 Import() error = %v, want %v", err, test.want)
+				t.Fatalf("malicious package Import() error = %v, want %v", err, test.want)
 			}
 			if after := databaseHash(t, database.path); after != before {
-				t.Fatal("P3-PORT-011 malicious package wrote authority")
+				t.Fatal("malicious package wrote authority before validation")
 			}
 		})
 	}
 }
 
-func TestP3PORT005RejectsUnknownFormatBeforeAuthorityWrite(t *testing.T) {
+func TestImportRejectsUnknownFormatBeforeAuthorityWrite(t *testing.T) {
 	directory, database := exportedFixture(t)
 	before := databaseHash(t, database.path)
 	manifestData, err := os.ReadFile(filepath.Join(directory, "manifest.json"))
@@ -132,14 +132,14 @@ func TestP3PORT005RejectsUnknownFormatBeforeAuthorityWrite(t *testing.T) {
 	}
 	_, err = NewImporter(database.repo, DefaultImportLimits()).Import(context.Background(), directory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "test"})
 	if !errors.Is(err, ErrIncompatibleVersion) {
-		t.Fatalf("P3-PORT-005 Import() error = %v", err)
+		t.Fatalf("unknown format Import() error = %v, want unsupported format", err)
 	}
 	if after := databaseHash(t, database.path); after != before {
-		t.Fatal("P3-PORT-005 unknown format wrote authority")
+		t.Fatal("unknown format wrote authority before validation")
 	}
 }
 
-func TestP3PORT006DryRunDeterministicSpaceAndIDConflictPlan(t *testing.T) {
+func TestImportDryRunDeterministicSpaceAndIDConflictPlan(t *testing.T) {
 	directory, database := exportedFixture(t)
 	before := databaseHash(t, database.path)
 	importer := NewImporter(database.repo, DefaultImportLimits())
@@ -171,7 +171,7 @@ func TestP3PORT006DryRunDeterministicSpaceAndIDConflictPlan(t *testing.T) {
 	}
 }
 
-func TestP3PORT009InterruptedBatchResumesWithMappingsAndProvenance(t *testing.T) {
+func TestImportInterruptedBatchResumesWithMappingsAndProvenance(t *testing.T) {
 	directory, database := exportedFixture(t)
 	limits := ImportLimits{MaxFiles: 13, MaxRecords: 1000, MaxFileBytes: 1 << 20, MaxTotalBytes: 10 << 20, BatchSize: 1}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -206,7 +206,7 @@ func TestP3PORT009InterruptedBatchResumesWithMappingsAndProvenance(t *testing.T)
 	}
 }
 
-func TestP3PORT007RepeatedImportIsMappingIdempotent(t *testing.T) {
+func TestRepeatedImportIsMappingIdempotent(t *testing.T) {
 	directory, database := exportedFixture(t)
 	importer := NewImporter(database.repo, DefaultImportLimits())
 	first, err := importer.Import(context.Background(), directory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "test"})
@@ -219,18 +219,18 @@ func TestP3PORT007RepeatedImportIsMappingIdempotent(t *testing.T) {
 	}
 	second, err := importer.Import(context.Background(), directory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "test"})
 	if err != nil || second.ImportOperationID != first.ImportOperationID {
-		t.Fatalf("P3-PORT-007 repeated import = %+v, %v", second, err)
+		t.Fatalf("repeated import status = %+v, error = %v", second, err)
 	}
 	var authorityAfter, mappingsAfter, provenanceAfter int
 	if err := database.writer.QueryRow(`SELECT (SELECT count(*) FROM raw_events)+(SELECT count(*) FROM memories)+(SELECT count(*) FROM memory_revisions)+(SELECT count(*) FROM memory_evidence),(SELECT count(*) FROM import_object_mappings),(SELECT count(*) FROM imported_provenance)`).Scan(&authorityAfter, &mappingsAfter, &provenanceAfter); err != nil {
 		t.Fatal(err)
 	}
 	if authorityAfter != authorityBefore || mappingsAfter != mappingsBefore || provenanceAfter != provenanceBefore {
-		t.Fatalf("P3-PORT-007 repeated import changed counts: authority=%d/%d mappings=%d/%d provenance=%d/%d", authorityBefore, authorityAfter, mappingsBefore, mappingsAfter, provenanceBefore, provenanceAfter)
+		t.Fatalf("repeated import changed counts: authority=%d/%d mappings=%d/%d provenance=%d/%d", authorityBefore, authorityAfter, mappingsBefore, mappingsAfter, provenanceBefore, provenanceAfter)
 	}
 }
 
-func TestP3PORT007BatchFailureRollsBackMappingProvenanceAndCheckpoint(t *testing.T) {
+func TestImportBatchFailureRollsBackMappingProvenanceAndCheckpoint(t *testing.T) {
 	directory, database := exportedFixture(t)
 	plan, err := NewImporter(database.repo, DefaultImportLimits()).DryRun(context.Background(), directory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "test"})
 	if err != nil {
@@ -258,7 +258,7 @@ func TestP3PORT007BatchFailureRollsBackMappingProvenanceAndCheckpoint(t *testing
 	}
 }
 
-func TestP3PORT007CancelPreservesCommittedBatch(t *testing.T) {
+func TestImportCancelPreservesCommittedBatch(t *testing.T) {
 	directory, database := exportedFixture(t)
 	limits := ImportLimits{MaxFiles: 13, MaxRecords: 1000, MaxFileBytes: 1 << 20, MaxTotalBytes: 10 << 20, BatchSize: 1}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -285,7 +285,7 @@ func TestP3PORT007CancelPreservesCommittedBatch(t *testing.T) {
 	}
 }
 
-func TestP3PORT008LocalCurrentConflictCreatesEvolutionProposal(t *testing.T) {
+func TestImportLocalCurrentConflictCreatesEvolutionProposal(t *testing.T) {
 	directory, database := exportedFixture(t)
 	input := ImportRequest{TargetSpaceID: taskSpace, CreatedBy: "test", ObjectMappings: map[string]string{"memory\x00memory-a": "memory-external"}}
 	importer := NewImporter(database.repo, DefaultImportLimits())
@@ -359,7 +359,7 @@ func TestImportGenerationFenceRejectsStaleBatchRace(t *testing.T) {
 	}
 }
 
-func TestP3PORT010ExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) {
+func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) {
 	source := newTestDatabase(t)
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {
@@ -371,30 +371,30 @@ func TestP3PORT010ExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *te
 		t.Fatal(err)
 	}
 	fresh := newFreshImportDatabase(t)
-	status, err := NewImporter(fresh.repo, DefaultImportLimits()).Import(context.Background(), packageDirectory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "p3-portability-drill"})
+	status, err := NewImporter(fresh.repo, DefaultImportLimits()).Import(context.Background(), packageDirectory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "portability-drill"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status.State != "succeeded" || status.CommittedObjects != status.TotalObjects {
-		t.Fatalf("P3-PORT-010 import status = %+v", status)
+		t.Fatalf("fresh import status = %+v, error = %v", status, err)
 	}
 	if err := fresh.repo.RebuildFTS(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	result, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 1000})
 	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.CurrentRevision.Content != "alpha" {
-		t.Fatalf("P3-PORT-010 retrieval = %+v, %v", result, err)
+		t.Fatalf("imported memory retrieval = %+v, error = %v", result, err)
 	}
 	var mappings, provenance, importedMemories int
 	if err := fresh.writer.QueryRow(`SELECT (SELECT count(*) FROM import_object_mappings),(SELECT count(*) FROM imported_provenance),(SELECT count(*) FROM memories)`).Scan(&mappings, &provenance, &importedMemories); err != nil {
 		t.Fatal(err)
 	}
 	if mappings != status.TotalObjects || provenance != mappings || importedMemories != 1 {
-		t.Fatalf("P3-PORT-010 authority/mapping counts = %d/%d/%d import=%d package=%d", mappings, provenance, importedMemories, status.TotalObjects, planObjectCount(plan))
+		t.Fatalf("imported authority/mapping counts = %d/%d/%d, import objects=%d package objects=%d", mappings, provenance, importedMemories, status.TotalObjects, planObjectCount(plan))
 	}
 }
 
-func TestP3PERF003TargetScaleExportImport(t *testing.T) {
+func TestPortabilityPerformanceAtTargetScale(t *testing.T) {
 	gates := loadPortabilityGates(t)
 	source := newTestDatabase(t)
 	tx, err := source.writer.Begin()
@@ -425,7 +425,7 @@ func TestP3PERF003TargetScaleExportImport(t *testing.T) {
 	fresh := newFreshImportDatabase(t)
 	limits := DefaultImportLimits()
 	limits.BatchSize = 25
-	status, err := NewImporter(fresh.repo, limits).Import(context.Background(), packageDirectory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "p3-perf"})
+	status, err := NewImporter(fresh.repo, limits).Import(context.Background(), packageDirectory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "performance-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,9 +448,9 @@ func TestP3PERF003TargetScaleExportImport(t *testing.T) {
 	if packageBytes > 0 {
 		tempAmplification = float64(temporaryBytes) / float64(packageBytes)
 	}
-	t.Logf("P3-PERF-003 objects=%d duration=%s throughput=%.1f/s checkpoints=%d temp=%.2fx", objects, duration, throughput, checkpoints, tempAmplification)
+	t.Logf("portability performance: objects=%d duration=%s throughput=%.1f/s checkpoints=%d temp=%.2fx", objects, duration, throughput, checkpoints, tempAmplification)
 	if throughput < gates.MinimumPortabilityObjectsPerSecond || tempAmplification > gates.MaximumPortabilityTempAmplification || checkpoints > gates.MaximumPortabilityCheckpoints {
-		t.Fatal("P3-PERF-003 thresholds exceeded")
+		t.Fatal("portability performance thresholds exceeded")
 	}
 }
 
@@ -463,7 +463,7 @@ type portabilityPerformanceGates struct {
 
 func loadPortabilityGates(t *testing.T) portabilityPerformanceGates {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "storage", "testdata", "phase3-gates-v1.json"))
+	data, err := os.ReadFile(filepath.Join("..", "storage", "testdata", "search-quality-gates-v1.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,8 +471,8 @@ func loadPortabilityGates(t *testing.T) portabilityPerformanceGates {
 		ConfigVersion string                      `json:"config_version"`
 		Performance   portabilityPerformanceGates `json:"performance"`
 	}
-	if err := json.Unmarshal(data, &config); err != nil || config.ConfigVersion != "phase3-gates-v1" || config.Performance.PortabilityObjectCount < 100 {
-		t.Fatalf("invalid Phase 3 portability gates: %v", err)
+	if err := json.Unmarshal(data, &config); err != nil || config.ConfigVersion != "search-quality-gates-v1" || config.Performance.PortabilityObjectCount < 100 {
+		t.Fatalf("invalid portability performance gates: %v", err)
 	}
 	return config.Performance
 }

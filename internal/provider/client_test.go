@@ -81,7 +81,7 @@ func TestProcessMinimizesContentAndUsesExplicitSecret(t *testing.T) {
 	}
 }
 
-func TestP3CONTRACT003ProcessPreservesContextMemoryBudgetSensitivityAndTypedEvidence(t *testing.T) {
+func TestProcessPreservesContextMemoryBudgetSensitivityAndTypedEvidence(t *testing.T) {
 	t.Setenv("DMEM_TEST_SECRET", "secret")
 	validFrom := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	validUntil := validFrom.Add(24 * time.Hour)

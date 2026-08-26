@@ -453,25 +453,25 @@ func TestMEMCurrentLifecycleMatchesLatestEventAndNoopIsRecordedWithoutEvent(t *t
 	}
 }
 
-func TestP3CONTRACT005CorpusGenerationAdvancesOnlyWithCommittedProjectionChanges(t *testing.T) {
+func TestCorpusGenerationAdvancesOnlyWithCommittedProjectionChanges(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	var generation int64
 	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 1 {
 		t.Fatalf("initial generation = %d, %v", generation, err)
 	}
-	memory := createTestMemory(t, repository, "p3-generation-create")
+	memory := createTestMemory(t, repository, "generation-create")
 	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {
 		t.Fatalf("generation after create = %d, %v", generation, err)
 	}
 	invalid := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "invalid", Evidence: directEvidence("missing-event"), Reason: "rollback"}
-	if _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("p3-generation-invalid", "/v1/memories/{memory_id}/revisions", invalid), memory.MemoryID, invalid); !errors.Is(err, ErrInvalidEvidence) {
+	if _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("generation-invalid", "/v1/memories/{memory_id}/revisions", invalid), memory.MemoryID, invalid); !errors.Is(err, ErrInvalidEvidence) {
 		t.Fatalf("invalid revise error = %v", err)
 	}
 	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {
 		t.Fatalf("generation after rollback = %d, %v", generation, err)
 	}
 	noop := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "confirm", Reason: "already active"}
-	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("p3-generation-noop", "/v1/memories/{memory_id}/state", noop), memory.MemoryID, noop); err != nil {
+	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("generation-noop", "/v1/memories/{memory_id}/state", noop), memory.MemoryID, noop); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {

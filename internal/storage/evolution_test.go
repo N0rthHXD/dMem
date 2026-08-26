@@ -38,22 +38,22 @@ func confirmEvolutionTest(t *testing.T, r *Repository, key string, p domain.Evol
 	return v
 }
 
-func TestP3EVOLVE001SupplementConfirmAtomic(t *testing.T) {
+func TestEvolutionSupplementConfirmAtomic(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, r, "evolve-supplement-memory")
 	p := createEvolutionTest(t, r, "evolve-supplement", evolutionParams("supplement", memory))
 	confirmed := confirmEvolutionTest(t, r, "evolve-supplement-confirm", p, nil)
 	if confirmed.ReviewState != "confirmed" || len(confirmed.Reviews) != 1 || len(confirmed.Reviews[0].Results) != 2 {
-		t.Fatalf("P3-EVOLVE-001 proposal=%+v", confirmed)
+		t.Fatalf("supplement confirmation proposal=%+v", confirmed)
 	}
 	var revisions, evidence, reviews, projections, jobs int
 	err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memory_revisions WHERE memory_id=?),(SELECT count(*) FROM memory_evidence me JOIN memory_revisions mr ON mr.revision_id=me.revision_id WHERE mr.memory_id=?),(SELECT count(*) FROM evolution_proposal_reviews WHERE proposal_id=?),(SELECT count(*) FROM memory_projections WHERE memory_id=?),(SELECT count(*) FROM jobs WHERE job_type='rebuild_fts')`, memory.MemoryID, memory.MemoryID, p.ProposalID, memory.MemoryID).Scan(&revisions, &evidence, &reviews, &projections, &jobs)
 	if err != nil || revisions != 2 || evidence != 2 || reviews != 1 || projections != 1 || jobs != 1 {
-		t.Fatalf("P3-EVOLVE-001 rows=%d/%d/%d/%d/%d err=%v", revisions, evidence, reviews, projections, jobs, err)
+		t.Fatalf("supplement confirmation rows=%d/%d/%d/%d/%d, error=%v", revisions, evidence, reviews, projections, jobs, err)
 	}
 }
 
-func TestP3EVOLVE002ReplacementModesAndSupersedes(t *testing.T) {
+func TestEvolutionReplacementModesAndSupersedes(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	old := createTestMemory(t, r, "replace-old")
 	p := createEvolutionTest(t, r, "replace-proposal", evolutionParams("replacement", old))
@@ -62,11 +62,11 @@ func TestP3EVOLVE002ReplacementModesAndSupersedes(t *testing.T) {
 	var relations, memories int
 	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memory_relations WHERE relation_type='supersedes'),(SELECT count(*) FROM memories)`).Scan(&relations, &memories)
 	if relations != 1 || memories != 2 || len(confirmed.Reviews[0].Results) != 3 {
-		t.Fatalf("P3-EVOLVE-002 relations=%d memories=%d proposal=%+v", relations, memories, confirmed)
+		t.Fatalf("replacement confirmation relations=%d memories=%d proposal=%+v", relations, memories, confirmed)
 	}
 }
 
-func TestP3EVOLVE003ConfirmIdempotentReplay(t *testing.T) {
+func TestEvolutionConfirmIdempotentReplay(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	m := createTestMemory(t, r, "replay-memory")
 	p := createEvolutionTest(t, r, "replay-proposal", evolutionParams("supplement", m))
@@ -78,11 +78,11 @@ func TestP3EVOLVE003ConfirmIdempotentReplay(t *testing.T) {
 	}
 	second, replay, err := r.ConfirmEvolutionProposal(context.Background(), identity, p.ProposalID, review)
 	if err != nil || !replay || first.Reviews[0].ReviewID != second.Reviews[0].ReviewID {
-		t.Fatalf("P3-EVOLVE-003 replay=%v err=%v", replay, err)
+		t.Fatalf("evolution confirmation replay=%v, error=%v", replay, err)
 	}
 }
 
-func TestP3EVOLVE004StaleGenerationCannotCreateProposal(t *testing.T) {
+func TestEvolutionStaleGenerationCannotCreateProposal(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	m := createTestMemory(t, r, "fence-memory")
 	now := formatTime(r.runtime.Now())
@@ -92,7 +92,7 @@ func TestP3EVOLVE004StaleGenerationCannotCreateProposal(t *testing.T) {
 	}
 	claim := ClaimedJob{Job: domain.Job{JobID: "evolve-job"}, LeaseOwner: "worker", LeaseGeneration: 1}
 	if _, _, err = r.CreateEvolutionProposalClaimed(context.Background(), claim, evolutionParams("supplement", m)); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("P3-EVOLVE-004 error=%v", err)
+		t.Fatalf("stale generation proposal error=%v, want stale generation", err)
 	}
 	var count int
 	r.store.reader.QueryRow(`SELECT count(*) FROM evolution_proposals`).Scan(&count)
@@ -101,7 +101,7 @@ func TestP3EVOLVE004StaleGenerationCannotCreateProposal(t *testing.T) {
 	}
 }
 
-func TestP3EVOLVE005TransactionFailureLeavesNoAuthority(t *testing.T) {
+func TestEvolutionTransactionFailureLeavesNoAuthority(t *testing.T) {
 	r, runtime := newMemoryTestRepository(t)
 	m := createTestMemory(t, r, "failure-memory")
 	p := createEvolutionTest(t, r, "failure-proposal", evolutionParams("supplement", m))
@@ -114,11 +114,11 @@ func TestP3EVOLVE005TransactionFailureLeavesNoAuthority(t *testing.T) {
 	}
 	got, _ := r.GetEvolutionProposal(context.Background(), p.ProposalID)
 	if got.ReviewState != "pending" || getMemoryRevisionCount(t, r, m.MemoryID) != 1 {
-		t.Fatalf("P3-EVOLVE-005 proposal=%+v", got)
+		t.Fatalf("transaction failure left proposal authority=%+v", got)
 	}
 }
 
-func TestP3EVOLVE006ContextMemoryWithoutEvidenceRejected(t *testing.T) {
+func TestEvolutionContextMemoryWithoutEvidenceRejected(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	m := createTestMemory(t, r, "evidence-memory")
 	p := evolutionParams("supplement", m)
@@ -126,7 +126,7 @@ func TestP3EVOLVE006ContextMemoryWithoutEvidenceRejected(t *testing.T) {
 	proposal := createEvolutionTest(t, r, "evidence-proposal", p)
 	review := ReviewEvolutionProposalParams{ExpectedTargets: proposal.Targets, ReasonCode: "reviewed"}
 	if _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("evidence-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), proposal.ProposalID, review); !errors.Is(err, ErrInvalidEvidence) {
-		t.Fatalf("P3-EVOLVE-006 error=%v", err)
+		t.Fatalf("context memory without evidence error=%v, want invalid evidence", err)
 	}
 }
 
@@ -139,7 +139,7 @@ func getMemoryRevisionCount(t *testing.T, r *Repository, id string) int {
 	return n
 }
 
-func TestP3CONFLICT001ConfirmConflictAtomic(t *testing.T) {
+func TestConfirmConflictAtomic(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b := createTestMemory(t, r, "conflict-a"), createTestMemory(t, r, "conflict-b")
 	p := createEvolutionTest(t, r, "conflict-proposal", evolutionParams("conflict", a, b))
@@ -155,18 +155,18 @@ func TestP3CONFLICT001ConfirmConflictAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	if relations != 1 || cases != 1 || participants != 2 || reviews != 1 || confirmed.ReviewState != "confirmed" || gotA.CurrentState != "contested" || gotB.CurrentState != "contested" {
-		t.Fatalf("P3-CONFLICT-001 rows=%d/%d/%d/%d", relations, cases, participants, reviews)
+		t.Fatalf("confirmed conflict rows=%d/%d/%d/%d, want 1/1/2/1", relations, cases, participants, reviews)
 	}
 }
 
-func TestP3CONFLICT002SearchContestedConflictRefs(t *testing.T) {
+func TestSearchContestedConflictRefs(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b := createTestMemory(t, r, "search-conflict-a"), createTestMemory(t, r, "search-conflict-b")
 	p := createEvolutionTest(t, r, "search-conflict", evolutionParams("conflict", a, b))
 	confirmEvolutionTest(t, r, "search-conflict-confirm", p, nil)
 	response, err := r.SearchMemories(context.Background(), SearchParams{Query: "searchable", SpaceIDs: []string{"space-1"}, States: []string{"contested"}, Mode: "keyword", Limit: 10, MaxChars: 10000})
 	if err != nil || len(response.Results) != 2 {
-		t.Fatalf("P3-CONFLICT-002 response=%+v err=%v", response, err)
+		t.Fatalf("contested conflict search response=%+v, error=%v", response, err)
 	}
 	for _, result := range response.Results {
 		if len(result.ConflictRefs) != 1 {
@@ -175,7 +175,7 @@ func TestP3CONFLICT002SearchContestedConflictRefs(t *testing.T) {
 	}
 }
 
-func TestP3CONFLICT003ConcurrentResolutionOneTerminalEvent(t *testing.T) {
+func TestConflictConcurrentResolutionOneTerminalEvent(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b := createTestMemory(t, r, "resolve-a"), createTestMemory(t, r, "resolve-b")
 	p := createEvolutionTest(t, r, "resolve-proposal", evolutionParams("conflict", a, b))
@@ -205,11 +205,11 @@ func TestP3CONFLICT003ConcurrentResolutionOneTerminalEvent(t *testing.T) {
 	var events int
 	r.store.reader.QueryRow(`SELECT count(*) FROM conflict_resolution_events WHERE case_id=?`, caseID).Scan(&events)
 	if success != 1 || events != 1 {
-		t.Fatalf("P3-CONFLICT-003 success=%d events=%d", success, events)
+		t.Fatalf("concurrent conflict resolutions succeeded=%d terminal events=%d, want 1/1", success, events)
 	}
 }
 
-func TestP3CONFLICT004MultiTargetRevisionChangedNoPartialUpdate(t *testing.T) {
+func TestConflictMultiTargetRevisionChangedNoPartialUpdate(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b := createTestMemory(t, r, "stale-a"), createTestMemory(t, r, "stale-b")
 	p := createEvolutionTest(t, r, "stale-conflict", evolutionParams("conflict", a, b))
@@ -219,7 +219,7 @@ func TestP3CONFLICT004MultiTargetRevisionChangedNoPartialUpdate(t *testing.T) {
 	}
 	review := ReviewEvolutionProposalParams{ExpectedTargets: p.Targets, ReasonCode: "reviewed"}
 	if _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("stale-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); !errors.Is(err, ErrRevisionConflict) {
-		t.Fatalf("P3-CONFLICT-004 error=%v", err)
+		t.Fatalf("changed target revision resolution error=%v, want revision conflict", err)
 	}
 	var cases, relations int
 	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM conflict_cases),(SELECT count(*) FROM memory_relations)`).Scan(&cases, &relations)
@@ -232,7 +232,7 @@ func TestP3CONFLICT004MultiTargetRevisionChangedNoPartialUpdate(t *testing.T) {
 	}
 }
 
-func TestP3CONFLICT005FrozenParticipantPreservesProposal(t *testing.T) {
+func TestConflictFrozenParticipantPreservesProposal(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b := createTestMemory(t, r, "frozen-a"), createTestMemory(t, r, "frozen-b")
 	p := createEvolutionTest(t, r, "frozen-conflict", evolutionParams("conflict", a, b))
@@ -242,7 +242,7 @@ func TestP3CONFLICT005FrozenParticipantPreservesProposal(t *testing.T) {
 	}
 	review := ReviewEvolutionProposalParams{ExpectedTargets: p.Targets, ReasonCode: "reviewed"}
 	if _, _, err = r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("frozen-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); !errors.Is(err, ErrFrozenRevision) {
-		t.Fatalf("P3-CONFLICT-005 error=%v", err)
+		t.Fatalf("frozen participant resolution error=%v, want frozen memory", err)
 	}
 	got, _ := r.GetEvolutionProposal(context.Background(), p.ProposalID)
 	if got.ReviewState != "pending" {
@@ -250,7 +250,7 @@ func TestP3CONFLICT005FrozenParticipantPreservesProposal(t *testing.T) {
 	}
 }
 
-func TestP3CONFLICT006AutomaticDestructiveResolutionUnsupported(t *testing.T) {
+func TestConflictAutomaticDestructiveResolutionUnsupported(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b := createTestMemory(t, r, "unsupported-a"), createTestMemory(t, r, "unsupported-b")
 	p := createEvolutionTest(t, r, "unsupported-conflict", evolutionParams("conflict", a, b))
@@ -258,7 +258,7 @@ func TestP3CONFLICT006AutomaticDestructiveResolutionUnsupported(t *testing.T) {
 	caseID := confirmed.Reviews[0].Results[1].ResultID
 	params := ResolveConflictParams{ResolutionType: "automatic_retract", ExpectedTargets: p.Targets, Reason: "automatic"}
 	if _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("unsupported-resolution", "/v1/conflict-cases/{case_id}/resolve", params), caseID, params); !errors.Is(err, ErrUnsupportedAction) {
-		t.Fatalf("P3-CONFLICT-006 error=%v", err)
+		t.Fatalf("automatic destructive resolution error=%v, want unsupported operation", err)
 	}
 	c, _ := r.GetConflictCase(context.Background(), caseID)
 	if c.State != "open" {

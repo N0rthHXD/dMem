@@ -40,7 +40,6 @@ func (f *fakeAggregateProvider) Build(_ context.Context, input domain.AggregateP
 
 func TestOpenAPIContract(t *testing.T) {
 	doc := loadOpenAPI(t)
-	assertTraceability(t, doc)
 	assertIdempotentResponseHeaders(t, doc)
 	assertSearchResponseModes(t, doc)
 	cfg := testConfig(t)
@@ -136,14 +135,14 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodPost, "/v1/candidates/"+rejectID+"/reject", "reject", reviewBody))
 	c.replay(http.MethodPost, "/v1/candidates/"+rejectID+"/reject", "reject", reviewBody)
 
-	p3MemoryBody := memoryCreateBody(space.SpaceID, event.EventID, "phase three contract target")
-	response = c.do(http.MethodPost, "/v1/memories", "p3-memory", p3MemoryBody)
-	var p3Memory domain.Memory
-	decodeResponse(t, response, &p3Memory)
-	response = c.do(http.MethodPost, "/v1/memories", "p3-aggregate-memory", memoryCreateBody(space.SpaceID, event.EventID, "phase three aggregate input"))
+	targetMemoryBody := memoryCreateBody(space.SpaceID, event.EventID, "contract target")
+	response = c.do(http.MethodPost, "/v1/memories", "target-memory", targetMemoryBody)
+	var targetMemory domain.Memory
+	decodeResponse(t, response, &targetMemory)
+	response = c.do(http.MethodPost, "/v1/memories", "aggregate-memory", memoryCreateBody(space.SpaceID, event.EventID, "aggregate input"))
 	var aggregateInput domain.Memory
 	decodeResponse(t, response, &aggregateInput)
-	response = c.do(http.MethodPost, "/v1/memories", "p3-aggregate-memory-two", memoryCreateBody(space.SpaceID, event.EventID, "phase three aggregate input two"))
+	response = c.do(http.MethodPost, "/v1/memories", "aggregate-memory-two", memoryCreateBody(space.SpaceID, event.EventID, "aggregate input two"))
 	var aggregateInputTwo domain.Memory
 	decodeResponse(t, response, &aggregateInputTwo)
 
@@ -168,7 +167,7 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodGet, "/v1/entities/"+*entityProposal.ResultEntityID+"?space_id="+space.SpaceID, "", nil))
 	c.close(c.expect(http.StatusNotImplemented, http.MethodPost, "/v1/entities/"+*entityProposal.ResultEntityID+"/merge", "entity-merge", nil))
 
-	relationBody := map[string]any{"event_id": event.EventID, "space_id": space.SpaceID, "relation_type": "supports", "source_memory_id": memory.MemoryID, "source_revision_id": memory.CurrentRevision.RevisionID, "target_memory_id": p3Memory.MemoryID, "target_revision_id": p3Memory.CurrentRevision.RevisionID, "evidence": []map[string]any{{"evidence_type": "human_confirmation"}}, "processor_identity": "contract/processor", "processing_version": "contract-v3"}
+	relationBody := map[string]any{"event_id": event.EventID, "space_id": space.SpaceID, "relation_type": "supports", "source_memory_id": memory.MemoryID, "source_revision_id": memory.CurrentRevision.RevisionID, "target_memory_id": targetMemory.MemoryID, "target_revision_id": targetMemory.CurrentRevision.RevisionID, "evidence": []map[string]any{{"evidence_type": "human_confirmation"}}, "processor_identity": "contract/processor", "processing_version": "contract-v3"}
 	response = c.do(http.MethodPost, "/v1/relation-proposals", "relation-create", relationBody)
 	var relationProposal domain.RelationProposal
 	decodeResponse(t, response, &relationProposal)
@@ -187,7 +186,7 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodGet, "/v1/relations?space_id="+space.SpaceID+"&memory_id="+memory.MemoryID+"&direction=outgoing", "", nil))
 	c.close(c.do(http.MethodGet, "/v1/relations/"+*relationProposal.ResultRelationID+"?space_id="+space.SpaceID, "", nil))
 
-	targets := []map[string]any{{"memory_id": memory.MemoryID, "expected_revision_id": memory.CurrentRevision.RevisionID}, {"memory_id": p3Memory.MemoryID, "expected_revision_id": p3Memory.CurrentRevision.RevisionID}}
+	targets := []map[string]any{{"memory_id": memory.MemoryID, "expected_revision_id": memory.CurrentRevision.RevisionID}, {"memory_id": targetMemory.MemoryID, "expected_revision_id": targetMemory.CurrentRevision.RevisionID}}
 	evolutionBody := map[string]any{"event_id": event.EventID, "space_id": space.SpaceID, "action": "conflict", "proposed_content": "contract conflict", "sensitivity": "normal", "processor_identity": "contract/processor", "processing_version": "contract-v3", "targets": targets, "evidence": []map[string]any{{"evidence_type": "raw_event_range", "event_id": event.EventID, "start_offset": 0, "end_offset": 8}}}
 	response = c.do(http.MethodPost, "/v1/evolution-proposals", "evolution-create", evolutionBody)
 	var evolution domain.EvolutionProposal
@@ -216,11 +215,11 @@ func TestOpenAPIContract(t *testing.T) {
 	c.replay(http.MethodPost, "/v1/evolution-proposals/"+evolutionReject.ProposalID+"/reject", "evolution-reject", map[string]any{"reason_code": "contract"})
 	c.close(c.do(http.MethodGet, "/v1/conflict-cases?space_id="+space.SpaceID, "", nil))
 	c.close(c.do(http.MethodGet, "/v1/conflict-cases/"+caseID, "", nil))
-	resolveBody := map[string]any{"resolution_type": "keep_both", "expected_targets": targets, "result_states": map[string]string{memory.MemoryID: "contested", p3Memory.MemoryID: "active"}, "reason": "contract resolution"}
+	resolveBody := map[string]any{"resolution_type": "keep_both", "expected_targets": targets, "result_states": map[string]string{memory.MemoryID: "contested", targetMemory.MemoryID: "active"}, "reason": "contract resolution"}
 	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/conflict-cases/"+caseID+"/resolve", "conflict-resolve", resolveBody))
 	c.replay(http.MethodPost, "/v1/conflict-cases/"+caseID+"/resolve", "conflict-resolve", resolveBody)
 
-	feedbackBody := map[string]any{"space_id": space.SpaceID, "memory_id": p3Memory.MemoryID, "revision_id": p3Memory.CurrentRevision.RevisionID, "feedback_type": "useful", "reason_code": "answered_query", "note": "contract feedback"}
+	feedbackBody := map[string]any{"space_id": space.SpaceID, "memory_id": targetMemory.MemoryID, "revision_id": targetMemory.CurrentRevision.RevisionID, "feedback_type": "useful", "reason_code": "answered_query", "note": "contract feedback"}
 	c.close(c.do(http.MethodPost, "/v1/feedback", "feedback-create", feedbackBody))
 	c.replay(http.MethodPost, "/v1/feedback", "feedback-create", feedbackBody)
 	c.close(c.do(http.MethodGet, "/v1/feedback?space_id="+space.SpaceID, "", nil))
@@ -248,7 +247,7 @@ func TestOpenAPIContract(t *testing.T) {
 	aggregateID := aggregatePage.Items[0].AggregateID
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID, "", nil))
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID+"/provenance", "", nil))
-	c.close(c.expect(http.StatusUnprocessableEntity, http.MethodPost, "/v1/aggregate-proposals", "aggregate-profile", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "profile", "input_revision_ids": []string{p3Memory.CurrentRevision.RevisionID}}))
+	c.close(c.expect(http.StatusUnprocessableEntity, http.MethodPost, "/v1/aggregate-proposals", "aggregate-profile", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "profile", "input_revision_ids": []string{targetMemory.CurrentRevision.RevisionID}}))
 
 	response = c.do(http.MethodPost, "/v1/search", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}})
 	var keyword domain.SearchResponse
@@ -603,20 +602,6 @@ func assertIdempotentResponseHeaders(t *testing.T, doc *openapi3.T) {
 			}
 		}
 	}
-}
-
-func assertTraceability(t *testing.T, doc *openapi3.T) {
-	t.Helper()
-	values, ok := doc.Extensions["x-traceability"].([]any)
-	if !ok {
-		t.Fatal("OpenAPI x-traceability is missing")
-	}
-	for _, value := range values {
-		if value == "P3-CONTRACT-002" {
-			return
-		}
-	}
-	t.Fatal("OpenAPI x-traceability is missing P3-CONTRACT-002")
 }
 
 func assertOperationStatusMatrix(t *testing.T, doc *openapi3.T, seen map[string]map[int]bool) {

@@ -17,7 +17,6 @@ import (
 var (
 	ErrEntityProposalReviewed = errors.New("entity proposal has already been reviewed")
 	ErrInvalidEntityProposal  = errors.New("invalid entity proposal")
-	ErrEntityMergeUnsupported = errors.New("entity merge is unsupported")
 	ErrFrozenRevision         = errors.New("memory is frozen")
 )
 
@@ -462,9 +461,6 @@ func (r *Repository) GetEntityInSpace(ctx context.Context, id, spaceID string, m
 	return entity, err
 }
 
-func (r *Repository) MergeEntities(context.Context, WriteIdentity, string, string) error {
-	return ErrEntityMergeUnsupported
-}
 func getEntity(ctx context.Context, q candidateQueryer, id string, mentions bool) (domain.Entity, error) {
 	var e domain.Entity
 	err := q.QueryRowContext(ctx, `SELECT entity_id,space_id,entity_type,canonical_name,normalized_name,normalization_version,state,sensitivity,created_by,processing_version,created_at,updated_at FROM entities WHERE entity_id=?`, id).Scan(&e.EntityID, &e.SpaceID, &e.EntityType, &e.CanonicalName, &e.NormalizedName, &e.NormalizationVersion, &e.State, &e.Sensitivity, &e.CreatedBy, &e.ProcessingVersion, &e.CreatedAt, &e.UpdatedAt)

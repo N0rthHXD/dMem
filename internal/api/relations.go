@@ -182,9 +182,6 @@ func (h *Handler) relations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := storage.RelationFilter{SpaceID: space, State: r.URL.Query().Get("state"), RelationType: r.URL.Query().Get("relation_type"), MemoryID: r.URL.Query().Get("memory_id"), RevisionID: r.URL.Query().Get("revision_id"), Direction: r.URL.Query().Get("direction"), Limit: limit, Cursor: cursor}
-	if f.RelationType == "" {
-		f.RelationType = r.URL.Query().Get("type")
-	}
 	if f.State != "" && !containsAPI([]string{"active", "dismissed"}, f.State) || f.RelationType != "" && !validRelationTypeAPI(f.RelationType) || f.Direction != "" && !containsAPI([]string{"incoming", "outgoing", "both"}, f.Direction) || f.MemoryID != "" && !validUUID(f.MemoryID) || f.RevisionID != "" && !validUUID(f.RevisionID) {
 		h.writeError(w, 422, "invalid_request", "invalid relation filter", requestID, "", false, nil)
 		return

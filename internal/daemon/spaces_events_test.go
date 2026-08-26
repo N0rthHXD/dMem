@@ -48,7 +48,7 @@ func TestSpaceAndEventAPI(t *testing.T) {
 	}
 
 	response = requestJSON(t, client, http.MethodPost, "/v1/spaces", "project-key", map[string]any{
-		"parent_space_id": root.SpaceID, "space_type": "project", "external_id": "p2", "display_name": "Different",
+		"parent_space_id": root.SpaceID, "space_type": "project", "external_id": "conflict", "display_name": "Different",
 	})
 	assertError(t, response, http.StatusConflict, "idempotency_conflict")
 

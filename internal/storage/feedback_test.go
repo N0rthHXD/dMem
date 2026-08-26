@@ -31,7 +31,7 @@ type domainFeedback struct {
 	ProposalID         *string
 }
 
-func TestP3FEEDBACK001AppendIsRevisionBoundAndIdempotent(t *testing.T) {
+func TestFeedbackAppendIsRevisionBoundAndIdempotent(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, repository, "feedback-001")
 	p := AppendFeedbackParams{SpaceID: "space-1", MemoryID: memory.MemoryID, RevisionID: memory.CurrentRevision.RevisionID, FeedbackType: "useful", ReasonCode: "answered_query"}
@@ -56,7 +56,7 @@ func TestP3FEEDBACK001AppendIsRevisionBoundAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestP3FEEDBACK002FeedbackNeverChangesLifecycle(t *testing.T) {
+func TestFeedbackNeverChangesLifecycle(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, repository, "feedback-002")
 	for i, kind := range []string{"useful", "irrelevant", "correct", "supplement", "contest"} {
@@ -69,7 +69,7 @@ func TestP3FEEDBACK002FeedbackNeverChangesLifecycle(t *testing.T) {
 	}
 }
 
-func TestP3FEEDBACK003EvolutionProposalIsDistinctPendingOutcome(t *testing.T) {
+func TestFeedbackEvolutionProposalIsDistinctPendingOutcome(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, repository, "feedback-003")
 	result := appendTestFeedback(t, repository, "caller", "feedback-003-proposal", AppendFeedbackParams{SpaceID: "space-1", MemoryID: memory.MemoryID, RevisionID: memory.CurrentRevision.RevisionID, FeedbackType: "correct", ReasonCode: "fact_incorrect", CreateProposal: true, SourceEventID: "event-1", ProposedContent: "corrected pending content"})
@@ -86,7 +86,7 @@ func TestP3FEEDBACK003EvolutionProposalIsDistinctPendingOutcome(t *testing.T) {
 	}
 }
 
-func TestP3FEEDBACK004AggregateDeleteAndRebuildIsDeterministic(t *testing.T) {
+func TestFeedbackAggregateDeleteAndRebuildIsDeterministic(t *testing.T) {
 	repository, runtime := newMemoryTestRepository(t)
 	memory := createTestMemory(t, repository, "feedback-004")
 	for i, vote := range []struct{ caller, kind string }{{"a", "useful"}, {"a", "irrelevant"}, {"b", "correct"}, {"c", "supplement"}, {"d", "contest"}} {
@@ -128,7 +128,7 @@ func readAggregate(t *testing.T, r *Repository, revision string) aggregateRow {
 	return a
 }
 
-func TestP3FEEDBACK005StaleClaimCannotPublishAggregate(t *testing.T) {
+func TestFeedbackStaleClaimCannotPublishAggregate(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	claim := ClaimedJob{Job: domain.Job{JobID: "missing", JobType: "rebuild_feedback_aggregates"}, LeaseOwner: "old-worker", LeaseGeneration: 1}
 	if err := repository.RebuildFeedbackAggregatesClaimed(context.Background(), claim); !errors.Is(err, ErrLeaseLost) {
@@ -140,7 +140,7 @@ func TestP3FEEDBACK005StaleClaimCannotPublishAggregate(t *testing.T) {
 	}
 }
 
-func TestP3FEEDBACK006NewRevisionDoesNotInheritScore(t *testing.T) {
+func TestFeedbackNewRevisionDoesNotInheritScore(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, repository, "feedback-006")
 	appendTestFeedback(t, repository, "caller", "feedback-006-vote", AppendFeedbackParams{SpaceID: "space-1", MemoryID: memory.MemoryID, RevisionID: memory.CurrentRevision.RevisionID, FeedbackType: "useful", ReasonCode: "other"})
@@ -157,7 +157,7 @@ func TestP3FEEDBACK006NewRevisionDoesNotInheritScore(t *testing.T) {
 	}
 }
 
-func TestP3RANK001RankingV2KeepsRecallAndUsesBoundedPostFusionSignal(t *testing.T) {
+func TestRankingKeepsRecallAndUsesBoundedPostFusionSignal(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	a := createMemoryWithContent(t, repository, "rank-a", "rankword alpha")
 	b := createMemoryWithContent(t, repository, "rank-b", "rankword beta")
@@ -177,7 +177,7 @@ func TestP3RANK001RankingV2KeepsRecallAndUsesBoundedPostFusionSignal(t *testing.
 	}
 }
 
-func TestP3RANK002FeedbackPoisoningSingleCallerIsBounded(t *testing.T) {
+func TestFeedbackPoisoningSingleCallerIsBounded(t *testing.T) {
 	var gate struct {
 		Version  string  `json:"version"`
 		Repeated int     `json:"repeated_events"`
@@ -210,7 +210,7 @@ func TestP3RANK002FeedbackPoisoningSingleCallerIsBounded(t *testing.T) {
 	}
 }
 
-func TestP3RANK003AggregateVersionSwitchRejectsCursor(t *testing.T) {
+func TestAggregateVersionSwitchRejectsCursor(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	createMemoryWithContent(t, repository, "rank-cursor-a", "cursorfeedback one")
 	createMemoryWithContent(t, repository, "rank-cursor-b", "cursorfeedback two")

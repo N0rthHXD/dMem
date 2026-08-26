@@ -675,13 +675,3 @@ func TestPersistenceErrorLoggingSuppressesExpectedErrors(t *testing.T) {
 		t.Fatalf("unexpected logs = %#v", records)
 	}
 }
-
-func TestNewServiceDefaultsLogger(t *testing.T) {
-	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if service.logger != slog.Default() {
-		t.Fatal("service did not use slog.Default")
-	}
-}

@@ -10,7 +10,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
-func TestP3CONTRACT004RelationManualCapabilityWithoutProvider(t *testing.T) {
+func TestRelationManualCapabilityWithoutProvider(t *testing.T) {
 	cfg := testConfig(t)
 	d, err := StartStaging(context.Background(), cfg)
 	if err != nil {
@@ -57,11 +57,17 @@ func TestP3CONTRACT004RelationManualCapabilityWithoutProvider(t *testing.T) {
 	if relation.RelationID != *proposal.ResultRelationID || len(relation.Evidence) != 1 {
 		t.Fatalf("relation=%+v", relation)
 	}
-	response = requestJSON(t, client, http.MethodGet, "/v1/relations?space_id="+url.QueryEscape(space.SpaceID)+"&memory_id="+url.QueryEscape(source.MemoryID)+"&direction=outgoing&type=supports", "", nil)
+	baseQuery := "/v1/relations?space_id=" + url.QueryEscape(space.SpaceID) + "&memory_id=" + url.QueryEscape(source.MemoryID) + "&direction=outgoing&relation_type="
+	response = requestJSON(t, client, http.MethodGet, baseQuery+"supports", "", nil)
 	var page domain.RelationPage
 	decodeResponse(t, response, &page)
 	if len(page.Items) != 1 {
 		t.Fatalf("one hop=%+v", page)
+	}
+	response = requestJSON(t, client, http.MethodGet, baseQuery+"contradicts", "", nil)
+	decodeResponse(t, response, &page)
+	if len(page.Items) != 0 {
+		t.Fatalf("relation type filter returned non-matching relations: %+v", page)
 	}
 	response = requestJSON(t, client, http.MethodPost, "/v1/indexes/relations/rebuild", "relation-rebuild-active", map[string]any{})
 	if response.StatusCode != http.StatusConflict {

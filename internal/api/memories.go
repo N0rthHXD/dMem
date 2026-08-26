@@ -362,5 +362,5 @@ func validMemoryType(value string) bool {
 }
 
 func validMemoryState(value string) bool {
-	return map[string]bool{"candidate": true, "active": true, "contested": true, "archived": true, "expired": true, "retracted": true, "deleted": true}[value]
+	return map[string]bool{"active": true, "contested": true, "superseded": true, "archived": true, "expired": true, "retracted": true, "deleted": true}[value]
 }

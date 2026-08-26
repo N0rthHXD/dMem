@@ -37,7 +37,7 @@ func confirmEntityTest(t *testing.T, r *Repository, name string) string {
 	return *v.ResultEntityID
 }
 
-func TestP3ENTITY001ConfirmEntityProposalAtomic(t *testing.T) {
+func TestConfirmEntityProposalAtomic(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	start, end := 0, 6
 	p := CreateEntityProposalParams{EventID: "event-1", SpaceID: "space-1", ProposalKind: "entity", EntityType: "person", CanonicalName: "Alice", Alias: "Ally", NormalizationVersion: "v1", MentionEventID: stringPointer("event-1"), StartOffset: &start, EndOffset: &end, MentionType: "explicit", Sensitivity: "normal", ProcessorIdentity: "processor/test", ProcessingVersion: "entity-v1"}
@@ -55,11 +55,11 @@ func TestP3ENTITY001ConfirmEntityProposalAtomic(t *testing.T) {
 	var entities, aliases, mentions, reviews, audits, jobs, idempotency int
 	err = r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM entities WHERE entity_id=?),(SELECT count(*) FROM entity_aliases WHERE entity_id=?),(SELECT count(*) FROM entity_mentions WHERE entity_id=?),(SELECT count(*) FROM entity_proposal_reviews),(SELECT count(*) FROM audit_events WHERE action='confirm_entity_proposal'),(SELECT count(*) FROM jobs WHERE job_type='rebuild_entity_index'),(SELECT count(*) FROM idempotency_records WHERE normalized_route LIKE '/v1/entity-proposals/%')`, *result.ResultEntityID, *result.ResultEntityID, *result.ResultEntityID).Scan(&entities, &aliases, &mentions, &reviews, &audits, &jobs, &idempotency)
 	if err != nil || entities != 1 || aliases != 2 || mentions != 1 || reviews != 1 || audits != 1 || jobs != 1 || idempotency != 1 {
-		t.Fatalf("P3-ENTITY-001 rows=%d/%d/%d/%d/%d/%d/%d err=%v", entities, aliases, mentions, reviews, audits, jobs, idempotency, err)
+		t.Fatalf("confirmed entity rows=%d/%d/%d/%d/%d/%d/%d, error=%v", entities, aliases, mentions, reviews, audits, jobs, idempotency, err)
 	}
 }
 
-func TestP3ENTITY002MentionRevisionAndRuneRangeRejectedAtomically(t *testing.T) {
+func TestEntityMentionRevisionAndRuneRangeRejectedAtomically(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	entityID := confirmEntityTest(t, r, "范围")
 	memory := createTestMemory(t, r, "entity-range-memory")
@@ -68,17 +68,17 @@ func TestP3ENTITY002MentionRevisionAndRuneRangeRejectedAtomically(t *testing.T) 
 	for _, revision := range []*string{&badRevision, &memory.CurrentRevision.RevisionID} {
 		p := CreateEntityProposalParams{EventID: "event-1", SpaceID: "space-1", ProposalKind: "mention", EntityID: &entityID, MentionMemoryID: &memory.MemoryID, MentionRevisionID: revision, StartOffset: &start, EndOffset: &end, MentionType: "explicit", Sensitivity: "normal", ProcessorIdentity: "processor/test", ProcessingVersion: "entity-v1"}
 		if _, _, err := r.CreateEntityProposal(context.Background(), memoryIdentity("bad-mention-"+*revision, "/v1/entity-proposals", p), p); !errors.Is(err, ErrInvalidEntityProposal) {
-			t.Fatalf("P3-ENTITY-002 error=%v", err)
+			t.Fatalf("invalid entity mention accepted or returned unexpected error: %v", err)
 		}
 	}
 	var mentions int
 	r.store.reader.QueryRow(`SELECT count(*) FROM entity_mentions`).Scan(&mentions)
 	if mentions != 0 {
-		t.Fatalf("P3-ENTITY-002 mentions=%d", mentions)
+		t.Fatalf("invalid entity mentions persisted=%d, want 0", mentions)
 	}
 }
 
-func TestP3ENTITY003AliasCollisionCreatesMergeProposalOnly(t *testing.T) {
+func TestEntityAliasCollisionCreatesMergeProposalOnly(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	first := confirmEntityTest(t, r, "Alpha")
 	second := confirmEntityTest(t, r, "Beta")
@@ -92,7 +92,7 @@ func TestP3ENTITY003AliasCollisionCreatesMergeProposalOnly(t *testing.T) {
 	var merges int
 	r.store.reader.QueryRow(`SELECT count(*) FROM entity_merge_proposals WHERE source_entity_id=? AND target_entity_id=? AND state='pending'`, second, first).Scan(&merges)
 	if merges != 1 {
-		t.Fatalf("P3-ENTITY-003 merges=%d", merges)
+		t.Fatalf("alias collision merge proposals=%d, want 1", merges)
 	}
 	var entityCount int
 	r.store.reader.QueryRow(`SELECT count(*) FROM entities`).Scan(&entityCount)
@@ -101,7 +101,7 @@ func TestP3ENTITY003AliasCollisionCreatesMergeProposalOnly(t *testing.T) {
 	}
 }
 
-func TestP3ENTITY004SiblingSpaceRejectedAndNotListed(t *testing.T) {
+func TestEntitySiblingSpaceRejectedAndNotListed(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	entityID := confirmEntityTest(t, r, "Scoped")
 	now := "2026-08-21T11:00:00Z"
@@ -112,15 +112,15 @@ func TestP3ENTITY004SiblingSpaceRejectedAndNotListed(t *testing.T) {
 	start, end := 0, 1
 	p := CreateEntityProposalParams{EventID: "event-1", SpaceID: "sibling", ProposalKind: "mention", EntityID: &entityID, MentionEventID: stringPointer("event-1"), StartOffset: &start, EndOffset: &end, MentionType: "explicit", Sensitivity: "normal", ProcessorIdentity: "p", ProcessingVersion: "v"}
 	if _, _, err = r.CreateEntityProposal(context.Background(), memoryIdentity("sibling-entity", "/v1/entity-proposals", p), p); !errors.Is(err, ErrInvalidEntityProposal) {
-		t.Fatalf("P3-ENTITY-004 create error=%v", err)
+		t.Fatalf("sibling-space entity proposal error=%v, want scope violation", err)
 	}
 	page, err := r.ListEntities(context.Background(), EntityFilter{SpaceID: "sibling", Limit: 10})
 	if err != nil || len(page.Items) != 0 {
-		t.Fatalf("P3-ENTITY-004 list=%+v err=%v", page, err)
+		t.Fatalf("sibling-space entity list=%+v, error=%v", page, err)
 	}
 }
 
-func TestP3ENTITY005StaleRevisionMentionNotRecalled(t *testing.T) {
+func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	entityID := confirmEntityTest(t, r, "RecallName")
 	memory := createTestMemory(t, r, "entity-recall-memory")
@@ -142,11 +142,11 @@ func TestP3ENTITY005StaleRevisionMentionNotRecalled(t *testing.T) {
 	}
 	result, err = r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 10000})
 	if err != nil || len(result.Results) != 0 {
-		t.Fatalf("P3-ENTITY-005 stale recall=%+v err=%v", result, err)
+		t.Fatalf("stale entity mention recall=%+v, error=%v", result, err)
 	}
 }
 
-func TestP3ENTITY006EntityIndexRebuildFromAuthority(t *testing.T) {
+func TestEntityIndexRebuildFromAuthority(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	confirmEntityTest(t, r, "Indexed")
 	if _, err := r.store.writer.Exec(`UPDATE jobs SET status='succeeded',finished_at='2026-08-21T12:30:00Z' WHERE job_type='rebuild_entity_index' AND status='pending'`); err != nil {
@@ -173,14 +173,6 @@ func TestP3ENTITY006EntityIndexRebuildFromAuthority(t *testing.T) {
 	var state string
 	var entities, mentions int
 	if err = r.store.reader.QueryRow(`SELECT state,source_entity_count,source_mention_count FROM entity_index_metadata WHERE singleton=1`).Scan(&state, &entities, &mentions); err != nil || state != "ready" || entities != 1 || mentions != 0 {
-		t.Fatalf("P3-ENTITY-006 metadata=%s/%d/%d err=%v", state, entities, mentions, err)
-	}
-}
-
-func TestP3ENTITY007MergeUnsupported(t *testing.T) {
-	r, _ := newMemoryTestRepository(t)
-	err := r.MergeEntities(context.Background(), memoryIdentity("merge", "/v1/entities/{entity_id}/merge", struct{}{}), "source", "target")
-	if !errors.Is(err, ErrEntityMergeUnsupported) {
-		t.Fatalf("P3-ENTITY-007 merge error=%v", err)
+		t.Fatalf("rebuilt entity index metadata=%s/%d/%d, error=%v", state, entities, mentions, err)
 	}
 }

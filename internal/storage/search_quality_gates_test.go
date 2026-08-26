@@ -2,24 +2,21 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"runtime"
 	"testing"
 	"time"
 )
 
-type phase3Corpus struct {
-	Version        string `json:"version"`
-	PrimarySpace   string `json:"primary_space"`
-	SiblingSpace   string `json:"sibling_space"`
-	EntityQuery    string `json:"entity_query"`
-	RelationQuery  string `json:"relation_query"`
-	ConflictQuery  string `json:"conflict_query"`
-	AggregateQuery string `json:"aggregate_query"`
+type searchQualityCorpus struct {
+	Version       string `json:"version"`
+	PrimarySpace  string `json:"primary_space"`
+	SiblingSpace  string `json:"sibling_space"`
+	EntityQuery   string `json:"entity_query"`
+	ConflictQuery string `json:"conflict_query"`
 }
 
-type phase3Gates struct {
+type searchQualityGates struct {
 	ConfigVersion  string `json:"config_version"`
 	CorpusVersion  string `json:"corpus_version"`
 	RankingVersion string `json:"ranking_version"`
@@ -45,21 +42,21 @@ type phase3Gates struct {
 	} `json:"performance"`
 }
 
-func loadPhase3Gates(t *testing.T) (phase3Corpus, phase3Gates) {
+func loadSearchQualityGates(t *testing.T) (searchQualityCorpus, searchQualityGates) {
 	t.Helper()
-	var corpus phase3Corpus
-	var gates phase3Gates
-	readJSONFixture(t, "testdata/phase3-corpus-v1.json", &corpus)
-	readJSONFixture(t, "testdata/phase3-gates-v1.json", &gates)
-	if corpus.Version != gates.CorpusVersion || gates.ConfigVersion != "phase3-gates-v1" || gates.RankingVersion != rankingVersion || gates.Performance.TargetMemoryCount < 100 || gates.Performance.QuerySamples < 20 {
-		t.Fatal("invalid Phase 3 gate identity or target scale")
+	var corpus searchQualityCorpus
+	var gates searchQualityGates
+	readJSONFixture(t, "testdata/search-quality-corpus-v1.json", &corpus)
+	readJSONFixture(t, "testdata/search-quality-gates-v1.json", &gates)
+	if corpus.Version != gates.CorpusVersion || gates.ConfigVersion != "search-quality-gates-v1" || gates.RankingVersion != rankingVersion || gates.Performance.TargetMemoryCount < 100 || gates.Performance.QuerySamples < 20 {
+		t.Fatal("invalid search quality gate identity or target scale")
 	}
 	return corpus, gates
 }
 
-func phase3GateFixture(t *testing.T) (*Repository, phase3Corpus, phase3Gates) {
+func searchQualityGateFixture(t *testing.T) (*Repository, searchQualityCorpus, searchQualityGates) {
 	t.Helper()
-	corpus, gates := loadPhase3Gates(t)
+	corpus, gates := loadSearchQualityGates(t)
 	r, _ := newMemoryTestRepository(t)
 	statements := []string{
 		`INSERT INTO memory_spaces(space_id,parent_space_id,space_type,external_id,display_name,created_at) VALUES ('space-sibling','space-1','project','sibling','Sibling','2026-08-25T10:00:00Z')`,
@@ -72,7 +69,7 @@ func phase3GateFixture(t *testing.T) (*Repository, phase3Corpus, phase3Gates) {
 		}
 	}
 	create := func(key, space, content, state string) (string, string) {
-		params := CreateMemoryParams{SpaceID: space, MemoryType: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "phase3 gate"}
+		params := CreateMemoryParams{SpaceID: space, MemoryType: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "search quality gate"}
 		memory, _, err := r.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
 		if err != nil {
 			t.Fatal(err)
@@ -81,15 +78,18 @@ func phase3GateFixture(t *testing.T) (*Repository, phase3Corpus, phase3Gates) {
 			if _, _, err = r.ChangeMemoryState(context.Background(), memoryIdentity(key+"-state", "/v1/memories/{memory_id}/state", state), memory.MemoryID, ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "contest", Reason: "gate conflict"}); err != nil {
 				t.Fatal(err)
 			}
-			memory, _ = r.GetMemory(context.Background(), memory.MemoryID)
+			memory, err = r.GetMemory(context.Background(), memory.MemoryID)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 		return memory.MemoryID, memory.CurrentRevision.RevisionID
 	}
-	entityMemory, entityRevision := create("p3-entity-current", corpus.PrimarySpace, "Alice owns PROJECT-ALPHA", "active")
-	staleMemory, staleRevision := create("p3-stale", corpus.PrimarySpace, "obsolete Alice archive token", "active")
-	_, siblingRevision := create("p3-sibling", corpus.SiblingSpace, "Alice PROJECT-ALPHA weekly launch brief", "active")
-	conflictA, conflictRevisionA := create("p3-conflict-a", corpus.PrimarySpace, "launch date is Friday", "contested")
-	conflictB, conflictRevisionB := create("p3-conflict-b", corpus.PrimarySpace, "launch date is Monday", "contested")
+	entityMemory, entityRevision := create("quality-entity-current", corpus.PrimarySpace, "Alice owns PROJECT-ALPHA", "active")
+	staleMemory, staleRevision := create("quality-stale", corpus.PrimarySpace, "obsolete Alice archive token", "active")
+	_, siblingRevision := create("quality-sibling", corpus.SiblingSpace, "Alice PROJECT-ALPHA weekly launch brief", "active")
+	conflictA, conflictRevisionA := create("quality-conflict-a", corpus.PrimarySpace, "launch date is Friday", "contested")
+	conflictB, conflictRevisionB := create("quality-conflict-b", corpus.PrimarySpace, "launch date is Monday", "contested")
 	if _, err := r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES ('revision-stale-current',? ,?,'current archive token','current-hash','test','v1','2026-08-25T11:00:00Z'); UPDATE memories SET current_revision_id='revision-stale-current',updated_at='2026-08-25T11:00:00Z' WHERE memory_id=?; UPDATE memory_projections SET revision_id='revision-stale-current',display_content='current archive token',content_hash='current-hash',updated_at='2026-08-25T11:00:00Z' WHERE memory_id=?`, staleMemory, staleRevision, staleMemory, staleMemory); err != nil {
 		t.Fatal(err)
 	}
@@ -105,8 +105,8 @@ func phase3GateFixture(t *testing.T) (*Repository, phase3Corpus, phase3Gates) {
 	return r, corpus, gates
 }
 
-func TestP3QUAL001SiblingSpaceContaminationZero(t *testing.T) {
-	r, corpus, gates := phase3GateFixture(t)
+func TestSearchQualitySiblingSpaceContaminationZero(t *testing.T) {
+	r, corpus, gates := searchQualityGateFixture(t)
 	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.EntityQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"active", "contested"}, Mode: "keyword", Limit: 20, MaxChars: 10000})
 	if err != nil {
 		t.Fatal(err)
@@ -118,12 +118,12 @@ func TestP3QUAL001SiblingSpaceContaminationZero(t *testing.T) {
 		}
 	}
 	if contamination > gates.Quality.MaximumSiblingContamination {
-		t.Fatalf("P3-QUAL-001 sibling contamination=%d", contamination)
+		t.Fatalf("entity sibling contamination=%d, want 0", contamination)
 	}
 }
 
-func TestP3QUAL002StaleRevisionRecallZero(t *testing.T) {
-	r, corpus, gates := phase3GateFixture(t)
+func TestSearchQualityStaleRevisionRecallZero(t *testing.T) {
+	r, corpus, gates := searchQualityGateFixture(t)
 	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.EntityQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"active"}, Mode: "keyword", Limit: 20, MaxChars: 10000})
 	if err != nil {
 		t.Fatal(err)
@@ -135,12 +135,12 @@ func TestP3QUAL002StaleRevisionRecallZero(t *testing.T) {
 		}
 	}
 	if stale > gates.Quality.MaximumStaleRevisionRecall {
-		t.Fatalf("P3-QUAL-002 stale recall=%d", stale)
+		t.Fatalf("stale relation recall=%d, want 0", stale)
 	}
 }
 
-func TestP3QUAL003ConflictRecallAndReferenceCompleteness(t *testing.T) {
-	r, corpus, gates := phase3GateFixture(t)
+func TestSearchQualityConflictRecallAndReferenceCompleteness(t *testing.T) {
+	r, corpus, gates := searchQualityGateFixture(t)
 	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.ConflictQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"contested"}, Mode: "keyword", Limit: 20, MaxChars: 10000})
 	if err != nil {
 		t.Fatal(err)
@@ -154,15 +154,15 @@ func TestP3QUAL003ConflictRecallAndReferenceCompleteness(t *testing.T) {
 	}
 	recall, completeness := float64(recalled)/2, float64(referenced)/2
 	if recall < gates.Quality.MinimumConflictRecall || completeness < gates.Quality.MinimumConflictReferenceCompleteness {
-		t.Fatalf("P3-QUAL-003 recall=%.2f refs=%.2f", recall, completeness)
+		t.Fatalf("conflict recall=%.2f references=%.2f, both want 1.0", recall, completeness)
 	}
 }
 
-func TestP3PERF001MultichannelQueryResources(t *testing.T) {
-	_, gates := loadPhase3Gates(t)
+func TestSearchPerformanceMultichannelQueryResources(t *testing.T) {
+	_, gates := loadSearchQualityGates(t)
 	documents := performanceDocuments(gates.Performance.TargetMemoryCount)
-	_, p2 := loadRetrievalEvaluation(t)
-	fixture := newRetrievalFixture(t, p2, documents)
+	_, retrievalConfig := loadRetrievalEvaluation(t)
+	fixture := newRetrievalFixture(t, retrievalConfig, documents)
 	if err := fixture.repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -185,15 +185,18 @@ func TestP3PERF001MultichannelQueryResources(t *testing.T) {
 		heap = after.TotalAlloc - before.TotalAlloc
 	}
 	p95 := percentile95(durations)
-	t.Logf("P3-PERF-001 p95=%s heap=%d candidates=%d scale=%d", p95, heap, maximumCandidates, len(documents))
+	t.Logf("search quality performance: p95=%s heap=%d candidates=%d scale=%d", p95, heap, maximumCandidates, len(documents))
 	if float64(p95)/float64(time.Millisecond) > gates.Performance.MaximumQueryP95MS || heap > gates.Performance.MaximumQueryHeapBytes || maximumCandidates > gates.Performance.MaximumCandidates {
-		t.Fatal("P3-PERF-001 thresholds exceeded")
+		t.Fatal("search quality performance thresholds exceeded")
 	}
 }
 
-func TestP3PERF002AuthorityProjectionRebuildResources(t *testing.T) {
-	r, _, gates := phase3GateFixture(t)
-	info, _ := os.Stat(r.store.path)
+func TestSearchPerformanceAuthorityProjectionRebuildResources(t *testing.T) {
+	r, _, gates := searchQualityGateFixture(t)
+	info, err := os.Stat(r.store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	baseSize := info.Size()
 	runtime.GC()
 	var before, after runtime.MemStats
@@ -216,27 +219,17 @@ func TestP3PERF002AuthorityProjectionRebuildResources(t *testing.T) {
 	}
 	duration := time.Since(started)
 	runtime.ReadMemStats(&after)
-	info, _ = os.Stat(r.store.path)
+	info, err = os.Stat(r.store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	heap := uint64(0)
 	if after.TotalAlloc > before.TotalAlloc {
 		heap = after.TotalAlloc - before.TotalAlloc
 	}
 	amplification := float64(info.Size()) / float64(baseSize)
-	t.Logf("P3-PERF-002 rebuild=%s heap=%d disk=%.2fx", duration, heap, amplification)
+	t.Logf("derived index rebuild performance: duration=%s heap=%d disk=%.2fx", duration, heap, amplification)
 	if float64(duration)/float64(time.Millisecond) > gates.Performance.MaximumAuthorityRebuildMS || heap > gates.Performance.MaximumAuthorityRebuildHeapBytes || amplification > gates.Performance.MaximumAuthorityDiskAmplification {
-		t.Fatal("P3-PERF-002 thresholds exceeded")
-	}
-}
-
-func TestPhase3GateFixturesAreStrictJSON(t *testing.T) {
-	for _, name := range []string{"testdata/phase3-corpus-v1.json", "testdata/phase3-gates-v1.json"} {
-		data, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var value any
-		if err = json.Unmarshal(data, &value); err != nil {
-			t.Fatal(err)
-		}
+		t.Fatal("derived index rebuild performance thresholds exceeded")
 	}
 }

@@ -11,7 +11,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func TestSliceCNoopJobAPIAndRetry(t *testing.T) {
+func TestNoopJobAPIAndRetry(t *testing.T) {
 	cfg := testConfig(t)
 	d, err := Start(context.Background(), cfg)
 	if err != nil {
@@ -19,10 +19,10 @@ func TestSliceCNoopJobAPIAndRetry(t *testing.T) {
 	}
 	defer d.Close(context.Background())
 	client := unixClient(cfg.Endpoint)
-	space := createSpace(t, client, "slice-c-space", map[string]any{
-		"space_type": "user", "external_id": "slice-c", "display_name": "Slice C",
+	space := createSpace(t, client, "noop-job-space", map[string]any{
+		"space_type": "user", "external_id": "noop-jobs", "display_name": "Noop Jobs",
 	})
-	response := requestJSON(t, client, http.MethodPost, "/v1/events", "slice-c-event", map[string]any{
+	response := requestJSON(t, client, http.MethodPost, "/v1/events", "noop-job-event", map[string]any{
 		"space_id": space.SpaceID, "source_type": "manual", "source_name": "test", "occurred_at": "2026-08-21T00:00:00Z",
 		"content": map[string]any{"kind": "text", "media_type": "text/plain", "text": "stored only"},
 	})
@@ -54,7 +54,7 @@ func TestSliceCNoopJobAPIAndRetry(t *testing.T) {
 	assertError(t, response, http.StatusConflict, "conflict")
 }
 
-func TestSliceCRunningCancelAPI(t *testing.T) {
+func TestRunningJobCancelAPI(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.WorkerCount = 1
 	processor := &heldProcessor{release: make(chan struct{})}
@@ -91,7 +91,7 @@ func TestSliceCRunningCancelAPI(t *testing.T) {
 	response.Body.Close()
 }
 
-func TestSliceCFailedRetryAPI(t *testing.T) {
+func TestFailedJobRetryAPI(t *testing.T) {
 	cfg := testConfig(t)
 	d, err := Start(context.Background(), cfg)
 	if err != nil {
@@ -138,7 +138,7 @@ func TestSliceCFailedRetryAPI(t *testing.T) {
 	}
 }
 
-func TestSliceCGracefulShutdownPreservesRecoverableState(t *testing.T) {
+func TestGracefulShutdownPreservesRecoverableJobState(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.WorkerCount = 1
 	processor := &heldProcessor{release: make(chan struct{})}

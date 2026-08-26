@@ -39,7 +39,7 @@ func confirmRelationTest(t *testing.T, r *Repository, key string, p domain.Relat
 	return v
 }
 
-func TestP3REL001ConfirmRelationProposalAtomic(t *testing.T) {
+func TestConfirmRelationProposalAtomic(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	p := createRelationProposalTest(t, r, "relation-proposal", relationParams(createTestMemory(t, r, "relation-source"), createTestMemory(t, r, "relation-target")))
 	confirmed := confirmRelationTest(t, r, "relation-confirm", p)
@@ -49,11 +49,11 @@ func TestP3REL001ConfirmRelationProposalAtomic(t *testing.T) {
 	var assertions, evidence, states, reviews, audits, jobs int
 	err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memory_relations),(SELECT count(*) FROM relation_evidence),(SELECT count(*) FROM relation_state_events),(SELECT count(*) FROM relation_proposal_reviews),(SELECT count(*) FROM audit_events WHERE action='confirm_relation_proposal'),(SELECT count(*) FROM jobs WHERE job_type='rebuild_relation_index')`).Scan(&assertions, &evidence, &states, &reviews, &audits, &jobs)
 	if err != nil || assertions != 1 || evidence != 1 || states != 1 || reviews != 1 || audits != 1 || jobs != 1 {
-		t.Fatalf("P3-REL-001 rows=%d/%d/%d/%d/%d/%d err=%v", assertions, evidence, states, reviews, audits, jobs, err)
+		t.Fatalf("confirmed relation rows=%d/%d/%d/%d/%d/%d, error=%v", assertions, evidence, states, reviews, audits, jobs, err)
 	}
 }
 
-func TestP3REL002DuplicateRelationConfirmConcurrentIdempotency(t *testing.T) {
+func TestDuplicateRelationConfirmConcurrentIdempotency(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	params := relationParams(createTestMemory(t, r, "duplicate-source"), createTestMemory(t, r, "duplicate-target"))
 	p := createRelationProposalTest(t, r, "duplicate-proposal", params)
@@ -91,13 +91,15 @@ func TestP3REL002DuplicateRelationConfirmConcurrentIdempotency(t *testing.T) {
 		}
 	}
 	var assertions, reviews, jobs int
-	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memory_relations),(SELECT count(*) FROM relation_proposal_reviews),(SELECT count(*) FROM jobs WHERE job_type='rebuild_relation_index')`).Scan(&assertions, &reviews, &jobs)
+	if err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memory_relations),(SELECT count(*) FROM relation_proposal_reviews),(SELECT count(*) FROM jobs WHERE job_type='rebuild_relation_index')`).Scan(&assertions, &reviews, &jobs); err != nil {
+		t.Fatal(err)
+	}
 	if assertions != 1 || reviews != 1 || jobs != 1 {
-		t.Fatalf("P3-REL-002 rows=%d/%d/%d", assertions, reviews, jobs)
+		t.Fatalf("duplicate relation confirmation rows=%d/%d/%d, want 1/1/1", assertions, reviews, jobs)
 	}
 }
 
-func TestP3REL003EndpointRevisionSpaceEvidenceRejectedAtomically(t *testing.T) {
+func TestRelationEndpointRevisionSpaceEvidenceRejectedAtomically(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	source, target := createTestMemory(t, r, "invalid-source"), createTestMemory(t, r, "invalid-target")
 	params := relationParams(source, target)
@@ -112,13 +114,15 @@ func TestP3REL003EndpointRevisionSpaceEvidenceRejectedAtomically(t *testing.T) {
 		t.Fatalf("evidence error=%v", err)
 	}
 	var assertions, reviews int
-	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memory_relations),(SELECT count(*) FROM relation_proposal_reviews)`).Scan(&assertions, &reviews)
+	if err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memory_relations),(SELECT count(*) FROM relation_proposal_reviews)`).Scan(&assertions, &reviews); err != nil {
+		t.Fatal(err)
+	}
 	if assertions != 0 || reviews != 0 {
-		t.Fatalf("P3-REL-003 rows=%d/%d", assertions, reviews)
+		t.Fatalf("invalid relation persisted rows=%d/%d, want 0/0", assertions, reviews)
 	}
 }
 
-func TestP3REL004OneHopTypeDirectionScopeAndCurrentRevision(t *testing.T) {
+func TestRelationOneHopTypeDirectionScopeAndCurrentRevision(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	source, target := createTestMemory(t, r, "hop-source"), createTestMemory(t, r, "hop-target")
 	confirmed := confirmRelationTest(t, r, "hop-confirm", createRelationProposalTest(t, r, "hop-proposal", relationParams(source, target)))
@@ -138,11 +142,11 @@ func TestP3REL004OneHopTypeDirectionScopeAndCurrentRevision(t *testing.T) {
 	}
 	page, err = r.ListRelations(context.Background(), RelationFilter{SpaceID: "space-1", MemoryID: source.MemoryID, Direction: "outgoing", Limit: 10})
 	if err != nil || len(page.Items) != 0 {
-		t.Fatalf("P3-REL-004 stale=%+v err=%v", page, err)
+		t.Fatalf("one-hop relation query returned stale result=%+v, error=%v", page, err)
 	}
 }
 
-func TestP3REL005RelationIndexDegradedAuthorityAndRebuild(t *testing.T) {
+func TestRelationIndexDegradedAuthorityAndRebuild(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	source, target := createTestMemory(t, r, "indexsource"), createTestMemory(t, r, "indextarget")
 	confirmed := confirmRelationTest(t, r, "index-confirm", createRelationProposalTest(t, r, "index-proposal", relationParams(source, target)))
@@ -169,7 +173,7 @@ func TestP3REL005RelationIndexDegradedAuthorityAndRebuild(t *testing.T) {
 	}
 	state, _ := r.RelationIndexHealth(context.Background())
 	if state != "ready" {
-		t.Fatalf("P3-REL-005 state=%s", state)
+		t.Fatalf("rebuilt relation index state=%s, want ready", state)
 	}
 	search, err = r.SearchMemories(context.Background(), SearchParams{Query: "initial", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 10000})
 	if err != nil {
@@ -182,6 +186,6 @@ func TestP3REL005RelationIndexDegradedAuthorityAndRebuild(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("P3-REL-005 independent relation recall=%+v", search)
+		t.Fatalf("rebuilt index omitted authority-backed relation: %+v", search)
 	}
 }

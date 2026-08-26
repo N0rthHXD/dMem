@@ -30,7 +30,7 @@ func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error)
 	}
 	for _, read := range reads {
 		if err := tx.QueryRowContext(ctx, read.query).Scan(read.value); err != nil {
-			if missingPhase3Metadata(err) {
+			if missingSearchMetadata(err) {
 				continue
 			}
 			return searchMetadata{}, err
@@ -41,7 +41,7 @@ func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error)
 
 func advanceCorpusGeneration(ctx context.Context, tx *sql.Tx, now string) error {
 	result, err := tx.ExecContext(ctx, `UPDATE corpus_metadata SET generation=generation+1, updated_at=? WHERE singleton=1`, now)
-	if missingPhase3Metadata(err) {
+	if missingSearchMetadata(err) {
 		return nil
 	}
 	if err != nil {
@@ -57,6 +57,6 @@ func advanceCorpusGeneration(ctx context.Context, tx *sql.Tx, now string) error 
 	return nil
 }
 
-func missingPhase3Metadata(err error) bool {
+func missingSearchMetadata(err error) bool {
 	return developmentMetadataDefaults && err != nil && strings.Contains(err.Error(), "no such table")
 }

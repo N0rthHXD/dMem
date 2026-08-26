@@ -178,7 +178,7 @@ func retrievalSearch(t *testing.T, repository *Repository, query, mode string, l
 	return ids
 }
 
-func TestP2QUAL001KeywordExactRecall(t *testing.T) {
+func TestRetrievalQualityKeywordExactRecall(t *testing.T) {
 	corpus, config := loadRetrievalEvaluation(t)
 	fixture := newRetrievalFixture(t, config, corpus.Documents)
 	hits := 0
@@ -195,11 +195,11 @@ func TestP2QUAL001KeywordExactRecall(t *testing.T) {
 	}
 	recall := float64(hits) / float64(len(corpus.Documents)-1)
 	if recall < config.Quality.MinimumKeywordExactRecall {
-		t.Fatalf("P2-QUAL-001 exact keyword recall = %.3f, want >= %.3f", recall, config.Quality.MinimumKeywordExactRecall)
+		t.Fatalf("exact keyword recall = %.3f, want >= %.3f", recall, config.Quality.MinimumKeywordExactRecall)
 	}
 }
 
-func TestP2QUAL002SemanticRecallAndHybridRanking(t *testing.T) {
+func TestRetrievalQualitySemanticRecallAndHybridRanking(t *testing.T) {
 	corpus, config := loadRetrievalEvaluation(t)
 	fixture := newRetrievalFixture(t, config, corpus.Documents)
 	if err := fixture.repository.RebuildSemantic(context.Background()); err != nil {
@@ -220,11 +220,11 @@ func TestP2QUAL002SemanticRecallAndHybridRanking(t *testing.T) {
 	count := float64(len(corpus.SemanticQueries))
 	semanticRecall, hybridRecall, reciprocalRank = semanticRecall/count, hybridRecall/count, reciprocalRank/count
 	if semanticRecall < config.Quality.MinimumSemanticRecallAtK || hybridRecall < config.Quality.MinimumHybridRecallAtK || reciprocalRank < config.Quality.MinimumHybridMRR {
-		t.Fatalf("P2-QUAL-002 semantic recall@%d=%.3f hybrid recall@%d=%.3f hybrid MRR=%.3f", config.Quality.SemanticK, semanticRecall, config.Quality.SemanticK, hybridRecall, reciprocalRank)
+		t.Fatalf("retrieval quality below threshold: semantic recall@%d=%.3f hybrid recall@%d=%.3f hybrid MRR=%.3f", config.Quality.SemanticK, semanticRecall, config.Quality.SemanticK, hybridRecall, reciprocalRank)
 	}
 }
 
-func TestP2QUAL003NoAnswerIrrelevantRecall(t *testing.T) {
+func TestRetrievalQualityNoAnswerIrrelevantRecall(t *testing.T) {
 	corpus, config := loadRetrievalEvaluation(t)
 	fixture := newRetrievalFixture(t, config, corpus.Documents)
 	if err := fixture.repository.RebuildSemantic(context.Background()); err != nil {
@@ -238,11 +238,11 @@ func TestP2QUAL003NoAnswerIrrelevantRecall(t *testing.T) {
 	}
 	rate := float64(irrelevant) / float64(len(corpus.NoAnswerQueries))
 	if rate > config.Quality.MaximumNoAnswerIrrelevantRecall {
-		t.Fatalf("P2-QUAL-003 no-answer irrelevant recall = %.3f, want <= %.3f", rate, config.Quality.MaximumNoAnswerIrrelevantRecall)
+		t.Fatalf("no-answer irrelevant recall = %.3f, want <= %.3f", rate, config.Quality.MaximumNoAnswerIrrelevantRecall)
 	}
 }
 
-func TestP2QUAL004SiblingContaminationZero(t *testing.T) {
+func TestRetrievalQualitySiblingContaminationZero(t *testing.T) {
 	corpus, config := loadRetrievalEvaluation(t)
 	fixture := newRetrievalFixture(t, config, corpus.Documents)
 	if err := fixture.repository.RebuildSemantic(context.Background()); err != nil {
@@ -256,11 +256,11 @@ func TestP2QUAL004SiblingContaminationZero(t *testing.T) {
 		}
 	}
 	if contamination > config.Quality.MaximumSiblingContamination {
-		t.Fatalf("P2-QUAL-004 sibling contamination = %d, want <= %d", contamination, config.Quality.MaximumSiblingContamination)
+		t.Fatalf("sibling contamination = %d, want <= %d", contamination, config.Quality.MaximumSiblingContamination)
 	}
 }
 
-func TestP2PERF001QueryP95AtTargetScale(t *testing.T) {
+func TestRetrievalPerformanceQueryP95AtTargetScale(t *testing.T) {
 	_, config := loadRetrievalEvaluation(t)
 	documents := performanceDocuments(config.Performance.TargetMemoryCount)
 	fixture := newRetrievalFixture(t, config, documents)
@@ -277,14 +277,14 @@ func TestP2PERF001QueryP95AtTargetScale(t *testing.T) {
 			durations[n] = time.Since(started)
 		}
 		p95 := percentile95(durations)
-		t.Logf("P2-PERF-001 %s p95=%s scale=%d samples=%d", mode, p95, len(documents), len(durations))
+		t.Logf("query performance: mode=%s p95=%s scale=%d samples=%d", mode, p95, len(documents), len(durations))
 		if float64(p95)/float64(time.Millisecond) > limits[mode] {
 			t.Fatalf("%s p95 %s exceeds %.0fms", mode, p95, limits[mode])
 		}
 	}
 }
 
-func TestP2PERF002SemanticRebuildResources(t *testing.T) {
+func TestRetrievalPerformanceSemanticRebuildResources(t *testing.T) {
 	_, config := loadRetrievalEvaluation(t)
 	documents := performanceDocuments(config.Performance.TargetMemoryCount)
 	fixture := newRetrievalFixture(t, config, documents)
@@ -326,9 +326,9 @@ func TestP2PERF002SemanticRebuildResources(t *testing.T) {
 	}
 	rawPayload := uint64(len(documents) * newDeterministicEmbeddingProvider(config).dimension * 8)
 	diskAmplification := float64(peakDisk.Load()) / float64(rawPayload)
-	t.Logf("P2-PERF-002 rebuild=%s peak_heap_growth=%d peak_disk=%d raw_vector_payload=%d disk_amplification=%.2fx", duration, heapGrowth, peakDisk.Load(), rawPayload, diskAmplification)
+	t.Logf("semantic rebuild performance: duration=%s peak_heap_growth=%d peak_disk=%d raw_vector_payload=%d disk_amplification=%.2fx", duration, heapGrowth, peakDisk.Load(), rawPayload, diskAmplification)
 	if float64(duration)/float64(time.Millisecond) > config.Performance.MaximumRebuildMS || heapGrowth > config.Performance.MaximumRebuildPeakHeapBytes || diskAmplification > config.Performance.MaximumRebuildDiskAmplification {
-		t.Fatalf("P2-PERF-002 thresholds exceeded: duration=%s heap=%d disk amplification=%.2fx", duration, heapGrowth, diskAmplification)
+		t.Fatalf("semantic rebuild thresholds exceeded: duration=%s heap=%d disk amplification=%.2fx", duration, heapGrowth, diskAmplification)
 	}
 }
 

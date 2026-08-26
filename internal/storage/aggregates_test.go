@@ -35,7 +35,7 @@ func confirmAggregateTest(t *testing.T, r *Repository, key string, proposal doma
 	return result
 }
 
-func TestP3AGG002ConfirmAggregateAtomicProvenance(t *testing.T) {
+func TestConfirmAggregateAtomicProvenance(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b := createTestMemory(t, r, "agg-a"), createTestMemory(t, r, "agg-b")
 	confirmed := confirmAggregateTest(t, r, "agg-confirm", createAggregateProposalTest(t, r, "agg-proposal", aggregateProposalParams(aggregateInput(a), aggregateInput(b))))
@@ -53,7 +53,7 @@ func TestP3AGG002ConfirmAggregateAtomicProvenance(t *testing.T) {
 	}
 }
 
-func TestP3AGG003MissingInputEvidenceRejected(t *testing.T) {
+func TestAggregateMissingInputEvidenceRejected(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, r, "agg-evidence")
 	if _, err := r.store.writer.Exec(`DELETE FROM memory_evidence WHERE revision_id=?`, memory.CurrentRevision.RevisionID); err == nil {
@@ -72,7 +72,7 @@ func TestP3AGG003MissingInputEvidenceRejected(t *testing.T) {
 	}
 }
 
-func TestP3AGG004InputRevisionStateChangedStaleDedupRebuild(t *testing.T) {
+func TestAggregateInputRevisionStateChangedStaleDedupRebuild(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	input := createTestMemory(t, r, "agg-stale")
 	confirmed := confirmAggregateTest(t, r, "agg-stale-confirm", createAggregateProposalTest(t, r, "agg-stale-proposal", aggregateProposalParams(aggregateInput(input))))
@@ -94,7 +94,7 @@ func TestP3AGG004InputRevisionStateChangedStaleDedupRebuild(t *testing.T) {
 	}
 }
 
-func TestP3AGG004FreshnessProjectionRebuildsFromFrozenInputs(t *testing.T) {
+func TestAggregateFreshnessProjectionRebuildsFromFrozenInputs(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	input := createTestMemory(t, r, "agg-recover")
 	confirmed := confirmAggregateTest(t, r, "agg-recover-confirm", createAggregateProposalTest(t, r, "agg-recover-proposal", aggregateProposalParams(aggregateInput(input))))
@@ -126,7 +126,7 @@ func (r *Repository) markStaleForTest(memoryID string) error {
 	return tx.Commit()
 }
 
-func TestP3AGG005SensitivityFloor(t *testing.T) {
+func TestAggregateSensitivityFloor(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, r, "agg-sensitive")
 	if _, err := r.store.writer.Exec(`UPDATE memories SET sensitivity='sensitive' WHERE memory_id=?`, memory.MemoryID); err != nil {
@@ -140,7 +140,7 @@ func TestP3AGG005SensitivityFloor(t *testing.T) {
 	}
 }
 
-func TestP3AGG006SiblingSpaceInputRejected(t *testing.T) {
+func TestAggregateSiblingSpaceInputRejected(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, r, "agg-sibling")
 	if _, err := r.store.writer.Exec(`INSERT INTO memory_spaces(space_id,parent_space_id,space_type,external_id,display_name,created_at) VALUES ('sibling','space-1','session','sibling','Sibling','now'); UPDATE memories SET space_id='sibling' WHERE memory_id=?`, memory.MemoryID); err != nil {

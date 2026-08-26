@@ -14,7 +14,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
-func TestSliceEKeywordScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
+func TestKeywordSearchScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	defer func() { close(release); _ = d.Close(context.Background()) }()
@@ -102,7 +102,7 @@ func TestSliceEKeywordScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 	}
 }
 
-func TestSliceEBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
+func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	cfg := testConfig(t)
 	d, release, client := startHeldDaemon(t, cfg)
 	defer d.Close(context.Background())
@@ -222,7 +222,7 @@ func TestSliceEBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	}
 }
 
-func TestSliceEDiskHardLimitAndCommittedReplay(t *testing.T) {
+func TestSearchDiskHardLimitAndCommittedReplay(t *testing.T) {
 	normal := testConfig(t)
 	d, release, client := startHeldDaemon(t, normal)
 	root := createSpace(t, client, "hard-root", map[string]any{"space_type": "user", "external_id": "hard-root", "display_name": "Hard Root"})

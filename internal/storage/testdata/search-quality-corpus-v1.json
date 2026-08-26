@@ -1,0 +1,7 @@
+{
+  "version": "search-quality-corpus-v1",
+  "primary_space": "space-1",
+  "sibling_space": "space-sibling",
+  "entity_query": "Alice",
+  "conflict_query": "launch date"
+}

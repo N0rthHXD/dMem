@@ -1,9 +1,0 @@
-{
-  "version": "phase3-corpus-v1",
-  "primary_space": "space-1",
-  "sibling_space": "space-sibling",
-  "entity_query": "Alice",
-  "relation_query": "PROJECT-ALPHA",
-  "conflict_query": "launch date",
-  "aggregate_query": "weekly launch brief"
-}

@@ -92,7 +92,7 @@ type RestoreResult struct {
 	FTSRebuilt        bool
 }
 
-var phase3AuthorityTables = []string{
+var authorityTables = []string{
 	"entities", "entity_events", "entity_aliases", "entity_alias_events", "entity_mentions",
 	"entity_proposals", "entity_proposal_reviews", "entity_merge_proposals", "memory_relations",
 	"relation_evidence", "relation_state_events", "relation_proposals", "relation_proposal_reviews",
@@ -366,8 +366,8 @@ func inspectSnapshot(ctx context.Context, db *sql.DB) (Manifest, error) {
 	if err := db.QueryRowContext(ctx, `SELECT coalesce(active_version, 0) FROM semantic_index_metadata WHERE singleton=1`).Scan(&result.SemanticIndexVersion); err != nil {
 		return Manifest{}, err
 	}
-	result.AuthorityCounts = make(map[string]int, len(phase3AuthorityTables))
-	for _, table := range phase3AuthorityTables {
+	result.AuthorityCounts = make(map[string]int, len(authorityTables))
+	for _, table := range authorityTables {
 		var count int
 		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&count); err != nil {
 			return Manifest{}, err
