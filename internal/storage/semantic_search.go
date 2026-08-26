@@ -86,7 +86,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, preflightMetadata), nil
 	}
 
-	queryResult, err := r.embeddingProvider.Embed(ctx, provider.NewEmbeddingRequest(params.SpaceIDs[0], "text/plain", "normal", []string{"manual"}, []string{params.Query}))
+	queryResult, err := r.embeddingProvider.Embed(ctx, provider.NewEmbeddingQueryRequest(params.SpaceIDs[0], "text/plain", "normal", []string{"manual"}, []string{params.Query}))
 	if err != nil || len(queryResult.Vectors()) != 1 {
 		if executed == "hybrid" {
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_unavailable"))

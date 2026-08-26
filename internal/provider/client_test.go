@@ -59,7 +59,7 @@ func TestProcessMinimizesContentAndUsesExplicitSecret(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestClient(t, server, Config{MaxContextItems: 1})
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", MaxContextItems: 1})
 	target := NewEvent("event-a", "space-a", "file_reference", "source", "normal", time.Unix(1, 0), NewReferenceContent("text/plain", 42, "sha256:abc"))
 	contextEvents := []Event{
 		NewEvent("context-a", "space-a", "message", "source", "normal", time.Unix(2, 0), NewTextContent("text/plain", "allowed-context")),
@@ -107,7 +107,7 @@ func TestProcessPreservesContextMemoryBudgetSensitivityAndTypedEvidence(t *testi
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"candidates_extracted\",\"candidates\":[{\"content\":\"typed result\",\"memory_type\":\"fact\",\"space_id\":\"space-a\",\"confidence\":0.9,\"sensitivity\":\"sensitive\",\"evidence\":[{\"event_id\":\"event-a\",\"evidence_type\":\"tool_result\",\"start_offset\":1,\"end_offset\":4}],\"suggestion_kind\":\"supplement\",\"related_memory_ids\":[\"memory-a\"]}]}"}}]}`))
 	}))
 	defer server.Close()
-	client := newTestClient(t, server, Config{})
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
 	target := NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "source text"))
 	memory := NewMemory("memory-a", "revision-a", "space-a", "bounded memory", "contested", "normal", &validFrom, &validUntil)
 	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, []Memory{memory}, []string{"fact"}, 1, 80))
@@ -202,6 +202,62 @@ func TestEmbeddingAllowedClassificationUsesHTTP(t *testing.T) {
 	}
 }
 
+func TestEmbeddingUsesFullURLAndOptionalConfiguration(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber := requests.Add(1)
+		if r.URL.Path != "/custom/embed" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["dimensions"] != float64(2) {
+			t.Errorf("dimensions = %#v", body["dimensions"])
+		}
+		inputs, ok := body["input"].([]any)
+		expected := "stored memory"
+		if requestNumber == 1 {
+			expected = "query: deployment region"
+		}
+		if !ok || len(inputs) != 1 || inputs[0] != expected {
+			t.Errorf("input = %#v", body["input"])
+		}
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1,2]}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{
+		Endpoint: server.URL + "/custom/embed", EmbeddingDim: 2, EmbeddingQueryInstructions: "query: ",
+	})
+	if _, err := client.Embed(context.Background(), NewEmbeddingQueryRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"deployment region"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Embed(context.Background(), NewEmbeddingRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"stored memory"})); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmbeddingOmitsEmptyOptionalConfiguration(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := body["dimensions"]; ok {
+			t.Errorf("request includes empty dimensions: %#v", body)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[1,2]}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{})
+	if _, err := client.Embed(context.Background(), NewEmbeddingQueryRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"query"})); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProcessEnforcesAggregateTargetAndContextCharacterBudget(t *testing.T) {
 	t.Setenv("DMEM_TEST_SECRET", "secret")
 	var requests atomic.Int32
@@ -226,7 +282,7 @@ func TestProcessEnforcesAggregateTargetAndContextCharacterBudget(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"no_memory\",\"candidates\":[]}"}}]}`))
 	}))
 	defer server.Close()
-	client := newTestClient(t, server, Config{MaxContentChars: 10})
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", MaxContentChars: 10})
 	target := NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "123456"))
 	contextEvents := []Event{
 		NewEvent("context-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "7890")),
@@ -249,7 +305,7 @@ func TestRejectsRedirectWithoutFollowing(t *testing.T) {
 		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
-	client := newTestClient(t, server, Config{})
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
 	_, err := client.Embed(context.Background(), NewEmbeddingRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"content"}))
 	assertProviderError(t, err, ErrorPermanent, "redirect_rejected")
 	if redirected.Load() != 0 {
@@ -331,7 +387,7 @@ func TestDeadlineCancelsRequest(t *testing.T) {
 func newTestClient(t *testing.T, server *httptest.Server, override Config) *Client {
 	t.Helper()
 	cfg := Config{
-		Enabled: true, Kind: KindOpenAICompatible, Endpoint: server.URL, Model: "model-a", SecretEnv: "DMEM_TEST_SECRET",
+		Enabled: true, Kind: KindOpenAICompatible, Endpoint: server.URL + "/embeddings", Model: "model-a", SecretEnv: "DMEM_TEST_SECRET",
 		AllowedSpaces: []string{"space-a"}, AllowedContentTypes: []string{"text/plain", "application/json"},
 		AllowedSourceTypes: []string{"message", "file_reference", "manual"}, AllowedSensitivities: []string{"normal"}, TelemetryDisabled: true, EgressPolicyVersion: "policy-v1",
 		MaxContentChars: 1000, MaxContextItems: 2, MaxResponseSize: 64 * 1024, RequestTimeout: time.Second, MaxConcurrent: 2, RequestsPerMinute: 60000,
@@ -344,6 +400,15 @@ func newTestClient(t *testing.T, server *httptest.Server, override Config) *Clie
 	}
 	if override.RequestTimeout != 0 {
 		cfg.RequestTimeout = override.RequestTimeout
+	}
+	if override.Endpoint != "" {
+		cfg.Endpoint = override.Endpoint
+	}
+	if override.EmbeddingDim != 0 {
+		cfg.EmbeddingDim = override.EmbeddingDim
+	}
+	if override.EmbeddingQueryInstructions != "" {
+		cfg.EmbeddingQueryInstructions = override.EmbeddingQueryInstructions
 	}
 	client, err := New(cfg, server.Client())
 	if err != nil {

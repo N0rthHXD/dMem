@@ -152,6 +152,9 @@ func TestParseProviderCombinations(t *testing.T) {
 			if test.embedding && cfg.EmbeddingProvider.Model != "embedding-model" {
 				t.Fatalf("embedding provider = %+v", cfg.EmbeddingProvider)
 			}
+			if test.embedding && (cfg.EmbeddingProvider.EmbeddingDim != 1024 || cfg.EmbeddingProvider.EmbeddingQueryInstructions != "query: ") {
+				t.Fatalf("embedding options = %+v", cfg.EmbeddingProvider)
+			}
 		})
 	}
 }
@@ -180,6 +183,7 @@ func TestParseRejectsLegacyAndUnsupportedProviderFlags(t *testing.T) {
 		"provider-allowed-spaces", "provider-allowed-content-types", "provider-allowed-source-types", "provider-allowed-sensitivities",
 		"provider-telemetry-disabled", "provider-egress-policy-version", "provider-max-content-chars", "provider-max-context-items",
 		"provider-max-response-size", "provider-request-timeout", "provider-max-concurrent", "provider-requests-per-minute",
+		"provider-embedding-dim", "provider-embedding-query-instructions",
 		"embedding-provider-max-context-items",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -195,8 +199,8 @@ func TestParseRejectsUnsafeProviderConfiguration(t *testing.T) {
 	args := []string{"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime")}
 	provider := providerArgs("embedding-provider", "model-a")
 	for i := range provider {
-		if provider[i] == "https://provider.example/v1" {
-			provider[i] = "http://provider.example/v1"
+		if provider[i] == "https://provider.example/v1/embeddings" {
+			provider[i] = "http://provider.example/v1/embeddings"
 		}
 	}
 	if _, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), append(args, provider...)); err == nil {
@@ -205,9 +209,13 @@ func TestParseRejectsUnsafeProviderConfiguration(t *testing.T) {
 }
 
 func providerArgs(prefix, model string) []string {
+	endpoint := "https://provider.example/v1/embeddings"
+	if prefix == "processing-provider" {
+		endpoint = "https://provider.example/v1/chat/completions"
+	}
 	args := []string{
 		"-" + prefix + "-enabled", "-" + prefix + "-kind", "openai-compatible",
-		"-" + prefix + "-endpoint", "https://provider.example/v1", "-" + prefix + "-model", model,
+		"-" + prefix + "-endpoint", endpoint, "-" + prefix + "-model", model,
 		"-" + prefix + "-secret-env", "DMEM_PROVIDER_API_KEY", "-" + prefix + "-allowed-spaces", "space-a, space-b,space-a",
 		"-" + prefix + "-allowed-content-types", "text/plain,application/json", "-" + prefix + "-allowed-source-types", "message,manual",
 		"-" + prefix + "-allowed-sensitivities", "normal", "-" + prefix + "-telemetry-disabled",
@@ -216,6 +224,8 @@ func providerArgs(prefix, model string) []string {
 	}
 	if prefix == "processing-provider" {
 		args = append(args, "-processing-provider-max-context-items", "4")
+	} else {
+		args = append(args, "-embedding-provider-embedding-dim", "1024", "-embedding-provider-embedding-query-instructions", "query: ")
 	}
 	return args
 }

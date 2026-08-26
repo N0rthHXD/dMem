@@ -27,6 +27,15 @@ explicit enablement, endpoint, model, policy
 allowlists, and secret environment-variable names. Disabled providers do not
 resolve secrets or make HTTP requests.
 
+Provider endpoints are full HTTPS request URLs. Processing endpoints must point
+to the chat-completions route, and embedding endpoints must point to the
+embeddings route; dMem does not append either path. Embedding configuration also
+accepts `--embedding-provider-embedding-dim` and
+`--embedding-provider-embedding-query-instructions`. A zero dimension is omitted
+from provider requests, and query instructions are prepended only to semantic
+search queries, not stored-memory embeddings. Empty optional request fields are
+not sent.
+
 ## Health And Failures
 
 `GET /v1/health` requires no caller header. It reports readiness, write/query

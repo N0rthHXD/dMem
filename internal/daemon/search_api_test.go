@@ -107,15 +107,15 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	d, release, client := startHeldDaemon(t, cfg)
 	defer d.Close(context.Background())
 	root := createSpace(t, client, "ep-root", map[string]any{"space_type": "user", "external_id": "ep-root", "display_name": "Root"})
-	for _, content := range []string{"分页 星星", "分页 月亮", "分页 太阳"} {
+	for _, content := range []string{"分页符星星", "分页符月亮", "分页符太阳"} {
 		event := ingestManualEvent(t, client, "ep-event-"+content, root.SpaceID, "evidence")
 		createMemory(t, client, "ep-memory-"+content, memoryCreateBody(root.SpaceID, event.EventID, content))
 	}
-	first := search(t, client, map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5})
+	first := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5})
 	if len(first.Results) != 1 || first.CharsUsed != 5 || !first.Truncated || first.NextCursor == nil {
 		t.Fatalf("budget page 1 = %+v", first)
 	}
-	second := search(t, client, map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5, "cursor": *first.NextCursor})
+	second := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5, "cursor": *first.NextCursor})
 	if len(second.Results) != 1 || second.Results[0].Memory.MemoryID == first.Results[0].Memory.MemoryID {
 		t.Fatalf("budget page 2 = %+v", second)
 	}
@@ -131,8 +131,8 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	if len(budgetSecond.Results) != 1 || budgetSecond.Results[0].Memory.MemoryID != large.MemoryID {
 		t.Fatalf("deferred budget candidate = %+v", budgetSecond)
 	}
-	emptyStates := search(t, client, map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}, "states": []string{}})
-	emptyTypes := search(t, client, map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}, "memory_types": []string{}})
+	emptyStates := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "states": []string{}})
+	emptyTypes := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "memory_types": []string{}})
 	if len(emptyStates.Results) != 0 || len(emptyTypes.Results) != 0 {
 		t.Fatalf("explicit empty filters returned results: states=%+v types=%+v", emptyStates, emptyTypes)
 	}
@@ -140,9 +140,9 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	assertSafeError(t, badCursor, http.StatusUnprocessableEntity, "invalid_request")
 	for _, body := range []map[string]any{
 		{"query": "", "space_ids": []string{root.SpaceID}},
-		{"query": "分页", "space_ids": []string{root.SpaceID, root.SpaceID}},
-		{"query": "分页", "space_ids": []string{"11111111-1111-4111-8111-111111111111"}},
-		{"query": "分页", "space_ids": []string{root.SpaceID}, "unknown": true},
+		{"query": "分页符", "space_ids": []string{root.SpaceID, root.SpaceID}},
+		{"query": "分页符", "space_ids": []string{"11111111-1111-4111-8111-111111111111"}},
+		{"query": "分页符", "space_ids": []string{root.SpaceID}, "unknown": true},
 	} {
 		assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/search", "", body), http.StatusUnprocessableEntity, "invalid_request")
 	}
@@ -152,7 +152,7 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	} else {
 		assertSafeError(t, special, http.StatusUnprocessableEntity, "invalid_request")
 	}
-	semantic := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}, "mode": "semantic"})
+	semantic := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "mode": "semantic"})
 	if semantic.StatusCode != http.StatusServiceUnavailable {
 		data, _ := io.ReadAll(semantic.Body)
 		semantic.Body.Close()
@@ -175,10 +175,10 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	if _, err := db.Exec(`DELETE FROM memory_fts WHERE memory_id=(SELECT memory_id FROM memory_projections ORDER BY memory_id LIMIT 1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO memory_fts(memory_id, revision_id, content) VALUES ('stale-memory', 'stale-revision', '分页 stale')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO memory_fts(memory_id, revision_id, content) VALUES ('stale-memory', 'stale-revision', '分页符 stale')`); err != nil {
 		t.Fatal(err)
 	}
-	degraded := search(t, client, map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}})
+	degraded := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}})
 	if degraded.IndexState != "degraded" {
 		t.Fatalf("degraded search state = %q", degraded.IndexState)
 	}
@@ -212,7 +212,7 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	}
 	close(release)
 	waitForJobStatus(t, client, job.JobID, "succeeded")
-	after := search(t, client, map[string]any{"query": "分页", "space_ids": []string{root.SpaceID}})
+	after := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}})
 	if after.IndexState != "ready" || len(after.Results) != 3 {
 		t.Fatalf("post-rebuild search = %+v", after)
 	}

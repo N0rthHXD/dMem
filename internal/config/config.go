@@ -286,13 +286,15 @@ type providerFlags struct {
 	timeout              *time.Duration
 	concurrent           *int
 	rate                 *int
+	embeddingDim         *int
+	queryInstructions    *string
 }
 
 func registerProviderFlags(fs *flag.FlagSet, prefix string, defaults ProviderConfig, includeMaxContext bool) providerFlags {
 	flags := providerFlags{
 		enabled:              fs.Bool(prefix+"-enabled", false, "enable the "+prefix),
 		kind:                 fs.String(prefix+"-kind", "", "provider kind"),
-		endpoint:             fs.String(prefix+"-endpoint", "", "provider HTTPS base endpoint"),
+		endpoint:             fs.String(prefix+"-endpoint", "", "provider full HTTPS request URL"),
 		model:                fs.String(prefix+"-model", "", "provider model identity"),
 		secretEnv:            fs.String(prefix+"-secret-env", "", "environment variable containing the provider secret"),
 		allowedSpaces:        fs.String(prefix+"-allowed-spaces", "", "comma-separated spaces allowed for egress"),
@@ -309,6 +311,9 @@ func registerProviderFlags(fs *flag.FlagSet, prefix string, defaults ProviderCon
 	}
 	if includeMaxContext {
 		flags.maxContext = fs.Int(prefix+"-max-context-items", defaults.MaxContextItems, "maximum egress context items")
+	} else {
+		flags.embeddingDim = fs.Int(prefix+"-embedding-dim", defaults.EmbeddingDim, "requested embedding dimension (omit when zero)")
+		flags.queryInstructions = fs.String(prefix+"-embedding-query-instructions", defaults.EmbeddingQueryInstructions, "instructions prepended to semantic queries")
 	}
 	return flags
 }
@@ -318,7 +323,7 @@ func (f providerFlags) config() ProviderConfig {
 	if f.maxContext != nil {
 		maxContext = *f.maxContext
 	}
-	return ProviderConfig{
+	config := ProviderConfig{
 		Enabled: *f.enabled, Kind: *f.kind, Endpoint: *f.endpoint, Model: *f.model, SecretEnv: *f.secretEnv,
 		AllowedSpaces: splitList(*f.allowedSpaces), AllowedContentTypes: splitList(*f.allowedContentTypes),
 		AllowedSourceTypes: splitList(*f.allowedSourceTypes), AllowedSensitivities: splitList(*f.allowedSensitivities),
@@ -326,6 +331,11 @@ func (f providerFlags) config() ProviderConfig {
 		MaxContentChars: *f.maxContent, MaxContextItems: maxContext, MaxResponseSize: *f.maxResponse,
 		RequestTimeout: *f.timeout, MaxConcurrent: *f.concurrent, RequestsPerMinute: *f.rate,
 	}
+	if f.embeddingDim != nil {
+		config.EmbeddingDim = *f.embeddingDim
+		config.EmbeddingQueryInstructions = *f.queryInstructions
+	}
+	return config
 }
 
 func validStableVersion(value string) bool {

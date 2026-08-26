@@ -5,7 +5,7 @@
 
 ## 决策
 
-首个生产 Processor 和 EmbeddingProvider 使用最小 OpenAI-compatible HTTP JSON 协议，但不依赖厂商 SDK。两类能力独立配置、独立启用并使用独立 client；各自必须显式配置 provider kind、HTTPS endpoint、model、secret environment-variable reference、允许的 space/content type/source type/sensitivity、telemetry disabled 和 egress policy version。processing 和 embedding 可以使用不同 endpoint、model、凭据、并发和速率预算，任一能力关闭不阻止另一能力运行。
+首个生产 Processor 和 EmbeddingProvider 使用最小 OpenAI-compatible HTTP JSON 协议，但不依赖厂商 SDK。两类能力独立配置、独立启用并使用独立 client；各自必须显式配置 provider kind、完整 HTTPS 请求 URL、model、secret environment-variable reference、允许的 space/content type/source type/sensitivity、telemetry disabled 和 egress policy version。processing 和 embedding 可以使用不同 endpoint、model、凭据、并发和速率预算，任一能力关闭不阻止另一能力运行。Embedding 可选配置维度和查询指令；维度为空时不发送 `dimensions`，查询指令仅添加到检索查询，空的可选请求字段不发送。
 
 实现禁止默认云凭据链、metadata discovery、redirect、telemetry、更新检查和辅助网络请求。Authorization 值只在发送请求时解析，不进入配置响应、日志、错误、audit 或 backup。策略在解析 Authorization 和发起网络请求前检查。`max_content_chars` 是 target 与 context 的 text/JSON 字符总预算；`max_context_items` 是独立的 context 数量上限。仅发送允许字段和有界同空间 context；reference 默认只发送 metadata，不读取 URI。
 

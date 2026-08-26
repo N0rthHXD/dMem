@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -46,44 +45,48 @@ func (e *Error) Class() ErrorClass { return e.class }
 func (e *Error) Code() string      { return e.code }
 
 type Config struct {
-	Enabled              bool
-	Kind                 string
-	Endpoint             string
-	Model                string
-	SecretEnv            string
-	AllowedSpaces        []string
-	AllowedContentTypes  []string
-	AllowedSourceTypes   []string
-	AllowedSensitivities []string
-	TelemetryDisabled    bool
-	EgressPolicyVersion  string
-	MaxContentChars      int
-	MaxContextItems      int
-	MaxResponseSize      int64
-	RequestTimeout       time.Duration
-	MaxConcurrent        int
-	RequestsPerMinute    int
+	Enabled                    bool
+	Kind                       string
+	Endpoint                   string
+	Model                      string
+	SecretEnv                  string
+	AllowedSpaces              []string
+	AllowedContentTypes        []string
+	AllowedSourceTypes         []string
+	AllowedSensitivities       []string
+	TelemetryDisabled          bool
+	EgressPolicyVersion        string
+	MaxContentChars            int
+	MaxContextItems            int
+	MaxResponseSize            int64
+	RequestTimeout             time.Duration
+	MaxConcurrent              int
+	RequestsPerMinute          int
+	EmbeddingDim               int
+	EmbeddingQueryInstructions string
 }
 
 type Client struct {
-	enabled       bool
-	endpoint      string
-	model         string
-	secretEnv     string
-	policyVersion string
-	spaces        map[string]struct{}
-	contentTypes  map[string]struct{}
-	sourceTypes   map[string]struct{}
-	sensitivities map[string]struct{}
-	maxChars      int
-	maxContext    int
-	maxResponse   int64
-	timeout       time.Duration
-	http          *http.Client
-	concurrency   chan struct{}
-	rateMu        sync.Mutex
-	nextRequest   time.Time
-	requestGap    time.Duration
+	enabled           bool
+	endpoint          string
+	model             string
+	secretEnv         string
+	policyVersion     string
+	spaces            map[string]struct{}
+	contentTypes      map[string]struct{}
+	sourceTypes       map[string]struct{}
+	sensitivities     map[string]struct{}
+	maxChars          int
+	maxContext        int
+	maxResponse       int64
+	timeout           time.Duration
+	http              *http.Client
+	concurrency       chan struct{}
+	rateMu            sync.Mutex
+	nextRequest       time.Time
+	requestGap        time.Duration
+	embeddingDim      int
+	queryInstructions string
 }
 
 var _ EmbeddingProvider = (*Client)(nil)
@@ -107,12 +110,13 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 	httpCopy := *httpClient
 	httpCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
-		enabled: true, endpoint: strings.TrimRight(endpoint.String(), "/"), model: cfg.Model,
+		enabled: true, endpoint: endpoint.String(), model: cfg.Model,
 		secretEnv: cfg.SecretEnv, policyVersion: cfg.EgressPolicyVersion,
 		spaces: spaces, contentTypes: contentTypes, sourceTypes: sourceTypes, sensitivities: sensitivities, maxChars: cfg.MaxContentChars,
 		maxContext: cfg.MaxContextItems, maxResponse: cfg.MaxResponseSize, timeout: cfg.RequestTimeout,
 		http: &httpCopy, concurrency: make(chan struct{}, cfg.MaxConcurrent),
-		requestGap: time.Minute / time.Duration(cfg.RequestsPerMinute),
+		requestGap:   time.Minute / time.Duration(cfg.RequestsPerMinute),
+		embeddingDim: cfg.EmbeddingDim, queryInstructions: cfg.EmbeddingQueryInstructions,
 	}, nil
 }
 
@@ -128,7 +132,7 @@ func ValidateConfig(cfg Config) error {
 	}
 	endpoint, err := url.Parse(cfg.Endpoint)
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
-		return errors.New("provider: endpoint must be an HTTPS base URL")
+		return errors.New("provider: endpoint must be a full HTTPS request URL")
 	}
 	if !boundedString(cfg.Model) || !validEnvName(cfg.SecretEnv) || !boundedString(cfg.EgressPolicyVersion) {
 		return errors.New("provider: incomplete identity, secret reference, or policy version")
@@ -138,6 +142,9 @@ func ValidateConfig(cfg Config) error {
 	}
 	if cfg.RequestTimeout <= 0 || cfg.RequestTimeout > 5*time.Minute || cfg.MaxConcurrent < 1 || cfg.MaxConcurrent > 64 || cfg.RequestsPerMinute < 1 || cfg.RequestsPerMinute > 60000 {
 		return errors.New("provider: invalid request limits")
+	}
+	if cfg.EmbeddingDim < 0 || cfg.EmbeddingDim > maxEmbeddingDimension || utf8.RuneCountInString(cfg.EmbeddingQueryInstructions) > cfg.MaxContentChars {
+		return errors.New("provider: invalid embedding options")
 	}
 	spaces := makeSet(cfg.AllowedSpaces)
 	contentTypes := makeSet(cfg.AllowedContentTypes)
@@ -226,7 +233,7 @@ func (c *Client) Process(ctx context.Context, request ProcessRequest) (ProcessRe
 	}
 	payload.Messages = []chatMessage{{Role: "system", Content: "Return JSON with category no_memory or candidates_extracted and a candidates array. Do not request state changes or deletion."}, {Role: "user", Content: string(promptJSON)}}
 	var response chatResponse
-	requestID, err := c.post(ctx, "/chat/completions", payload, &response)
+	requestID, err := c.post(ctx, payload, &response)
 	if err != nil {
 		return ProcessResult{}, err
 	}
@@ -275,7 +282,7 @@ func (c *Client) Build(ctx context.Context, request domain.AggregateProviderInpu
 	prompt, _ := json.Marshal(request)
 	payload.Messages = append(payload.Messages, chatMessage{Role: "user", Content: string(prompt)})
 	var response chatResponse
-	if _, err := c.post(ctx, "/chat/completions", payload, &response); err != nil {
+	if _, err := c.post(ctx, payload, &response); err != nil {
 		return domain.AggregateProviderResult{}, err
 	}
 	if len(response.Choices) != 1 {
@@ -315,13 +322,19 @@ func (c *Client) Embed(ctx context.Context, request EmbeddingRequest) (Embedding
 	if len(request.inputs) == 0 || len(request.inputs) > maxEmbeddingBatch {
 		return EmbeddingResult{}, failure(ErrorInvalidInput, "invalid_embedding_batch")
 	}
-	for _, input := range request.inputs {
+	inputs := append([]string(nil), request.inputs...)
+	if request.query && c.queryInstructions != "" {
+		for i := range inputs {
+			inputs[i] = c.queryInstructions + inputs[i]
+		}
+	}
+	for _, input := range inputs {
 		if input == "" || utf8.RuneCountInString(input) > c.maxChars {
 			return EmbeddingResult{}, failure(ErrorInvalidInput, "embedding_input_out_of_bounds")
 		}
 	}
 	var response embeddingResponse
-	requestID, err := c.post(ctx, "/embeddings", embeddingWireRequest{Model: c.model, Input: append([]string(nil), request.inputs...)}, &response)
+	requestID, err := c.post(ctx, embeddingWireRequest{Model: c.model, Input: inputs, Dimensions: c.embeddingDim}, &response)
 	if err != nil {
 		return EmbeddingResult{}, err
 	}
@@ -337,6 +350,9 @@ func (c *Client) Embed(ctx context.Context, request EmbeddingRequest) (Embedding
 		}
 		if dimension == 0 {
 			dimension = len(item.Embedding)
+		}
+		if c.embeddingDim > 0 && len(item.Embedding) != c.embeddingDim {
+			return EmbeddingResult{}, failure(ErrorInvalidOutput, "embedding_dimension_mismatch")
 		}
 		if len(item.Embedding) != dimension {
 			return EmbeddingResult{}, failure(ErrorInvalidOutput, "embedding_dimension_mismatch")
@@ -460,7 +476,7 @@ func wireEvent(event Event) egressEvent {
 	return egressEvent{EventID: event.eventID, SpaceID: event.spaceID, SourceType: event.sourceType, SourceName: event.sourceName, Sensitivity: event.sensitivity, OccurredAt: event.occurredAt.UTC().Format(time.RFC3339Nano), Content: content}
 }
 
-func (c *Client) post(ctx context.Context, path string, payload, output any) (string, error) {
+func (c *Client) post(ctx context.Context, payload, output any) (string, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	secret := os.Getenv(c.secretEnv)
@@ -475,7 +491,7 @@ func (c *Client) post(ctx context.Context, path string, payload, output any) (st
 		return "", err
 	}
 	defer func() { <-c.concurrency }()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", failure(ErrorPermanent, "request_creation_failed")
 	}
@@ -702,7 +718,7 @@ type egressEvent struct {
 	EventID     string        `json:"event_id"`
 	SpaceID     string        `json:"space_id"`
 	SourceType  string        `json:"source_type"`
-	SourceName  string        `json:"source_name"`
+	SourceName  string        `json:"source_name,omitempty"`
 	Sensitivity string        `json:"sensitivity"`
 	OccurredAt  string        `json:"occurred_at"`
 	Content     egressContent `json:"content"`
@@ -713,8 +729,8 @@ type processPrompt struct {
 	JobID              string         `json:"job_id"`
 	Attempt            int            `json:"attempt"`
 	Event              egressEvent    `json:"event"`
-	ContextEvents      []egressEvent  `json:"context_events"`
-	ContextMemories    []egressMemory `json:"context_memories"`
+	ContextEvents      []egressEvent  `json:"context_events,omitempty"`
+	ContextMemories    []egressMemory `json:"context_memories,omitempty"`
 	AllowedMemoryTypes []string       `json:"allowed_memory_types"`
 	MaxCandidates      int            `json:"max_candidates"`
 	MaxContentChars    int            `json:"max_content_chars"`
@@ -726,8 +742,8 @@ type egressMemory struct {
 	Content     string     `json:"content"`
 	State       string     `json:"state"`
 	Sensitivity string     `json:"sensitivity"`
-	ValidFrom   *time.Time `json:"valid_from"`
-	ValidUntil  *time.Time `json:"valid_until"`
+	ValidFrom   *time.Time `json:"valid_from,omitempty"`
+	ValidUntil  *time.Time `json:"valid_until,omitempty"`
 }
 type chatMessage struct {
 	Role    string `json:"role"`
@@ -774,8 +790,9 @@ type processOutput struct {
 	Candidates []candidateWire `json:"candidates"`
 }
 type embeddingWireRequest struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
+	Model      string   `json:"model"`
+	Input      []string `json:"input"`
+	Dimensions int      `json:"dimensions,omitempty"`
 }
 type embeddingResponse struct {
 	Data []struct {

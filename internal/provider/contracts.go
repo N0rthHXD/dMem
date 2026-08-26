@@ -170,6 +170,13 @@ type EmbeddingRequest struct {
 	sensitivity string
 	sourceTypes []string
 	inputs      []string
+	query       bool
+}
+
+func NewEmbeddingQueryRequest(spaceID, contentType, sensitivity string, sourceTypes, inputs []string) EmbeddingRequest {
+	request := NewEmbeddingRequest(spaceID, contentType, sensitivity, sourceTypes, inputs)
+	request.query = true
+	return request
 }
 
 func NewEmbeddingRequest(spaceID, contentType, sensitivity string, sourceTypes, inputs []string) EmbeddingRequest {
