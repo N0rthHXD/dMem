@@ -25,6 +25,28 @@ const (
 	maxIdentityChars      = 512
 )
 
+const processSystemPrompt = `You are a memory extraction processor for an agent system. Inspect the target event, optionally together with context events and context memories, and decide what durable memories should be recorded.
+
+Respond with STRICT JSON ONLY (no markdown, no surrounding prose) matching this shape exactly:
+{"category":"no_memory|candidates_extracted","candidates":[...]}
+
+If nothing is worth remembering, return {"category":"no_memory","candidates":[]}.
+Otherwise return "candidates_extracted" with 1 to max_candidates candidates.
+
+Every candidate object MUST contain EXACTLY these fields and no others:
+- "content": string. A self-contained declarative memory statement.
+- "memory_type": string. One of the allowed_memory_types given in the input.
+- "space_id": string. Exactly equal to the target event's space_id.
+- "confidence": number between 0 and 1 inclusive.
+- "sensitivity": "normal" or "sensitive".
+- "suggestion_kind": one of "new", "duplicate", "supplement", "replacement", "conflict".
+- "evidence": non-empty array. Each element has EXACTLY {"event_id","evidence_type","start_offset","end_offset"}. "event_id" must be the target event_id or a context event_id present in the input. "evidence_type" is "direct_statement", "tool_result", or "manual_reference". Set BOTH "start_offset" and "end_offset" to null to cite the whole event, or set both to 0-based rune offsets into that event's content text with start_offset < end_offset and end_offset not exceeding the text length. Never set only one of the two.
+- "related_memory_ids": array of context memory ids this candidate relates to; use [] when there are none.
+
+Optionally include "valid_from" and/or "valid_until" as RFC3339 strings only when an explicit time bound is present; "valid_until" must be after "valid_from".
+
+Do not invent event_id or memory id values that were not provided in the input. Do not add any field beyond those listed. Do not request state changes or deletion.`
+
 type ErrorClass string
 
 const (
@@ -234,7 +256,7 @@ func (c *Client) Process(ctx context.Context, request ProcessRequest) (ProcessRe
 	if err != nil {
 		return ProcessResult{}, failure(ErrorInvalidInput, "invalid_process_request")
 	}
-	payload.Messages = []chatMessage{{Role: "system", Content: "Return JSON with category no_memory or candidates_extracted and a candidates array. Do not request state changes or deletion."}, {Role: "user", Content: string(promptJSON)}}
+	payload.Messages = []chatMessage{{Role: "system", Content: processSystemPrompt}, {Role: "user", Content: string(promptJSON)}}
 	var response chatResponse
 	requestID, err := c.post(ctx, payload, &response)
 	if err != nil {
