@@ -35,6 +35,14 @@ func TestOpenInitializesSchemaAndSQLiteCapabilities(t *testing.T) {
 	if err := store.reader.QueryRowContext(ctx, "SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'searchable'").Scan(&matchCount); err != nil || matchCount != 1 {
 		t.Fatalf("FTS5 query count = %d, %v", matchCount, err)
 	}
+	if _, err := store.writer.ExecContext(ctx, "INSERT INTO memory_fts(memory_id, revision_id, content) VALUES ('mixed', 'mixed-r', 'SQLite 支持中英文混合检索')"); err != nil {
+		t.Fatalf("FTS5 mixed-language insert: %v", err)
+	}
+	for _, query := range []string{"QLite", "中英文"} {
+		if err := store.reader.QueryRowContext(ctx, "SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?", query).Scan(&matchCount); err != nil || matchCount != 1 {
+			t.Errorf("FTS5 mixed-language query %q count = %d, %v; want 1, nil", query, matchCount, err)
+		}
+	}
 	if _, err := store.writer.ExecContext(ctx, "INSERT INTO schema_metadata(singleton, schema_version, initialized_at) VALUES ('wrong', 1, 'now')"); err == nil {
 		t.Fatal("STRICT table accepted a text primary key")
 	}

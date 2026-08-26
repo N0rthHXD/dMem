@@ -1189,7 +1189,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
     memory_id UNINDEXED,
     revision_id UNINDEXED,
     content,
-    tokenize = 'unicode61'
+    tokenize = 'trigram'
 );
 
 CREATE TABLE jobs (
