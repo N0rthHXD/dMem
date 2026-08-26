@@ -239,6 +239,48 @@ func TestEmbeddingUsesFullURLAndOptionalConfiguration(t *testing.T) {
 	}
 }
 
+func TestMultimodalEmbeddingUsesTextInputAndObjectResponse(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model      string                     `json:"model"`
+			Input      []multimodalEmbeddingInput `json:"input"`
+			Dimensions int                        `json:"dimensions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Model != "model-a" || body.Dimensions != 2 || len(body.Input) != 1 || body.Input[0].Type != "text" || body.Input[0].Text != "query: deployment region" {
+			t.Errorf("request = %+v", body)
+		}
+		_, _ = w.Write([]byte(`{"data":{"embedding":[1,2]},"usage":{"prompt_tokens":4}}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{
+		Endpoint: server.URL + "/api/v3/embeddings/multimodal", EmbeddingDim: 2, EmbeddingQueryInstructions: "query: ",
+	})
+	result, err := client.Embed(context.Background(), NewEmbeddingQueryRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"deployment region"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vectors := result.Vectors(); len(vectors) != 1 || len(vectors[0]) != 2 || vectors[0][0] != 1 || result.Usage().InputTokens() != 4 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestMultimodalEmbeddingRejectsBatch(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/api/v3/embeddings/multimodal"})
+	_, err := client.Embed(context.Background(), NewEmbeddingRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"first", "second"}))
+	assertProviderError(t, err, ErrorInvalidInput, "multimodal_embedding_requires_single_input")
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d", requests.Load())
+	}
+}
+
 func TestEmbeddingOmitsEmptyOptionalConfiguration(t *testing.T) {
 	t.Setenv("DMEM_TEST_SECRET", "secret")
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -87,6 +88,7 @@ type Client struct {
 	requestGap        time.Duration
 	embeddingDim      int
 	queryInstructions string
+	multimodalEmbed   bool
 }
 
 var _ EmbeddingProvider = (*Client)(nil)
@@ -117,6 +119,7 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 		http: &httpCopy, concurrency: make(chan struct{}, cfg.MaxConcurrent),
 		requestGap:   time.Minute / time.Duration(cfg.RequestsPerMinute),
 		embeddingDim: cfg.EmbeddingDim, queryInstructions: cfg.EmbeddingQueryInstructions,
+		multimodalEmbed: strings.TrimSuffix(endpoint.Path, "/") == "/api/v3/embeddings/multimodal",
 	}, nil
 }
 
@@ -333,8 +336,21 @@ func (c *Client) Embed(ctx context.Context, request EmbeddingRequest) (Embedding
 			return EmbeddingResult{}, failure(ErrorInvalidInput, "embedding_input_out_of_bounds")
 		}
 	}
+	if c.multimodalEmbed && len(inputs) != 1 {
+		return EmbeddingResult{}, failure(ErrorInvalidInput, "multimodal_embedding_requires_single_input")
+	}
 	var response embeddingResponse
-	requestID, err := c.post(ctx, embeddingWireRequest{Model: c.model, Input: inputs, Dimensions: c.embeddingDim}, &response)
+	var requestID string
+	var err error
+	if c.multimodalEmbed {
+		var wireResponse multimodalEmbeddingResponse
+		requestID, err = c.post(ctx, multimodalEmbeddingWireRequest{
+			Model: c.model, Input: []multimodalEmbeddingInput{{Type: "text", Text: inputs[0]}}, Dimensions: c.embeddingDim,
+		}, &wireResponse)
+		response = embeddingResponse{Data: []embeddingWireItem{wireResponse.Data}, Usage: wireResponse.Usage}
+	} else {
+		requestID, err = c.post(ctx, embeddingWireRequest{Model: c.model, Input: inputs, Dimensions: c.embeddingDim}, &response)
+	}
 	if err != nil {
 		return EmbeddingResult{}, err
 	}
@@ -794,10 +810,24 @@ type embeddingWireRequest struct {
 	Input      []string `json:"input"`
 	Dimensions int      `json:"dimensions,omitempty"`
 }
+type multimodalEmbeddingWireRequest struct {
+	Model      string                     `json:"model"`
+	Input      []multimodalEmbeddingInput `json:"input"`
+	Dimensions int                        `json:"dimensions,omitempty"`
+}
+type multimodalEmbeddingInput struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+type embeddingWireItem struct {
+	Index     int       `json:"index"`
+	Embedding []float64 `json:"embedding"`
+}
 type embeddingResponse struct {
-	Data []struct {
-		Index     int       `json:"index"`
-		Embedding []float64 `json:"embedding"`
-	} `json:"data"`
-	Usage usageWire `json:"usage"`
+	Data  []embeddingWireItem `json:"data"`
+	Usage usageWire           `json:"usage"`
+}
+type multimodalEmbeddingResponse struct {
+	Data  embeddingWireItem `json:"data"`
+	Usage usageWire         `json:"usage"`
 }
