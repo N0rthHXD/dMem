@@ -36,5 +36,4 @@ relations. Aggregates never replace their source memories.
 Input changes mark aggregate freshness stale and enqueue deduplicated rebuild
 work. Rebuilt content returns to review instead of replacing confirmed content
 automatically. Provenance remains queryable down to input revisions and their
-evidence. Profile generation and autonomous cross-space profiling are not
-implemented.
+evidence. Aggregate generation never crosses spaces implicitly.

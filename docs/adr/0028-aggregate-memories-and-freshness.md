@@ -5,7 +5,7 @@
 
 ## 决策
 
-审核后的 scene/topic aggregate 是普通 logical memory 和不可变 revision，不建立第二套内容 authority。它有一个一对一 aggregate descriptor，kind 固定为 `scene`、`topic` 或 `profile`；`scene` 和 `topic` 是 required，`profile` 仅保留 Schema 且生成请求返回 `unsupported`。Descriptor 保存 policy/processing version 和 sensitivity；每个直接输入 revision 由权威 `derived_from` relation 记录，缺少完整 provenance 或 sensitivity 低于任一输入时不能 confirm。
+审核后的 scene/topic aggregate 是普通 logical memory 和不可变 revision，不建立第二套内容 authority。它有一个一对一 aggregate descriptor，kind 固定为 `scene` 或 `topic`。Descriptor 保存 policy/processing version 和 sensitivity；每个直接输入 revision 由权威 `derived_from` relation 记录，缺少完整 provenance 或 sensitivity 低于任一输入时不能 confirm。
 
 Aggregate proposal 是独立 resource，保存有界且排序规范化的 input revision IDs、input fingerprint、内容和 provider identity。Create/list/get/review、aggregate get/list 和 drill-down 是 UDS HTTP 公共 API。Provider 在事务外运行；confirm 原子创建普通 memory/revision、descriptor、全部 provenance、review、audit 和 index jobs。Aggregate 不能覆盖、删除或替代输入 memory，且 frozen 输入不会被 aggregate review 修改。
 

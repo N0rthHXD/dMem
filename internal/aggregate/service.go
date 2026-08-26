@@ -27,7 +27,7 @@ func NewService(repository *storage.Repository, provider domain.AggregateProvide
 }
 
 func (s *Service) Build(ctx context.Context, identity storage.WriteIdentity, space, kind string, revisions []string) (domain.AggregateProposal, bool, error) {
-	if kind == "profile" || s.provider == nil {
+	if s.provider == nil {
 		return domain.AggregateProposal{}, false, ErrUnsupported
 	}
 	prepared, err := s.repository.PrepareAggregateBuild(ctx, space, kind, revisions, s.maxInputs)

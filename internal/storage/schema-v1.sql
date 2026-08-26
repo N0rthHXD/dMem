@@ -929,7 +929,7 @@ INSERT INTO feedback_aggregate_metadata(singleton, algorithm_version, state, upd
 CREATE TABLE aggregate_descriptors (
     aggregate_id TEXT PRIMARY KEY,
     memory_id TEXT NOT NULL UNIQUE REFERENCES memories(memory_id) ON DELETE RESTRICT,
-    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic', 'profile')),
+    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic')),
     policy_version TEXT NOT NULL,
     processing_version TEXT NOT NULL,
     sensitivity TEXT NOT NULL CHECK (sensitivity IN ('normal', 'sensitive')),
@@ -944,7 +944,7 @@ CREATE TRIGGER aggregate_descriptors_no_delete BEFORE DELETE ON aggregate_descri
 CREATE TABLE aggregate_proposals (
     proposal_id TEXT PRIMARY KEY,
     space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
-    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic', 'profile')),
+    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic')),
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     input_fingerprint TEXT NOT NULL,

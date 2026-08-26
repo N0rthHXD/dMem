@@ -80,13 +80,3 @@ func TestBuildSceneTopicBoundedOutsideWriteTransactionIdentity(t *testing.T) {
 		t.Fatalf("bound error=%v", err)
 	}
 }
-
-func TestProfileUnsupportedNeverCallsProvider(t *testing.T) {
-	repository, space := aggregateTestRepository(t)
-	provider := &fakeProvider{result: domain.AggregateProviderResult{Content: "must not happen", Sensitivity: "normal"}}
-	service := NewService(repository, provider, "aggregate/fake", "policy-v1", "aggregate-v1", 2)
-	_, _, err := service.Build(context.Background(), storage.WriteIdentity{}, space, "profile", []string{uuid(1)})
-	if !errors.Is(err, ErrUnsupported) || len(provider.calls) != 0 {
-		t.Fatalf("error=%v calls=%d", err, len(provider.calls))
-	}
-}

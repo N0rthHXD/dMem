@@ -247,7 +247,6 @@ func TestOpenAPIContract(t *testing.T) {
 	aggregateID := aggregatePage.Items[0].AggregateID
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID, "", nil))
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID+"/provenance", "", nil))
-	c.close(c.expect(http.StatusUnprocessableEntity, http.MethodPost, "/v1/aggregate-proposals", "aggregate-profile", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "profile", "input_revision_ids": []string{targetMemory.CurrentRevision.RevisionID}}))
 
 	response = c.do(http.MethodPost, "/v1/search", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}})
 	var keyword domain.SearchResponse
@@ -437,6 +436,7 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodGet, "/v1/feedback?space_id=bad", "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/feedback/aggregates/rebuild", "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/aggregate-proposals", "aggregate-json", "{", http.StatusBadRequest},
+		{http.MethodPost, "/v1/aggregate-proposals", "aggregate-invalid", `{}`, http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/aggregate-proposals?space_id=bad", "", "", http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/aggregate-proposals/not-a-uuid", "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/aggregate-proposals/" + aggregateProposal.ProposalID + "/confirm", "aggregate-confirm-json", "{", http.StatusBadRequest},

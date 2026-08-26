@@ -1287,7 +1287,7 @@ components:
     RelationType: { type: string, enum: [supports, contradicts, supersedes, derived_from, related_to] }
     EvolutionAction: { type: string, enum: [duplicate, supplement, replacement, conflict] }
     ConflictState: { type: string, enum: [open, resolved, dismissed] }
-    AggregateKind: { type: string, enum: [scene, topic, profile] }
+    AggregateKind: { type: string, enum: [scene, topic] }
     ReviewProposalRequest:
       type: object
       additionalProperties: false

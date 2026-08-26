@@ -90,7 +90,7 @@ func TestAggregateDaemonBuildConfirmProvenanceStaleAndHealth(t *testing.T) {
 	}
 }
 
-func TestAggregateOfflineAndProfileUnsupported(t *testing.T) {
+func TestAggregateOffline(t *testing.T) {
 	cfg := testConfig(t)
 	d, err := StartStaging(context.Background(), cfg)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestAggregateOfflineAndProfileUnsupported(t *testing.T) {
 	}
 	defer d.Close(context.Background())
 	client := unixClient(cfg.Endpoint)
-	space := createSpace(t, client, "aggregate-profile-space", map[string]any{"space_type": "user", "external_id": "aggregate-profile", "display_name": "Aggregate Profile"})
+	space := createSpace(t, client, "aggregate-offline-space", map[string]any{"space_type": "user", "external_id": "aggregate-offline", "display_name": "Aggregate Offline"})
 	response := requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals", "aggregate-offline", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "scene", "input_revision_ids": []string{"00000000-0000-4000-8000-000000000001"}})
 	if response.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("offline aggregate endpoint status=%d, want %d", response.StatusCode, http.StatusNotFound)
@@ -107,14 +107,6 @@ func TestAggregateOfflineAndProfileUnsupported(t *testing.T) {
 	decodeResponse(t, response, &apiError)
 	if apiError.ErrorCode != "unsupported" {
 		t.Fatalf("offline aggregate endpoint error=%+v, want code not_found", apiError)
-	}
-	response = requestJSON(t, client, http.MethodPost, "/v1/aggregate-proposals", "aggregate-profile", map[string]any{"space_id": space.SpaceID, "aggregate_kind": "profile", "input_revision_ids": []string{"00000000-0000-4000-8000-000000000001"}})
-	if response.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("profile status=%d", response.StatusCode)
-	}
-	decodeResponse(t, response, &apiError)
-	if apiError.ErrorCode != "unsupported" {
-		t.Fatalf("profile error=%+v", apiError)
 	}
 	response = requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
 	var health api.Health
