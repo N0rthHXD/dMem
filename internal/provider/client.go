@@ -7,9 +7,9 @@ import (
 	"errors"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -68,39 +68,31 @@ func (e *Error) Class() ErrorClass { return e.class }
 func (e *Error) Code() string      { return e.code }
 
 type Config struct {
-	Enabled                    bool
-	Kind                       string
-	Endpoint                   string
-	Model                      string
-	SecretEnv                  string
-	AllowedSpaces              []string
-	AllowedContentTypes        []string
-	AllowedSourceTypes         []string
-	AllowedSensitivities       []string
-	TelemetryDisabled          bool
-	EgressPolicyVersion        string
-	MaxContentChars            int
-	MaxContextItems            int
-	MaxResponseSize            int64
-	RequestTimeout             time.Duration
-	MaxConcurrent              int
-	RequestsPerMinute          int
-	EmbeddingDim               int
-	EmbeddingQueryInstructions string
+	Enabled           bool
+	Kind              string
+	Endpoint          string
+	Model             string
+	TelemetryDisabled bool
+	Secret            SecretReference
+	Options           EmbeddingOptions
+	Limits            Limits
+	Policy            Policy
 }
 
 type Client struct {
 	enabled           bool
 	endpoint          string
 	model             string
-	secretEnv         string
-	policyVersion     string
-	spaces            map[string]struct{}
+	secret            SecretReference
 	contentTypes      map[string]struct{}
 	sourceTypes       map[string]struct{}
 	sensitivities     map[string]struct{}
-	maxChars          int
+	queryAllowed      bool
+	maxEgressInput    int
+	maxAggregateInput int
 	maxContext        int
+	maxCandidate      int
+	maxTotalCandidate int
 	maxResponse       int64
 	timeout           time.Duration
 	http              *http.Client
@@ -124,10 +116,9 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 		return &Client{enabled: false}, nil
 	}
 	endpoint, _ := url.Parse(cfg.Endpoint)
-	spaces := makeSet(cfg.AllowedSpaces)
-	contentTypes := makeSet(cfg.AllowedContentTypes)
-	sourceTypes := makeSet(cfg.AllowedSourceTypes)
-	sensitivities := makeSet(cfg.AllowedSensitivities)
+	contentTypes := makeMIMETypeSet(cfg.Policy.ContentTypes)
+	sourceTypes := makeSet(cfg.Policy.SourceTypes)
+	sensitivities := makeSet(cfg.Policy.Sensitivities)
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
@@ -135,12 +126,14 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 	httpCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
 		enabled: true, endpoint: endpoint.String(), model: cfg.Model,
-		secretEnv: cfg.SecretEnv, policyVersion: cfg.EgressPolicyVersion,
-		spaces: spaces, contentTypes: contentTypes, sourceTypes: sourceTypes, sensitivities: sensitivities, maxChars: cfg.MaxContentChars,
-		maxContext: cfg.MaxContextItems, maxResponse: cfg.MaxResponseSize, timeout: cfg.RequestTimeout,
-		http: &httpCopy, concurrency: make(chan struct{}, cfg.MaxConcurrent),
-		requestGap:   time.Minute / time.Duration(cfg.RequestsPerMinute),
-		embeddingDim: cfg.EmbeddingDim, queryInstructions: cfg.EmbeddingQueryInstructions,
+		secret:       cfg.Secret,
+		contentTypes: contentTypes, sourceTypes: sourceTypes, sensitivities: sensitivities, queryAllowed: cfg.Policy.Query != "deny",
+		maxEgressInput: cfg.Limits.MaxEgressInputChars, maxAggregateInput: cfg.Limits.MaxAggregateInputChars, maxContext: cfg.Limits.MaxContextItems,
+		maxCandidate: cfg.Limits.MaxCandidateChars, maxTotalCandidate: cfg.Limits.MaxTotalCandidateChars,
+		maxResponse: cfg.Limits.MaxResponseBytes, timeout: cfg.Limits.RequestTimeout,
+		http: &httpCopy, concurrency: make(chan struct{}, cfg.Limits.MaxConcurrent),
+		requestGap:   time.Minute / time.Duration(cfg.Limits.RequestsPerMinute),
+		embeddingDim: cfg.Options.Dimensions, queryInstructions: cfg.Options.QueryInstructions,
 		multimodalEmbed: strings.TrimSuffix(endpoint.Path, "/") == "/api/v3/embeddings/multimodal",
 	}, nil
 }
@@ -159,23 +152,28 @@ func ValidateConfig(cfg Config) error {
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return errors.New("provider: endpoint must be a full HTTPS request URL")
 	}
-	if !boundedString(cfg.Model) || !validEnvName(cfg.SecretEnv) || !boundedString(cfg.EgressPolicyVersion) {
-		return errors.New("provider: incomplete identity, secret reference, or policy version")
+	if !boundedString(cfg.Model) {
+		return errors.New("provider: incomplete model identity")
 	}
-	if cfg.MaxContentChars < 1 || cfg.MaxContentChars > 100000 || cfg.MaxContextItems < 0 || cfg.MaxContextItems > 100 || cfg.MaxResponseSize < 1024 || cfg.MaxResponseSize > 16*1024*1024 {
+	if cfg.Secret.Source != "environment" || !validEnvName(cfg.Secret.Name) {
+		return errors.New("provider: invalid secret reference")
+	}
+	if cfg.Limits.MaxEgressInputChars < 1 || cfg.Limits.MaxEgressInputChars > 100000 || cfg.Limits.MaxContextItems < 0 || cfg.Limits.MaxContextItems > 100 || cfg.Limits.MaxResponseBytes < 1024 || cfg.Limits.MaxResponseBytes > 16*1024*1024 {
 		return errors.New("provider: invalid content or response bounds")
 	}
-	if cfg.RequestTimeout <= 0 || cfg.RequestTimeout > 5*time.Minute || cfg.MaxConcurrent < 1 || cfg.MaxConcurrent > 64 || cfg.RequestsPerMinute < 1 || cfg.RequestsPerMinute > 60000 {
+	if cfg.Limits.RequestTimeout <= 0 || cfg.Limits.RequestTimeout > 5*time.Minute || cfg.Limits.MaxConcurrent < 1 || cfg.Limits.MaxConcurrent > 64 || cfg.Limits.RequestsPerMinute < 1 || cfg.Limits.RequestsPerMinute > 60000 {
 		return errors.New("provider: invalid request limits")
 	}
-	if cfg.EmbeddingDim < 0 || cfg.EmbeddingDim > maxEmbeddingDimension || utf8.RuneCountInString(cfg.EmbeddingQueryInstructions) > cfg.MaxContentChars {
+	if cfg.Options.Dimensions < 0 || cfg.Options.Dimensions > maxEmbeddingDimension || utf8.RuneCountInString(cfg.Options.QueryInstructions) > cfg.Limits.MaxEgressInputChars {
 		return errors.New("provider: invalid embedding options")
 	}
-	spaces := makeSet(cfg.AllowedSpaces)
-	contentTypes := makeSet(cfg.AllowedContentTypes)
-	sourceTypes := makeSet(cfg.AllowedSourceTypes)
-	sensitivities := makeSet(cfg.AllowedSensitivities)
-	if len(spaces) == 0 || len(contentTypes) == 0 || len(sourceTypes) == 0 || len(sensitivities) == 0 {
+	if cfg.Limits.MaxCandidateChars != 0 && (cfg.Limits.MaxAggregateInputChars < 1 || cfg.Limits.MaxAggregateInputChars > 100000 || cfg.Limits.MaxCandidateChars > 100000 || cfg.Limits.MaxTotalCandidateChars < cfg.Limits.MaxCandidateChars || cfg.Limits.MaxTotalCandidateChars > 1000000) {
+		return errors.New("provider: invalid candidate bounds")
+	}
+	contentTypes := makeMIMETypeSet(cfg.Policy.ContentTypes)
+	sourceTypes := makeSet(cfg.Policy.SourceTypes)
+	sensitivities := makeSet(cfg.Policy.Sensitivities)
+	if len(contentTypes) == 0 || len(sourceTypes) == 0 || len(sensitivities) == 0 {
 		return errors.New("provider: egress allowlists are required")
 	}
 	for sourceType := range sourceTypes {
@@ -187,6 +185,12 @@ func ValidateConfig(cfg Config) error {
 		if sensitivity != "normal" && sensitivity != "sensitive" {
 			return errors.New("provider: invalid sensitivity allowlist")
 		}
+	}
+	if cfg.Policy.Default != "deny" {
+		return errors.New("provider: policy default must be deny")
+	}
+	if len(cfg.Policy.Assignments) == 0 {
+		return errors.New("provider: at least one policy assignment is required")
 	}
 	return nil
 }
@@ -208,49 +212,32 @@ func (c *Client) EgressPolicyVersion() string {
 	if !c.Enabled() {
 		return ""
 	}
-	return c.policyVersion
+	return "generated"
 }
 
 func (c *Client) Process(ctx context.Context, request ProcessRequest) (ProcessResult, error) {
-	if !c.Enabled() {
-		return ProcessResult{}, failure(ErrorDisabled, "provider_disabled")
-	}
-	if err := c.validateEvent(request.target); err != nil {
+	if err := c.PreflightProcess(request); err != nil {
 		return ProcessResult{}, err
 	}
-	if !boundedString(request.processorIdentity) || !boundedString(request.processingVersion) || !boundedString(request.jobID) || request.attempt < 1 || request.maxCandidates < 1 || request.maxCandidates > 100 || request.maxContentChars < 1 || request.maxContentChars > c.maxChars || len(request.allowedMemoryTypes) == 0 {
-		return ProcessResult{}, failure(ErrorInvalidInput, "invalid_process_request")
-	}
-	for _, memoryType := range request.allowedMemoryTypes {
-		if !boundedString(memoryType) {
-			return ProcessResult{}, failure(ErrorInvalidInput, "invalid_process_request")
-		}
-	}
-	remaining := request.maxContentChars
+	remaining := c.maxEgressInput
 	if request.target.content.kind != "reference" {
 		remaining -= utf8.RuneCountInString(request.target.content.text)
-		if remaining < 0 {
-			return ProcessResult{}, failure(ErrorInvalidInput, "content_out_of_bounds")
-		}
 	}
-	contextEvents, err := c.minimizeContext(request.target.spaceID, request.context, remaining)
-	if err != nil {
-		return ProcessResult{}, err
-	}
+	contextEvents, omissions := c.minimizeContext(request.target.spaceID, request.context, remaining)
 	for _, event := range contextEvents {
 		if event.Content.Kind != "reference" {
 			remaining -= utf8.RuneCountInString(event.Content.Text)
 		}
 	}
-	contextMemories, err := c.minimizeMemories(request.contextMemories, remaining, c.maxContext)
-	if err != nil {
-		return ProcessResult{}, err
-	}
+	contextMemories, memoryOmissions := c.minimizeMemories(request.contextMemories, remaining, max(0, c.maxContext-len(contextEvents)))
+	mergeOmissions(omissions, memoryOmissions)
+	request.context = acceptedEvents(request.context, contextEvents)
+	request.contextMemories = acceptedMemories(request.contextMemories, contextMemories)
 	payload := chatRequest{Model: c.model, ResponseFormat: responseFormat{Type: "json_object"}}
 	prompt := processPrompt{
 		ProcessorIdentity: request.processorIdentity, ProcessingVersion: request.processingVersion,
 		JobID: request.jobID, Attempt: request.attempt, Event: wireEvent(request.target),
-		ContextEvents: contextEvents, ContextMemories: contextMemories, AllowedMemoryTypes: append([]string(nil), request.allowedMemoryTypes...), MaxCandidates: request.maxCandidates, MaxContentChars: request.maxContentChars,
+		ContextEvents: contextEvents, ContextMemories: contextMemories, AllowedMemoryTypes: append([]string(nil), request.allowedMemoryTypes...), MaxCandidates: request.maxCandidates, MaxContentChars: min(request.maxCandidateChars, c.maxCandidate),
 	}
 	promptJSON, err := json.Marshal(prompt)
 	if err != nil {
@@ -269,19 +256,73 @@ func (c *Client) Process(ctx context.Context, request ProcessRequest) (ProcessRe
 	if err := decodeSingleStrict([]byte(response.Choices[0].Message.Content), &output); err != nil {
 		return ProcessResult{}, failure(ErrorInvalidOutput, "malformed_processor_output")
 	}
-	result, err := validateProcessOutput(output, request, response.Usage, requestID, request.maxContentChars)
+	request.maxCandidateChars = min(request.maxCandidateChars, c.maxCandidate)
+	request.maxTotalChars = min(request.maxTotalChars, c.maxTotalCandidate)
+	result, err := validateProcessOutput(output, request, response.Usage, requestID)
 	if err != nil {
 		return ProcessResult{}, err
 	}
+	result.omissionSummary = omissions
+	for _, count := range omissions {
+		result.omittedCount += count
+	}
 	return result, nil
+}
+
+func (c *Client) PreflightProcess(request ProcessRequest) error {
+	if !c.Enabled() {
+		return failure(ErrorDisabled, "provider_disabled")
+	}
+	if err := c.validateEvent(request.target); err != nil {
+		return err
+	}
+	if !boundedString(request.processorIdentity) || !boundedString(request.processingVersion) || !boundedString(request.jobID) || request.attempt < 1 || request.maxCandidates < 1 || request.maxCandidates > 100 || request.maxCandidateChars < 1 || request.maxTotalChars < request.maxCandidateChars || len(request.allowedMemoryTypes) == 0 {
+		return failure(ErrorInvalidInput, "invalid_process_request")
+	}
+	for _, memoryType := range request.allowedMemoryTypes {
+		if !boundedString(memoryType) {
+			return failure(ErrorInvalidInput, "invalid_process_request")
+		}
+	}
+	if request.target.content.kind != "reference" {
+		if utf8.RuneCountInString(request.target.content.text) > c.maxEgressInput {
+			return failure(ErrorInvalidInput, "content_out_of_bounds")
+		}
+	}
+	return nil
+}
+
+func acceptedEvents(events []Event, accepted []egressEvent) []Event {
+	ids := make(map[string]struct{}, len(accepted))
+	for _, event := range accepted {
+		ids[event.EventID] = struct{}{}
+	}
+	result := make([]Event, 0, len(accepted))
+	for _, event := range events {
+		if _, ok := ids[event.eventID]; ok {
+			result = append(result, event)
+		}
+	}
+	return result
+}
+
+func acceptedMemories(memories []Memory, accepted []egressMemory) []Memory {
+	ids := make(map[string]struct{}, len(accepted))
+	for _, memory := range accepted {
+		ids[memory.MemoryID] = struct{}{}
+	}
+	result := make([]Memory, 0, len(accepted))
+	for _, memory := range memories {
+		if _, ok := ids[memory.memoryID]; ok {
+			result = append(result, memory)
+		}
+	}
+	return result
 }
 
 func (c *Client) Build(ctx context.Context, request domain.AggregateProviderInput) (domain.AggregateProviderResult, error) {
 	if !c.Enabled() {
 		return domain.AggregateProviderResult{}, failure(ErrorDisabled, "provider_disabled")
-	}
-	if _, ok := c.spaces[request.SpaceID]; !ok {
-		return domain.AggregateProviderResult{}, failure(ErrorPolicy, "space_not_allowed")
 	}
 	if request.Kind != "scene" && request.Kind != "topic" || request.PolicyVersion == "" || request.ProcessingVersion == "" || len(request.Inputs) == 0 || len(request.Inputs) > c.maxContext {
 		return domain.AggregateProviderResult{}, failure(ErrorInvalidInput, "invalid_aggregate_request")
@@ -296,7 +337,7 @@ func (c *Client) Build(ctx context.Context, request domain.AggregateProviderInpu
 			return domain.AggregateProviderResult{}, failure(ErrorPolicy, "aggregate_sensitivity_not_allowed")
 		}
 		total += utf8.RuneCountInString(input.Content)
-		if total > c.maxChars {
+		if total > c.maxAggregateInput {
 			return domain.AggregateProviderResult{}, failure(ErrorInvalidInput, "content_out_of_bounds")
 		}
 		if input.Sensitivity == "sensitive" {
@@ -327,19 +368,22 @@ func (c *Client) Embed(ctx context.Context, request EmbeddingRequest) (Embedding
 	if !c.Enabled() {
 		return EmbeddingResult{}, failure(ErrorDisabled, "provider_disabled")
 	}
-	if _, ok := c.spaces[request.spaceID]; !ok {
-		return EmbeddingResult{}, failure(ErrorPolicy, "space_not_allowed")
-	}
-	if _, ok := c.contentTypes[request.contentType]; !ok {
+	if _, ok := c.contentTypes[normalizeMIMEType(request.contentType)]; !ok {
 		return EmbeddingResult{}, failure(ErrorPolicy, "content_type_not_allowed")
 	}
 	if _, ok := c.sensitivities[request.sensitivity]; !ok {
 		return EmbeddingResult{}, failure(ErrorPolicy, "sensitivity_not_allowed")
 	}
-	if len(request.sourceTypes) == 0 {
+	if request.query && !c.queryAllowed {
+		return EmbeddingResult{}, failure(ErrorPolicy, "semantic_query_not_allowed")
+	}
+	if !request.query && len(request.sourceTypes) == 0 {
 		return EmbeddingResult{}, failure(ErrorInvalidInput, "missing_embedding_source_types")
 	}
 	for _, sourceType := range request.sourceTypes {
+		if request.query && sourceType == "semantic_query" {
+			continue
+		}
 		if _, ok := c.sourceTypes[sourceType]; !ok {
 			return EmbeddingResult{}, failure(ErrorPolicy, "source_type_not_allowed")
 		}
@@ -354,7 +398,7 @@ func (c *Client) Embed(ctx context.Context, request EmbeddingRequest) (Embedding
 		}
 	}
 	for _, input := range inputs {
-		if input == "" || utf8.RuneCountInString(input) > c.maxChars {
+		if input == "" || utf8.RuneCountInString(input) > c.maxEgressInput {
 			return EmbeddingResult{}, failure(ErrorInvalidInput, "embedding_input_out_of_bounds")
 		}
 	}
@@ -410,10 +454,7 @@ func (c *Client) Embed(ctx context.Context, request EmbeddingRequest) (Embedding
 }
 
 func (c *Client) validateEvent(event Event) error {
-	if _, ok := c.spaces[event.spaceID]; !ok {
-		return failure(ErrorPolicy, "space_not_allowed")
-	}
-	if _, ok := c.contentTypes[event.content.mediaType]; !ok {
+	if _, ok := c.contentTypes[normalizeMIMEType(event.content.mediaType)]; !ok {
 		return failure(ErrorPolicy, "content_type_not_allowed")
 	}
 	if _, ok := c.sourceTypes[event.sourceType]; !ok {
@@ -431,77 +472,89 @@ func (c *Client) validateEvent(event Event) error {
 	if event.content.kind == "reference" && (event.content.declaredSize < 0 || !boundedOptionalString(event.content.declaredHash)) {
 		return failure(ErrorInvalidInput, "invalid_reference_metadata")
 	}
-	if event.content.kind != "reference" && (event.content.text == "" || utf8.RuneCountInString(event.content.text) > c.maxChars) {
+	if event.content.kind != "reference" && (event.content.text == "" || utf8.RuneCountInString(event.content.text) > c.maxEgressInput) {
 		return failure(ErrorInvalidInput, "content_out_of_bounds")
 	}
 	return nil
 }
 
-func (c *Client) minimizeContext(spaceID string, events []Event, remaining int) ([]egressEvent, error) {
-	if len(events) > c.maxContext {
-		events = events[:c.maxContext]
-	}
+func (c *Client) minimizeContext(spaceID string, events []Event, remaining int) ([]egressEvent, map[string]int) {
 	result := make([]egressEvent, 0, len(events))
+	omissions := make(map[string]int)
 	for _, event := range events {
-		if event.spaceID != spaceID {
-			return nil, failure(ErrorPolicy, "context_space_not_allowed")
+		if len(result) == c.maxContext {
+			omissions["context_limit"]++
+			continue
 		}
-		if _, ok := c.contentTypes[event.content.mediaType]; !ok {
-			return nil, failure(ErrorPolicy, "context_content_type_not_allowed")
+		if event.spaceID != spaceID {
+			omissions["context_space_not_allowed"]++
+			continue
+		}
+		if _, ok := c.contentTypes[normalizeMIMEType(event.content.mediaType)]; !ok {
+			omissions["context_content_type_not_allowed"]++
+			continue
 		}
 		if _, ok := c.sourceTypes[event.sourceType]; !ok {
-			return nil, failure(ErrorPolicy, "context_source_type_not_allowed")
+			omissions["context_source_type_not_allowed"]++
+			continue
 		}
 		if _, ok := c.sensitivities[event.sensitivity]; !ok {
-			return nil, failure(ErrorPolicy, "context_sensitivity_not_allowed")
+			omissions["context_sensitivity_not_allowed"]++
+			continue
 		}
 		if !boundedString(event.eventID) || !boundedString(event.sourceType) || !boundedOptionalString(event.sourceName) || event.occurredAt.IsZero() {
-			return nil, failure(ErrorInvalidInput, "invalid_context_event")
+			omissions["invalid_context_event"]++
+			continue
 		}
 		if event.content.kind != "text" && event.content.kind != "json" && event.content.kind != "reference" {
-			return nil, failure(ErrorInvalidInput, "invalid_context_event")
+			omissions["invalid_context_event"]++
+			continue
 		}
 		if event.content.kind == "reference" && (event.content.declaredSize < 0 || !boundedOptionalString(event.content.declaredHash)) {
-			return nil, failure(ErrorInvalidInput, "invalid_context_event")
+			omissions["invalid_context_event"]++
+			continue
 		}
 		if event.content.kind != "reference" {
 			length := utf8.RuneCountInString(event.content.text)
 			if event.content.text == "" || length > remaining {
-				break
+				omissions["context_input_limit"]++
+				continue
 			}
 			remaining -= length
 		}
 		result = append(result, wireEvent(event))
 	}
-	return result, nil
+	return result, omissions
 }
 
-func (c *Client) minimizeMemories(memories []Memory, remaining, limit int) ([]egressMemory, error) {
+func (c *Client) minimizeMemories(memories []Memory, remaining, limit int) ([]egressMemory, map[string]int) {
 	if limit < 0 {
 		limit = 0
 	}
-	if len(memories) > limit {
-		memories = memories[:limit]
-	}
 	result := make([]egressMemory, 0, len(memories))
+	omissions := make(map[string]int)
 	for _, memory := range memories {
-		if _, ok := c.spaces[memory.spaceID]; !ok {
-			return nil, failure(ErrorPolicy, "context_memory_space_not_allowed")
+		if len(result) == limit {
+			omissions["context_limit"]++
+			continue
 		}
 		if _, ok := c.sensitivities[memory.sensitivity]; !ok {
-			return nil, failure(ErrorPolicy, "context_memory_sensitivity_not_allowed")
+			omissions["context_memory_sensitivity_not_allowed"]++
+			continue
 		}
 		if !boundedString(memory.memoryID) || !boundedString(memory.revisionID) || !boundedString(memory.spaceID) || memory.content == "" || !validMemoryState(memory.state) || (memory.validFrom != nil && memory.validUntil != nil && !memory.validFrom.Before(*memory.validUntil)) {
-			return nil, failure(ErrorInvalidInput, "invalid_context_memory")
+			omissions["invalid_context_memory"]++
+			continue
 		}
 		length := utf8.RuneCountInString(memory.content)
 		if length > remaining {
-			break
+			omissions["context_input_limit"]++
+			continue
 		}
 		remaining -= length
-		result = append(result, egressMemory{MemoryID: memory.memoryID, RevisionID: memory.revisionID, SpaceID: memory.spaceID, Content: memory.content, State: memory.state, Sensitivity: memory.sensitivity, ValidFrom: cloneTime(memory.validFrom), ValidUntil: cloneTime(memory.validUntil)})
+		result = append(result, egressMemory{MemoryID: memory.memoryID, RevisionID: memory.revisionID, SpaceID: memory.spaceID, Content: memory.content, State: memory.state, Sensitivity: memory.sensitivity, ProposalCapable: memory.proposalCapable, ValidFrom: cloneTime(memory.validFrom), ValidUntil: cloneTime(memory.validUntil)})
 	}
-	return result, nil
+	return result, omissions
 }
 
 func wireEvent(event Event) egressEvent {
@@ -517,7 +570,7 @@ func wireEvent(event Event) egressEvent {
 func (c *Client) post(ctx context.Context, payload, output any) (string, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	secret := os.Getenv(c.secretEnv)
+	secret := resolveSecret(c.secret)
 	if secret == "" {
 		return "", failure(ErrorPermanent, "secret_unavailable")
 	}
@@ -596,7 +649,7 @@ func (c *Client) acquire(ctx context.Context) error {
 	}
 }
 
-func validateProcessOutput(output processOutput, request ProcessRequest, usage usageWire, requestID string, maxChars int) (ProcessResult, error) {
+func validateProcessOutput(output processOutput, request ProcessRequest, usage usageWire, requestID string) (ProcessResult, error) {
 	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 {
 		return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_usage")
 	}
@@ -615,7 +668,7 @@ func validateProcessOutput(output processOutput, request ProcessRequest, usage u
 	for i, item := range output.Candidates {
 		contentChars := utf8.RuneCountInString(item.Content)
 		totalChars += contentChars
-		if item.Content == "" || contentChars > maxChars || totalChars > maxChars || item.SpaceID != request.target.spaceID {
+		if item.Content == "" || contentChars > request.maxCandidateChars || totalChars > request.maxTotalChars || item.SpaceID != request.target.spaceID {
 			return ProcessResult{}, failure(ErrorInvalidOutput, "candidate_out_of_bounds")
 		}
 		if _, ok := allowedTypes[item.MemoryType]; !ok || math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
@@ -639,12 +692,13 @@ func validateProcessOutput(output processOutput, request ProcessRequest, usage u
 			}
 			evidence[n] = Evidence{eventID: reference.EventID, evidenceType: reference.EvidenceType, startOffset: cloneInt64(reference.StartOffset), endOffset: cloneInt64(reference.EndOffset)}
 		}
-		memoryIDs := makeSet(nil)
+		memoryIDs := make(map[string]Memory, len(request.contextMemories))
 		for _, memory := range request.contextMemories {
-			memoryIDs[memory.memoryID] = struct{}{}
+			memoryIDs[memory.memoryID] = memory
 		}
 		for _, relatedID := range item.RelatedMemoryIDs {
-			if _, ok := memoryIDs[relatedID]; !ok || !boundedString(relatedID) {
+			memory, ok := memoryIDs[relatedID]
+			if !ok || !boundedString(relatedID) || item.SuggestionKind != "new" && !memory.proposalCapable {
 				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
 			}
 		}
@@ -703,6 +757,27 @@ func makeSet(values []string) map[string]struct{} {
 	}
 	return result
 }
+func makeMIMETypeSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value = normalizeMIMEType(value); value != "" {
+			result[value] = struct{}{}
+		}
+	}
+	return result
+}
+func normalizeMIMEType(value string) string {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(mediaType)
+}
+func mergeOmissions(destination, source map[string]int) {
+	for reason, count := range source {
+		destination[reason] += count
+	}
+}
 func validEnvName(name string) bool {
 	for i, r := range name {
 		if !((r >= 'A' && r <= 'Z') || r == '_' || (i > 0 && r >= '0' && r <= '9')) {
@@ -720,7 +795,7 @@ func validSuggestion(value string) bool {
 }
 func validSourceType(value string) bool {
 	switch value {
-	case "message", "conversation", "tool_call", "tool_result", "file_reference", "collector_event", "manual":
+	case "message", "conversation", "tool_call", "tool_result", "file_reference", "collector_event", "manual", "semantic_query":
 		return true
 	}
 	return false
@@ -774,14 +849,15 @@ type processPrompt struct {
 	MaxContentChars    int            `json:"max_content_chars"`
 }
 type egressMemory struct {
-	MemoryID    string     `json:"memory_id"`
-	RevisionID  string     `json:"revision_id"`
-	SpaceID     string     `json:"space_id"`
-	Content     string     `json:"content"`
-	State       string     `json:"state"`
-	Sensitivity string     `json:"sensitivity"`
-	ValidFrom   *time.Time `json:"valid_from,omitempty"`
-	ValidUntil  *time.Time `json:"valid_until,omitempty"`
+	MemoryID        string     `json:"memory_id"`
+	RevisionID      string     `json:"revision_id"`
+	SpaceID         string     `json:"space_id"`
+	Content         string     `json:"content"`
+	State           string     `json:"state"`
+	Sensitivity     string     `json:"sensitivity"`
+	ProposalCapable bool       `json:"proposal_capable"`
+	ValidFrom       *time.Time `json:"valid_from,omitempty"`
+	ValidUntil      *time.Time `json:"valid_until,omitempty"`
 }
 type chatMessage struct {
 	Role    string `json:"role"`

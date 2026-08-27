@@ -115,5 +115,5 @@ func judgePrompt(item Case, hypothesis string) string {
 			template = "I will give you a question, a rubric for desired personalized response, and a response from a model. Please answer yes if the response satisfies the desired response. Otherwise, answer no. The model does not need to reflect all the points in the rubric. The response is correct as long as it recalls and utilizes the user's personal information correctly.\n\nQuestion: %s\n\nRubric: %s\n\nModel Response: %s\n\nIs the model response correct? Answer yes or no only."
 		}
 	}
-	return fmt.Sprintf(template, item.Question, item.Answer, hypothesis)
+	return fmt.Sprintf(template, item.Question, item.AnswerString(), hypothesis)
 }

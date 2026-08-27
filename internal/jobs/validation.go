@@ -12,6 +12,12 @@ import (
 var errInvalidProcessingResult = errors.New("invalid processing result")
 
 func validateProcessingResult(input domain.ProcessingInput, result domain.ProcessingResult) error {
+	if input.Policy.MaxCandidateChars == 0 {
+		input.Policy.MaxCandidateChars = input.Policy.MaxContentChars
+	}
+	if input.Policy.MaxTotalCandidateChars == 0 {
+		input.Policy.MaxTotalCandidateChars = input.Policy.MaxCandidateChars
+	}
 	switch result.Code {
 	case domain.ProcessingNoProcessor, domain.ProcessingNoMemory, domain.ProcessingPolicyRejected:
 		if len(result.Candidates) != 0 {
@@ -32,6 +38,16 @@ func validateProcessingResult(input domain.ProcessingInput, result domain.Proces
 	if result.Usage.InputTokens < 0 || result.Usage.OutputTokens < 0 || !boundedProcessingString(result.ProviderRequestID, 128) || !boundedProcessingString(result.ReasonCode, 512) || !boundedProcessingString(result.ProviderIdentity, 512) || !boundedProcessingString(result.ModelIdentity, 512) || !boundedProcessingString(result.PolicyVersion, 512) {
 		return errInvalidProcessingResult
 	}
+	omitted := 0
+	for reason, count := range result.OmissionSummary {
+		if count < 1 || !validOmissionReason(reason) {
+			return errInvalidProcessingResult
+		}
+		omitted += count
+	}
+	if result.OmittedContextCount < 0 || omitted != result.OmittedContextCount {
+		return errInvalidProcessingResult
+	}
 	allowedTypes := stringSet(input.Policy.AllowedMemoryTypes)
 	events := map[string]domain.ProcessingEvent{input.Target.EventID: input.Target}
 	for _, event := range input.ContextEvents {
@@ -40,15 +56,15 @@ func validateProcessingResult(input domain.ProcessingInput, result domain.Proces
 		}
 		events[event.EventID] = event
 	}
-	memories := make(map[string]string, len(input.ContextMemories))
+	memories := make(map[string]domain.ProcessingMemory, len(input.ContextMemories))
 	for _, memory := range input.ContextMemories {
-		memories[memory.MemoryID] = memory.SpaceID
+		memories[memory.MemoryID] = memory
 	}
 	totalChars := 0
 	for _, candidate := range result.Candidates {
 		chars := utf8.RuneCountInString(candidate.Content)
 		totalChars += chars
-		if candidate.Content == "" || chars > input.Policy.MaxContentChars || totalChars > input.Policy.MaxContentChars || candidate.SpaceID != input.Target.SpaceID {
+		if candidate.Content == "" || chars > input.Policy.MaxCandidateChars || totalChars > input.Policy.MaxTotalCandidateChars || candidate.SpaceID != input.Target.SpaceID {
 			return errInvalidProcessingResult
 		}
 		if _, ok := allowedTypes[candidate.MemoryType]; !ok || math.IsNaN(candidate.Confidence) || math.IsInf(candidate.Confidence, 0) || candidate.Confidence < 0 || candidate.Confidence > 1 {
@@ -83,8 +99,8 @@ func validateProcessingResult(input domain.ProcessingInput, result domain.Proces
 		}
 		seenMemories := make(map[string]struct{}, len(candidate.RelatedMemoryIDs))
 		for _, memoryID := range candidate.RelatedMemoryIDs {
-			spaceID, ok := memories[memoryID]
-			if !ok || spaceID == "" {
+			memory, ok := memories[memoryID]
+			if !ok || memory.SpaceID == "" || candidate.SuggestionKind != "new" && !memory.ProposalCapable {
 				return errInvalidProcessingResult
 			}
 			if _, duplicate := seenMemories[memoryID]; duplicate {
@@ -108,6 +124,14 @@ func validateProcessingResult(input domain.ProcessingInput, result domain.Proces
 		}
 	}
 	return nil
+}
+
+func validOmissionReason(value string) bool {
+	switch value {
+	case "context_limit", "context_space_not_allowed", "context_content_type_not_allowed", "context_source_type_not_allowed", "context_sensitivity_not_allowed", "invalid_context_event", "context_input_limit", "context_memory_sensitivity_not_allowed", "invalid_context_memory", "context_memory_policy_denied":
+		return true
+	}
+	return false
 }
 
 func stringSet(values []string) map[string]struct{} {

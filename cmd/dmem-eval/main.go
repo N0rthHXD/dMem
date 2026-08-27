@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/evaluation/longmemeval"
 )
 
@@ -31,7 +32,8 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("dmem-eval longmemeval", flag.ContinueOnError)
 	datasetPath := fs.String("dataset", "", "LongMemEval JSON dataset path")
-	socket := fs.String("socket", os.Getenv("DMEM_SOCKET"), "dMem Unix socket")
+	configPath := fs.String("config", "", "dMem config file path (empty uses $XDG_CONFIG_HOME/dmem/config.toml)")
+	socket := fs.String("socket", os.Getenv("DMEM_SOCKET"), "dMem Unix socket (overrides --config)")
 	callerID := fs.String("caller-id", "longmemeval", "dMem caller ID")
 	runID := fs.String("run-id", time.Now().UTC().Format("20060102T150405Z"), "stable run ID")
 	output := fs.String("output", "results/longmemeval/result.json", "result and resume file")
@@ -52,8 +54,18 @@ func run(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || *datasetPath == "" || *socket == "" {
-		return errors.New("--dataset and --socket are required")
+	if fs.NArg() != 0 || *datasetPath == "" {
+		return errors.New("--dataset is required")
+	}
+	if *socket == "" {
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			cfg, err = config.Default()
+			if err != nil {
+				return fmt.Errorf("resolve dMem socket: provide --socket or --config: %w", err)
+			}
+		}
+		*socket = cfg.Endpoint
 	}
 	cutoffs, err := parseCutoffs(*cutoffsText)
 	if err != nil {

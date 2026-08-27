@@ -34,12 +34,23 @@ type Case struct {
 	QuestionID         string   `json:"question_id"`
 	QuestionType       string   `json:"question_type"`
 	Question           string   `json:"question"`
-	Answer             string   `json:"answer"`
+	Answer             any      `json:"answer"`
 	QuestionDate       string   `json:"question_date"`
 	HaystackSessionIDs []string `json:"haystack_session_ids"`
 	HaystackDates      []string `json:"haystack_dates"`
 	HaystackSessions   [][]Turn `json:"haystack_sessions"`
 	AnswerSessionIDs   []string `json:"answer_session_ids"`
+}
+
+func (c Case) AnswerString() string {
+	if c.Answer == nil {
+		return ""
+	}
+	if s, ok := c.Answer.(string); ok {
+		return s
+	}
+	data, _ := json.Marshal(c.Answer)
+	return string(data)
 }
 
 type Dataset struct {
@@ -87,7 +98,7 @@ func Decode(reader io.Reader) (Dataset, error) {
 }
 
 func validateCase(item *Case, seen map[string]bool) error {
-	if strings.TrimSpace(item.QuestionID) == "" || strings.TrimSpace(item.Question) == "" || strings.TrimSpace(item.Answer) == "" {
+	if strings.TrimSpace(item.QuestionID) == "" || strings.TrimSpace(item.Question) == "" || strings.TrimSpace(item.AnswerString()) == "" {
 		return errors.New("question_id, question, and answer are required")
 	}
 	if seen[item.QuestionID] {
@@ -108,10 +119,14 @@ func validateCase(item *Case, seen map[string]bool) error {
 	}
 	sessions := make(map[string]bool, len(item.HaystackSessionIDs))
 	for i, id := range item.HaystackSessionIDs {
-		if strings.TrimSpace(id) == "" || sessions[id] {
-			return fmt.Errorf("session %d has an empty or duplicate ID", i)
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("session %d has an empty ID", i)
 		}
-		sessions[id] = true
+		key := id + "\x00" + item.HaystackDates[i]
+		if sessions[key] {
+			return fmt.Errorf("session %d has a duplicate ID+date", i)
+		}
+		sessions[key] = true
 		if _, err := ParseDate(item.HaystackDates[i]); err != nil {
 			return fmt.Errorf("session %q date: %w", id, err)
 		}
@@ -122,13 +137,14 @@ func validateCase(item *Case, seen map[string]bool) error {
 			if turn.Role != "user" && turn.Role != "assistant" {
 				return fmt.Errorf("session %q turn %d has invalid role %q", id, j, turn.Role)
 			}
-			if strings.TrimSpace(turn.Content) == "" {
-				return fmt.Errorf("session %q turn %d has empty content", id, j)
-			}
 		}
 	}
+	sessionIDs := make(map[string]bool, len(item.HaystackSessionIDs))
+	for _, id := range item.HaystackSessionIDs {
+		sessionIDs[id] = true
+	}
 	for _, id := range item.AnswerSessionIDs {
-		if !sessions[id] {
+		if !sessionIDs[id] {
 			return fmt.Errorf("answer_session_id %q does not resolve", id)
 		}
 	}

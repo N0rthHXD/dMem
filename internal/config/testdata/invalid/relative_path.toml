@@ -1,0 +1,36 @@
+config_version = 1
+
+[instance]
+data_dir = "relative/path/data"
+runtime_dir = "/tmp/dmem-test/run"
+database_filename = "dmem.db"
+socket_filename = "dmem.sock"
+
+[server]
+request_timeout = "30s"
+shutdown_grace_period = "15s"
+max_connections = 64
+max_request_bytes = 4194304
+
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+[processing]
+version = "builtin-noop-v1"
+
+[processing.provider]
+enabled = false
+
+[embedding.provider]
+enabled = false

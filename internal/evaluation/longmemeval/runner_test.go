@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
@@ -30,6 +31,8 @@ func (f *fakeClient) Recall(_ context.Context, request recallRequest) (domain.Se
 		{Memory: domain.Memory{CurrentRevision: domain.MemoryRevision{Evidence: []domain.MemoryEvidence{{EventID: "event-later"}}}}},
 	}}, nil
 }
+
+func (f *fakeClient) WaitForSemanticReady(_ context.Context, _ time.Duration) error { return nil }
 
 func TestRunnerIngestsChronologicallyWithoutLabelsAndScoresEvidence(t *testing.T) {
 	dataset, err := Decode(strings.NewReader(validDataset))

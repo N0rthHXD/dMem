@@ -45,6 +45,20 @@ include `source_event_id` and `proposed_content`.
 
 ## Resource API
 
+## Configuration API
+
+`GET /v1/config` returns the active configuration identity, activation generation,
+latest reload attempt, and redacted capability summaries. It never returns file
+paths, secret references or values, request content, query text, or provider
+responses.
+
+`POST /v1/config/reload` reads the daemon's already-selected TOML file and
+atomically activates it only when the complete candidate is valid. The request
+requires an empty JSON object or an `expected_effective_identity`; a mismatch
+returns `config_identity_conflict`. This is an idempotent write: reuse the same
+key and body to receive the original successful result with
+`Idempotent-Replay: true`.
+
 The same contract exposes lower-level operations for:
 
 - spaces, raw events, replay, memories, revisions, lifecycle state, and search;

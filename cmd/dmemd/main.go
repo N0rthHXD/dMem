@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,13 +32,26 @@ var (
 	errDatabaseExists = errors.New("database already exists")
 )
 
+type commandError struct {
+	code int
+	err  error
+}
+
+func (e commandError) Error() string { return e.err.Error() }
+func (e commandError) Unwrap() error { return e.err }
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	configPath, rest, err := extractGlobalConfig(os.Args[1:])
+	if err != nil || len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, errUsage)
+		os.Exit(2)
+	}
+	if len(rest) > 0 {
+		switch rest[0] {
 		case "backup", "restore", "init":
-			if err := runMaintenance(ctx, os.Args[1], os.Args[2:], os.Stdout); err != nil {
+			if err := runMaintenance(ctx, rest[0], rest[1:], os.Stdout, configPath); err != nil {
 				fmt.Fprintln(os.Stderr, maintenanceError(err))
 				if errors.Is(err, errUsage) {
 					os.Exit(2)
@@ -44,34 +60,152 @@ func main() {
 			}
 			return
 		case "daemon":
-			runDaemon(ctx, os.Args[2:])
+			runDaemon(ctx, configPath)
+			return
+		case "config":
+			if err := runConfig(ctx, configPath, rest[1:], os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			return
+		case "status", "reload":
+			if err := runConfig(ctx, configPath, rest, os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(commandExitCode(err))
+			}
 			return
 		}
 	}
-	runDaemon(ctx, os.Args[1:])
+	fmt.Fprintln(os.Stderr, errUsage)
+	os.Exit(2)
 }
 
-func runDaemon(ctx context.Context, args []string) {
-	fs := flag.NewFlagSet("dmemd", flag.ContinueOnError)
-	cfg, err := config.Parse(fs, args)
+func commandExitCode(err error) int {
+	var commandErr commandError
+	if errors.As(err, &commandErr) {
+		return commandErr.code
+	}
+	return 1
+}
+
+func extractGlobalConfig(args []string) (configPath string, rest []string, err error) {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--config" {
+			if configPath != "" || i+1 == len(args) || args[i+1] == "" {
+				return "", nil, errUsage
+			}
+			configPath = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(args[i], "--config=") {
+			value := strings.TrimPrefix(args[i], "--config=")
+			if configPath != "" || value == "" {
+				return "", nil, errUsage
+			}
+			configPath = value
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	return configPath, rest, nil
+}
+
+func runDaemon(ctx context.Context, configPath string) {
+	manager := config.NewManager(configPath, nil)
+	d, err := daemon.StartManaged(ctx, manager)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-
-	d, err := daemon.Start(ctx, cfg)
-	if err != nil {
-		slog.Error("daemon startup failed", "error", err)
-		os.Exit(1)
-	}
 	slog.Info("daemon ready")
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go handleSIGHUPReloads(hup, d)
 
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGracePeriod)
+	shutdownGrace := 15 * time.Second
+	if snapshot := manager.Snapshot(); snapshot != nil {
+		shutdownGrace = snapshot.Config.ShutdownGracePeriod
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := d.Close(shutdownCtx); err != nil {
 		slog.Error("daemon shutdown failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func handleSIGHUPReloads(signals <-chan os.Signal, d *daemon.Daemon) {
+	for range signals {
+		if result, err := d.Reload(context.Background(), config.TriggerSIGHUP); err != nil {
+			slog.Error("configuration reload failed", "error", err)
+		} else if result.Outcome == config.OutcomeRejected || result.Outcome == config.OutcomeFailed {
+			slog.Warn("configuration reload rejected", "code", result.ErrorCode)
+		}
+	}
+}
+
+func runConfig(ctx context.Context, configPath string, args []string, output io.Writer) error {
+	if len(args) != 1 {
+		return errUsage
+	}
+	switch args[0] {
+	case "validate":
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		if err := cfg.ValidateOffline(); err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(struct {
+			SourceIdentity    string `json:"source_identity"`
+			EffectiveIdentity string `json:"effective_identity"`
+		}{cfg.SourceIdentity, cfg.EffectiveIdentity})
+	case "status", "reload":
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", cfg.Endpoint)
+		}}}
+		defer client.CloseIdleConnections()
+		method, path := http.MethodGet, "/v1/config"
+		if args[0] == "reload" {
+			method, path = http.MethodPost, "/v1/config/reload"
+		}
+		req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, strings.NewReader("{}"))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("X-Caller-ID", "dmemd")
+		if method == http.MethodPost {
+			req.Header.Set("Idempotency-Key", fmt.Sprintf("config-reload-%d", time.Now().UnixNano()))
+			req.Header.Set("Content-Type", "application/json")
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			return commandError{code: 3, err: fmt.Errorf("daemon unavailable: %w", err)}
+		}
+		defer response.Body.Close()
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			body, _ := io.ReadAll(response.Body)
+			code := 1
+			switch response.StatusCode {
+			case http.StatusConflict, http.StatusUnprocessableEntity:
+				code = 4
+			case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+				code = 5
+			}
+			return commandError{code: code, err: fmt.Errorf("configuration request failed: %s", strings.TrimSpace(string(body)))}
+		}
+		_, err = io.Copy(output, response.Body)
+		return err
+	default:
+		return errUsage
 	}
 }
 
@@ -82,45 +216,28 @@ type localConfig struct {
 	timeout      time.Duration
 }
 
-func parseLocalConfig(fs *flag.FlagSet, args []string) (localConfig, error) {
-	defaults, err := config.Default()
+func parseLocalConfig(configPath string, fs *flag.FlagSet, args []string) (localConfig, error) {
+	cfg, err := config.Load(configPath)
 	if err != nil {
-		return localConfig{}, errCommandFailed
+		return localConfig{}, err
 	}
-	dataDefault := defaults.DataDir
-	if value := os.Getenv("DMEM_DATA_DIR"); value != "" {
-		dataDefault = value
-	}
-	databaseDefault := os.Getenv("DMEM_DATABASE_PATH")
-	dataDir := fs.String("data-dir", dataDefault, "persistent data directory")
-	databasePath := fs.String("database-path", databaseDefault, "SQLite database path")
-	minimumFree := fs.Uint64("minimum-free", defaults.DiskHardFree, "minimum free filesystem bytes (0 disables)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "maintenance operation timeout")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return localConfig{}, errUsage
 	}
-	absoluteData, err := filepath.Abs(*dataDir)
-	if err != nil {
+	if *timeout <= 0 || *timeout > time.Hour {
 		return localConfig{}, errUsage
 	}
-	path := *databasePath
-	if path == "" {
-		path = filepath.Join(absoluteData, "dmem.db")
-	}
-	absoluteDatabase, err := filepath.Abs(path)
-	if err != nil || filepath.Dir(absoluteDatabase) != absoluteData || *timeout <= 0 || *timeout > time.Hour {
-		return localConfig{}, errUsage
-	}
-	return localConfig{dataDir: absoluteData, databasePath: absoluteDatabase, minimumFree: *minimumFree, timeout: *timeout}, nil
+	return localConfig{dataDir: cfg.DataDir, databasePath: cfg.DatabasePath, minimumFree: cfg.DiskHardFree, timeout: *timeout}, nil
 }
 
-func runMaintenance(ctx context.Context, command string, args []string, output io.Writer) error {
+func runMaintenance(ctx context.Context, command string, args []string, output io.Writer, configPath string) error {
 	fs := flag.NewFlagSet("dmemd "+command, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	switch command {
 	case "backup":
 		target := fs.String("target", "", "new backup directory")
-		cfg, err := parseLocalConfig(fs, args)
+		cfg, err := parseLocalConfig(configPath, fs, args)
 		if err != nil || *target == "" {
 			return errUsage
 		}
@@ -148,7 +265,7 @@ func runMaintenance(ctx context.Context, command string, args []string, output i
 	case "restore":
 		source := fs.String("source", "", "backup directory")
 		confirm := fs.Bool("confirm-replace", false, "confirm replacement of the data directory")
-		cfg, err := parseLocalConfig(fs, args)
+		cfg, err := parseLocalConfig(configPath, fs, args)
 		if err != nil || *source == "" || !*confirm {
 			return errUsage
 		}
@@ -164,7 +281,7 @@ func runMaintenance(ctx context.Context, command string, args []string, output i
 			FTSRebuilt     bool   `json:"fts_rebuilt"`
 		}{result.Manifest.BackupID, result.NormalizedJobs, result.FTSRebuilt})
 	case "init":
-		cfg, err := parseLocalConfig(fs, args)
+		cfg, err := parseLocalConfig(configPath, fs, args)
 		if err != nil {
 			return errUsage
 		}

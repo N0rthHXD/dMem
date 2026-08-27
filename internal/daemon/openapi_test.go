@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/N0rthHXD/dMem/internal/application"
+	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
@@ -44,10 +46,21 @@ func TestOpenAPIContract(t *testing.T) {
 	assertSearchResponseModes(t, doc)
 	cfg := testConfig(t)
 	cfg.ProcessingVersion = "contract-v3"
-	cfg.ProcessingProvider.EgressPolicyVersion = "contract-policy-v1"
+	cfg.ProcessingProvider = config.ProviderConfig{
+		Enabled: true,
+		Policy: provider.Policy{
+			Default:       "deny",
+			ContentTypes:  []string{"text/plain"},
+			SourceTypes:   []string{"manual"},
+			Sensitivities: []string{"normal"},
+			Assignments: []provider.PolicyAssignment{
+				{Selector: "space", SpaceID: "11111111-1111-4111-8111-111111111111", Effect: "allow"},
+			},
+		},
+	}
 	release := make(chan struct{})
-	provider := &fakeAggregateProvider{result: domain.AggregateProviderResult{Content: "contract aggregate", Sensitivity: "normal", ProviderIdentity: "contract/local", ModelIdentity: "contract-v1"}}
-	d, err := startService(context.Background(), cfg, &heldProcessor{release: release}, provider, true)
+	aggregateProvider := &fakeAggregateProvider{result: domain.AggregateProviderResult{Content: "contract aggregate", Sensitivity: "normal", ProviderIdentity: "contract/local", ModelIdentity: "contract-v1"}}
+	d, err := startService(context.Background(), cfg, &heldProcessor{release: release}, aggregateProvider, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +74,11 @@ func TestOpenAPIContract(t *testing.T) {
 
 	spaceBody := map[string]any{"space_type": "user", "external_id": "contract", "display_name": "Contract"}
 	c.close(c.do(http.MethodGet, "/v1/health", "", nil))
+	c.close(c.expect(http.StatusServiceUnavailable, http.MethodGet, "/v1/config", "", nil))
+	c.close(c.expect(http.StatusServiceUnavailable, http.MethodPost, "/v1/config/reload", "config-unmanaged", map[string]any{}))
+	c.invalidCaller(http.MethodGet, "/v1/config")
+	c.invalid(http.StatusUnprocessableEntity, http.MethodPost, "/v1/config/reload", "config-invalid", `{"unknown":true}`)
+	exerciseConfigurationContract(t, router, c.seen)
 	response := c.do(http.MethodPost, "/v1/spaces", "space", spaceBody)
 	var space domain.Space
 	decodeResponse(t, response, &space)
@@ -464,6 +482,22 @@ func TestOpenAPIContract(t *testing.T) {
 	exerciseResourceExhaustedContract(t, router, c.seen)
 
 	assertOperationStatusMatrix(t, doc, c.seen)
+}
+
+func exerciseConfigurationContract(t *testing.T, router routers.Router, seen map[string]map[int]bool) {
+	t.Helper()
+	root := t.TempDir()
+	path := filepath.Join(root, "config.toml")
+	writeReloadConfig(t, path, reloadConfig{dataDir: filepath.Join(root, "data"), runtimeDir: filepath.Join(root, "runtime")})
+	d, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(context.Background())
+	c := &contractClient{t: t, client: unixClient(d.endpoint), router: router, seen: seen}
+	c.close(c.expect(http.StatusOK, http.MethodGet, "/v1/config", "", nil))
+	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/config/reload", "config-no-change", map[string]any{}))
+	c.close(c.expect(http.StatusConflict, http.MethodPost, "/v1/config/reload", "config-conflict", map[string]any{"expected_effective_identity": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}))
 }
 
 func exerciseResourceExhaustedContract(t *testing.T, router routers.Router, seen map[string]map[int]bool) {

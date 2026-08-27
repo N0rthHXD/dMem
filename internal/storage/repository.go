@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
@@ -30,6 +31,7 @@ var (
 	ErrInvalidSearchQuery  = errors.New("invalid search query")
 	ErrIndexDegraded       = errors.New("index degraded")
 	ErrEmbeddingPolicy     = errors.New("embedding policy rejected")
+	ErrPolicyDenied        = errors.New("policy denied")
 )
 
 type WriteIdentity struct {
@@ -68,18 +70,29 @@ type EventFilter struct {
 }
 
 type Repository struct {
-	store                     *Store
-	runtime                   domain.Runtime
-	queueSoftLimit            int
-	queueHardLimit            int
-	maxAttempts               int
-	processingVersion         string
-	diskSoftFree              uint64
-	diskHardFree              uint64
-	embeddingProvider         provider.EmbeddingProvider
-	vectorIndex               semanticVectorIndex
-	embeddingProviderIdentity string
-	embeddingModelIdentity    string
+	store                           *Store
+	runtime                         domain.Runtime
+	queueSoftLimit                  int
+	queueHardLimit                  int
+	maxAttempts                     int
+	processingVersion               string
+	processingGeneration            atomic.Int64
+	processingPolicyGeneration      atomic.Int64
+	processingCompatibilityIdentity atomic.Value
+	diskSoftFree                    uint64
+	diskHardFree                    uint64
+	embedding                       atomic.Pointer[embeddingRuntime]
+}
+
+type embeddingRuntime struct {
+	Provider              provider.EmbeddingProvider
+	Index                 semanticVectorIndex
+	ProviderIdentity      string
+	ModelIdentity         string
+	CompatibilityIdentity string
+	ConfigurationIdentity string
+	Generation            int
+	PolicyGeneration      int
 }
 
 type semanticVectorIndex interface {
@@ -90,20 +103,78 @@ type semanticVectorIndex interface {
 	Status(int) vector.Status
 }
 
+func (r *Repository) emb() *embeddingRuntime {
+	return r.embedding.Load()
+}
+
+func (r *Repository) semanticIndex() semanticVectorIndex {
+	return r.emb().Index
+}
+
+func (r *Repository) setSemanticIndex(idx semanticVectorIndex) {
+	prev := *r.emb()
+	prev.Index = idx
+	r.embedding.Store(&prev)
+}
+
+func (r *Repository) setEmbeddingProvider(p provider.EmbeddingProvider) {
+	prev := *r.emb()
+	prev.Provider = p
+	r.embedding.Store(&prev)
+}
+
 func (r *Repository) ConfigureSemantic(embedding provider.EmbeddingProvider, index *vector.Index, providerIdentity, modelIdentity string) {
-	r.embeddingProvider, r.vectorIndex = embedding, index
-	r.embeddingProviderIdentity, r.embeddingModelIdentity = providerIdentity, modelIdentity
+	r.SetEmbedding(embedding, index, providerIdentity, modelIdentity, providerIdentity+"/"+modelIdentity, providerIdentity+"/"+modelIdentity, 0, 0)
+}
+
+func (r *Repository) SetEmbedding(embedding provider.EmbeddingProvider, index *vector.Index, providerIdentity, modelIdentity, compatibilityIdentity, configurationIdentity string, generation, policyGeneration int) {
+	prev := r.emb()
+	var idx semanticVectorIndex
+	if index != nil {
+		idx = index
+	} else if prev != nil {
+		idx = prev.Index
+	}
+	r.embedding.Store(&embeddingRuntime{
+		Provider:              embedding,
+		Index:                 idx,
+		ProviderIdentity:      providerIdentity,
+		ModelIdentity:         modelIdentity,
+		CompatibilityIdentity: compatibilityIdentity,
+		ConfigurationIdentity: configurationIdentity,
+		Generation:            generation,
+		PolicyGeneration:      policyGeneration,
+	})
+}
+
+func (r *Repository) SetProcessingGeneration(generation, policyGeneration int, compatibilityIdentity string) {
+	r.processingGeneration.Store(int64(generation))
+	r.processingPolicyGeneration.Store(int64(policyGeneration))
+	if compatibilityIdentity != "" {
+		r.processingCompatibilityIdentity.Store(compatibilityIdentity)
+	}
+}
+
+func (r *Repository) currentProcessingGeneration() int {
+	return int(r.processingGeneration.Load())
+}
+
+func (r *Repository) currentProcessingPolicyGeneration() int {
+	return int(r.processingPolicyGeneration.Load())
 }
 
 func (r *Repository) embeddingIdentity() string {
-	return r.embeddingProviderIdentity + "/" + r.embeddingModelIdentity
+	e := r.emb()
+	return e.ProviderIdentity + "/" + e.ModelIdentity
 }
 
 func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, maxAttempts int, processingVersion string) *Repository {
-	return &Repository{
+	r := &Repository{
 		store: store, runtime: runtime, queueSoftLimit: softLimit, queueHardLimit: hardLimit,
 		maxAttempts: maxAttempts, processingVersion: processingVersion,
 	}
+	r.embedding.Store(&embeddingRuntime{})
+	return r
 }
 
 // BeginReadSnapshot starts a read-only transaction for consumers that must scan
@@ -204,6 +275,9 @@ func (r *Repository) CreateSpace(ctx context.Context, identity WriteIdentity, pa
 		if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint {
 			return domain.Space{}, false, fmt.Errorf("%w: create space", ErrConflict)
 		}
+		return domain.Space{}, false, err
+	}
+	if err := r.persistCurrentSpacePolicies(ctx, tx, spaceID); err != nil {
 		return domain.Space{}, false, err
 	}
 	body, _ := json.Marshal(result)

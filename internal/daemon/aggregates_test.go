@@ -7,16 +7,29 @@ import (
 	"testing"
 
 	"github.com/N0rthHXD/dMem/internal/api"
+	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/jobs"
+	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
 func TestAggregateDaemonBuildConfirmProvenanceStaleAndHealth(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ProcessingVersion = "aggregate-v1"
-	cfg.ProcessingProvider.EgressPolicyVersion = "aggregate-policy-v1"
-	provider := &fakeAggregateProvider{result: domain.AggregateProviderResult{Content: "scene output", Sensitivity: "normal", ProviderIdentity: "fake/local", ModelIdentity: "fake-v1"}}
-	d, err := startService(context.Background(), cfg, jobs.NoopProcessor{}, provider, false)
+	cfg.ProcessingProvider = config.ProviderConfig{
+		Enabled: true,
+		Policy: provider.Policy{
+			Default:       "deny",
+			ContentTypes:  []string{"text/plain"},
+			SourceTypes:   []string{"manual"},
+			Sensitivities: []string{"normal"},
+			Assignments: []provider.PolicyAssignment{
+				{Selector: "space", SpaceID: "11111111-1111-4111-8111-111111111111", Effect: "allow"},
+			},
+		},
+	}
+	aggregateProvider := &fakeAggregateProvider{result: domain.AggregateProviderResult{Content: "scene output", Sensitivity: "normal", ProviderIdentity: "fake/local", ModelIdentity: "fake-v1"}}
+	d, err := startService(context.Background(), cfg, jobs.NoopProcessor{}, aggregateProvider, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,8 +48,8 @@ func TestAggregateDaemonBuildConfirmProvenanceStaleAndHealth(t *testing.T) {
 	}
 	var proposal domain.AggregateProposal
 	decodeResponse(t, response, &proposal)
-	if len(provider.calls) != 1 || proposal.ProviderIdentity == nil || proposal.ModelIdentity == nil || proposal.InputFingerprint == "" {
-		t.Fatalf("proposal=%+v calls=%+v", proposal, provider.calls)
+	if len(aggregateProvider.calls) != 1 || proposal.ProviderIdentity == nil || proposal.ModelIdentity == nil || proposal.InputFingerprint == "" {
+		t.Fatalf("proposal=%+v calls=%+v", proposal, aggregateProvider.calls)
 	}
 	response = requestJSON(t, client, http.MethodGet, "/v1/aggregate-proposals?space_id="+url.QueryEscape(space.SpaceID), "", nil)
 	var proposals domain.AggregateProposalPage

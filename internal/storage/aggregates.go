@@ -48,6 +48,9 @@ func (r *Repository) PrepareAggregateBuild(ctx context.Context, space, kind stri
 	if (kind != "scene" && kind != "topic") || len(revisionIDs) == 0 || len(revisionIDs) > maxInputs {
 		return nil, ErrInvalidAggregateProposal
 	}
+	if err := r.RequireEffectivePolicy(ctx, "processing", space); err != nil {
+		return nil, err
+	}
 	ids := append([]string(nil), revisionIDs...)
 	sort.Strings(ids)
 	for i := 1; i < len(ids); i++ {
@@ -154,6 +157,9 @@ func (r *Repository) CommitAggregateProposal(ctx context.Context, identity Write
 	}
 	defer tx.Rollback()
 	if claim != nil {
+		if claim.Job.ConfigurationGeneration != r.currentProcessingGeneration() || claim.Job.PolicyGeneration != r.currentProcessingPolicyGeneration() {
+			return domain.AggregateProposal{}, false, ErrStaleGeneration
+		}
 		if err = r.requireJobClaim(ctx, tx, *claim); err != nil {
 			return domain.AggregateProposal{}, false, err
 		}

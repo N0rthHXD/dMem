@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
 func TestDisabledDoesNotResolveSecretOrUseHTTP(t *testing.T) {
@@ -18,7 +20,7 @@ func TestDisabledDoesNotResolveSecretOrUseHTTP(t *testing.T) {
 		t.Fatal("disabled provider made an HTTP request")
 		return nil, nil
 	})
-	client, err := New(Config{Enabled: false, SecretEnv: "DMEM_TEST_SECRET"}, &http.Client{Transport: transport})
+	client, err := New(Config{Enabled: false, Secret: SecretReference{Source: "environment", Name: "DMEM_TEST_SECRET"}}, &http.Client{Transport: transport})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +61,7 @@ func TestProcessMinimizesContentAndUsesExplicitSecret(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", MaxContextItems: 1})
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", Limits: Limits{MaxContextItems: 1}})
 	target := NewEvent("event-a", "space-a", "file_reference", "source", "normal", time.Unix(1, 0), NewReferenceContent("text/plain", 42, "sha256:abc"))
 	contextEvents := []Event{
 		NewEvent("context-a", "space-a", "message", "source", "normal", time.Unix(2, 0), NewTextContent("text/plain", "allowed-context")),
@@ -121,6 +123,54 @@ func TestProcessPreservesContextMemoryBudgetSensitivityAndTypedEvidence(t *testi
 	}
 }
 
+func TestProcessUsesOneContextBudgetAndMarksReadOnlyMemories(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []chatMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		var prompt processPrompt
+		if err := json.Unmarshal([]byte(body.Messages[1].Content), &prompt); err != nil {
+			t.Fatal(err)
+		}
+		if len(prompt.ContextEvents) != 1 || len(prompt.ContextMemories) != 1 || prompt.ContextMemories[0].ProposalCapable {
+			t.Fatalf("context budget/proposal capability = %+v", prompt)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"no_memory\",\"candidates\":[]}"}}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", Limits: Limits{MaxContextItems: 2}})
+	target := NewEvent("target", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "target"))
+	events := []Event{NewEvent("context", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "event context"))}
+	memories := []Memory{
+		NewMemoryWithProposalCapability("memory-a", "revision-a", "ancestor", "read only", "active", "normal", false, nil, nil),
+		NewMemory("memory-b", "revision-b", "space-a", "over limit", "active", "normal", nil, nil),
+	}
+	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, events, memories, []string{"fact"}, 1, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OmissionSummary()["context_limit"] != 1 {
+		t.Fatalf("omission summary = %#v", result.OmissionSummary())
+	}
+}
+
+func TestProcessRejectsEvidenceFromOmittedContext(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"candidates_extracted\",\"candidates\":[{\"content\":\"result\",\"memory_type\":\"fact\",\"space_id\":\"space-a\",\"confidence\":0.8,\"sensitivity\":\"normal\",\"evidence\":[{\"event_id\":\"denied\",\"evidence_type\":\"direct_statement\",\"start_offset\":null,\"end_offset\":null}],\"suggestion_kind\":\"new\",\"related_memory_ids\":[]}] }"}}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
+	target := NewEvent("target", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "target"))
+	denied := NewEvent("denied", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "private"))
+	_, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, []Event{denied}, nil, []string{"fact"}, 1, 100))
+	assertProviderError(t, err, ErrorInvalidOutput, "invalid_evidence_reference")
+}
+
 func TestPolicyRejectsBeforeSecretAndNetwork(t *testing.T) {
 	t.Setenv("DMEM_TEST_SECRET", "")
 	var requests atomic.Int32
@@ -132,7 +182,6 @@ func TestPolicyRejectsBeforeSecretAndNetwork(t *testing.T) {
 		target Event
 		code   string
 	}{
-		{"space", NewEvent("event-a", "space-denied", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "private-content")), "space_not_allowed"},
 		{"content", NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/html", "private-content")), "content_type_not_allowed"},
 		{"source", NewEvent("event-a", "space-a", "tool_result", "source", "normal", time.Now(), NewTextContent("text/plain", "private-content")), "source_type_not_allowed"},
 		{"sensitivity", NewEvent("event-a", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "private-content")), "sensitivity_not_allowed"},
@@ -229,7 +278,7 @@ func TestEmbeddingUsesFullURLAndOptionalConfiguration(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestClient(t, server, Config{
-		Endpoint: server.URL + "/custom/embed", EmbeddingDim: 2, EmbeddingQueryInstructions: "query: ",
+		Endpoint: server.URL + "/custom/embed", Options: EmbeddingOptions{Dimensions: 2, QueryInstructions: "query: "},
 	})
 	if _, err := client.Embed(context.Background(), NewEmbeddingQueryRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"deployment region"})); err != nil {
 		t.Fatal(err)
@@ -257,7 +306,7 @@ func TestMultimodalEmbeddingUsesTextInputAndObjectResponse(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestClient(t, server, Config{
-		Endpoint: server.URL + "/api/v3/embeddings/multimodal", EmbeddingDim: 2, EmbeddingQueryInstructions: "query: ",
+		Endpoint: server.URL + "/api/v3/embeddings/multimodal", Options: EmbeddingOptions{Dimensions: 2, QueryInstructions: "query: "},
 	})
 	result, err := client.Embed(context.Background(), NewEmbeddingQueryRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"deployment region"}))
 	if err != nil {
@@ -324,7 +373,7 @@ func TestProcessEnforcesAggregateTargetAndContextCharacterBudget(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"no_memory\",\"candidates\":[]}"}}]}`))
 	}))
 	defer server.Close()
-	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", MaxContentChars: 10})
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", Limits: Limits{MaxEgressInputChars: 10}})
 	target := NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "123456"))
 	contextEvents := []Event{
 		NewEvent("context-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "7890")),
@@ -420,37 +469,105 @@ func TestDeadlineCancelsRequest(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := newTestClient(t, server, Config{RequestTimeout: 20 * time.Millisecond})
+	client := newTestClient(t, server, Config{Limits: Limits{RequestTimeout: 20 * time.Millisecond}})
 	_, err := client.Embed(context.Background(), NewEmbeddingRequest("space-a", "text/plain", "normal", []string{"manual"}, []string{"content"}))
 	close(release)
 	assertProviderError(t, err, ErrorTransient, "request_timeout_or_cancelled")
 }
 
+func TestProcessOmitsDeniedOptionalContext(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []chatMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(body.Messages[1].Content, "denied context") {
+			t.Fatal("denied context reached provider")
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"no_memory\",\"candidates\":[]}"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{})
+	target := NewEvent("target", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "allowed target"))
+	denied := NewEvent("context", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "denied context"))
+	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, []Event{denied}, nil, []string{"fact"}, 1, 100, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OmittedContextCount() != 1 || result.OmissionSummary()["context_sensitivity_not_allowed"] != 1 {
+		t.Fatalf("omissions = %d %#v", result.OmittedContextCount(), result.OmissionSummary())
+	}
+}
+
+func TestProcessNormalizesMIMEPolicyKeys(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"no_memory\",\"candidates\":[]}"}}],"usage":{}}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{Policy: Policy{ContentTypes: []string{" Text/Plain "}}})
+	target := NewEvent("target", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "content"))
+	if _, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, nil, []string{"fact"}, 1, 100)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAggregateUsesIndependentInputLimit(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"content\":\"summary\",\"sensitivity\":\"normal\"}"}}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", Limits: Limits{MaxAggregateInputChars: 20}})
+	_, err := client.Build(context.Background(), domain.AggregateProviderInput{Kind: "scene", SpaceID: "space-a", PolicyVersion: "policy", ProcessingVersion: "v1", Inputs: []domain.AggregateInput{{SpaceID: "space-a", Content: "12345678901", Sensitivity: "normal"}, {SpaceID: "space-a", Content: "1234567890", Sensitivity: "normal"}}})
+	assertProviderError(t, err, ErrorInvalidInput, "content_out_of_bounds")
+}
+
 func newTestClient(t *testing.T, server *httptest.Server, override Config) *Client {
 	t.Helper()
 	cfg := Config{
-		Enabled: true, Kind: KindOpenAICompatible, Endpoint: server.URL + "/embeddings", Model: "model-a", SecretEnv: "DMEM_TEST_SECRET",
-		AllowedSpaces: []string{"space-a"}, AllowedContentTypes: []string{"text/plain", "application/json"},
-		AllowedSourceTypes: []string{"message", "file_reference", "manual"}, AllowedSensitivities: []string{"normal"}, TelemetryDisabled: true, EgressPolicyVersion: "policy-v1",
-		MaxContentChars: 1000, MaxContextItems: 2, MaxResponseSize: 64 * 1024, RequestTimeout: time.Second, MaxConcurrent: 2, RequestsPerMinute: 60000,
+		Enabled: true, Kind: KindOpenAICompatible, Endpoint: server.URL + "/embeddings", Model: "model-a",
+		Secret: SecretReference{Source: "environment", Name: "DMEM_TEST_SECRET"}, TelemetryDisabled: true,
+		Limits: Limits{
+			MaxEgressInputChars: 1000, MaxAggregateInputChars: 1000, MaxContextItems: 2, MaxCandidateChars: 1000, MaxTotalCandidateChars: 1000, MaxResponseBytes: 64 * 1024,
+			RequestTimeout: time.Second, MaxConcurrent: 2, RequestsPerMinute: 60000,
+		},
+		Policy: Policy{
+			Default:       "deny",
+			ContentTypes:  []string{"text/plain", "application/json"},
+			SourceTypes:   []string{"message", "file_reference", "manual"},
+			Sensitivities: []string{"normal"},
+			Assignments: []PolicyAssignment{
+				{Selector: "space", SpaceID: "space-a", Effect: "allow"},
+			},
+		},
 	}
-	if override.MaxContextItems != 0 {
-		cfg.MaxContextItems = override.MaxContextItems
+	if override.Limits.MaxContextItems != 0 {
+		cfg.Limits.MaxContextItems = override.Limits.MaxContextItems
 	}
-	if override.MaxContentChars != 0 {
-		cfg.MaxContentChars = override.MaxContentChars
+	if override.Limits.MaxEgressInputChars != 0 {
+		cfg.Limits.MaxEgressInputChars = override.Limits.MaxEgressInputChars
 	}
-	if override.RequestTimeout != 0 {
-		cfg.RequestTimeout = override.RequestTimeout
+	if override.Limits.MaxAggregateInputChars != 0 {
+		cfg.Limits.MaxAggregateInputChars = override.Limits.MaxAggregateInputChars
+	}
+	if override.Limits.RequestTimeout != 0 {
+		cfg.Limits.RequestTimeout = override.Limits.RequestTimeout
 	}
 	if override.Endpoint != "" {
 		cfg.Endpoint = override.Endpoint
 	}
-	if override.EmbeddingDim != 0 {
-		cfg.EmbeddingDim = override.EmbeddingDim
+	if override.Options.Dimensions != 0 {
+		cfg.Options.Dimensions = override.Options.Dimensions
 	}
-	if override.EmbeddingQueryInstructions != "" {
-		cfg.EmbeddingQueryInstructions = override.EmbeddingQueryInstructions
+	if override.Options.QueryInstructions != "" {
+		cfg.Options.QueryInstructions = override.Options.QueryInstructions
+	}
+	if len(override.Policy.ContentTypes) > 0 {
+		cfg.Policy.ContentTypes = override.Policy.ContentTypes
 	}
 	client, err := New(cfg, server.Client())
 	if err != nil {

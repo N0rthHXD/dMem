@@ -21,11 +21,28 @@ func (p *ProviderProcessor) Enabled() bool { return p != nil && p.client != nil 
 func (p *ProviderProcessor) Identity() string { return p.client.Identity() }
 
 func (p *ProviderProcessor) Process(ctx context.Context, input domain.ProcessingInput) domain.ProcessingResult {
-	request := provider.NewProcessRequest(
-		input.ProcessorIdentity, input.ProcessingVersion, input.JobID, input.Attempt,
-		providerEvent(input.Target), providerEvents(input.ContextEvents), providerMemories(input.ContextMemories), input.Policy.AllowedMemoryTypes, input.Policy.MaxCandidates, input.Policy.MaxContentChars,
-	)
+	request := providerRequest(input)
 	output, err := p.client.Process(ctx, request)
+	return p.result(input, output, err)
+}
+
+func (p *ProviderProcessor) Preflight(input domain.ProcessingInput) *domain.ProcessingResult {
+	err := p.client.PreflightProcess(providerRequest(input))
+	if err == nil {
+		return nil
+	}
+	result := p.result(input, provider.ProcessResult{}, err)
+	return &result
+}
+
+func providerRequest(input domain.ProcessingInput) provider.ProcessRequest {
+	return provider.NewProcessRequest(
+		input.ProcessorIdentity, input.ProcessingVersion, input.JobID, input.Attempt,
+		providerEvent(input.Target), providerEvents(input.ContextEvents), providerMemories(input.ContextMemories), input.Policy.AllowedMemoryTypes, input.Policy.MaxCandidates, input.Policy.MaxCandidateChars, input.Policy.MaxTotalCandidateChars,
+	)
+}
+
+func (p *ProviderProcessor) result(input domain.ProcessingInput, output provider.ProcessResult, err error) domain.ProcessingResult {
 	if err != nil {
 		result := domain.ProcessingResult{Code: domain.ProcessingPermanentFailure, Message: "provider request failed", ProviderIdentity: p.client.Identity(), ModelIdentity: p.client.ModelIdentity(), PolicyVersion: p.client.EgressPolicyVersion()}
 		var providerErr *provider.Error
@@ -47,7 +64,15 @@ func (p *ProviderProcessor) Process(ctx context.Context, input domain.Processing
 	result := domain.ProcessingResult{
 		Code: domain.ProcessingOutcome(output.Category()), ProviderIdentity: p.client.Identity(), ModelIdentity: p.client.ModelIdentity(),
 		PolicyVersion: p.client.EgressPolicyVersion(), ProviderRequestID: output.ProviderRequestID(),
-		Usage: domain.ProcessingUsage{InputTokens: output.Usage().InputTokens(), OutputTokens: output.Usage().OutputTokens()},
+		Usage:               domain.ProcessingUsage{InputTokens: output.Usage().InputTokens(), OutputTokens: output.Usage().OutputTokens()},
+		OmittedContextCount: output.OmittedContextCount(), OmissionSummary: output.OmissionSummary(),
+	}
+	if result.OmissionSummary == nil {
+		result.OmissionSummary = make(map[string]int)
+	}
+	for reason, count := range input.OmissionSummary {
+		result.OmissionSummary[reason] += count
+		result.OmittedContextCount += count
 	}
 	for _, candidate := range output.Candidates() {
 		item := domain.ProcessingCandidate{
@@ -66,7 +91,7 @@ func (p *ProviderProcessor) Process(ctx context.Context, input domain.Processing
 func providerMemories(values []domain.ProcessingMemory) []provider.Memory {
 	result := make([]provider.Memory, len(values))
 	for i, value := range values {
-		result[i] = provider.NewMemory(value.MemoryID, value.RevisionID, value.SpaceID, value.Content, value.CurrentState, value.Sensitivity, value.ValidFrom, value.ValidUntil)
+		result[i] = provider.NewMemoryWithProposalCapability(value.MemoryID, value.RevisionID, value.SpaceID, value.Content, value.CurrentState, value.Sensitivity, value.ProposalCapable, value.ValidFrom, value.ValidUntil)
 	}
 	return result
 }

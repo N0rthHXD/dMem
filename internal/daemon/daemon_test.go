@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"flag"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +18,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/instance"
+	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
 func TestDaemonLifecycleAndHealth(t *testing.T) {
@@ -88,12 +89,21 @@ func TestConfiguredHealthIsLocalAndDoesNotLeakConfiguration(t *testing.T) {
 	cfg.ProcessingVersion = "health-provider-v1"
 	cfg.ProcessingProvider = config.ProviderConfig{
 		Enabled: true, Kind: "openai-compatible", Endpoint: "https://provider.invalid/private/path", Model: "health-model",
-		SecretEnv: "DMEM_HEALTH_TEST_SECRET", AllowedSpaces: []string{"11111111-1111-4111-8111-111111111111"}, AllowedContentTypes: []string{"text/plain"},
-		AllowedSourceTypes: []string{"manual"}, AllowedSensitivities: []string{"normal"}, TelemetryDisabled: true,
-		EgressPolicyVersion: "health-v1", MaxContentChars: 1000, MaxContextItems: 1, MaxResponseSize: 4096,
-		RequestTimeout: time.Second, MaxConcurrent: 1, RequestsPerMinute: 60,
+		TelemetryDisabled: true,
+		Secret:            provider.SecretReference{Source: "environment", Name: "DMEM_HEALTH_TEST_SECRET"},
+		Limits: provider.Limits{MaxEgressInputChars: 1000, MaxContextItems: 1, MaxResponseBytes: 4096,
+			RequestTimeout: time.Second, MaxConcurrent: 1, RequestsPerMinute: 60},
+		Policy: provider.Policy{
+			Default:       "deny",
+			ContentTypes:  []string{"text/plain"},
+			SourceTypes:   []string{"manual"},
+			Sensitivities: []string{"normal"},
+			Assignments: []provider.PolicyAssignment{
+				{Selector: "space", SpaceID: "11111111-1111-4111-8111-111111111111", Effect: "allow"},
+			},
+		},
 	}
-	t.Setenv(cfg.ProcessingProvider.SecretEnv, "health-secret-value")
+	t.Setenv(cfg.ProcessingProvider.Secret.Name, "health-secret-value")
 	d, err := Start(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -117,10 +127,50 @@ func TestConfiguredHealthIsLocalAndDoesNotLeakConfiguration(t *testing.T) {
 		t.Fatalf("configured health = %+v", health)
 	}
 	text := string(raw)
-	for _, forbidden := range []string{cfg.DataDir, cfg.DatabasePath, cfg.Endpoint, cfg.ProcessingProvider.Endpoint, cfg.ProcessingProvider.SecretEnv, "health-secret-value"} {
+	for _, forbidden := range []string{cfg.DataDir, cfg.DatabasePath, cfg.Endpoint, cfg.ProcessingProvider.Endpoint, cfg.ProcessingProvider.Secret.Name, "health-secret-value"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("health leaked configuration %q: %s", forbidden, text)
 		}
+	}
+}
+
+func TestManagedConfigurationStatusIsRedactedAndRecordsSIGHUP(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.toml")
+	cfg := reloadConfig{dataDir: filepath.Join(root, "data"), runtimeDir: filepath.Join(root, "runtime")}
+	writeReloadConfig(t, path, cfg)
+	d, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(context.Background())
+
+	result, err := d.Reload(context.Background(), config.TriggerSIGHUP)
+	if err != nil || result.Outcome != config.OutcomeNoChange || result.Trigger != config.TriggerSIGHUP {
+		t.Fatalf("SIGHUP reload = %+v, %v", result, err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://localhost/v1/config", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Caller-ID", "daemon-test")
+	response, err := unixClient(d.endpoint).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var raw json.RawMessage
+	if err := json.NewDecoder(response.Body).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, forbidden := range []string{path, cfg.dataDir, cfg.runtimeDir, "provider.invalid", "DMEM_RELOAD_PROCESSING_SECRET", "secret", "query"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("configuration status leaked %q: %s", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, `"trigger":"sighup"`) || !strings.Contains(text, `"reconciliation_state":"idle"`) {
+		t.Fatalf("configuration status = %s", text)
 	}
 }
 
@@ -128,12 +178,21 @@ func TestEmbeddingProviderDoesNotConfigureProcessing(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.EmbeddingProvider = config.ProviderConfig{
 		Enabled: true, Kind: "openai-compatible", Endpoint: "https://embedding.invalid/v1", Model: "embedding-model",
-		SecretEnv: "DMEM_EMBEDDING_TEST_SECRET", AllowedSpaces: []string{"11111111-1111-4111-8111-111111111111"}, AllowedContentTypes: []string{"text/plain"},
-		AllowedSourceTypes: []string{"manual"}, AllowedSensitivities: []string{"normal"}, TelemetryDisabled: true,
-		EgressPolicyVersion: "embedding-v1", MaxContentChars: 1000, MaxResponseSize: 4096,
-		RequestTimeout: time.Second, MaxConcurrent: 1, RequestsPerMinute: 60,
+		TelemetryDisabled: true,
+		Secret:            provider.SecretReference{Source: "environment", Name: "DMEM_EMBEDDING_TEST_SECRET"},
+		Limits: provider.Limits{MaxEgressInputChars: 1000, MaxResponseBytes: 4096,
+			RequestTimeout: time.Second, MaxConcurrent: 1, RequestsPerMinute: 60},
+		Policy: provider.Policy{
+			Default:       "deny",
+			ContentTypes:  []string{"text/plain"},
+			SourceTypes:   []string{"manual"},
+			Sensitivities: []string{"normal"},
+			Assignments: []provider.PolicyAssignment{
+				{Selector: "space", SpaceID: "11111111-1111-4111-8111-111111111111", Effect: "allow"},
+			},
+		},
 	}
-	t.Setenv(cfg.EmbeddingProvider.SecretEnv, "embedding-secret-value")
+	t.Setenv(cfg.EmbeddingProvider.Secret.Name, "embedding-secret-value")
 	d, err := Start(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -156,8 +215,8 @@ func TestEmbeddingProviderDoesNotConfigureProcessing(t *testing.T) {
 
 func TestStartStagingClearsBothProviders(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.ProcessingProvider = config.ProviderConfig{Enabled: true, SecretEnv: "DMEM_MISSING_PROCESSING_SECRET"}
-	cfg.EmbeddingProvider = config.ProviderConfig{Enabled: true, SecretEnv: "DMEM_MISSING_EMBEDDING_SECRET"}
+	cfg.ProcessingProvider = config.ProviderConfig{Enabled: true, Secret: provider.SecretReference{Source: "environment", Name: "DMEM_MISSING_PROCESSING_SECRET"}}
+	cfg.EmbeddingProvider = config.ProviderConfig{Enabled: true, Secret: provider.SecretReference{Source: "environment", Name: "DMEM_MISSING_EMBEDDING_SECRET"}}
 	d, err := StartStaging(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -170,18 +229,30 @@ func TestStartStagingClearsBothProviders(t *testing.T) {
 func TestProcessingVersionChangeAfterRestartCreatesDistinctJobResult(t *testing.T) {
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
+	runtimeDir := filepath.Join(root, "runtime")
 	parse := func(processingVersion string) config.Config {
 		t.Helper()
-		cfg, err := config.Parse(flag.NewFlagSet("test", flag.ContinueOnError), []string{
-			"-data-dir", dataDir,
-			"-runtime-dir", filepath.Join(root, "runtime"),
-			"-processing-version", processingVersion,
-			"-disk-soft-free", "2", "-disk-hard-free", "1",
-		})
-		if err != nil {
-			t.Fatal(err)
+		return config.Config{
+			DataDir:             dataDir,
+			RuntimeDir:          runtimeDir,
+			DatabasePath:        filepath.Join(dataDir, "dmem.db"),
+			Endpoint:            filepath.Join(runtimeDir, "dmem.sock"),
+			RequestTimeout:      5 * time.Second,
+			ShutdownGracePeriod: 5 * time.Second,
+			MaxConnections:      4,
+			WorkerCount:         2,
+			MaxRequestSize:      4 * 1024 * 1024,
+			QueueSoftLimit:      10000,
+			QueueHardLimit:      20000,
+			MaxAttempts:         3,
+			LeaseDuration:       5 * time.Second,
+			PerJobTimeout:       10 * time.Second,
+			RetryInitialBackoff: 100 * time.Millisecond,
+			RetryMaxBackoff:     time.Second,
+			ProcessingVersion:   processingVersion,
+			DiskSoftFree:        2,
+			DiskHardFree:        1,
 		}
-		return cfg
 	}
 
 	firstConfig := parse("extract-rules-v1")
@@ -304,4 +375,106 @@ func unixClient(endpoint string) *http.Client {
 		},
 	}
 	return &http.Client{Transport: transport, Timeout: 5 * time.Second}
+}
+
+func TestSIGHUPReloadRecordsTriggerAndConcurrentReloadsAreSerialized(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.toml")
+	initial := reloadConfig{dataDir: filepath.Join(root, "data"), runtimeDir: filepath.Join(root, "runtime")}
+	writeReloadConfig(t, path, initial)
+	t.Setenv("DMEM_RELOAD_PROCESSING_SECRET", "processing-secret")
+
+	d, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(context.Background())
+
+	result, err := d.Reload(context.Background(), config.TriggerSIGHUP)
+	if err != nil || result.Outcome != config.OutcomeNoChange || result.Trigger != config.TriggerSIGHUP {
+		t.Fatalf("SIGHUP reload = %+v, %v", result, err)
+	}
+
+	_, attempt := d.ConfigurationStatus()
+	if attempt.Trigger != config.TriggerSIGHUP {
+		t.Fatalf("status trigger = %q; want sighup", attempt.Trigger)
+	}
+
+	processing := initial
+	processing.processing = true
+	writeReloadConfig(t, path, processing)
+
+	concurrent := 5
+	results := make(chan config.ActivationResult, concurrent)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < concurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			r, _ := d.Reload(context.Background(), config.TriggerSIGHUP)
+			results <- r
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	activatedCount := 0
+	for r := range results {
+		if r.Trigger != config.TriggerSIGHUP {
+			t.Fatalf("concurrent reload trigger = %q; want sighup", r.Trigger)
+		}
+		if r.Outcome == config.OutcomeActivated {
+			activatedCount++
+		}
+	}
+	if activatedCount != 1 {
+		t.Fatalf("concurrent SIGHUP reloads produced %d activations; want exactly 1 (serialized)", activatedCount)
+	}
+}
+
+func TestApplySnapshotFailurePreservesPreviousEffectiveConfig(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.toml")
+	initial := reloadConfig{dataDir: filepath.Join(root, "data"), runtimeDir: filepath.Join(root, "runtime")}
+	writeReloadConfig(t, path, initial)
+	t.Setenv("DMEM_RELOAD_PROCESSING_SECRET", "processing-secret")
+
+	d, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(context.Background())
+
+	processing := initial
+	processing.processing = true
+	writeReloadConfig(t, path, processing)
+	result, err := d.Reload(context.Background(), config.TriggerAPI)
+	if err != nil || result.Outcome != config.OutcomeActivated {
+		t.Fatalf("processing reload = %+v, %v", result, err)
+	}
+	previousIdentity := d.manager.Snapshot().Config.EffectiveIdentity
+	previousGeneration := d.manager.ActivationGeneration()
+
+	d.applySnapshotErr = errors.New("injected applySnapshot failure")
+	embedding := processing
+	embedding.embedding = true
+	writeReloadConfig(t, path, embedding)
+	result, err = d.Reload(context.Background(), config.TriggerAPI)
+	if err == nil {
+		t.Fatal("expected applySnapshot failure error")
+	}
+
+	if d.manager.Snapshot().Config.EffectiveIdentity != previousIdentity {
+		t.Fatalf("effective identity = %q; want %q (previous should be preserved)", d.manager.Snapshot().Config.EffectiveIdentity, previousIdentity)
+	}
+	if d.manager.ActivationGeneration() != previousGeneration {
+		t.Fatalf("activation generation = %d; want %d (reverted)", d.manager.ActivationGeneration(), previousGeneration)
+	}
+	health := managedHealth(t, d)
+	if health.ProcessorState != "degraded" || health.ProcessorIdentity != "openai-compatible/processing-a" {
+		t.Fatalf("previous processing capability not preserved: %+v", health)
+	}
 }

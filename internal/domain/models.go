@@ -97,26 +97,33 @@ type JobError struct {
 }
 
 type Job struct {
-	JobID             string    `json:"job_id"`
-	OperationID       string    `json:"operation_id"`
-	JobType           string    `json:"job_type"`
-	TargetType        string    `json:"target_type"`
-	TargetID          string    `json:"target_id"`
-	Status            string    `json:"status"`
-	AttemptCount      int       `json:"attempt_count"`
-	MaxAttempts       int       `json:"max_attempts"`
-	ResultCode        *string   `json:"result_code"`
-	LastErrorCode     *string   `json:"last_error_code"`
-	CreatedAt         string    `json:"created_at"`
-	StartedAt         *string   `json:"started_at"`
-	FinishedAt        *string   `json:"finished_at"`
-	ProcessingVersion string    `json:"-"`
-	Priority          int       `json:"-"`
-	NextRunAt         string    `json:"-"`
-	CancelRequestedAt *string   `json:"-"`
-	Result            any       `json:"-"`
-	LastError         *JobError `json:"-"`
-	ExpiresAt         *string   `json:"-"`
+	JobID                   string    `json:"job_id"`
+	OperationID             string    `json:"operation_id"`
+	JobType                 string    `json:"job_type"`
+	TargetType              string    `json:"target_type"`
+	TargetID                string    `json:"target_id"`
+	Status                  string    `json:"status"`
+	AttemptCount            int       `json:"attempt_count"`
+	MaxAttempts             int       `json:"max_attempts"`
+	ResultCode              *string   `json:"result_code"`
+	LastErrorCode           *string   `json:"last_error_code"`
+	CreatedAt               string    `json:"created_at"`
+	StartedAt               *string   `json:"started_at"`
+	FinishedAt              *string   `json:"finished_at"`
+	ProcessingVersion       string    `json:"-"`
+	Priority                int       `json:"-"`
+	NextRunAt               string    `json:"-"`
+	CancelRequestedAt       *string   `json:"-"`
+	Result                  any       `json:"-"`
+	LastError               *JobError `json:"-"`
+	ExpiresAt               *string   `json:"-"`
+	Capability              string    `json:"-"`
+	ConfigurationGeneration int       `json:"-"`
+	PolicyGeneration        int       `json:"-"`
+	CompatibilityIdentity   string    `json:"-"`
+	BlockedReasonCode       string    `json:"-"`
+	ReconciliationRunID     string    `json:"-"`
+	ProviderAttemptCount    int       `json:"-"`
 }
 
 type ProcessingContent struct {
@@ -138,20 +145,23 @@ type ProcessingEvent struct {
 }
 
 type ProcessingMemory struct {
-	MemoryID     string
-	RevisionID   string
-	SpaceID      string
-	Content      string
-	CurrentState string
-	Sensitivity  string
-	ValidFrom    *time.Time
-	ValidUntil   *time.Time
+	MemoryID        string
+	RevisionID      string
+	SpaceID         string
+	Content         string
+	CurrentState    string
+	Sensitivity     string
+	ValidFrom       *time.Time
+	ValidUntil      *time.Time
+	ProposalCapable bool
 }
 
 type ProcessingPolicy struct {
-	AllowedMemoryTypes []string
-	MaxCandidates      int
-	MaxContentChars    int
+	AllowedMemoryTypes     []string
+	MaxCandidates          int
+	MaxContentChars        int
+	MaxCandidateChars      int
+	MaxTotalCandidateChars int
 }
 
 type ProcessingInput struct {
@@ -162,6 +172,7 @@ type ProcessingInput struct {
 	Target            ProcessingEvent
 	ContextEvents     []ProcessingEvent
 	ContextMemories   []ProcessingMemory
+	OmissionSummary   map[string]int
 	Policy            ProcessingPolicy
 }
 
@@ -203,15 +214,17 @@ const (
 )
 
 type ProcessingResult struct {
-	Code              ProcessingOutcome
-	Candidates        []ProcessingCandidate
-	Message           string
-	ReasonCode        string
-	ProviderIdentity  string
-	ModelIdentity     string
-	PolicyVersion     string
-	ProviderRequestID string
-	Usage             ProcessingUsage
+	Code                ProcessingOutcome
+	Candidates          []ProcessingCandidate
+	Message             string
+	ReasonCode          string
+	ProviderIdentity    string
+	ModelIdentity       string
+	PolicyVersion       string
+	ProviderRequestID   string
+	Usage               ProcessingUsage
+	OmittedContextCount int
+	OmissionSummary     map[string]int
 }
 
 type MemoryEvidence struct {

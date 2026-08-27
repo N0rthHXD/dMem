@@ -61,6 +61,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	if err := preflight.Commit(); err != nil {
 		return domain.SearchResponse{}, err
 	}
+	runtime := r.emb()
 	semanticAvailable := r.semanticQueryable(status)
 	keywordAvailable := ftsState == "ready"
 	executed := params.Mode
@@ -85,8 +86,38 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
 		return semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, preflightMetadata), nil
 	}
+	authorization, err := r.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return domain.SearchResponse{}, err
+	}
+	scope, err := searchScope(ctx, authorization, params.SpaceIDs, params.IncludeAncestors)
+	policyGeneration := 0
+	if err == nil {
+		policyGeneration, err = r.authorizeSemanticQueryScope(ctx, authorization, scope)
+	}
+	if closeErr := authorization.Rollback(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		if executed == "hybrid" && keywordAvailable {
+			return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_policy_denied"))
+		}
+		return domain.SearchResponse{}, err
+	}
+	if len(scope) == 0 {
+		if executed == "hybrid" && keywordAvailable {
+			return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_policy_denied"))
+		}
+		return domain.SearchResponse{}, ErrPolicyDenied
+	}
+	if policyGeneration > 0 && runtime.PolicyGeneration != policyGeneration {
+		if executed == "hybrid" && keywordAvailable {
+			return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_policy_changed"))
+		}
+		return domain.SearchResponse{}, ErrPolicyDenied
+	}
 
-	queryResult, err := r.embeddingProvider.Embed(ctx, provider.NewEmbeddingQueryRequest(params.SpaceIDs[0], "text/plain", "normal", []string{"manual"}, []string{params.Query}))
+	queryResult, err := runtime.Provider.Embed(ctx, provider.NewEmbeddingQueryRequest(scope[0], "text/plain", "normal", []string{"semantic_query"}, []string{params.Query}))
 	if err != nil || len(queryResult.Vectors()) != 1 {
 		if executed == "hybrid" {
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_unavailable"))
@@ -160,11 +191,22 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			}
 		}
 	}
-	eligible, err := semanticVectorEligibility(ctx, tx, params, spaces)
+	eligible, err := semanticVectorEligibility(ctx, tx, params, spaces, runtime.PolicyGeneration)
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	semantic, err := r.vectorIndex.Search(queryVector, spaces, eligible, recallLimit, status.ActiveVersion)
+	if current := r.emb(); current.Generation != runtime.Generation || current.PolicyGeneration != runtime.PolicyGeneration || current.CompatibilityIdentity != runtime.CompatibilityIdentity {
+		if executed == "hybrid" {
+			_ = tx.Rollback()
+			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(response.DegradationReasons, "semantic_unavailable"))
+			if keywordErr != nil {
+				return domain.SearchResponse{}, ErrIndexDegraded
+			}
+			return result, nil
+		}
+		return domain.SearchResponse{}, ErrIndexDegraded
+	}
+	semantic, err := runtime.Index.Search(queryVector, spaces, eligible, recallLimit, status.ActiveVersion)
 	if err != nil {
 		if executed == "hybrid" {
 			_ = tx.Rollback()
@@ -409,9 +451,10 @@ func semanticKeywordRecall(ctx context.Context, tx *sql.Tx, params SearchParams,
 	return result, rows.Err()
 }
 
-func semanticVectorEligibility(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string) ([]vector.Identity, error) {
-	query := `SELECT p.memory_id,p.revision_id,p.content_hash FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 AND p.current_state IN ('active','contested') AND p.space_id IN (` + placeholders(len(spaces)) + `)`
-	args := make([]any, 0, len(spaces)+len(params.States)+len(params.MemoryTypes)+2)
+func semanticVectorEligibility(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policyGeneration int) ([]vector.Identity, error) {
+	query := `SELECT p.memory_id,p.revision_id,p.content_hash FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 AND p.current_state IN ('active','contested') AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) AND p.space_id IN (` + placeholders(len(spaces)) + `)`
+	args := make([]any, 0, len(spaces)+len(params.States)+len(params.MemoryTypes)+3)
+	args = append(args, policyGeneration)
 	for _, id := range spaces {
 		args = append(args, id)
 	}
@@ -447,7 +490,7 @@ func semanticSearchStatus(ctx context.Context, tx *sql.Tx) (SemanticStatus, stri
 	var status SemanticStatus
 	var active, dimension sql.NullInt64
 	var providerName, model sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT state,active_version,provider_identity,model_identity,dimension,source_revision_count FROM semantic_index_metadata WHERE singleton=1`).Scan(&status.State, &active, &providerName, &model, &dimension, &status.SourceRevisionCount); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT state,active_version,provider_identity,model_identity,dimension,source_revision_count,coalesce(policy_generation,0) FROM semantic_index_metadata WHERE singleton=1`).Scan(&status.State, &active, &providerName, &model, &dimension, &status.SourceRevisionCount, &status.PolicyGeneration); err != nil {
 		return status, "", 0, err
 	}
 	status.ActiveVersion, status.Dimension = int(active.Int64), int(dimension.Int64)

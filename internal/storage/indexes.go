@@ -38,12 +38,12 @@ func (r *Repository) semanticIndexDirty(ctx context.Context, tx *sql.Tx) (bool, 
 		SELECT 1 FROM semantic_index_metadata
 		WHERE singleton=1 AND (
 			state<>'ready' OR coalesce(provider_identity,'')<>? OR coalesce(model_identity,'')<>?
-			OR source_revision_count<>(SELECT count(*) FROM memory_projections WHERE searchable=1)
+			OR source_revision_count<>(SELECT count(*) FROM memory_projections p WHERE searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1))
 		)
 	) OR EXISTS (
 		SELECT 1 FROM memory_projections
-		WHERE searchable=1 AND (embedding_state<>'current' OR coalesce(embedding_provider,'')<>? OR coalesce(embedding_model,'')<>?)
-	)`, r.embeddingProviderIdentity, r.embeddingModelIdentity, r.embeddingProviderIdentity, r.embeddingModelIdentity).Scan(&dirty)
+		WHERE searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=memory_projections.memory_id AND e.revision_id=memory_projections.revision_id AND e.policy_generation=? AND e.eligible=1) AND (embedding_state<>'current' OR coalesce(embedding_provider,'')<>? OR coalesce(embedding_model,'')<>?)
+	)`, r.emb().ProviderIdentity, r.emb().ModelIdentity, r.emb().PolicyGeneration, r.emb().PolicyGeneration, r.emb().ProviderIdentity, r.emb().ModelIdentity).Scan(&dirty)
 	return dirty != 0, err
 }
 
@@ -96,7 +96,7 @@ func (r *Repository) CreateSemanticRebuildJob(ctx context.Context, identity Writ
 }
 
 func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
-	if r.embeddingProvider == nil || r.vectorIndex == nil {
+	if r.emb().Provider == nil || r.emb().Index == nil {
 		return nil
 	}
 	tx, err := r.store.writer.BeginTx(ctx, nil)
@@ -106,10 +106,13 @@ func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
 	defer tx.Rollback()
 	now := formatTime(r.runtime.Now())
 	identity := r.embeddingIdentity()
+	if err := r.ensureCurrentEmbeddingEligibility(ctx, tx, now); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='cancelled', finished_at=?, last_error_code='provider_changed', last_error_message='semantic provider identity changed' WHERE job_type IN ('embed_memory','rebuild_semantic') AND processing_version<>? AND status IN ('pending','waiting','retrying')`, now, identity); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT revision_id FROM memory_projections WHERE searchable=1 AND (embedding_state<>'current' OR embedding_provider<>? OR embedding_model<>?) ORDER BY memory_id`, r.embeddingProviderIdentity, r.embeddingModelIdentity)
+	rows, err := tx.QueryContext(ctx, `SELECT p.revision_id FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) AND NOT EXISTS (SELECT 1 FROM memory_embeddings e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash AND e.compatibility_identity=?) ORDER BY p.memory_id`, r.emb().PolicyGeneration, r.emb().CompatibilityIdentity)
 	if err != nil {
 		return err
 	}
@@ -137,11 +140,11 @@ func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
 	var searchable, activeVersion, sourceCount int
 	var state string
 	var currentProvider, currentModel sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM memory_projections WHERE searchable=1), coalesce(active_version,0), state, provider_identity, model_identity, source_revision_count FROM semantic_index_metadata WHERE singleton=1`).Scan(&searchable, &activeVersion, &state, &currentProvider, &currentModel, &sourceCount); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1)), coalesce(active_version,0), state, provider_identity, model_identity, source_revision_count FROM semantic_index_metadata WHERE singleton=1`, r.emb().PolicyGeneration).Scan(&searchable, &activeVersion, &state, &currentProvider, &currentModel, &sourceCount); err != nil {
 		return err
 	}
-	indexState := r.vectorIndex.Status(activeVersion).State
-	needsRebuild := searchable > 0 && (len(revisions) > 0 || state != "ready" || currentProvider.String != r.embeddingProviderIdentity || currentModel.String != r.embeddingModelIdentity || sourceCount != searchable || indexState != vector.StateReady && indexState != vector.StateStale)
+	indexState := r.emb().Index.Status(activeVersion).State
+	needsRebuild := len(revisions) > 0 || state != "ready" || currentProvider.String != r.emb().ProviderIdentity || currentModel.String != r.emb().ModelIdentity || sourceCount != searchable || indexState != vector.StateReady && indexState != vector.StateStale
 	if needsRebuild {
 		if _, err := r.enqueueSemanticRebuild(ctx, tx, now); err != nil {
 			return err

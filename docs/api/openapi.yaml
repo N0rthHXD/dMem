@@ -90,7 +90,32 @@ paths:
           description: Daemon health
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Health' }
+                schema: { $ref: '#/components/schemas/Health' }
+  /config:
+    get:
+      operationId: getConfigurationStatus
+      parameters: [{ $ref: '#/components/parameters/callerId' }]
+      responses:
+        '200':
+          description: Redacted active configuration and latest activation attempt
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConfigurationStatus' } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /config/reload:
+    post:
+      operationId: reloadConfiguration
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReloadConfigurationRequest' } } }
+      responses:
+        '200':
+          description: Configuration activated or unchanged
+          headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ReloadConfigurationResponse' } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /spaces:
     post:
       operationId: createSpace
@@ -1952,6 +1977,85 @@ components:
         job_queue_depth: { type: integer, minimum: 0 }
         oldest_job_age_seconds: { type: integer, minimum: 0 }
         disk_pressure: { type: string, enum: [normal, soft, hard] }
+        configuration_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+    ReloadConfigurationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expected_effective_identity: { type: [string, 'null'], pattern: '^sha256:[0-9a-f]{64}$' }
+    ReloadConfigurationResponse:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, outcome, active_source_identity, active_effective_identity, changed_capabilities, reconciliation_state]
+      properties:
+        attempt_id: { type: string }
+        outcome: { type: string, enum: [activated, no_change] }
+        previous_effective_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        active_source_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        active_effective_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        changed_capabilities: { type: array, items: { type: string, enum: [processing, embedding] }, uniqueItems: true }
+        reconciliation_state: { type: string, enum: [idle, queued, running, failed] }
+    ConfigurationStatus:
+      type: object
+      additionalProperties: false
+      required: [state, activation_generation, active_source_identity, active_effective_identity, activated_at, last_attempt, capabilities]
+      properties:
+        state: { type: string, enum: [active] }
+        activation_generation: { type: integer, minimum: 1 }
+        active_source_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        active_effective_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        activated_at: { type: string, format: date-time }
+        last_attempt: { $ref: '#/components/schemas/ConfigurationAttempt' }
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [processing, embedding]
+          properties:
+            processing: { $ref: '#/components/schemas/ConfigurationCapability' }
+            embedding: { $ref: '#/components/schemas/ConfigurationCapability' }
+    ConfigurationAttempt:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, trigger, outcome, started_at, finished_at, diagnostics]
+      properties:
+        attempt_id: { type: string }
+        trigger: { type: string, enum: [startup, api, sighup] }
+        outcome: { type: string, enum: [activated, no_change, rejected, failed] }
+        source_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        error_code: { type: string }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        diagnostics: { type: array, items: { $ref: '#/components/schemas/ConfigurationDiagnostic' } }
+    ConfigurationDiagnostic:
+      type: object
+      additionalProperties: false
+      required: [code, path]
+      properties:
+        code: { type: string }
+        path: { type: string }
+        line: { type: integer, minimum: 1 }
+        column: { type: integer, minimum: 1 }
+    ConfigurationCapability:
+      type: object
+      additionalProperties: false
+      required: [enabled, state, configuration_generation, policy_generation, blocked_work_count, reconciliation_state]
+      properties:
+        enabled: { type: boolean }
+        kind: { type: string }
+        model: { type: string }
+        configuration_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        compatibility_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        policy_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        secret_available: { type: boolean }
+        policy_content_types: { type: array, items: { type: string } }
+        policy_source_types: { type: array, items: { type: string } }
+        policy_sensitivities: { type: array, items: { type: string } }
+        policy_assignment_count: { type: integer, minimum: 0 }
+        state: { type: string, enum: [disabled, ready, degraded, unavailable] }
+        configuration_generation: { type: integer, minimum: 0 }
+        policy_generation: { type: integer, minimum: 0 }
+        blocked_work_count: { type: integer, minimum: 0 }
+        reconciliation_state: { type: string, enum: [idle, queued, running, failed] }
     Error:
       type: object
       required: [error_code, message, request_id, operation_id, retryable]
@@ -1989,6 +2093,9 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     ResourceExhausted:
       description: Hard local resource limit reached
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ServiceUnavailable:
+      description: Service unavailable
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     UnsupportedOperation:
       description: Operation is not implemented

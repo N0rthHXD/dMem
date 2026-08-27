@@ -219,7 +219,7 @@ func (r *Runner) Run(ctx context.Context, dataset Dataset) (RunResult, error) {
 }
 
 func (r *Runner) runCase(ctx context.Context, datasetSHA string, item Case) (CaseResult, error) {
-	result := CaseResult{QuestionID: item.QuestionID, QuestionType: item.QuestionType, IsAbstention: item.IsAbstention(), Question: item.Question, GroundTruthAnswer: item.Answer, QuestionDate: item.QuestionDate, AnswerSessionIDs: item.AnswerSessionIDs}
+	result := CaseResult{QuestionID: item.QuestionID, QuestionType: item.QuestionType, IsAbstention: item.IsAbstention(), Question: item.Question, GroundTruthAnswer: item.AnswerString(), QuestionDate: item.QuestionDate, AnswerSessionIDs: item.AnswerSessionIDs}
 	started := time.Now()
 	space, err := r.client.CreateSpace(ctx, stableKey("space", datasetSHA, item.QuestionID, r.config.RunID), boundedExternalID(datasetSHA, item.QuestionID, r.config.RunID), "LongMemEval "+item.QuestionID)
 	if err != nil {
@@ -254,6 +254,11 @@ func (r *Runner) runCase(ctx context.Context, datasetSHA string, item Case) (Cas
 	}
 	result.Ingestion.DurationMS = float64(time.Since(started).Microseconds()) / 1000
 	questionDate, _ := ParseDate(item.QuestionDate)
+	if r.config.RetrievalMode == "semantic" || r.config.RetrievalMode == "hybrid" {
+		if err := r.client.WaitForSemanticReady(ctx, 30*time.Minute); err != nil {
+			return result, fmt.Errorf("wait for semantic: %w", err)
+		}
+	}
 	retrievalStarted := time.Now()
 	response, err := r.client.Recall(ctx, recallRequest{Query: item.Question, SpaceIDs: []string{space.SpaceID}, IncludeAncestors: false, ReferenceTime: questionDate.Format(time.RFC3339), Mode: r.config.RetrievalMode, Limit: r.config.Limit, MaxChars: r.config.MaxChars, IncludeEvidence: true})
 	if err != nil {
@@ -271,14 +276,14 @@ func (r *Runner) runCase(ctx context.Context, datasetSHA string, item Case) (Cas
 	}
 	if r.answerer != nil {
 		started := time.Now()
-		completion, err := r.answerer.Complete(ctx, answerPrompt(item, answerMemories(response.Results, result.Ingestion.EventLabels, r.config.AnswerCutoff)), 500)
+		completion, err := r.answerer.Complete(ctx, answerPrompt(item, answerMemories(response.Results, result.Ingestion.EventLabels, r.config.AnswerCutoff)), 2048)
 		if err != nil {
 			return result, fmt.Errorf("generate answer: %w", err)
 		}
 		result.Generation = &GenerationResult{Cutoff: r.config.AnswerCutoff, Hypothesis: completion.Content, Model: r.answerer.Model(), PromptTokens: completion.PromptTokens, CompletionTokens: completion.CompletionTokens, RequestID: completion.RequestID, DurationMS: float64(time.Since(started).Microseconds()) / 1000}
 		if r.judge != nil {
 			started = time.Now()
-			judgment, err := r.judge.Complete(ctx, judgePrompt(item, completion.Content), 10)
+			judgment, err := r.judge.Complete(ctx, judgePrompt(item, completion.Content), 512)
 			if err != nil {
 				return result, fmt.Errorf("judge answer: %w", err)
 			}
@@ -314,13 +319,18 @@ func answerMemories(results []domain.SearchResult, labels map[string]EventLabel,
 
 func renderTurns(turns []Turn) string {
 	var builder strings.Builder
-	for i, turn := range turns {
-		if i > 0 {
+	first := true
+	for _, turn := range turns {
+		if strings.TrimSpace(turn.Content) == "" {
+			continue
+		}
+		if !first {
 			builder.WriteByte('\n')
 		}
 		builder.WriteString(turn.Role)
 		builder.WriteString(": ")
 		builder.WriteString(turn.Content)
+		first = false
 	}
 	return builder.String()
 }

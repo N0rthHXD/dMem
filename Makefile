@@ -2,7 +2,7 @@ GO ?= go
 GO_TAGS := sqlite_fts5
 GOVULNCHECK ?= govulncheck
 
-.PHONY: build test test-race vet openapi schema schema-init schema-check restore-drill portability-drill quality performance offline-default govulncheck check
+.PHONY: build test test-race vet openapi schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check govulncheck check
 
 build:
 	CGO_ENABLED=1 $(GO) build -tags '$(GO_TAGS)' ./...
@@ -23,12 +23,14 @@ schema:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^TestDocumentedSchemaMatchesEmbeddedSchema$$'
 
 schema-init:
-	@test -n "$(DATA_DIR)" || (printf '%s\n' 'DATA_DIR is required' >&2; exit 2)
-	CGO_ENABLED=1 $(GO) run -tags '$(GO_TAGS)' ./cmd/dmemd init --data-dir "$(DATA_DIR)"
+	@test -n "$(CONFIG)" || (printf '%s\n' 'CONFIG is required' >&2; exit 2)
+	CGO_ENABLED=1 $(GO) run -tags '$(GO_TAGS)' ./cmd/dmemd --config "$(CONFIG)" init
 
 schema-check: schema
-	@data_dir="$$(mktemp -d)"; trap 'rm -rf "$$data_dir"' EXIT; \
-		$(MAKE) --no-print-directory schema-init DATA_DIR="$$data_dir"
+	@root="$$(mktemp -d)"; trap 'rm -rf "$$root"' EXIT; \
+		config="$$root/config.toml"; \
+		printf '%s\n' 'config_version = 1' '' '[instance]' "data_dir = \"$$root/data\"" "runtime_dir = \"$$root/runtime\"" 'database_filename = "dmem.db"' 'socket_filename = "dmem.sock"' '' '[server]' 'request_timeout = "30s"' 'shutdown_grace_period = "15s"' 'max_connections = 4' 'max_request_bytes = 4194304' '' '[jobs]' 'worker_count = 1' 'queue_soft_limit = 10' 'queue_hard_limit = 20' 'max_attempts = 3' 'lease_duration = "30s"' 'per_job_timeout = "2m"' 'retry_initial_backoff = "1s"' 'retry_max_backoff = "5m"' '' '[storage]' 'disk_soft_free_bytes = 1073741824' 'disk_hard_free_bytes = 268435456' '' '[processing]' 'version = "builtin-noop-v1"' '' '[processing.provider]' 'enabled = false' '' '[embedding.provider]' 'enabled = false' > "$$config"; \
+		$(MAKE) --no-print-directory schema-init CONFIG="$$config"
 
 restore-drill:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/maintenance -run '^Test(BackupRestoreDrill|ManifestInventoriesAuthority|RestoreFencesRunningWork|RestoreRebuildsDerivedHealthFromAuthority)$$' -count=1
@@ -46,6 +48,9 @@ performance:
 offline-default:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestProvidersDisabledByDefault$$' -count=1
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/provider -run '^TestDisabledDoesNotResolveSecretOrUseHTTP$$' -count=1
+
+config-check:
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestExampleConfigValidates$$' -count=1
 
 govulncheck:
 	CGO_ENABLED=1 $(GOVULNCHECK) -tags '$(GO_TAGS)' ./...

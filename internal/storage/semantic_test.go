@@ -67,6 +67,28 @@ func TestEmbedMemoryUsesAuthoritativeClassification(t *testing.T) {
 	}
 }
 
+func TestEmbedMemoryRejectsStaleCapturedEmbeddingSnapshot(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	oldProvider := &semanticTestProvider{}
+	configureSemanticTest(t, repository, oldProvider)
+	repository.SetEmbedding(oldProvider, nil, "provider-old", "model-old", "compat-old", "config-old", 1, 0)
+	oldProvider.after = func() {
+		repository.SetEmbedding(&semanticTestProvider{}, nil, "provider-new", "model-new", "compat-new", "config-new", 2, 0)
+	}
+	memory := createTestMemory(t, repository, "captured-embedding")
+
+	if err := repository.EmbedMemory(context.Background(), memory.CurrentRevision.RevisionID); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("EmbedMemory() error = %v, want ErrStaleGeneration", err)
+	}
+	var embeddings int
+	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM memory_embeddings WHERE memory_id=?`, memory.MemoryID).Scan(&embeddings); err != nil {
+		t.Fatal(err)
+	}
+	if embeddings != 0 {
+		t.Fatalf("stale embedding published %d rows", embeddings)
+	}
+}
+
 func TestEmbedMemoryWithoutEvidenceUsesExplicitManualClassification(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	embedding := &semanticTestProvider{}
@@ -74,6 +96,9 @@ func TestEmbedMemoryWithoutEvidenceUsesExplicitManualClassification(t *testing.T
 	memory := createTestMemory(t, repository, "manual-no-evidence")
 	revisionID := "manual-no-evidence-revision"
 	if _, err := repository.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,?,'initial searchable memory','manual-no-evidence-hash','test','test-v1','2026-08-21T12:00:00Z'); UPDATE memories SET current_revision_id=? WHERE memory_id=?; UPDATE memory_projections SET revision_id=?,content_hash='manual-no-evidence-hash' WHERE memory_id=?; UPDATE memory_fts SET revision_id=? WHERE memory_id=?`, revisionID, memory.MemoryID, memory.CurrentRevision.RevisionID, revisionID, memory.MemoryID, revisionID, memory.MemoryID, revisionID, memory.MemoryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.store.writer.Exec(`INSERT INTO embedding_eligibility(memory_id,revision_id,space_id,configuration_generation,policy_generation,eligible,reason_code,evaluated_at) VALUES (?,?,?,?,?,?,?,?)`, memory.MemoryID, revisionID, "space-1", 0, 0, 1, "test", formatTime(repository.runtime.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.EmbedMemory(context.Background(), revisionID); err != nil {
@@ -107,10 +132,13 @@ func TestEmbedMemoryPolicyRejectsAuthoritativeClassificationBeforeHTTP(t *testin
 			defer server.Close()
 			t.Setenv("DMEM_TEST_EMBED_SECRET", "")
 			client, err := provider.New(provider.Config{
-				Enabled: true, Kind: provider.KindOpenAICompatible, Endpoint: server.URL, Model: "test-model", SecretEnv: "DMEM_TEST_EMBED_SECRET",
-				AllowedSpaces: []string{"space-1"}, AllowedContentTypes: []string{"text/plain"}, AllowedSourceTypes: []string{"manual"}, AllowedSensitivities: []string{"normal"},
-				TelemetryDisabled: true, EgressPolicyVersion: "test-policy", MaxContentChars: 1000, MaxContextItems: 1, MaxResponseSize: 4096,
-				RequestTimeout: time.Second, MaxConcurrent: 1, RequestsPerMinute: 60,
+				Enabled: true, Kind: provider.KindOpenAICompatible, Endpoint: server.URL, Model: "test-model",
+				Secret:            provider.SecretReference{Source: "environment", Name: "DMEM_TEST_EMBED_SECRET"},
+				TelemetryDisabled: true,
+				Limits: provider.Limits{MaxEgressInputChars: 1000, MaxContextItems: 1, MaxResponseBytes: 4096,
+					RequestTimeout: time.Second, MaxConcurrent: 1, RequestsPerMinute: 60},
+				Policy: provider.Policy{Default: "deny", ContentTypes: []string{"text/plain"}, SourceTypes: []string{"manual"}, Sensitivities: []string{"normal"},
+					Assignments: []provider.PolicyAssignment{{Selector: "space", SpaceID: "space-1", Effect: "allow"}}},
 			}, server.Client())
 			if err != nil {
 				t.Fatal(err)
@@ -479,7 +507,7 @@ func TestSemanticRebuildRejectsConcurrentRevisionBeforeActivation(t *testing.T) 
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	base := repository.vectorIndex.(*vector.Index)
+	base := repository.semanticIndex().(*vector.Index)
 	hooked := &hookedSemanticIndex{Index: base}
 	hooked.afterBuild = func() {
 		params := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "concurrent automobile revision", Evidence: directEvidence("event-1"), Reason: "race"}
@@ -489,7 +517,7 @@ func TestSemanticRebuildRejectsConcurrentRevisionBeforeActivation(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	repository.vectorIndex = hooked
+	repository.setSemanticIndex(hooked)
 	if err := repository.RebuildSemantic(context.Background()); err == nil || !strings.Contains(err.Error(), "source changed") {
 		t.Fatalf("concurrent rebuild error = %v", err)
 	}
@@ -511,9 +539,9 @@ func TestClaimedSemanticRebuildDoesNotActivateAfterLeaseExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base := repository.vectorIndex.(*vector.Index)
+	base := repository.semanticIndex().(*vector.Index)
 	hooked := &hookedSemanticIndex{Index: base, afterBuild: func() { clock.now = clock.now.Add(2 * time.Minute) }}
-	repository.vectorIndex = hooked
+	repository.setSemanticIndex(hooked)
 	claim := claimIndexJob(t, repository, "semantic-claim", "rebuild_semantic", "index", semanticIndexName, time.Minute)
 	if err := repository.RebuildSemanticClaimed(context.Background(), claim); !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("RebuildSemanticClaimed() error = %v", err)
@@ -534,8 +562,8 @@ func TestFirstClaimedSemanticBuildRollsBackActivationAfterLeaseExpiry(t *testing
 	if err := repository.EmbedMemory(context.Background(), memory.CurrentRevision.RevisionID); err != nil {
 		t.Fatal(err)
 	}
-	base := repository.vectorIndex.(*vector.Index)
-	repository.vectorIndex = &hookedSemanticIndex{Index: base, afterActivate: func() { clock.now = clock.now.Add(2 * time.Minute) }}
+	base := repository.semanticIndex().(*vector.Index)
+	repository.setSemanticIndex(&hookedSemanticIndex{Index: base, afterActivate: func() { clock.now = clock.now.Add(2 * time.Minute) }})
 	claim := claimIndexJob(t, repository, "semantic-first-claim", "rebuild_semantic", "index", semanticIndexName, time.Minute)
 
 	if err := repository.RebuildSemanticClaimed(context.Background(), claim); !errors.Is(err, ErrLeaseLost) {
@@ -592,7 +620,7 @@ func TestHybridUnionDedupAndAuthoritativeVectorFiltering(t *testing.T) {
 
 	phantom := vector.Record{Metadata: vector.Metadata{MemoryID: "phantom", RevisionID: "phantom-revision", SpaceID: "space-1", ContentHash: "phantom-hash", Provider: "test-provider", Model: "test-model", Dimension: 2, IndexVersion: 1}, Vector: []float64{1, 0}}
 	stale := vector.Record{Metadata: vector.Metadata{MemoryID: semanticOnly.MemoryID, RevisionID: "stale-revision", SpaceID: "space-1", ContentHash: "stale-hash", Provider: "test-provider", Model: "test-model", Dimension: 2, IndexVersion: 1}, Vector: []float64{1, 0}}
-	index := repository.vectorIndex.(*vector.Index)
+	index := repository.semanticIndex().(*vector.Index)
 	if err := index.Upsert(phantom.Metadata.MemoryID, phantom.Metadata.RevisionID, phantom.Vector, phantom.Metadata); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +645,7 @@ func TestSemanticEligibilityAppliedBeforeBoundedVectorRecall(t *testing.T) {
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	index := repository.vectorIndex.(*vector.Index)
+	index := repository.semanticIndex().(*vector.Index)
 	for i := 0; i < 101; i++ {
 		id := "phantom-" + string(rune(0x100+i))
 		metadata := vector.Metadata{MemoryID: id, RevisionID: "revision", SpaceID: "space-1", ContentHash: "hash", Provider: "test-provider", Model: "test-model", Dimension: 2, IndexVersion: 1}
@@ -731,7 +759,7 @@ func TestHybridFallbacksAndNeitherChannelAvailable(t *testing.T) {
 	if err != nil || result.ExecutedMode != "semantic" || !result.Degraded || len(result.Results) != 1 {
 		t.Fatalf("keyword-to-semantic fallback = %+v, %v", result, err)
 	}
-	repository.embeddingProvider = nil
+	repository.setEmbeddingProvider(nil)
 	if _, err := repository.SearchMemories(context.Background(), hybridParams("fallbackword")); !errors.Is(err, ErrIndexDegraded) {
 		t.Fatalf("neither channel error = %v", err)
 	}
@@ -784,7 +812,108 @@ func TestSemanticRebuildPublishesEmptyVersionAfterLastMemoryArchived(t *testing.
 	}
 }
 
-func TestEmbeddingPolicyRejectionCancelsBlockedRebuild(t *testing.T) {
+func TestSemanticRebuildUsesOnlyCurrentEligibleCorpus(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	provider := &semanticTestProvider{}
+	configureSemanticTest(t, repository, provider)
+	eligible := createMemoryWithContent(t, repository, "eligible-corpus", "automobile eligible corpus")
+	excluded := createMemoryWithContent(t, repository, "excluded-corpus", "automobile excluded corpus")
+	setEmbeddingEligibility(t, repository, excluded, 0, false)
+
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := repository.SemanticStatus(context.Background())
+	if err != nil || status.State != "ready" || status.SourceRevisionCount != 1 {
+		t.Fatalf("eligible semantic status = %+v, %v", status, err)
+	}
+	if len(provider.requests) != 1 || provider.requests[0].Inputs()[0] != "automobile eligible corpus" {
+		t.Fatalf("embedding requests = %+v", provider.requests)
+	}
+	result, err := repository.SearchMemories(context.Background(), semanticParams("car"))
+	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != eligible.MemoryID {
+		t.Fatalf("eligible semantic results = %+v, %v", result, err)
+	}
+}
+
+func TestSemanticRebuildAllowsInitiallyEmptyEligibleCorpus(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	configureSemanticTest(t, repository, &semanticTestProvider{})
+	memory := createMemoryWithContent(t, repository, "empty-eligible-corpus", "automobile excluded corpus")
+	setEmbeddingEligibility(t, repository, memory, 0, false)
+
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := repository.SemanticStatus(context.Background())
+	if err != nil || status.State != "ready" || status.ActiveVersion != 1 || status.SourceRevisionCount != 0 {
+		t.Fatalf("empty eligible semantic status = %+v, %v", status, err)
+	}
+}
+
+func TestSemanticEligibilityExpansionReusesCompatibleVectors(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	provider := &semanticTestProvider{}
+	configureSemanticTest(t, repository, provider)
+	memory := createMemoryWithContent(t, repository, "eligible-expand", "automobile expansion")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requests := len(provider.requests)
+	setEmbeddingEligibility(t, repository, memory, 1, true)
+	repository.SetEmbedding(provider, nil, "test-provider", "test-model", "test-provider/test-model", "test-provider/test-model", 1, 1)
+
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != requests {
+		t.Fatalf("policy expansion re-embedded compatible vector: %d -> %d", requests, len(provider.requests))
+	}
+}
+
+func TestSemanticEligibilityNarrowingFiltersActiveIndexImmediately(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	provider := &semanticTestProvider{}
+	configureSemanticTest(t, repository, provider)
+	allowed := createMemoryWithContent(t, repository, "eligible-narrow-allowed", "automobile allowed")
+	excluded := createMemoryWithContent(t, repository, "eligible-narrow-excluded", "automobile excluded")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	setEmbeddingEligibility(t, repository, allowed, 1, true)
+	setEmbeddingEligibility(t, repository, excluded, 1, false)
+	repository.SetEmbedding(provider, nil, "test-provider", "test-model", "test-provider/test-model", "test-provider/test-model", 1, 1)
+
+	result, err := repository.SearchMemories(context.Background(), semanticParams("car"))
+	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != allowed.MemoryID {
+		t.Fatalf("narrowed semantic results = %+v, %v", result, err)
+	}
+}
+
+func TestSemanticCompatibilityChangeRebuildsEligibleCorpus(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	provider := &semanticTestProvider{}
+	configureSemanticTest(t, repository, provider)
+	memory := createMemoryWithContent(t, repository, "eligible-compatible", "automobile compatibility")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repository.SetEmbedding(provider, nil, "test-provider-v2", "test-model-v2", "compat-v2", "config-v2", 2, 0)
+
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := repository.CurrentEmbeddingIdentity(context.Background(), memory.MemoryID)
+	if err != nil || identity.Provider != "test-provider-v2" || identity.Model != "test-model-v2" {
+		t.Fatalf("compatible embedding identity = %+v, %v", identity, err)
+	}
+	status, err := repository.SemanticStatus(context.Background())
+	if err != nil || status.ActiveVersion != 2 || status.Provider != "test-provider-v2" || status.Model != "test-model-v2" {
+		t.Fatalf("compatibility rebuild status = %+v, %v", status, err)
+	}
+}
+
+func TestEmbeddingPolicyRejectionPreservesEligibleRebuild(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	configureSemanticTest(t, repository, &semanticTestProvider{})
 	createMemoryWithContent(t, repository, "policy-rebuild", "automobile policy")
@@ -799,7 +928,7 @@ func TestEmbeddingPolicyRejectionCancelsBlockedRebuild(t *testing.T) {
 	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM jobs WHERE job_type='rebuild_semantic' AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, repository.embeddingIdentity()).Scan(&active); err != nil {
 		t.Fatal(err)
 	}
-	if active != 0 {
+	if active != 1 {
 		t.Fatalf("active rebuilds after policy rejection = %d", active)
 	}
 }
@@ -811,10 +940,80 @@ func TestHybridFallsBackWhenVectorSearchFails(t *testing.T) {
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	repository.vectorIndex = &hookedSemanticIndex{Index: repository.vectorIndex.(*vector.Index), searchErr: errors.New("missing vector file")}
+	repository.setSemanticIndex(&hookedSemanticIndex{Index: repository.semanticIndex().(*vector.Index), searchErr: errors.New("missing vector file")})
 	result, err := repository.SearchMemories(context.Background(), hybridParams("vectorfallback"))
 	if err != nil || result.ExecutedMode != "keyword" || !result.Degraded || len(result.Results) != 1 {
 		t.Fatalf("vector search fallback = %+v, %v", result, err)
+	}
+}
+
+func TestSemanticQueryNormalizesCompleteScopeAndSeparatesQueryClassification(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	provider := &semanticTestProvider{}
+	configureSemanticTest(t, repository, provider)
+	configureSemanticQueryPolicy(t, repository, "space-query-a", "space-query-b")
+	insertPolicySpace(t, repository, "space-query-a", "space-1", "project", "query-a")
+	insertPolicySpace(t, repository, "space-query-b", "space-1", "project", "query-b")
+	first := createMemoryInSpace(t, repository, "query-scope-a", "space-query-a", "automobile queryscope")
+	second := createMemoryInSpace(t, repository, "query-scope-b", "space-query-b", "automobile queryscope")
+	setEmbeddingEligibilityForSpace(t, repository, first, "space-query-a", 1, true)
+	setEmbeddingEligibilityForSpace(t, repository, second, "space-query-b", 1, true)
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	params := semanticParams("car")
+	params.SpaceIDs = []string{"space-query-b", "space-query-a", "space-query-b"}
+	result, err := repository.SearchMemories(context.Background(), params)
+	if err != nil || len(result.Results) != 2 {
+		t.Fatalf("normalized semantic search = %+v, %v", result, err)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatal("semantic query did not call provider")
+	}
+	request := provider.requests[len(provider.requests)-1]
+	if request.SpaceID() != "space-query-a" || strings.Join(request.SourceTypes(), ",") != "semantic_query" {
+		t.Fatalf("query request = space %q source types %v", request.SpaceID(), request.SourceTypes())
+	}
+
+	params.SpaceIDs = []string{"space-query-a", "space-query-b"}
+	reordered, err := repository.SearchMemories(context.Background(), params)
+	if err != nil || strings.Join(resultIDs(reordered), ",") != strings.Join(resultIDs(result), ",") {
+		t.Fatalf("order-invariant semantic search = %+v, %v; first = %+v", reordered, err, result)
+	}
+}
+
+func TestSemanticQueryDenialExplicitlyDegradesHybrid(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	provider := &semanticTestProvider{}
+	configureSemanticTest(t, repository, provider)
+	configureSemanticQueryPolicy(t, repository, "space-query-allowed")
+	insertPolicySpace(t, repository, "space-query-allowed", "space-1", "project", "allowed")
+	insertPolicySpace(t, repository, "space-query-denied", "space-1", "project", "denied")
+	allowed := createMemoryInSpace(t, repository, "query-allowed", "space-query-allowed", "automobile deniedscope")
+	setEmbeddingEligibilityForSpace(t, repository, allowed, "space-query-allowed", 1, true)
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	createMemoryInSpace(t, repository, "query-denied", "space-query-denied", "automobile deniedscope")
+	requests := len(provider.requests)
+
+	params := semanticParams("deniedscope")
+	params.SpaceIDs = []string{"space-query-allowed", "space-query-denied"}
+	if _, err := repository.SearchMemories(context.Background(), params); !errors.Is(err, ErrPolicyDenied) {
+		t.Fatalf("semantic denied scope error = %v", err)
+	}
+	if len(provider.requests) != requests {
+		t.Fatalf("denied semantic scope called provider: %d -> %d", requests, len(provider.requests))
+	}
+
+	params.Mode = "hybrid"
+	result, err := repository.SearchMemories(context.Background(), params)
+	if err != nil || result.ExecutedMode != "keyword" || !result.Degraded || strings.Join(result.DegradationReasons, ",") != "semantic_policy_denied" || len(result.Results) != 2 {
+		t.Fatalf("hybrid denied scope = %+v, %v", result, err)
+	}
+	if len(provider.requests) != requests {
+		t.Fatalf("hybrid denied scope called provider: %d -> %d", requests, len(provider.requests))
 	}
 }
 
@@ -955,6 +1154,42 @@ func createMemoryInSpace(t *testing.T, repository *Repository, key, spaceID, con
 		t.Fatalf("create semantic memory = %+v, replay=%t, %v", memory, replay, err)
 	}
 	return memory
+}
+
+func setEmbeddingEligibility(t *testing.T, repository *Repository, memory domain.Memory, generation int, eligible bool) {
+	setEmbeddingEligibilityForSpace(t, repository, memory, "space-1", generation, eligible)
+}
+
+func setEmbeddingEligibilityForSpace(t *testing.T, repository *Repository, memory domain.Memory, spaceID string, generation int, eligible bool) {
+	t.Helper()
+	_, err := repository.store.writer.Exec(`INSERT INTO embedding_eligibility(memory_id,revision_id,space_id,configuration_generation,policy_generation,eligible,reason_code,evaluated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(memory_id,revision_id,policy_generation) DO UPDATE SET eligible=excluded.eligible,reason_code=excluded.reason_code,evaluated_at=excluded.evaluated_at`, memory.MemoryID, memory.CurrentRevision.RevisionID, spaceID, generation, generation, boolInt(eligible), "test", formatTime(repository.runtime.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func configureSemanticQueryPolicy(t *testing.T, repository *Repository, allowedSpaces ...string) {
+	t.Helper()
+	now := repository.runtime.Now()
+	assignments := make([]PolicyAssignmentRecord, len(allowedSpaces))
+	for i, spaceID := range allowedSpaces {
+		assignments[i] = PolicyAssignmentRecord{AssignmentID: "query-allow-" + spaceID, PolicyIdentity: "query-policy", Capability: "embedding", SelectorKind: "space", SpaceID: spaceID, Effect: "allow"}
+	}
+	err := repository.CommitActivation(context.Background(), ActivationCommit{
+		Revision:   RevisionRecord{RevisionID: "query-revision", SourceIdentity: "query-source", EffectiveIdentity: "query-effective", ConfigVersion: 1, LoadedAt: now},
+		Activation: ActivationRecord{ActivationID: "query-activation", RevisionID: "query-revision", Trigger: "startup", RequestedBy: "test", Outcome: "activated", StartedAt: now, FinishedAt: now},
+		Capabilities: []CapabilityStateRecord{
+			{Capability: "processing", Enabled: false, HealthState: "disabled", ReconciliationState: "idle"},
+			{Capability: "embedding", Enabled: true, ConfigurationIdentity: "query-config", ConfigurationGeneration: 1, CompatibilityIdentity: "test-provider/test-model", PolicyIdentity: "query-policy", PolicyGeneration: 1, HealthState: "ready", ReconciliationState: "idle"},
+		},
+		Policies:    []ProviderPolicyRecord{{PolicyIdentity: "query-policy", Capability: "embedding", DefaultDecision: "deny", AllowedContentTypes: []string{"text/plain"}, AllowedSourceTypes: []string{"manual"}, AllowedSensitivities: []string{"normal"}, QueryAllowed: true, CreatedAt: now}},
+		Assignments: assignments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := repository.emb()
+	repository.SetEmbedding(runtime.Provider, runtime.Index.(*vector.Index), "test-provider", "test-model", "test-provider/test-model", "test-provider/test-model", 1, 1)
 }
 
 func searchResultsByID(response domain.SearchResponse) map[string]domain.SearchResult {

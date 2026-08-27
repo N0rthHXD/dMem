@@ -9,4 +9,4 @@
 
 实现禁止默认云凭据链、metadata discovery、redirect、telemetry、更新检查和辅助网络请求。Authorization 值只在发送请求时解析，不进入配置响应、日志、错误、audit 或 backup。策略在解析 Authorization 和发起网络请求前检查。`max_content_chars` 是 target 与 context 的 text/JSON 字符总预算；`max_context_items` 是独立的 context 数量上限。仅发送允许字段和有界同空间 context；reference 默认只发送 metadata，不读取 URI。
 
-HTTP client 使用 deadline、取消、并发限制、速率限制和稳定错误分类。Provider/model、policy version、结果类别和外部 request id 可审计，但正文和原始 provider response 不可审计或记录。外部依赖失败不影响 ingest、手工 memory 和 keyword search。CLI 使用 `--processing-provider-*` 和 `--embedding-provider-*` 两组参数；未发布阶段直接移除旧 `--provider-*` 参数，不定义兼容优先级。
+HTTP client 使用 deadline、取消、并发限制、速率限制和稳定错误分类。Provider/model、policy version、结果类别和外部 request id 可审计，但正文和原始 provider response 不可审计或记录。外部依赖失败不影响 ingest、手工 memory 和 keyword search。两类能力通过单一 TOML 配置文件独立配置、独立启用，不再使用 `--processing-provider-*` 或 `--embedding-provider-*` 命令行参数；运行时 reload 通过 `POST /v1/config/reload`、`dmemd reload` 或 `SIGHUP` 触发，原子生效且不重启 daemon。

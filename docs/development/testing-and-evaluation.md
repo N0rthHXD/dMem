@@ -46,6 +46,33 @@ make offline-default
 - `offline-default` verifies that disabled providers do not read secrets or make
   HTTP requests.
 
+### Configuration And Reconciliation
+
+Configuration reload and reconciliation tests live in `internal/daemon` and
+`internal/storage`. They use the managed daemon (`StartManaged` with
+`config.NewManager`) and the in-package `reloadConfig` helper to write strict TOML
+files that toggle provider enablement and policy assignments without live
+provider credentials.
+
+- `TestManagedDaemonReloadsCapabilitiesAtomically` and `TestSC014ReloadBecomesEffectiveWithinTenSeconds`
+  verify atomic reload, no-change, rejection, and the 10-second SC-014 timing
+  bound.
+- `TestPolicyCorrectionRecoversBlockedProcessing` and `TestPolicyExpansionDoesNotDuplicateCompletedWork`
+  prove policy expansion flips `blocked_policy` jobs to `pending` without
+  changing the processing compatibility identity or duplicating completed work.
+- `TestReconciliationResumesAfterDaemonRestart` proves effective configuration
+  identity, blocked work, reconciliation cursor, and semantic provider state
+  survive a daemon restart and resume correctly.
+- `TestSC004ReconciliationEnqueuesEligibleJobsPromptly` verifies the 30-second
+  SC-004 bound: 95% of newly eligible blocked jobs enter reconciliation promptly
+  while completed jobs are not duplicated.
+
+Deterministic provider drills use the in-process `heldProcessor` (blocks until a
+release channel is closed) and `httptest.NewTLSServer` stubs; they never contact
+live endpoints. Reconciliation recovery is driven either by the daemon's
+maintenance loop (1-second interval) or by direct repository calls
+(`ClaimReconciliationRun` + `Reconcile`) for precise timing control.
+
 The fixed retrieval fixtures and versioned gate files live under
 `internal/storage/testdata`. Changes to corpora, ranking, index formats,
 portability format, scale, or thresholds must update the corresponding identity

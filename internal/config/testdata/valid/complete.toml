@@ -1,0 +1,99 @@
+config_version = 1
+
+[instance]
+data_dir = "/tmp/dmem-test/data"
+runtime_dir = "/tmp/dmem-test/run"
+database_filename = "dmem.db"
+socket_filename = "dmem.sock"
+
+[server]
+request_timeout = "30s"
+shutdown_grace_period = "15s"
+max_connections = 64
+max_request_bytes = 4194304
+
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+[processing]
+version = "processor-v1"
+
+[processing.provider]
+enabled = true
+kind = "openai-compatible"
+endpoint = "https://provider.example/v1/chat/completions"
+model = "model-a"
+telemetry_disabled = true
+
+[processing.provider.secret]
+source = "environment"
+name = "DMEM_PROCESSING_API_KEY"
+
+[processing.provider.limits]
+max_egress_input_chars = 12000
+max_aggregate_input_chars = 48000
+max_context_items = 8
+max_candidate_chars = 12000
+max_total_candidate_chars = 48000
+max_response_bytes = 1048576
+request_timeout = "30s"
+max_concurrent = 2
+requests_per_minute = 60
+
+[processing.provider.policy]
+default = "deny"
+content_types = ["application/json", "text/plain"]
+source_types = ["manual", "message"]
+sensitivities = ["normal"]
+
+[[processing.provider.policy.assignments]]
+selector = "space"
+space_id = "11111111-1111-4111-8111-111111111111"
+effect = "allow"
+include_descendants = true
+
+[embedding.provider]
+enabled = true
+kind = "openai-compatible"
+endpoint = "https://provider.example/v1/embeddings"
+model = "embedding-a"
+telemetry_disabled = true
+
+[embedding.provider.secret]
+source = "environment"
+name = "DMEM_EMBEDDING_API_KEY"
+
+[embedding.provider.options]
+dimensions = 1024
+query_instructions = "query: "
+
+[embedding.provider.limits]
+max_egress_input_chars = 12000
+max_response_bytes = 1048576
+request_timeout = "30s"
+max_concurrent = 2
+requests_per_minute = 60
+
+[embedding.provider.policy]
+default = "deny"
+query = "allow"
+content_types = ["text/plain"]
+source_types = ["manual", "message"]
+sensitivities = ["normal"]
+
+[[embedding.provider.policy.assignments]]
+selector = "space_type"
+space_type = "project"
+effect = "allow"
+priority = 100

@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/api"
+	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -170,6 +172,31 @@ func TestAPIValidationAndReferenceContent(t *testing.T) {
 
 	response = requestJSON(t, client, http.MethodGet, "/v1/does-not-exist", "", nil)
 	assertError(t, response, http.StatusNotFound, "not_found")
+}
+
+func TestManagedDaemonCreatesPolicyForNewSpace(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.toml")
+	cfg := reloadConfig{dataDir: filepath.Join(root, "data"), runtimeDir: filepath.Join(root, "runtime"), embedding: true}
+	writeReloadConfig(t, path, cfg)
+	t.Setenv("DMEM_RELOAD_EMBEDDING_SECRET", "embedding-secret")
+
+	d, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(context.Background())
+	client := unixClient(d.endpoint)
+	owner := createSpace(t, client, "policy-owner", map[string]any{"space_type": "user", "external_id": "owner", "display_name": "Owner"})
+	project := createSpace(t, client, "policy-project", map[string]any{"parent_space_id": owner.SpaceID, "space_type": "project", "external_id": "project-a", "display_name": "Project"})
+
+	policy, err := d.repository.EffectivePolicy(context.Background(), "embedding", project.SpaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Decision != "allow" || policy.PolicyGeneration != 1 || policy.ReasonCode != "attribute_assignment" {
+		t.Fatalf("project policy = %+v", policy)
+	}
 }
 
 type heldProcessor struct {

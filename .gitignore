@@ -1,0 +1,17 @@
+.opencode/
+.specify/
+*.log
+*.test
+*.exe
+*.out
+build/
+vendor/
+bin/
+coverage/
+.env*
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/

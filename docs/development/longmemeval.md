@@ -53,17 +53,23 @@ scripts.
 
 ## Run
 
-Download `longmemeval_s_cleaned.json` or another official variant, start dMem,
-and run:
+Download `longmemeval_s_cleaned.json` or another official variant, start dMem
+with its config file, and run:
 
 ```sh
 CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/dmem-eval longmemeval \
   --dataset /path/to/longmemeval_s_cleaned.json \
-  --socket "${XDG_RUNTIME_DIR}/dmem/dmem.sock" \
+  --config ~/.config/dmem/config.toml \
   --run-id baseline-001 \
   --retrieval-mode hybrid \
   --output results/longmemeval/baseline-001.json
 ```
+
+The evaluator resolves the dMem Unix socket from the config file's
+`runtime_dir` + `socket_filename`, mirroring `dmemd --config <path> daemon`.
+`--socket` overrides the config and `DMEM_SOCKET` overrides both; when neither
+is set the evaluator falls back to the default config path and then to the
+computed default socket.
 
 For QA evaluation:
 
@@ -73,7 +79,7 @@ export LONGMEMEVAL_JUDGE_API_KEY=...
 
 CGO_ENABLED=1 go run -tags sqlite_fts5 ./cmd/dmem-eval longmemeval \
   --dataset /path/to/longmemeval_s_cleaned.json \
-  --socket "${XDG_RUNTIME_DIR}/dmem/dmem.sock" \
+  --config ~/.config/dmem/config.toml \
   --run-id qa-001 \
   --answer-model gpt-4o-mini-2024-07-18 \
   --judge-model gpt-4o-2024-08-06 \

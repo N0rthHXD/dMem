@@ -21,6 +21,7 @@ type Repository interface {
 	HeartbeatJob(context.Context, storage.ClaimedJob, time.Duration) (bool, error)
 	PrepareProcessing(context.Context, storage.ClaimedJob, storage.ProcessingPreparationParams) (domain.ProcessingInput, error)
 	CommitProcessing(context.Context, storage.ClaimedJob, domain.ProcessingInput, storage.ProcessingCommit) error
+	BlockJob(context.Context, storage.ClaimedJob, string) error
 	FailProcessing(context.Context, storage.ClaimedJob, domain.ProcessingInput, storage.JobFailure) error
 	CompleteJob(context.Context, storage.ClaimedJob, storage.JobResult) error
 	FailJob(context.Context, storage.ClaimedJob, storage.JobFailure) error
@@ -32,13 +33,12 @@ type Repository interface {
 
 type Service struct {
 	repository         Repository
-	processor          Processor
+	processing         atomic.Pointer[processingRuntime]
 	workerCount        int
 	leaseDuration      time.Duration
 	perJobTimeout      time.Duration
 	retryInitial       time.Duration
 	retryMax           time.Duration
-	preparation        storage.ProcessingPreparationParams
 	indexes            IndexRepository
 	entityIndexes      EntityIndexRepository
 	relationIndexes    RelationIndexRepository
@@ -46,8 +46,6 @@ type Service struct {
 	aggregates         AggregateRebuilder
 	diskPressure       DiskPressureSource
 	serviceID          uint64
-	processorID        string
-	processorEnabled   bool
 	healthMu           sync.RWMutex
 	processorState     string
 	logger             *slog.Logger
@@ -57,6 +55,88 @@ type Service struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	workers sync.WaitGroup
+}
+
+type processingRuntime struct {
+	processor             Processor
+	preparation           storage.ProcessingPreparationParams
+	processorID           string
+	processorEnabled      bool
+	generation            int
+	policyGeneration      int
+	compatibilityIdentity string
+	policyIdentity        string
+	processingVersion     string
+}
+
+type ProcessingConfig struct {
+	Processor              Processor
+	ProcessorIdentity      string
+	Enabled                bool
+	MaxContentChars        int
+	MaxTotalCandidateChars int
+	MaxContextItems        int
+	Generation             int
+	PolicyGeneration       int
+	CompatibilityIdentity  string
+	PolicyIdentity         string
+	ProcessingVersion      string
+}
+
+func (s *Service) currentProcessing() *processingRuntime {
+	return s.processing.Load()
+}
+
+func (s *Service) SetProcessing(cfg ProcessingConfig) {
+	processor := cfg.Processor
+	if processor == nil {
+		processor = NoopProcessor{}
+	}
+	identity := cfg.ProcessorIdentity
+	if identity == "" {
+		identity = processor.Identity()
+	}
+	if identity == "" {
+		identity = "processor/in-process"
+	}
+	if !cfg.Enabled {
+		identity = "none"
+	}
+	maxContentChars := cfg.MaxContentChars
+	if maxContentChars <= 0 {
+		maxContentChars = 12000
+	}
+	maxContext := cfg.MaxContextItems
+	if maxContext < 0 {
+		maxContext = 0
+	}
+	rt := processingRuntime{
+		processor:             processor,
+		processorID:           identity,
+		processorEnabled:      cfg.Enabled,
+		generation:            cfg.Generation,
+		policyGeneration:      cfg.PolicyGeneration,
+		compatibilityIdentity: cfg.CompatibilityIdentity,
+		policyIdentity:        cfg.PolicyIdentity,
+		processingVersion:     cfg.ProcessingVersion,
+		preparation: storage.ProcessingPreparationParams{
+			ProcessorIdentity:      identity,
+			AllowedMemoryTypes:     []string{"fact", "preference", "constraint", "decision", "task", "event", "project_context", "agent_experience"},
+			MaxCandidates:          20,
+			MaxCandidateChars:      maxContentChars,
+			MaxTotalCandidateChars: max(cfg.MaxTotalCandidateChars, maxContentChars),
+			MaxContextEvents:       maxContext,
+			MaxContextMemories:     maxContext,
+		},
+	}
+	s.processing.Store(&rt)
+	s.healthMu.Lock()
+	if rt.processorEnabled {
+		s.processorState = "degraded"
+	} else {
+		s.processorState = "not_configured"
+	}
+	s.healthMu.Unlock()
 }
 
 var nextServiceID atomic.Uint64
@@ -84,9 +164,12 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 	if dependencies.Logger == nil {
 		dependencies.Logger = slog.Default()
 	}
-	maxContentChars, maxContext := cfg.ProcessingProvider.MaxContentChars, cfg.ProcessingProvider.MaxContextItems
+	maxContentChars, maxTotalCandidateChars, maxContext := cfg.ProcessingProvider.Limits.MaxCandidateChars, cfg.ProcessingProvider.Limits.MaxTotalCandidateChars, cfg.ProcessingProvider.Limits.MaxContextItems
 	if maxContentChars <= 0 {
 		maxContentChars = 12000
+	}
+	if maxTotalCandidateChars < maxContentChars {
+		maxTotalCandidateChars = maxContentChars
 	}
 	if maxContext < 0 {
 		maxContext = 0
@@ -101,19 +184,13 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 		state = "not_configured"
 		identity = "none"
 	}
-	return &Service{
-		repository:    repository,
-		processor:     processor,
-		workerCount:   cfg.WorkerCount,
-		leaseDuration: cfg.LeaseDuration,
-		perJobTimeout: cfg.PerJobTimeout,
-		retryInitial:  cfg.RetryInitialBackoff,
-		retryMax:      cfg.RetryMaxBackoff,
-		preparation: storage.ProcessingPreparationParams{
-			ProcessorIdentity:  identity,
-			AllowedMemoryTypes: []string{"fact", "preference", "constraint", "decision", "task", "event", "project_context", "agent_experience"},
-			MaxCandidates:      20, MaxContentChars: maxContentChars, MaxContextEvents: maxContext, MaxContextMemories: maxContext,
-		},
+	s := &Service{
+		repository:         repository,
+		workerCount:        cfg.WorkerCount,
+		leaseDuration:      cfg.LeaseDuration,
+		perJobTimeout:      cfg.PerJobTimeout,
+		retryInitial:       cfg.RetryInitialBackoff,
+		retryMax:           cfg.RetryMaxBackoff,
 		indexes:            dependencies.Indexes,
 		entityIndexes:      dependencies.EntityIndexes,
 		relationIndexes:    dependencies.RelationIndexes,
@@ -121,22 +198,36 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 		aggregates:         dependencies.AggregateRebuilder,
 		diskPressure:       dependencies.DiskPressure,
 		serviceID:          nextServiceID.Add(1),
-		processorID:        identity,
-		processorEnabled:   enabled,
 		processorState:     state,
 		logger:             dependencies.Logger,
 		done:               make(chan struct{}),
-	}, nil
+	}
+	s.SetProcessing(ProcessingConfig{
+		Processor:              processor,
+		ProcessorIdentity:      identity,
+		Enabled:                enabled,
+		MaxContentChars:        maxContentChars,
+		MaxTotalCandidateChars: maxTotalCandidateChars,
+		MaxContextItems:        maxContext,
+		ProcessingVersion:      cfg.ProcessingVersion,
+	})
+	return s, nil
 }
 
 func (s *Service) ProcessorHealth() (string, string) {
+	rt := s.currentProcessing()
+	id := "none"
+	if rt != nil {
+		id = rt.processorID
+	}
 	s.healthMu.RLock()
 	defer s.healthMu.RUnlock()
-	return s.processorState, s.processorID
+	return s.processorState, id
 }
 
 func (s *Service) recordProcessorResult(result domain.ProcessingResult) {
-	if !s.processorEnabled {
+	rt := s.currentProcessing()
+	if rt == nil || !rt.processorEnabled {
 		return
 	}
 	state := ""
@@ -220,6 +311,27 @@ func (s *Service) maintain(ctx context.Context) error {
 	if _, err := s.repository.PromoteWaitingJobs(ctx, s.workerCount); err != nil {
 		return fmt.Errorf("promote waiting jobs: %w", err)
 	}
+	if reconciler, ok := s.repository.(interface {
+		ClaimReconciliationRun(context.Context) (storage.ClaimedReconciliationRun, error)
+		Reconcile(context.Context, storage.ClaimedReconciliationRun, int) (storage.ReconciliationBatch, error)
+	}); ok {
+		for {
+			run, err := reconciler.ClaimReconciliationRun(ctx)
+			if errors.Is(err, storage.ErrNotFound) {
+				break
+			}
+			if err != nil {
+				return fmt.Errorf("claim reconciliation run: %w", err)
+			}
+			batch, err := reconciler.Reconcile(ctx, run, 100)
+			if err != nil {
+				return fmt.Errorf("reconcile run: %w", err)
+			}
+			if !batch.Complete {
+				continue
+			}
+		}
+	}
 	return nil
 }
 
@@ -286,18 +398,41 @@ func (s *Service) processClaim(serviceCtx context.Context, claim storage.Claimed
 		s.processIndexClaim(processCtx, claim)
 		return
 	}
-	input, err := s.repository.PrepareProcessing(processCtx, claim, s.preparation)
+	runtime := s.currentProcessing()
+	input, err := s.repository.PrepareProcessing(processCtx, claim, runtime.preparation)
 	if err != nil {
 		if errors.Is(err, storage.ErrLeaseLost) {
 			return
 		}
-		input = domain.ProcessingInput{ProcessorIdentity: s.preparation.ProcessorIdentity, ProcessingVersion: claim.ProcessingVersion, JobID: claim.Job.JobID, Target: domain.ProcessingEvent{EventID: claim.Job.TargetID}}
+		if errors.Is(err, storage.ErrPolicyDenied) {
+			s.logPersistenceError(context.Background(), "block_processing_job", claim, s.repository.BlockJob(context.Background(), claim, "target_policy_denied"))
+			return
+		}
+		input = domain.ProcessingInput{ProcessorIdentity: runtime.preparation.ProcessorIdentity, ProcessingVersion: claim.ProcessingVersion, JobID: claim.Job.JobID, Target: domain.ProcessingEvent{EventID: claim.Job.TargetID}}
 		s.failProcessing(claim, input, "preparation_failed", "processing preparation failed", true)
 		return
 	}
 	results := make(chan domain.ProcessingResult, 1)
+	if preflight, ok := runtime.processor.(interface {
+		Preflight(domain.ProcessingInput) *domain.ProcessingResult
+	}); ok {
+		if outcome := preflight.Preflight(input); outcome != nil {
+			s.applyOutcome(claim, input, *outcome)
+			return
+		}
+	}
+	if recorder, ok := s.repository.(interface {
+		MarkProviderAttempt(context.Context, storage.ClaimedJob) error
+	}); ok {
+		if err := recorder.MarkProviderAttempt(processCtx, claim); err != nil {
+			if !errors.Is(err, storage.ErrLeaseLost) {
+				s.failProcessing(claim, input, "attempt_record_failed", "provider attempt could not be recorded", true)
+			}
+			return
+		}
+	}
 	go func() {
-		results <- s.processor.Process(processCtx, input)
+		results <- runtime.processor.Process(processCtx, input)
 	}()
 
 	heartbeat := time.NewTicker(s.leaseDuration / 3)
@@ -355,9 +490,15 @@ func (s *Service) applyOutcome(claim storage.ClaimedJob, input domain.Processing
 	}
 	s.recordProcessorResult(result)
 	switch result.Code {
-	case domain.ProcessingNoProcessor, domain.ProcessingNoMemory, domain.ProcessingCandidatesExtracted, domain.ProcessingPolicyRejected:
+	case domain.ProcessingNoProcessor, domain.ProcessingNoMemory, domain.ProcessingCandidatesExtracted:
 		err := s.repository.CommitProcessing(context.Background(), claim, input, storage.ProcessingCommit{Result: result})
+		if errors.Is(err, storage.ErrStaleGeneration) {
+			s.reevaluateStale(claim)
+			return
+		}
 		s.logPersistenceError(context.Background(), "commit_processing", claim, err)
+	case domain.ProcessingPolicyRejected:
+		s.logPersistenceError(context.Background(), "block_processing_job", claim, s.repository.BlockJob(context.Background(), claim, result.ReasonCode))
 	case domain.ProcessingTransientFailure:
 		s.failProcessing(claim, input, string(result.Code), "processor transient failure", true)
 	case domain.ProcessingPermanentFailure, domain.ProcessingInvalidOutput:
@@ -368,6 +509,20 @@ func (s *Service) applyOutcome(claim storage.ClaimedJob, input domain.Processing
 func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJob) {
 	operationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if claim.Job.JobType == "embed_memory" {
+		if preparer, ok := s.repository.(interface {
+			PrepareEmbeddingAttempt(context.Context, storage.ClaimedJob) error
+		}); ok {
+			if err := preparer.PrepareEmbeddingAttempt(operationCtx, claim); err != nil {
+				if errors.Is(err, storage.ErrPolicyDenied) {
+					s.logPersistenceError(context.Background(), "block_index_job", claim, s.repository.BlockJob(context.Background(), claim, "embedding_policy_denied"))
+				} else if !errors.Is(err, storage.ErrLeaseLost) {
+					s.failTransientJob(claim, "attempt_record_failed", "provider attempt could not be recorded")
+				}
+				return
+			}
+		}
+	}
 	results := make(chan error, 1)
 	go func() {
 		var err error
@@ -440,10 +595,14 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 			if errors.Is(err, storage.ErrLeaseLost) {
 				return
 			}
+			if errors.Is(err, storage.ErrStaleGeneration) {
+				s.reevaluateStale(claim)
+				return
+			}
 			if err != nil {
-				if errors.Is(err, storage.ErrEmbeddingPolicy) {
-					persistErr := s.repository.CompleteJob(context.Background(), claim, storage.JobResult{Code: string(domain.ProcessingPolicyRejected)})
-					s.logPersistenceError(context.Background(), "complete_index_job", claim, persistErr)
+				if errors.Is(err, storage.ErrEmbeddingPolicy) || errors.Is(err, storage.ErrPolicyDenied) {
+					persistErr := s.repository.BlockJob(context.Background(), claim, "embedding_policy_denied")
+					s.logPersistenceError(context.Background(), "block_index_job", claim, persistErr)
 					return
 				}
 				s.failTransientJob(claim, string(domain.ProcessingTransientFailure), "index operation failed")
@@ -475,6 +634,16 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 			return
 		}
 	}
+}
+
+func (s *Service) reevaluateStale(claim storage.ClaimedJob) {
+	repository, ok := s.repository.(interface {
+		ReevaluateStaleJob(context.Context, storage.ClaimedJob) error
+	})
+	if !ok {
+		return
+	}
+	s.logPersistenceError(context.Background(), "reevaluate_stale_job", claim, repository.ReevaluateStaleJob(context.Background(), claim))
 }
 
 func (s *Service) failTimeout(claim storage.ClaimedJob, input domain.ProcessingInput) {

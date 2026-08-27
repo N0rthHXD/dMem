@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"sync/atomic"
 
 	"github.com/N0rthHXD/dMem/internal/aggregate"
 	"github.com/N0rthHXD/dMem/internal/application"
+	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -44,6 +47,7 @@ type Health struct {
 	JobQueueDepth            int    `json:"job_queue_depth"`
 	OldestJobAgeSeconds      int    `json:"oldest_job_age_seconds"`
 	DiskPressure             string `json:"disk_pressure"`
+	ConfigurationIdentity    string `json:"configuration_identity,omitempty"`
 }
 
 type Handler struct {
@@ -55,6 +59,19 @@ type Handler struct {
 	processorHealth interface{ ProcessorHealth() (string, string) }
 	maxRequestSize  int64
 	id              func() (string, error)
+	configuration   ConfigurationController
+	reloadRequests  map[string]reloadRequest
+	reloadMu        sync.Mutex
+}
+
+type reloadRequest struct {
+	expectedIdentity string
+	response         reloadConfigurationResponse
+}
+
+type ConfigurationController interface {
+	ConfigurationStatus() (*config.Snapshot, config.ActivationResult)
+	ReloadConfiguration(context.Context) (config.ActivationResult, error)
 }
 
 type HandlerDependencies struct {
@@ -64,6 +81,7 @@ type HandlerDependencies struct {
 	ProcessorHealth  interface{ ProcessorHealth() (string, string) }
 	MaxRequestSize   int64
 	ID               func() (string, error)
+	Configuration    ConfigurationController
 }
 
 func NewHandler(ftsState string, dependencies HandlerDependencies) *Handler {
@@ -75,6 +93,8 @@ func NewHandler(ftsState string, dependencies HandlerDependencies) *Handler {
 		processorHealth: dependencies.ProcessorHealth,
 		maxRequestSize:  dependencies.MaxRequestSize,
 		id:              dependencies.ID,
+		configuration:   dependencies.Configuration,
+		reloadRequests:  make(map[string]reloadRequest),
 	}
 	h.ready.Store(true)
 	return h
@@ -87,6 +107,8 @@ func (h *Handler) SetReady(ready bool) {
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", h.health)
+	mux.HandleFunc("GET /v1/config", h.configurationStatus)
+	mux.HandleFunc("POST /v1/config/reload", h.reloadConfiguration)
 	mux.HandleFunc("POST /v1/remember", h.remember)
 	mux.HandleFunc("POST /v1/recall", h.recall)
 	mux.HandleFunc("POST /v1/memories/{memory_id}/feedback", h.memoryFeedback)
@@ -188,6 +210,12 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	if h.processorHealth != nil {
 		processorState, processorIdentity = h.processorHealth.ProcessorHealth()
 	}
+	configurationIdentity := ""
+	if h.configuration != nil {
+		if snapshot, _ := h.configuration.ConfigurationStatus(); snapshot != nil {
+			configurationIdentity = snapshot.Config.EffectiveIdentity
+		}
+	}
 	storageHealthy := storageState == "ready"
 	serviceReady := ready && storageHealthy && schemaState == "compatible"
 	mode := "healthy"
@@ -240,6 +268,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		JobQueueDepth:            queueDepth,
 		OldestJobAgeSeconds:      oldestAge,
 		DiskPressure:             diskPressure,
+		ConfigurationIdentity:    configurationIdentity,
 	})
 }
 

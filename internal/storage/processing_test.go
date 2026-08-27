@@ -46,6 +46,23 @@ func TestProcessingCommitAtomicallyStoresCandidatesEvidenceAuditAttemptAndStatus
 	}
 }
 
+func TestProcessingCommitPersistsSafeOmissionSummary(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	claim, input := claimProcessingJob(t, repository, 3)
+	result := domain.ProcessingResult{Code: domain.ProcessingNoMemory, OmittedContextCount: 2, OmissionSummary: map[string]int{"context_limit": 1, "context_memory_policy_denied": 1}}
+	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var summary string
+	if err := repository.store.reader.QueryRow(`SELECT omitted_context_count, omission_summary FROM job_attempts WHERE job_id=?`, claim.Job.JobID).Scan(&count, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || summary != `{"context_limit":1,"context_memory_policy_denied":1}` {
+		t.Fatalf("omissions = %d %s", count, summary)
+	}
+}
+
 func TestPrepareProcessingIncludesBoundedCurrentMemoryContract(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	validFrom, validUntil := "2026-08-20T00:00:00Z", "2026-09-20T00:00:00Z"
@@ -97,6 +114,25 @@ func TestProcessingCommitLeaseLossAndTransactionFailureLeaveNoPartialResult(t *t
 	}
 }
 
+func TestProcessingCommitRejectsStaleConfigurationGeneration(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	repository.SetProcessingGeneration(1, 0, "processing-v1")
+	claim, input := claimProcessingJob(t, repository, 3)
+	repository.SetProcessingGeneration(2, 0, "processing-v2")
+
+	err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: domain.ProcessingResult{Code: domain.ProcessingNoMemory}})
+	if !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("CommitProcessing() error = %v, want ErrStaleGeneration", err)
+	}
+	var status string
+	if err := repository.store.reader.QueryRow(`SELECT status FROM jobs WHERE job_id='process-job'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" {
+		t.Fatalf("stale generation changed job state to %q", status)
+	}
+}
+
 func TestProcessingCommitAndFailRejectExpiredLeaseBeforeRecovery(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -133,7 +169,7 @@ func TestProcessingCommitAndFailRejectExpiredLeaseBeforeRecovery(t *testing.T) {
 }
 
 func TestProcessingOutcomeStatusesAndTransientExhaustion(t *testing.T) {
-	for _, test := range []struct{ code, eventStatus string }{{"no_processor", "stored"}, {"no_memory", "processed"}, {"policy_rejected", "stored"}} {
+	for _, test := range []struct{ code, eventStatus string }{{"no_processor", "stored"}, {"no_memory", "processed"}} {
 		t.Run(test.code, func(t *testing.T) {
 			repository, _ := newMemoryTestRepository(t)
 			claim, input := claimProcessingJob(t, repository, 3)

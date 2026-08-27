@@ -1,115 +1,82 @@
 package config
 
 import (
-	"flag"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
-func TestParseResolvesDerivedPaths(t *testing.T) {
+func TestLoadValidMinimal(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	dataDir := filepath.Join(root, "data")
-	runtimeDir := filepath.Join(root, "runtime")
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	cfg, err := Parse(fs, []string{"-data-dir", dataDir, "-runtime-dir", runtimeDir})
+	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
 	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.DatabasePath != filepath.Join(dataDir, "dmem.db") {
-		t.Errorf("DatabasePath = %q", cfg.DatabasePath)
+	if cfg.ConfigVersion != 1 {
+		t.Errorf("ConfigVersion = %d", cfg.ConfigVersion)
 	}
-	if cfg.Endpoint != filepath.Join(runtimeDir, "dmem.sock") {
-		t.Errorf("Endpoint = %q", cfg.Endpoint)
+	if cfg.ProcessingProvider.Enabled || cfg.EmbeddingProvider.Enabled {
+		t.Error("providers should be disabled in minimal config")
+	}
+	if cfg.ProcessingVersion != DefaultProcessingVersion {
+		t.Errorf("ProcessingVersion = %q", cfg.ProcessingVersion)
 	}
 }
 
-func TestParseJobConfiguration(t *testing.T) {
+func TestPolicyAssignmentValidationAndCanonicalIdentity(t *testing.T) {
+	policy := provider.Policy{Default: "deny", Query: "allow", ContentTypes: []string{"text/plain"}, SourceTypes: []string{"manual"}, Sensitivities: []string{"normal"}, Assignments: []provider.PolicyAssignment{{Selector: "space_type", SpaceType: "project", Effect: "allow", Priority: 1}}}
+	if err := validatePolicy(policy, false); err != nil {
+		t.Fatalf("valid policy rejected: %v", err)
+	}
+	invalid := policy
+	invalid.Assignments = []provider.PolicyAssignment{{Selector: "space", SpaceID: "space", ExternalID: "unexpected", Effect: "allow"}}
+	if err := validatePolicy(invalid, false); err == nil {
+		t.Fatal("mixed selector fields accepted")
+	}
+	reordered := policy
+	reordered.Assignments = append([]provider.PolicyAssignment{{Selector: "external_id", ExternalID: "project-a", Effect: "deny", Priority: 2}}, policy.Assignments...)
+	policy.Assignments = append(policy.Assignments, reordered.Assignments[0])
+	if PolicyIdentity(policy) != PolicyIdentity(reordered) {
+		t.Fatal("canonical policy identity changed with assignment order")
+	}
+}
+
+func TestLoadValidComplete(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	cfg, err := Parse(fs, []string{
-		"-data-dir", filepath.Join(root, "data"),
-		"-runtime-dir", filepath.Join(root, "runtime"),
-		"-lease-duration", "10s",
-		"-per-job-timeout", "30s",
-		"-retry-initial-backoff", "250ms",
-		"-retry-max-backoff", "2s",
-	})
+	cfg, err := Load(filepath.Join("testdata", "valid", "complete.toml"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.LeaseDuration != 10*time.Second || cfg.PerJobTimeout != 30*time.Second || cfg.RetryInitialBackoff != 250*time.Millisecond || cfg.RetryMaxBackoff != 2*time.Second {
-		t.Fatalf("job config = %+v", cfg)
+	if !cfg.ProcessingProvider.Enabled {
+		t.Error("processing provider should be enabled")
 	}
-}
-
-func TestParseProcessingVersionPrecedenceAndDefault(t *testing.T) {
-	t.Setenv("DMEM_PROCESSING_VERSION", "")
-	root := t.TempDir()
-	paths := []string{"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime")}
-	cfg, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), paths)
-	if err != nil || cfg.ProcessingVersion != DefaultProcessingVersion {
-		t.Fatalf("default processing version = %q, %v", cfg.ProcessingVersion, err)
+	if !cfg.EmbeddingProvider.Enabled {
+		t.Error("embedding provider should be enabled")
 	}
-	t.Setenv("DMEM_PROCESSING_VERSION", "env-v2")
-	cfg, err = Parse(flag.NewFlagSet("test", flag.ContinueOnError), paths)
-	if err != nil || cfg.ProcessingVersion != "env-v2" {
-		t.Fatalf("environment processing version = %q, %v", cfg.ProcessingVersion, err)
+	if cfg.SourceIdentity == "" {
+		t.Error("SourceIdentity should be set")
 	}
-	cfg, err = Parse(flag.NewFlagSet("test", flag.ContinueOnError), append(paths, "-processing-version", "flag-v3"))
-	if err != nil || cfg.ProcessingVersion != "flag-v3" {
-		t.Fatalf("flag processing version = %q, %v", cfg.ProcessingVersion, err)
+	if cfg.EffectiveIdentity == "" {
+		t.Error("EffectiveIdentity should be set")
 	}
 }
 
-func TestParseRejectsInvalidProcessingVersion(t *testing.T) {
-	root := t.TempDir()
-	for _, version := range []string{"", " leading-space", "version/2", strings.Repeat("v", 129)} {
-		_, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), []string{
-			"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime"), "-processing-version", version,
-		})
-		if err == nil {
-			t.Fatalf("Parse() accepted processing version %q", version)
-		}
+func TestExampleConfigValidates(t *testing.T) {
+	path := filepath.Join("..", "..", "docs", "operations", "config.example.toml")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
 	}
-}
-
-func TestParseRejectsInvalidJobConfiguration(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	_, err := Parse(fs, []string{
-		"-data-dir", filepath.Join(root, "data"),
-		"-runtime-dir", filepath.Join(root, "runtime"),
-		"-lease-duration", "30s",
-		"-per-job-timeout", "10s",
-	})
-	if err == nil {
-		t.Fatal("Parse() accepted per-job timeout shorter than lease duration")
-	}
-}
-
-func TestParseRejectsSocketOutsideRuntimeDirectory(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	_, err := Parse(fs, []string{
-		"-data-dir", filepath.Join(root, "data"),
-		"-runtime-dir", filepath.Join(root, "runtime"),
-		"-endpoint", filepath.Join(root, "elsewhere", "dmem.sock"),
-	})
-	if err == nil {
-		t.Fatal("Parse() accepted endpoint outside runtime directory")
+	if cfg.ProcessingProvider.Enabled || cfg.EmbeddingProvider.Enabled {
+		t.Error("providers should be disabled in example config")
 	}
 }
 
 func TestProvidersDisabledByDefault(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	cfg, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), []string{"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime")})
+	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,114 +85,156 @@ func TestProvidersDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestParseProviderCombinations(t *testing.T) {
-	t.Setenv("DMEM_PROCESSING_VERSION", "")
-	for _, test := range []struct {
-		name                  string
-		processing, embedding bool
-	}{
-		{"neither", false, false},
-		{"processing only", true, false},
-		{"embedding only", false, true},
-		{"both", true, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
-			args := []string{"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime")}
-			if test.processing {
-				args = append(args, "-processing-version", "processing-model-v1")
-				args = append(args, providerArgs("processing-provider", "processing-model")...)
-			}
-			if test.embedding {
-				args = append(args, providerArgs("embedding-provider", "embedding-model")...)
-			}
-			cfg, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), args)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.ProcessingProvider.Enabled != test.processing || cfg.EmbeddingProvider.Enabled != test.embedding {
-				t.Fatalf("provider states = processing %t, embedding %t", cfg.ProcessingProvider.Enabled, cfg.EmbeddingProvider.Enabled)
-			}
-			if test.processing && (cfg.ProcessingProvider.Model != "processing-model" || cfg.ProcessingProvider.MaxContextItems != 4) {
-				t.Fatalf("processing provider = %+v", cfg.ProcessingProvider)
-			}
-			if test.embedding && cfg.EmbeddingProvider.Model != "embedding-model" {
-				t.Fatalf("embedding provider = %+v", cfg.EmbeddingProvider)
-			}
-			if test.embedding && (cfg.EmbeddingProvider.EmbeddingDim != 1024 || cfg.EmbeddingProvider.EmbeddingQueryInstructions != "query: ") {
-				t.Fatalf("embedding options = %+v", cfg.EmbeddingProvider)
-			}
-		})
+func TestRejectsBadVersion(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "invalid", "bad_version.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted bad config version")
 	}
 }
 
-func TestProcessingProviderRequiresExplicitNonDefaultVersion(t *testing.T) {
-	t.Setenv("DMEM_PROCESSING_VERSION", "")
-	root := t.TempDir()
-	base := []string{"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime")}
-	if _, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), append(base, providerArgs("processing-provider", "model-a")...)); err == nil {
-		t.Fatal("Parse() accepted processing provider without explicit processing version")
-	}
-	args := append(append([]string{}, base...), "-processing-version", DefaultProcessingVersion)
-	if _, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), append(args, providerArgs("processing-provider", "model-a")...)); err == nil {
-		t.Fatal("Parse() accepted processing provider with explicit default processing version")
-	}
-	if _, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), append(base, providerArgs("embedding-provider", "model-a")...)); err != nil {
-		t.Fatalf("embedding-only provider requires processing version: %v", err)
+func TestRejectsMissingDataDir(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "invalid", "missing_data_dir.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted missing data_dir")
 	}
 }
 
-func TestParseRejectsLegacyAndUnsupportedProviderFlags(t *testing.T) {
-	root := t.TempDir()
-	base := []string{"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime")}
-	for _, name := range []string{
-		"provider-enabled", "provider-kind", "provider-endpoint", "provider-model", "provider-secret-env",
-		"provider-allowed-spaces", "provider-allowed-content-types", "provider-allowed-source-types", "provider-allowed-sensitivities",
-		"provider-telemetry-disabled", "provider-egress-policy-version", "provider-max-content-chars", "provider-max-context-items",
-		"provider-max-response-size", "provider-request-timeout", "provider-max-concurrent", "provider-requests-per-minute",
-		"provider-embedding-dim", "provider-embedding-query-instructions",
-		"embedding-provider-max-context-items",
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), append(base, "-"+name)); err == nil {
-				t.Fatalf("Parse() accepted -%s", name)
-			}
-		})
+func TestRejectsBadDuration(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "invalid", "bad_duration.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted bad duration")
 	}
 }
 
-func TestParseRejectsUnsafeProviderConfiguration(t *testing.T) {
-	root := t.TempDir()
-	args := []string{"-data-dir", filepath.Join(root, "data"), "-runtime-dir", filepath.Join(root, "runtime")}
-	provider := providerArgs("embedding-provider", "model-a")
-	for i := range provider {
-		if provider[i] == "https://provider.example/v1/embeddings" {
-			provider[i] = "http://provider.example/v1/embeddings"
-		}
-	}
-	if _, err := Parse(flag.NewFlagSet("test", flag.ContinueOnError), append(args, provider...)); err == nil {
-		t.Fatal("Parse() accepted unsafe embedding provider configuration")
+func TestRejectsRelativePath(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "invalid", "relative_path.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted relative path")
 	}
 }
 
-func providerArgs(prefix, model string) []string {
-	endpoint := "https://provider.example/v1/embeddings"
-	if prefix == "processing-provider" {
-		endpoint = "https://provider.example/v1/chat/completions"
+func TestRejectsUnknownField(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "unknown-field", "extra_in_instance.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted unknown field in instance table")
 	}
-	args := []string{
-		"-" + prefix + "-enabled", "-" + prefix + "-kind", "openai-compatible",
-		"-" + prefix + "-endpoint", endpoint, "-" + prefix + "-model", model,
-		"-" + prefix + "-secret-env", "DMEM_PROVIDER_API_KEY", "-" + prefix + "-allowed-spaces", "space-a, space-b,space-a",
-		"-" + prefix + "-allowed-content-types", "text/plain,application/json", "-" + prefix + "-allowed-source-types", "message,manual",
-		"-" + prefix + "-allowed-sensitivities", "normal", "-" + prefix + "-telemetry-disabled",
-		"-" + prefix + "-egress-policy-version", "policy-v1", "-" + prefix + "-max-content-chars", "2048",
-		"-" + prefix + "-request-timeout", "10s", "-" + prefix + "-max-concurrent", "3", "-" + prefix + "-requests-per-minute", "120",
+	ve, ok := err.(*ValidationError)
+	if !ok {
+		t.Fatalf("expected ValidationError, got %T", err)
 	}
-	if prefix == "processing-provider" {
-		args = append(args, "-processing-provider-max-context-items", "4")
-	} else {
-		args = append(args, "-embedding-provider-embedding-dim", "1024", "-embedding-provider-embedding-query-instructions", "query: ")
+	if ve.Code != "config_unknown_field" && ve.Code != "config_invalid_syntax" {
+		t.Errorf("error code = %q, want config_unknown_field", ve.Code)
 	}
-	return args
+}
+
+func TestRejectsUnknownTable(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "unknown-field", "extra_table.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted unknown table")
+	}
+}
+
+func TestRejectsDuplicateTable(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "duplicate-field", "duplicate_table.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted duplicate table")
+	}
+}
+
+func TestRejectsDuplicateKey(t *testing.T) {
+	t.Parallel()
+	_, err := Load(filepath.Join("testdata", "duplicate-field", "duplicate_key.toml"))
+	if err == nil {
+		t.Fatal("Load() accepted duplicate key")
+	}
+}
+
+func TestEnabledProcessing(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(filepath.Join("testdata", "enabled-processing", "processing.toml"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.ProcessingProvider.Enabled {
+		t.Error("processing provider should be enabled")
+	}
+	if cfg.EmbeddingProvider.Enabled {
+		t.Error("embedding provider should be disabled")
+	}
+	if cfg.ProcessingProvider.Kind != "openai-compatible" {
+		t.Errorf("Kind = %q", cfg.ProcessingProvider.Kind)
+	}
+}
+
+func TestEnabledEmbedding(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(filepath.Join("testdata", "enabled-embedding", "embedding.toml"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.EmbeddingProvider.Enabled {
+		t.Error("embedding provider should be enabled")
+	}
+	if cfg.ProcessingProvider.Enabled {
+		t.Error("processing provider should be disabled")
+	}
+	if cfg.EmbeddingProvider.Options.Dimensions != 1024 {
+		t.Errorf("Dimensions = %d", cfg.EmbeddingProvider.Options.Dimensions)
+	}
+	if cfg.EmbeddingProvider.Options.QueryInstructions != "query: " {
+		t.Errorf("QueryInstructions = %q", cfg.EmbeddingProvider.Options.QueryInstructions)
+	}
+}
+
+func TestDurationsParsed(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RequestTimeout != 30*time.Second {
+		t.Errorf("RequestTimeout = %v", cfg.RequestTimeout)
+	}
+	if cfg.ShutdownGracePeriod != 15*time.Second {
+		t.Errorf("ShutdownGracePeriod = %v", cfg.ShutdownGracePeriod)
+	}
+	if cfg.LeaseDuration != 30*time.Second {
+		t.Errorf("LeaseDuration = %v", cfg.LeaseDuration)
+	}
+}
+
+func TestDerivedPaths(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabasePath != filepath.Join(cfg.DataDir, "dmem.db") {
+		t.Errorf("DatabasePath = %q", cfg.DatabasePath)
+	}
+	if cfg.Endpoint != filepath.Join(cfg.RuntimeDir, "dmem.sock") {
+		t.Errorf("Endpoint = %q", cfg.Endpoint)
+	}
+}
+
+func TestNoSettingEnvironmentOverrides(t *testing.T) {
+	t.Setenv("DMEM_DATA_DIR", "/tmp/should-be-ignored")
+	t.Setenv("DMEM_PROCESSING_VERSION", "should-be-ignored")
+	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DataDir == "/tmp/should-be-ignored" {
+		t.Error("DMEM_DATA_DIR env override was not ignored")
+	}
+	if cfg.ProcessingVersion == "should-be-ignored" {
+		t.Error("DMEM_PROCESSING_VERSION env override was not ignored")
+	}
 }

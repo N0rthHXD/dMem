@@ -827,16 +827,20 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 	if err := advanceCorpusGeneration(ctx, tx, now); err != nil {
 		return err
 	}
+	eligible, err := r.upsertCurrentEmbeddingEligibility(ctx, tx, memoryID, revisionID, spaceID, searchable, now)
+	if err != nil {
+		return err
+	}
 	if !semanticChanged {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE semantic_index_metadata SET state=CASE WHEN active_version IS NULL THEN 'absent' ELSE 'stale' END, updated_at=? WHERE singleton=1`, now); err != nil {
 		return err
 	}
-	if r.embeddingProvider == nil {
+	if r.emb().Provider == nil {
 		return nil
 	}
-	if searchable {
+	if searchable && eligible {
 		ids, err := r.newIDs(2)
 		if err != nil {
 			return err
@@ -853,11 +857,62 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 			return err
 		}
 	}
-	if r.vectorIndex == nil {
+	if r.emb().Index == nil {
 		return nil
 	}
 	_, err = r.enqueueSemanticRebuild(ctx, tx, now)
 	return err
+}
+
+func (r *Repository) upsertCurrentEmbeddingEligibility(ctx context.Context, tx *sql.Tx, memoryID, revisionID, spaceID string, searchable bool, now string) (bool, error) {
+	runtime := r.emb()
+	eligible, reason := false, "not_searchable"
+	if searchable {
+		state, err := r.currentCapabilityState(ctx, tx, "embedding")
+		if errors.Is(err, ErrNotFound) {
+			eligible, reason = true, "unconfigured"
+		} else if err != nil {
+			return false, err
+		} else {
+			policy, err := r.resolveEffectivePolicy(ctx, tx, "embedding", spaceID, state.PolicyIdentity, runtime.PolicyGeneration)
+			if err != nil {
+				return false, err
+			}
+			eligible, reason = policy.Decision == "allow", policy.ReasonCode
+		}
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO embedding_eligibility(memory_id,revision_id,space_id,configuration_generation,policy_generation,eligible,reason_code,evaluated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(memory_id,revision_id,policy_generation) DO UPDATE SET space_id=excluded.space_id,configuration_generation=excluded.configuration_generation,eligible=excluded.eligible,reason_code=excluded.reason_code,evaluated_at=excluded.evaluated_at`, memoryID, revisionID, spaceID, runtime.Generation, runtime.PolicyGeneration, boolInt(eligible), reason, now)
+	return eligible, err
+}
+
+func (r *Repository) ensureCurrentEmbeddingEligibility(ctx context.Context, tx *sql.Tx, now string) error {
+	runtime := r.emb()
+	rows, err := tx.QueryContext(ctx, `SELECT memory_id,revision_id,space_id,searchable FROM memory_projections WHERE NOT EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=memory_projections.memory_id AND e.revision_id=memory_projections.revision_id AND e.policy_generation=?)`, runtime.PolicyGeneration)
+	if err != nil {
+		return err
+	}
+	type projection struct {
+		memoryID, revisionID, spaceID string
+		searchable                    bool
+	}
+	var projections []projection
+	for rows.Next() {
+		var item projection
+		if err := rows.Scan(&item.memoryID, &item.revisionID, &item.spaceID, &item.searchable); err != nil {
+			rows.Close()
+			return err
+		}
+		projections = append(projections, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range projections {
+		if _, err := r.upsertCurrentEmbeddingEligibility(ctx, tx, item.memoryID, item.revisionID, item.spaceID, item.searchable, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func replayMemory(ctx context.Context, tx *sql.Tx, identity WriteIdentity, expectedStatus int) (domain.Memory, bool, error) {

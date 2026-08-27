@@ -80,3 +80,58 @@ func TestBuildSceneTopicBoundedOutsideWriteTransactionIdentity(t *testing.T) {
 		t.Fatalf("bound error=%v", err)
 	}
 }
+
+func TestBuildCapturesOneProcessingSnapshot(t *testing.T) {
+	repository, space := aggregateTestRepository(t)
+	page, err := repository.ListMemories(context.Background(), storage.MemoryFilter{SpaceID: space, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	oldProvider := &blockingAggregateProvider{started: started, release: release, result: domain.AggregateProviderResult{Content: "old", Sensitivity: "normal", ProviderIdentity: "old/provider", ModelIdentity: "old-model"}}
+	service := NewService(repository, oldProvider, "processor-old", "policy-old", "version-old", 2)
+	identity := storage.WriteIdentity{CallerID: "test", IdempotencyKey: "captured", RequestID: uuid(700), Method: "POST", Route: "/v1/aggregate-proposals", RequestHash: storage.HashRequest("captured")}
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := service.Build(context.Background(), identity, space, "scene", []string{page.Items[0].CurrentRevision.RevisionID, page.Items[1].CurrentRevision.RevisionID})
+		errCh <- err
+	}()
+	<-started
+	service.SetProcessing(&fakeProvider{result: domain.AggregateProviderResult{Content: "new", Sensitivity: "normal", ProviderIdentity: "new/provider", ModelIdentity: "new-model"}}, "processor-new", "policy-new", "version-new", 1, 2, 0)
+	close(release)
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	proposals, err := repository.ListAggregateProposals(context.Background(), storage.AggregateProposalFilter{SpaceID: space, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proposals.Items) != 1 {
+		t.Fatalf("proposals = %+v", proposals.Items)
+	}
+	proposal := proposals.Items[0]
+	if proposal.ProcessorIdentity != "processor-old" || proposal.PolicyVersion != "policy-old" || proposal.ProcessingVersion != "version-old" || proposal.ProviderIdentity == nil || *proposal.ProviderIdentity != "old/provider" {
+		t.Fatalf("proposal used mixed processing configuration: %+v", proposal)
+	}
+}
+
+type blockingAggregateProvider struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	result  domain.AggregateProviderResult
+}
+
+func (p *blockingAggregateProvider) Build(ctx context.Context, _ domain.AggregateProviderInput) (domain.AggregateProviderResult, error) {
+	select {
+	case p.started <- struct{}{}:
+	case <-ctx.Done():
+		return domain.AggregateProviderResult{}, ctx.Err()
+	}
+	select {
+	case <-p.release:
+		return p.result, nil
+	case <-ctx.Done():
+		return domain.AggregateProviderResult{}, ctx.Err()
+	}
+}

@@ -31,6 +31,7 @@ type fakeRepository struct {
 	heartbeatErr error
 	failures     []storage.JobFailure
 	maintenance  chan struct{}
+	processing   *domain.ProcessingInput
 }
 
 type capturedLog struct {
@@ -101,11 +102,27 @@ func (r *fakeRepository) PrepareProcessing(_ context.Context, claim storage.Clai
 	if !validClaim(item, claim) {
 		return domain.ProcessingInput{}, storage.ErrLeaseLost
 	}
+	if r.processing != nil {
+		input := *r.processing
+		input.ProcessorIdentity = params.ProcessorIdentity
+		input.ProcessingVersion = claim.ProcessingVersion
+		input.JobID = claim.Job.JobID
+		input.Attempt = claim.Job.AttemptCount
+		return input, nil
+	}
 	return domain.ProcessingInput{ProcessorIdentity: params.ProcessorIdentity, ProcessingVersion: claim.ProcessingVersion, JobID: claim.Job.JobID, Attempt: claim.Job.AttemptCount, Target: domain.ProcessingEvent{EventID: claim.Job.TargetID}, Policy: domain.ProcessingPolicy{AllowedMemoryTypes: params.AllowedMemoryTypes, MaxCandidates: params.MaxCandidates, MaxContentChars: params.MaxContentChars}}, nil
 }
 
 func (r *fakeRepository) CommitProcessing(_ context.Context, claim storage.ClaimedJob, _ domain.ProcessingInput, commit storage.ProcessingCommit) error {
 	return r.CompleteJob(context.Background(), claim, storage.JobResult{Code: string(commit.Result.Code)})
+}
+
+func (r *fakeRepository) BlockJob(_ context.Context, claim storage.ClaimedJob, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.find(claim.Job.JobID)
+	item.job.Status, item.job.BlockedReasonCode = "blocked_policy", reason
+	return nil
 }
 
 func (r *fakeRepository) FailProcessing(_ context.Context, claim storage.ClaimedJob, _ domain.ProcessingInput, failure storage.JobFailure) error {
@@ -304,6 +321,90 @@ func (f processorFunc) Process(ctx context.Context, input domain.ProcessingInput
 	return f(ctx, input)
 }
 
+type identifiedProcessor struct {
+	id      string
+	process func(context.Context, domain.ProcessingInput) domain.ProcessingResult
+}
+
+func (p identifiedProcessor) Enabled() bool    { return true }
+func (p identifiedProcessor) Identity() string { return p.id }
+func (p identifiedProcessor) Process(ctx context.Context, input domain.ProcessingInput) domain.ProcessingResult {
+	return p.process(ctx, input)
+}
+
+func TestProcessClaimCapturesOneProcessingRuntime(t *testing.T) {
+	item := pendingJob("captured-runtime", 1)
+	item.job.Status = "running"
+	item.job.AttemptCount = 1
+	item.generation = 1
+	claim := storage.ClaimedJob{Job: item.job, ProcessingVersion: "v1", LeaseOwner: "worker", LeaseGeneration: 1}
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	service, err := NewService(repository, testConfig(), nil, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	service.SetProcessing(ProcessingConfig{
+		Processor: identifiedProcessor{id: "processor-old", process: func(ctx context.Context, input domain.ProcessingInput) domain.ProcessingResult {
+			if input.ProcessorIdentity != "processor-old" {
+				t.Errorf("provider input identity = %q", input.ProcessorIdentity)
+			}
+			close(started)
+			select {
+			case <-release:
+				return domain.ProcessingResult{Code: domain.ProcessingNoMemory}
+			case <-ctx.Done():
+				return domain.ProcessingResult{Code: domain.ProcessingTransientFailure}
+			}
+		}},
+		ProcessorIdentity: "processor-old",
+		Enabled:           true,
+		ProcessingVersion: "v1",
+	})
+	done := make(chan struct{})
+	go func() {
+		service.processClaim(context.Background(), claim)
+		close(done)
+	}()
+	<-started
+	service.SetProcessing(ProcessingConfig{Processor: identifiedProcessor{id: "processor-new", process: func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		return domain.ProcessingResult{Code: domain.ProcessingNoMemory}
+	}}, ProcessorIdentity: "processor-new", Enabled: true, ProcessingVersion: "v2"})
+	close(release)
+	<-done
+	if item.job.ResultCode == nil || *item.job.ResultCode != string(domain.ProcessingNoMemory) {
+		t.Fatalf("job result = %+v", item.job)
+	}
+}
+
+func TestProcessingAllowsTargetWithFilteredContextAndReadOnlyAncestor(t *testing.T) {
+	item := pendingJob("mixed-context", 1)
+	now := time.Now()
+	prepared := &domain.ProcessingInput{
+		Target:          domain.ProcessingEvent{EventID: "target", SpaceID: "space-a", SourceType: "message", Sensitivity: "normal", OccurredAt: now, Content: domain.ProcessingContent{Kind: "text", MediaType: "text/plain", Text: "allowed target"}},
+		ContextEvents:   []domain.ProcessingEvent{{EventID: "allowed-event", SpaceID: "space-a", SourceType: "message", Sensitivity: "normal", OccurredAt: now, Content: domain.ProcessingContent{Kind: "text", MediaType: "text/plain", Text: "allowed context"}}},
+		ContextMemories: []domain.ProcessingMemory{{MemoryID: "ancestor", RevisionID: "r1", SpaceID: "ancestor-space", Content: "read-only context", CurrentState: "active", Sensitivity: "normal", ProposalCapable: false}},
+		OmissionSummary: map[string]int{"context_sensitivity_not_allowed": 1, "context_memory_sensitivity_not_allowed": 1},
+		Policy:          domain.ProcessingPolicy{AllowedMemoryTypes: []string{"fact"}, MaxCandidates: 1, MaxContentChars: 100},
+	}
+	repository := &fakeRepository{jobs: []*fakeJob{item}, processing: prepared}
+	startService(t, repository, processorFunc(func(_ context.Context, input domain.ProcessingInput) domain.ProcessingResult {
+		if input.Target.EventID != "target" || len(input.ContextEvents) != 1 || len(input.ContextMemories) != 1 || input.ContextMemories[0].ProposalCapable {
+			t.Fatalf("processing input = %+v", input)
+		}
+		if input.OmissionSummary["context_sensitivity_not_allowed"] != 1 || input.OmissionSummary["context_memory_sensitivity_not_allowed"] != 1 {
+			t.Fatalf("omissions = %#v", input.OmissionSummary)
+		}
+		return domain.ProcessingResult{Code: domain.ProcessingNoMemory, OmittedContextCount: 2, OmissionSummary: input.OmissionSummary}
+	}))
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "succeeded"
+	})
+}
+
 func TestTransientFailureUsesBoundedBackoffAndAttemptLimit(t *testing.T) {
 	item := pendingJob("transient", 3)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
@@ -387,7 +488,7 @@ func (r failingIndexRepository) RebuildSemanticClaimed(context.Context, storage.
 	return r.err
 }
 
-func TestEmbeddingPolicyRejectionIsStableTerminalOutcome(t *testing.T) {
+func TestEmbeddingPolicyRejectionBlocksWithoutRetry(t *testing.T) {
 	item := pendingJob("embedding-policy", 3)
 	item.job.JobType, item.job.TargetType, item.job.TargetID = "embed_memory", "memory_revision", "revision-1"
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
@@ -406,11 +507,11 @@ func TestEmbeddingPolicyRejectionIsStableTerminalOutcome(t *testing.T) {
 	waitFor(t, func() bool {
 		repository.mu.Lock()
 		defer repository.mu.Unlock()
-		return item.job.Status == "succeeded"
+		return item.job.Status == "blocked_policy"
 	})
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
-	if item.job.AttemptCount != 1 || item.job.ResultCode == nil || *item.job.ResultCode != string(domain.ProcessingPolicyRejected) || len(repository.failures) != 0 {
+	if item.job.AttemptCount != 1 || item.job.BlockedReasonCode != "embedding_policy_denied" || len(repository.failures) != 0 {
 		t.Fatalf("job = %+v, failures = %+v", item.job, repository.failures)
 	}
 }

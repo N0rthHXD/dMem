@@ -9,6 +9,47 @@ type EmbeddingProvider interface {
 	Embed(context.Context, EmbeddingRequest) (EmbeddingResult, error)
 }
 
+type SecretReference struct {
+	Source string
+	Name   string
+}
+
+type EmbeddingOptions struct {
+	Dimensions        int
+	QueryInstructions string
+}
+
+type Limits struct {
+	MaxEgressInputChars    int
+	MaxAggregateInputChars int
+	MaxContextItems        int
+	MaxCandidateChars      int
+	MaxTotalCandidateChars int
+	MaxResponseBytes       int64
+	RequestTimeout         time.Duration
+	MaxConcurrent          int
+	RequestsPerMinute      int
+}
+
+type PolicyAssignment struct {
+	Selector           string
+	SpaceID            string
+	SpaceType          string
+	ExternalID         string
+	Effect             string
+	IncludeDescendants bool
+	Priority           int
+}
+
+type Policy struct {
+	Default       string
+	Query         string
+	ContentTypes  []string
+	SourceTypes   []string
+	Sensitivities []string
+	Assignments   []PolicyAssignment
+}
+
 type ProcessCategory string
 
 const (
@@ -74,10 +115,15 @@ type ProcessRequest struct {
 	contextMemories    []Memory
 	allowedMemoryTypes []string
 	maxCandidates      int
-	maxContentChars    int
+	maxCandidateChars  int
+	maxTotalChars      int
 }
 
-func NewProcessRequest(processorIdentity, processingVersion, jobID string, attempt int, target Event, contextEvents []Event, contextMemories []Memory, allowedMemoryTypes []string, maxCandidates, maxContentChars int) ProcessRequest {
+func NewProcessRequest(processorIdentity, processingVersion, jobID string, attempt int, target Event, contextEvents []Event, contextMemories []Memory, allowedMemoryTypes []string, maxCandidates, maxCandidateChars int, maxTotalChars ...int) ProcessRequest {
+	totalChars := maxCandidateChars
+	if len(maxTotalChars) > 0 {
+		totalChars = maxTotalChars[0]
+	}
 	return ProcessRequest{
 		processorIdentity:  processorIdentity,
 		processingVersion:  processingVersion,
@@ -88,17 +134,22 @@ func NewProcessRequest(processorIdentity, processingVersion, jobID string, attem
 		contextMemories:    append([]Memory(nil), contextMemories...),
 		allowedMemoryTypes: append([]string(nil), allowedMemoryTypes...),
 		maxCandidates:      maxCandidates,
-		maxContentChars:    maxContentChars,
+		maxCandidateChars:  maxCandidateChars,
+		maxTotalChars:      totalChars,
 	}
 }
 
 type Memory struct {
 	memoryID, revisionID, spaceID, content, state, sensitivity string
 	validFrom, validUntil                                      *time.Time
+	proposalCapable                                            bool
 }
 
 func NewMemory(memoryID, revisionID, spaceID, content, state, sensitivity string, validFrom, validUntil *time.Time) Memory {
-	return Memory{memoryID: memoryID, revisionID: revisionID, spaceID: spaceID, content: content, state: state, sensitivity: sensitivity, validFrom: cloneTime(validFrom), validUntil: cloneTime(validUntil)}
+	return NewMemoryWithProposalCapability(memoryID, revisionID, spaceID, content, state, sensitivity, true, validFrom, validUntil)
+}
+func NewMemoryWithProposalCapability(memoryID, revisionID, spaceID, content, state, sensitivity string, proposalCapable bool, validFrom, validUntil *time.Time) Memory {
+	return Memory{memoryID: memoryID, revisionID: revisionID, spaceID: spaceID, content: content, state: state, sensitivity: sensitivity, proposalCapable: proposalCapable, validFrom: cloneTime(validFrom), validUntil: cloneTime(validUntil)}
 }
 
 func (m Memory) MemoryID() string       { return m.memoryID }
@@ -107,6 +158,7 @@ func (m Memory) SpaceID() string        { return m.spaceID }
 func (m Memory) Content() string        { return m.content }
 func (m Memory) State() string          { return m.state }
 func (m Memory) Sensitivity() string    { return m.sensitivity }
+func (m Memory) ProposalCapable() bool  { return m.proposalCapable }
 func (m Memory) ValidFrom() *time.Time  { return cloneTime(m.validFrom) }
 func (m Memory) ValidUntil() *time.Time { return cloneTime(m.validUntil) }
 
@@ -153,16 +205,26 @@ func (u Usage) InputTokens() int  { return u.inputTokens }
 func (u Usage) OutputTokens() int { return u.outputTokens }
 
 type ProcessResult struct {
-	category   ProcessCategory
-	candidates []Candidate
-	usage      Usage
-	requestID  string
+	category        ProcessCategory
+	candidates      []Candidate
+	usage           Usage
+	requestID       string
+	omittedCount    int
+	omissionSummary map[string]int
 }
 
 func (r ProcessResult) Category() ProcessCategory { return r.category }
 func (r ProcessResult) Candidates() []Candidate   { return append([]Candidate(nil), r.candidates...) }
 func (r ProcessResult) Usage() Usage              { return r.usage }
 func (r ProcessResult) ProviderRequestID() string { return r.requestID }
+func (r ProcessResult) OmittedContextCount() int  { return r.omittedCount }
+func (r ProcessResult) OmissionSummary() map[string]int {
+	result := make(map[string]int, len(r.omissionSummary))
+	for reason, count := range r.omissionSummary {
+		result[reason] = count
+	}
+	return result
+}
 
 type EmbeddingRequest struct {
 	spaceID     string

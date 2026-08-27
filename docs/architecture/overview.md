@@ -44,13 +44,46 @@ rate-limited, and disabled by default. Provider calls run outside SQLite write
 transactions. Provider/model and processing identities are stored with work so
 results remain attributable.
 
+## Configuration And Policy
+
+All daemon settings come from one strict TOML file selected by XDG default or a
+single `--config` locator. Setting-specific flags and environment overrides are
+removed. The file stores provider endpoints, models, secret references, limits,
+policies, queue thresholds, and paths. Secret values never enter the file,
+database, status, or logs; only typed environment references are persisted.
+
+A reload (API `POST /v1/config/reload`, `dmemd reload`, or `SIGHUP`) reads,
+strictly decodes, and atomically activates one complete file revision. A valid
+change publishes one immutable effective snapshot with monotonic activation,
+configuration, and policy generations. An invalid or no-op change leaves the
+previous snapshot untouched. Restart-bound fields (paths, worker count, server
+timeout, connection limit) reject the whole candidate rather than being silently
+ignored.
+
+Provider policy is a versioned set of egress decisions. Assignments target exact
+spaces, stable space attributes, or ancestors with descendant inheritance.
+Current-space overrides win; otherwise the nearest ancestor wins; explicit deny
+wins at equal specificity; unmatched spaces deny by default; siblings never
+inherit. Each space receives a current-generation decision before provider work
+is evaluated, so spaces created after startup do not need their UUID listed in
+the file.
+
+Policy that denies a target moves the job to `blocked_policy` without resolving a
+secret or making a network call. Correcting the policy creates a durable
+reconciliation run that re-evaluates blocked work in bounded batches with a
+crash-safe cursor. Reconciliation only changes jobs, eligibility projections, and
+index metadata; it never mutates authority records. Compatible embeddings are
+reused after policy changes; incompatible identities trigger a rebuild.
+
 ## Jobs And Recovery
 
 SQLite stores durable jobs for extraction, embedding, index rebuilds, feedback
 aggregation, and aggregate rebuilds. Workers use leases, attempts, heartbeats,
 bounded retries, and generation fencing. Only the current lease owner and
 generation may commit a result. Startup fences expired work and returns it to a
-valid retry or terminal state.
+valid retry or terminal state. `blocked_policy` jobs are not selected by the
+normal retry scheduler and do not consume provider retries; reconciliation
+re-evaluates them under the current policy generation.
 
 The queue applies soft and hard limits. A soft-limit write can be accepted with
 deferred work; a hard-limit or disk-hard-limit write is rejected atomically,

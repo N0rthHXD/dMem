@@ -1,0 +1,214 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+)
+
+const maxConfigFileSize = 1 << 20
+
+type fileDocument struct {
+	ConfigVersion int             `toml:"config_version"`
+	Instance      instanceTable   `toml:"instance"`
+	Server        serverTable     `toml:"server"`
+	Jobs          jobsTable       `toml:"jobs"`
+	Storage       storageTable    `toml:"storage"`
+	Processing    processingTable `toml:"processing"`
+	Embedding     embeddingTable  `toml:"embedding"`
+}
+
+type instanceTable struct {
+	DataDir          string `toml:"data_dir"`
+	RuntimeDir       string `toml:"runtime_dir"`
+	DatabaseFilename string `toml:"database_filename"`
+	SocketFilename   string `toml:"socket_filename"`
+}
+
+type serverTable struct {
+	RequestTimeout      string `toml:"request_timeout"`
+	ShutdownGracePeriod string `toml:"shutdown_grace_period"`
+	MaxConnections      int    `toml:"max_connections"`
+	MaxRequestBytes     int64  `toml:"max_request_bytes"`
+}
+
+type jobsTable struct {
+	WorkerCount         int    `toml:"worker_count"`
+	QueueSoftLimit      int    `toml:"queue_soft_limit"`
+	QueueHardLimit      int    `toml:"queue_hard_limit"`
+	MaxAttempts         int    `toml:"max_attempts"`
+	LeaseDuration       string `toml:"lease_duration"`
+	PerJobTimeout       string `toml:"per_job_timeout"`
+	RetryInitialBackoff string `toml:"retry_initial_backoff"`
+	RetryMaxBackoff     string `toml:"retry_max_backoff"`
+}
+
+type storageTable struct {
+	DiskSoftFreeBytes uint64 `toml:"disk_soft_free_bytes"`
+	DiskHardFreeBytes uint64 `toml:"disk_hard_free_bytes"`
+}
+
+type processingTable struct {
+	Version  string                  `toml:"version"`
+	Provider processingProviderTable `toml:"provider"`
+}
+
+type embeddingTable struct {
+	Provider embeddingProviderTable `toml:"provider"`
+}
+
+type processingProviderTable struct {
+	Enabled           bool                  `toml:"enabled"`
+	Kind              string                `toml:"kind"`
+	Endpoint          string                `toml:"endpoint"`
+	Model             string                `toml:"model"`
+	TelemetryDisabled bool                  `toml:"telemetry_disabled"`
+	Secret            secretTable           `toml:"secret"`
+	Limits            processingLimitsTable `toml:"limits"`
+	Policy            processingPolicyTable `toml:"policy"`
+}
+
+type embeddingProviderTable struct {
+	Enabled           bool                 `toml:"enabled"`
+	Kind              string               `toml:"kind"`
+	Endpoint          string               `toml:"endpoint"`
+	Model             string               `toml:"model"`
+	TelemetryDisabled bool                 `toml:"telemetry_disabled"`
+	Secret            secretTable          `toml:"secret"`
+	Options           optionsTable         `toml:"options"`
+	Limits            embeddingLimitsTable `toml:"limits"`
+	Policy            embeddingPolicyTable `toml:"policy"`
+}
+
+type secretTable struct {
+	Source string `toml:"source"`
+	Name   string `toml:"name"`
+}
+
+type optionsTable struct {
+	Dimensions        int    `toml:"dimensions"`
+	QueryInstructions string `toml:"query_instructions"`
+}
+
+type processingLimitsTable struct {
+	MaxEgressInputChars    int    `toml:"max_egress_input_chars"`
+	MaxAggregateInputChars int    `toml:"max_aggregate_input_chars"`
+	MaxContextItems        int    `toml:"max_context_items"`
+	MaxCandidateChars      int    `toml:"max_candidate_chars"`
+	MaxTotalCandidateChars int    `toml:"max_total_candidate_chars"`
+	MaxResponseBytes       int64  `toml:"max_response_bytes"`
+	RequestTimeout         string `toml:"request_timeout"`
+	MaxConcurrent          int    `toml:"max_concurrent"`
+	RequestsPerMinute      int    `toml:"requests_per_minute"`
+}
+
+type embeddingLimitsTable struct {
+	MaxEgressInputChars int    `toml:"max_egress_input_chars"`
+	MaxResponseBytes    int64  `toml:"max_response_bytes"`
+	RequestTimeout      string `toml:"request_timeout"`
+	MaxConcurrent       int    `toml:"max_concurrent"`
+	RequestsPerMinute   int    `toml:"requests_per_minute"`
+}
+
+type processingPolicyTable struct {
+	Default       string            `toml:"default"`
+	ContentTypes  []string          `toml:"content_types"`
+	SourceTypes   []string          `toml:"source_types"`
+	Sensitivities []string          `toml:"sensitivities"`
+	Assignments   []assignmentTable `toml:"assignments"`
+}
+
+type embeddingPolicyTable struct {
+	Default       string            `toml:"default"`
+	Query         string            `toml:"query"`
+	ContentTypes  []string          `toml:"content_types"`
+	SourceTypes   []string          `toml:"source_types"`
+	Sensitivities []string          `toml:"sensitivities"`
+	Assignments   []assignmentTable `toml:"assignments"`
+}
+
+type assignmentTable struct {
+	Selector           string `toml:"selector"`
+	SpaceID            string `toml:"space_id"`
+	SpaceType          string `toml:"space_type"`
+	ExternalID         string `toml:"external_id"`
+	Effect             string `toml:"effect"`
+	IncludeDescendants bool   `toml:"include_descendants"`
+	Priority           int    `toml:"priority"`
+}
+
+type Diagnostic struct {
+	Code   string
+	Path   string
+	Line   int
+	Column int
+}
+
+type ValidationError struct {
+	Code        string
+	Diagnostics []Diagnostic
+}
+
+func (e *ValidationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if len(e.Diagnostics) > 0 {
+		d := e.Diagnostics[0]
+		return fmt.Sprintf("config: %s at %s", e.Code, d.Path)
+	}
+	return "config: " + e.Code
+}
+
+func newValidationError(code string, diagnostics ...Diagnostic) *ValidationError {
+	return &ValidationError{Code: code, Diagnostics: diagnostics}
+}
+
+func readFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
+		}
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
+	}
+	if info.Size() > maxConfigFileSize {
+		return nil, newValidationError("config_too_large", Diagnostic{Code: "config_too_large", Path: path})
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxConfigFileSize {
+		return nil, newValidationError("config_too_large", Diagnostic{Code: "config_too_large", Path: path})
+	}
+	return data, nil
+}
+
+func defaultConfigPath() (string, error) {
+	xdg := os.Getenv("XDG_CONFIG_HOME")
+	if xdg != "" {
+		if !filepath.IsAbs(xdg) {
+			return "", errors.New("XDG_CONFIG_HOME must be absolute when set")
+		}
+		return filepath.Join(xdg, "dmem", "config.toml"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "dmem", "config.toml"), nil
+}

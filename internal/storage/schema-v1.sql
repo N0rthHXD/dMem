@@ -1169,18 +1169,20 @@ CREATE TABLE memory_embeddings (
     memory_id TEXT NOT NULL REFERENCES memories(memory_id) ON DELETE RESTRICT,
     revision_id TEXT NOT NULL REFERENCES memory_revisions(revision_id) ON DELETE RESTRICT,
     content_hash TEXT NOT NULL,
+    compatibility_identity TEXT NOT NULL,
+    configuration_identity TEXT NOT NULL,
     provider_identity TEXT NOT NULL,
     model_identity TEXT NOT NULL,
     dimension INTEGER NOT NULL CHECK (dimension > 0),
     vector_json TEXT NOT NULL CHECK (json_valid(vector_json) AND json_type(vector_json) = 'array'),
     processed_at TEXT NOT NULL,
     index_version INTEGER NOT NULL CHECK (index_version > 0),
-    PRIMARY KEY (memory_id, revision_id, provider_identity, model_identity),
+    PRIMARY KEY (memory_id, revision_id, content_hash, compatibility_identity),
     FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
 ) WITHOUT ROWID, STRICT;
 
 CREATE INDEX memory_embeddings_identity_idx
-ON memory_embeddings(provider_identity, model_identity, dimension, memory_id, revision_id);
+ON memory_embeddings(compatibility_identity, memory_id, revision_id, content_hash);
 
 CREATE INDEX memory_projections_scope_idx
 ON memory_projections(space_id, searchable, memory_type, current_state, memory_id);
@@ -1200,7 +1202,7 @@ CREATE TABLE jobs (
     target_id TEXT NOT NULL,
     processing_version TEXT NOT NULL,
     processor_identity TEXT,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'waiting', 'running', 'retrying', 'succeeded', 'failed', 'cancelled', 'expired')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'waiting', 'running', 'retrying', 'succeeded', 'failed', 'cancelled', 'expired', 'blocked_policy', 'superseded')),
     priority INTEGER NOT NULL DEFAULT 0,
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
@@ -1209,6 +1211,13 @@ CREATE TABLE jobs (
     lease_until TEXT,
     lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
     cancel_requested_at TEXT,
+    capability TEXT CHECK (capability IS NULL OR capability IN ('processing', 'embedding')),
+    configuration_generation INTEGER CHECK (configuration_generation IS NULL OR configuration_generation >= 0),
+    policy_generation INTEGER CHECK (policy_generation IS NULL OR policy_generation >= 0),
+    compatibility_identity TEXT,
+    blocked_reason_code TEXT,
+    reconciliation_run_id TEXT,
+    provider_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (provider_attempt_count >= 0),
     result_code TEXT,
     result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
     last_error_code TEXT,
@@ -1241,7 +1250,14 @@ CREATE TABLE job_attempts (
     worker_id TEXT NOT NULL,
     started_at TEXT NOT NULL,
     finished_at TEXT,
-    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('succeeded', 'retrying', 'failed', 'cancelled', 'lease_lost')),
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('succeeded', 'retrying', 'failed', 'cancelled', 'lease_lost', 'blocked_policy', 'stale_generation', 'superseded')),
+    configuration_generation INTEGER CHECK (configuration_generation IS NULL OR configuration_generation >= 0),
+    policy_generation INTEGER CHECK (policy_generation IS NULL OR policy_generation >= 0),
+    effective_decision_id TEXT,
+    compatibility_identity TEXT,
+    external_call_started_at TEXT,
+    omitted_context_count INTEGER NOT NULL DEFAULT 0 CHECK (omitted_context_count >= 0),
+    omission_summary TEXT CHECK (omission_summary IS NULL OR json_valid(omission_summary)),
     result_code TEXT,
     error_code TEXT,
     error_message TEXT,
@@ -1298,11 +1314,158 @@ CREATE TABLE semantic_index_metadata (
     provider_identity TEXT,
     model_identity TEXT,
     dimension INTEGER CHECK (dimension IS NULL OR dimension > 0),
+    compatibility_identity TEXT,
+    policy_generation INTEGER CHECK (policy_generation IS NULL OR policy_generation >= 0),
     source_revision_count INTEGER NOT NULL DEFAULT 0 CHECK (source_revision_count >= 0),
+    eligible_revision_count INTEGER NOT NULL DEFAULT 0 CHECK (eligible_revision_count >= 0),
+    embedded_revision_count INTEGER NOT NULL DEFAULT 0 CHECK (embedded_revision_count >= 0),
+    excluded_revision_count INTEGER NOT NULL DEFAULT 0 CHECK (excluded_revision_count >= 0),
+    corpus_fingerprint TEXT,
+    created_at TEXT,
+    activated_at TEXT,
     updated_at TEXT NOT NULL
 ) STRICT;
 
 INSERT INTO semantic_index_metadata (singleton, state, updated_at)
 VALUES (1, 'absent', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+CREATE TABLE configuration_revisions (
+    revision_id TEXT PRIMARY KEY,
+    source_identity TEXT NOT NULL,
+    effective_identity TEXT,
+    config_version INTEGER NOT NULL CHECK (config_version = 1),
+    loaded_at TEXT NOT NULL,
+    redacted_document TEXT CHECK (redacted_document IS NULL OR json_valid(redacted_document))
+) STRICT;
+
+CREATE TABLE configuration_activations (
+    activation_id TEXT PRIMARY KEY,
+    revision_id TEXT REFERENCES configuration_revisions(revision_id) ON DELETE RESTRICT,
+    previous_activation_id TEXT,
+    trigger TEXT NOT NULL CHECK (trigger IN ('startup', 'api', 'sighup')),
+    requested_by TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('activated', 'no_change', 'rejected', 'failed')),
+    error_code TEXT,
+    diagnostics TEXT CHECK (diagnostics IS NULL OR json_valid(diagnostics)),
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX configuration_activations_revision_idx
+ON configuration_activations(revision_id, started_at);
+
+CREATE TABLE effective_configuration_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    activation_id TEXT REFERENCES configuration_activations(activation_id) ON DELETE RESTRICT,
+    source_identity TEXT,
+    effective_identity TEXT,
+    activation_generation INTEGER CHECK (activation_generation IS NULL OR activation_generation > 0),
+    activated_at TEXT,
+    last_attempt_id TEXT REFERENCES configuration_activations(activation_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE TABLE capability_states (
+    capability TEXT PRIMARY KEY CHECK (capability IN ('processing', 'embedding')),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    configuration_identity TEXT,
+    configuration_generation INTEGER CHECK (configuration_generation IS NULL OR configuration_generation >= 0),
+    compatibility_identity TEXT,
+    policy_identity TEXT,
+    policy_generation INTEGER CHECK (policy_generation IS NULL OR policy_generation >= 0),
+    activation_id TEXT REFERENCES configuration_activations(activation_id) ON DELETE RESTRICT,
+    health_state TEXT NOT NULL CHECK (health_state IN ('disabled', 'ready', 'degraded', 'unavailable')),
+    reconciliation_state TEXT NOT NULL CHECK (reconciliation_state IN ('idle', 'queued', 'running', 'failed'))
+) STRICT;
+
+CREATE TABLE provider_policies (
+    policy_identity TEXT NOT NULL,
+    capability TEXT NOT NULL CHECK (capability IN ('processing', 'embedding')),
+    default_decision TEXT NOT NULL CHECK (default_decision = 'deny'),
+    allowed_content_types TEXT NOT NULL CHECK (json_valid(allowed_content_types)),
+    allowed_source_types TEXT NOT NULL CHECK (json_valid(allowed_source_types)),
+    allowed_sensitivities TEXT NOT NULL CHECK (json_valid(allowed_sensitivities)),
+    query_allowed INTEGER NOT NULL CHECK (query_allowed IN (0, 1)),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (policy_identity, capability)
+) WITHOUT ROWID, STRICT;
+
+CREATE TABLE policy_assignments (
+    assignment_id TEXT PRIMARY KEY,
+    policy_identity TEXT NOT NULL,
+    capability TEXT NOT NULL CHECK (capability IN ('processing', 'embedding')),
+    selector_kind TEXT NOT NULL CHECK (selector_kind IN ('space', 'space_type', 'external_id')),
+    space_id TEXT,
+    space_type TEXT,
+    external_id TEXT,
+    effect TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+    include_descendants INTEGER NOT NULL DEFAULT 0 CHECK (include_descendants IN (0, 1)),
+    priority INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (policy_identity, capability) REFERENCES provider_policies(policy_identity, capability) ON DELETE RESTRICT,
+    CHECK (
+        (selector_kind = 'space' AND space_id IS NOT NULL) OR
+        (selector_kind = 'space_type' AND space_type IS NOT NULL) OR
+        (selector_kind = 'external_id' AND external_id IS NOT NULL)
+    )
+) STRICT;
+
+CREATE INDEX policy_assignments_lookup_idx
+ON policy_assignments(capability, selector_kind, space_id, space_type, external_id, priority);
+
+CREATE TABLE effective_space_policies (
+    capability TEXT NOT NULL CHECK (capability IN ('processing', 'embedding')),
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    policy_generation INTEGER NOT NULL CHECK (policy_generation >= 0),
+    decision TEXT NOT NULL CHECK (decision IN ('allow', 'deny')),
+    source_assignment_id TEXT,
+    source_space_id TEXT,
+    inheritance_depth INTEGER CHECK (inheritance_depth IS NULL OR inheritance_depth >= 0),
+    reason_code TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    PRIMARY KEY (capability, space_id, policy_generation)
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX effective_space_policies_space_idx
+ON effective_space_policies(space_id, capability, policy_generation);
+
+CREATE TABLE embedding_eligibility (
+    memory_id TEXT NOT NULL REFERENCES memories(memory_id) ON DELETE RESTRICT,
+    revision_id TEXT NOT NULL,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    configuration_generation INTEGER CHECK (configuration_generation IS NULL OR configuration_generation >= 0),
+    policy_generation INTEGER NOT NULL CHECK (policy_generation >= 0),
+    eligible INTEGER NOT NULL CHECK (eligible IN (0, 1)),
+    reason_code TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    PRIMARY KEY (memory_id, revision_id, policy_generation),
+    FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX embedding_eligibility_generation_idx
+ON embedding_eligibility(policy_generation, eligible, memory_id);
+
+CREATE TABLE reconciliation_runs (
+    run_id TEXT PRIMARY KEY,
+    capability TEXT NOT NULL CHECK (capability IN ('processing', 'embedding')),
+    activation_id TEXT NOT NULL REFERENCES configuration_activations(activation_id) ON DELETE RESTRICT,
+    change_class TEXT NOT NULL CHECK (change_class IN ('policy_expand', 'policy_narrow', 'compatibility', 'enable', 'disable', 'runtime_limits')),
+    from_configuration_generation INTEGER CHECK (from_configuration_generation IS NULL OR from_configuration_generation >= 0),
+    to_configuration_generation INTEGER CHECK (to_configuration_generation IS NULL OR to_configuration_generation >= 0),
+    from_policy_generation INTEGER CHECK (from_policy_generation IS NULL OR from_policy_generation >= 0),
+    to_policy_generation INTEGER CHECK (to_policy_generation IS NULL OR to_policy_generation >= 0),
+    target_policy_identity TEXT,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'completed', 'failed')),
+    cursor TEXT,
+    scan_high_watermark TEXT,
+    affected_count INTEGER NOT NULL DEFAULT 0 CHECK (affected_count >= 0),
+    scheduled_count INTEGER NOT NULL DEFAULT 0 CHECK (scheduled_count >= 0),
+    blocked_count INTEGER NOT NULL DEFAULT 0 CHECK (blocked_count >= 0),
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    updated_at TEXT,
+    finished_at TEXT
+) STRICT;
+
+CREATE INDEX reconciliation_runs_state_idx
+ON reconciliation_runs(state, capability, created_at);
 
 COMMIT;

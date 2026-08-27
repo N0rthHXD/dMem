@@ -400,6 +400,143 @@ func TestExpiredLeaseCannotCompleteOrFailBeforeRecovery(t *testing.T) {
 	}
 }
 
+func TestStaleGenerationRequeuesWithoutConsumingProviderRetryBudget(t *testing.T) {
+	ctx := context.Background()
+	repository, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	insertTestJob(t, repository, "stale-generation", "pending", 0, 0, 3, now, now)
+	claim, err := repository.ClaimJob(ctx, ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReevaluateStaleJob(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	job, err := repository.GetJob(ctx, claim.Job.JobID)
+	if err != nil || job.Status != "pending" || job.AttemptCount != 1 || job.ProviderAttemptCount != 0 {
+		t.Fatalf("stale re-evaluation job = %+v, %v", job, err)
+	}
+	var outcome, code string
+	if err := repository.store.reader.QueryRow(`SELECT outcome, error_code FROM job_attempts WHERE job_id=?`, claim.Job.JobID).Scan(&outcome, &code); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "stale_generation" || code != "stale_generation" {
+		t.Fatalf("attempt = outcome %q code %q", outcome, code)
+	}
+}
+
+func TestRepeatedStaleGenerationsRemainClaimable(t *testing.T) {
+	ctx := context.Background()
+	repository, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	insertTestJob(t, repository, "repeat-stale", "pending", 0, 0, 1, now, now)
+	if _, err := repository.store.writer.Exec(`UPDATE jobs SET capability='processing' WHERE job_id='repeat-stale'`); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		claim, err := repository.ClaimJob(ctx, ClaimJobParams{WorkerID: fmt.Sprintf("worker-%d", attempt), LeaseDuration: time.Minute})
+		if err != nil {
+			t.Fatalf("claim %d: %v", attempt, err)
+		}
+		if err := repository.ReevaluateStaleJob(ctx, claim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err := repository.GetJob(ctx, "repeat-stale")
+	if err != nil || job.Status != "pending" || job.AttemptCount != 3 || job.ProviderAttemptCount != 0 {
+		t.Fatalf("job = %+v, %v", job, err)
+	}
+}
+
+func TestBlockJobRejectsUnsafeReasonCode(t *testing.T) {
+	repository, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	insertTestJob(t, repository, "unsafe-block", "pending", 0, 0, 3, now, now)
+	claim, err := repository.ClaimJob(context.Background(), ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.BlockJob(context.Background(), claim, "private content\nleak"); !errors.Is(err, ErrInvalidJobState) {
+		t.Fatalf("BlockJob() error = %v", err)
+	}
+}
+
+func TestSupersedeBlockedJobClosesAttemptAndPreventsRequeue(t *testing.T) {
+	ctx := context.Background()
+	repository, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	insertTestJob(t, repository, "superseded-job", "pending", 0, 0, 1, now, now)
+	claim, err := repository.ClaimJob(ctx, ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.BlockJob(ctx, claim, "target_policy_denied"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SupersedeJob(ctx, "superseded-job", "target_superseded"); err != nil {
+		t.Fatal(err)
+	}
+	job, err := repository.GetJob(ctx, "superseded-job")
+	if err != nil || job.Status != "superseded" || job.BlockedReasonCode != "target_superseded" || job.FinishedAt == nil {
+		t.Fatalf("superseded job = %+v, %v", job, err)
+	}
+	if _, err := repository.ClaimJob(ctx, ClaimJobParams{WorkerID: "other-worker", LeaseDuration: time.Minute}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ClaimJob(superseded) error = %v", err)
+	}
+}
+
+func TestSupersedeRunningJobFencesLateProviderResult(t *testing.T) {
+	ctx := context.Background()
+	repository, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	insertTestJob(t, repository, "running-superseded-job", "pending", 0, 0, 1, now, now)
+	claim, err := repository.ClaimJob(ctx, ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SupersedeJob(ctx, claim.Job.JobID, "target_superseded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CompleteJob(ctx, claim, JobResult{Code: "late"}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("CompleteJob() error = %v", err)
+	}
+	var outcome, code string
+	if err := repository.store.reader.QueryRow(`SELECT outcome, error_code FROM job_attempts WHERE job_id=?`, claim.Job.JobID).Scan(&outcome, &code); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "superseded" || code != "target_superseded" {
+		t.Fatalf("attempt = outcome %q code %q", outcome, code)
+	}
+}
+
+func TestMarkProviderAttemptPersistsCallProvenanceAndBudget(t *testing.T) {
+	ctx := context.Background()
+	repository, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	insertTestJob(t, repository, "provider-attempt-job", "pending", 0, 0, 2, now, now)
+	if _, err := repository.store.writer.Exec(`UPDATE jobs SET capability='processing', configuration_generation=7, policy_generation=9, compatibility_identity='compatibility-v1' WHERE job_id='provider-attempt-job'`); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := repository.ClaimJob(ctx, ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.store.writer.Exec(`UPDATE jobs SET configuration_generation=7, policy_generation=9 WHERE job_id=?`, claim.Job.JobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.MarkProviderAttempt(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	var configurationGeneration, policyGeneration, attempts int
+	var compatibility, startedAt string
+	if err := repository.store.reader.QueryRow(`SELECT a.configuration_generation, a.policy_generation, a.compatibility_identity, a.external_call_started_at, j.provider_attempt_count FROM job_attempts a JOIN jobs j ON j.job_id=a.job_id WHERE a.job_id=?`, claim.Job.JobID).Scan(&configurationGeneration, &policyGeneration, &compatibility, &startedAt, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if configurationGeneration != 7 || policyGeneration != 9 || compatibility != "compatibility-v1" || startedAt != now || attempts != 1 {
+		t.Fatalf("provider attempt = configuration=%d policy=%d compatibility=%q started=%q attempts=%d", configurationGeneration, policyGeneration, compatibility, startedAt, attempts)
+	}
+}
+
 func TestJobMaintenancePromotionRecoveryTerminalStatesAndExpiration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -453,5 +590,59 @@ func TestJobMaintenancePromotionRecoveryTerminalStatesAndExpiration(t *testing.T
 	exhaustedJob, _ := repository.GetJob(ctx, exhausted.Job.JobID)
 	if exhaustedJob.Status != "failed" || exhaustedJob.FinishedAt == nil {
 		t.Fatalf("exhausted recovered job = %+v", exhaustedJob)
+	}
+}
+
+func TestBlockedPolicyEmbedJobDoesNotBlockSemanticRebuild(t *testing.T) {
+	ctx := context.Background()
+	repo, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	repo.SetEmbedding(nil, nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 1, 1)
+
+	embedIdentity := repo.embeddingIdentity()
+	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,capability,configuration_generation,policy_generation,blocked_reason_code,created_at) VALUES ('blocked-embed','op-blocked','embed_memory','memory_revision','rev-blocked',?,'blocked_policy',0,3,?,'embedding',1,1,'target_policy_denied',?)`, embedIdentity, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,capability,configuration_generation,policy_generation,created_at) VALUES ('rebuild-job','op-rebuild','rebuild_semantic','index','memory_semantic',?,'pending',0,3,?,'embedding',1,1,?)`, embedIdentity, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	claim, err := repo.ClaimJob(ctx, ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatalf("ClaimJob() error = %v; rebuild_semantic should be claimable despite blocked_policy embed job", err)
+	}
+	if claim.Job.JobID != "rebuild-job" {
+		t.Fatalf("ClaimJob() = %q; want rebuild-job", claim.Job.JobID)
+	}
+
+	if err := repo.CompleteJob(ctx, claim, JobResult{Code: "rebuilt"}); err != nil {
+		t.Fatalf("CompleteJob() error = %v", err)
+	}
+	rebuilt, err := repo.GetJob(ctx, "rebuild-job")
+	if err != nil || rebuilt.Status != "succeeded" {
+		t.Fatalf("rebuild job = %+v, %v", rebuilt, err)
+	}
+}
+
+func TestPendingEmbedJobStillBlocksSemanticRebuild(t *testing.T) {
+	ctx := context.Background()
+	repo, clock := newJobTestRepository(t)
+	now := formatTime(clock.now)
+	repo.SetEmbedding(nil, nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 1, 1)
+
+	embedIdentity := repo.embeddingIdentity()
+	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,capability,configuration_generation,policy_generation,created_at) VALUES ('pending-embed','op-pending','embed_memory','memory_revision','rev-pending',?,'pending',0,3,?,'embedding',1,1,?)`, embedIdentity, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,capability,configuration_generation,policy_generation,created_at) VALUES ('rebuild-blocked','op-rebuild-blocked','rebuild_semantic','index','memory_semantic',?,'pending',0,3,?,'embedding',1,1,?)`, embedIdentity, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	claim, err := repo.ClaimJob(ctx, ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Minute})
+	if err != nil {
+		t.Fatalf("ClaimJob() error = %v", err)
+	}
+	if claim.Job.JobID != "pending-embed" {
+		t.Fatalf("ClaimJob() = %q; want pending-embed (rebuild should be blocked by pending embed)", claim.Job.JobID)
 	}
 }

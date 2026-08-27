@@ -17,6 +17,7 @@ import (
 var (
 	ErrLeaseLost       = errors.New("job lease lost")
 	ErrInvalidJobState = errors.New("invalid job state")
+	ErrStaleGeneration = errors.New("stale configuration generation")
 )
 
 type ClaimJobParams struct {
@@ -46,12 +47,14 @@ type JobFailure struct {
 }
 
 type ProcessingPreparationParams struct {
-	ProcessorIdentity  string
-	AllowedMemoryTypes []string
-	MaxCandidates      int
-	MaxContentChars    int
-	MaxContextEvents   int
-	MaxContextMemories int
+	ProcessorIdentity      string
+	AllowedMemoryTypes     []string
+	MaxCandidates          int
+	MaxCandidateChars      int
+	MaxTotalCandidateChars int
+	MaxContentChars        int
+	MaxContextEvents       int
+	MaxContextMemories     int
 }
 
 type ProcessingCommit struct {
@@ -62,7 +65,7 @@ type claimRowQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-const jobSelect = `SELECT job_id, operation_id, job_type, target_type, target_id, processing_version, processor_identity, status, priority, attempt_count, max_attempts, next_run_at, cancel_requested_at, result_code, result_json, last_error_code, last_error_message, created_at, started_at, finished_at, expires_at FROM jobs`
+const jobSelect = `SELECT job_id, operation_id, job_type, target_type, target_id, processing_version, processor_identity, status, priority, attempt_count, max_attempts, next_run_at, cancel_requested_at, capability, configuration_generation, policy_generation, compatibility_identity, blocked_reason_code, reconciliation_run_id, provider_attempt_count, result_code, result_json, last_error_code, last_error_message, created_at, started_at, finished_at, expires_at FROM jobs`
 
 func (r *Repository) GetJob(ctx context.Context, jobID string) (domain.Job, error) {
 	return scanJob(r.store.reader.QueryRowContext(ctx, jobSelect+` WHERE job_id=?`, jobID))
@@ -85,14 +88,15 @@ func (r *Repository) ClaimJob(ctx context.Context, params ClaimJobParams) (Claim
 	defer tx.Rollback()
 
 	var jobID string
-	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs j WHERE status IN ('pending','retrying') AND next_run_at<=? AND attempt_count<max_attempts AND (expires_at IS NULL OR expires_at>?) AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?) AND (job_type<>'rebuild_semantic' OR (NOT EXISTS (SELECT 1 FROM jobs e WHERE e.job_type='embed_memory' AND e.processing_version=j.processing_version AND e.status IN ('pending','waiting','running','retrying')) AND NOT EXISTS (SELECT 1 FROM memory_projections p WHERE p.searchable=1 AND (p.embedding_state<>'current' OR p.embedding_provider<>? OR p.embedding_model<>?)))) ORDER BY priority DESC, next_run_at ASC, created_at ASC, job_id ASC LIMIT 1`, nowText, nowText, r.embeddingIdentity(), r.embeddingProviderIdentity, r.embeddingModelIdentity).Scan(&jobID)
+	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs j WHERE status IN ('pending','retrying') AND next_run_at<=? AND ((capability IS NULL AND attempt_count<max_attempts) OR (capability IS NOT NULL AND provider_attempt_count<max_attempts)) AND (expires_at IS NULL OR expires_at>?) AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?) AND (job_type<>'rebuild_semantic' OR (NOT EXISTS (SELECT 1 FROM jobs e WHERE e.job_type='embed_memory' AND e.processing_version=j.processing_version AND e.status IN ('pending','waiting','running','retrying')) AND NOT EXISTS (SELECT 1 FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility x WHERE x.memory_id=p.memory_id AND x.revision_id=p.revision_id AND x.policy_generation=? AND x.eligible=1) AND (p.embedding_state<>'current' OR p.embedding_provider<>? OR p.embedding_model<>?)))) ORDER BY priority DESC, next_run_at ASC, created_at ASC, job_id ASC LIMIT 1`, nowText, nowText, r.embeddingIdentity(), r.emb().PolicyGeneration, r.emb().ProviderIdentity, r.emb().ModelIdentity).Scan(&jobID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClaimedJob{}, ErrNotFound
 	}
 	if err != nil {
 		return ClaimedJob{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='running', attempt_count=attempt_count+1, lease_owner=?, lease_until=?, lease_generation=lease_generation+1, started_at=coalesce(started_at, ?), finished_at=NULL WHERE job_id=? AND status IN ('pending','retrying') AND next_run_at<=? AND attempt_count<max_attempts`, params.WorkerID, leaseUntil, nowText, jobID, nowText)
+	embedding := r.emb()
+	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='running', attempt_count=attempt_count+1, lease_owner=?, lease_until=?, lease_generation=lease_generation+1, started_at=coalesce(started_at, ?), finished_at=NULL, configuration_generation=CASE WHEN job_type IN ('embed_memory','rebuild_semantic') THEN ? ELSE ? END, policy_generation=CASE WHEN job_type IN ('embed_memory','rebuild_semantic') THEN ? ELSE ? END WHERE job_id=? AND status IN ('pending','retrying') AND next_run_at<=? AND ((capability IS NULL AND attempt_count<max_attempts) OR (capability IS NOT NULL AND provider_attempt_count<max_attempts))`, params.WorkerID, leaseUntil, nowText, embedding.Generation, r.currentProcessingGeneration(), embedding.PolicyGeneration, r.currentProcessingPolicyGeneration(), jobID, nowText)
 	if err != nil {
 		return ClaimedJob{}, err
 	}
@@ -143,10 +147,13 @@ func (r *Repository) PrepareProcessing(ctx context.Context, claim ClaimedJob, pa
 	if err != nil {
 		return domain.ProcessingInput{}, err
 	}
+	if err := r.RequireEffectivePolicy(ctx, "processing", target.SpaceID); err != nil {
+		return domain.ProcessingInput{}, err
+	}
 	input := domain.ProcessingInput{
 		ProcessorIdentity: params.ProcessorIdentity, ProcessingVersion: version, JobID: claim.Job.JobID,
 		Attempt: claim.Job.AttemptCount, Target: target,
-		Policy: domain.ProcessingPolicy{AllowedMemoryTypes: append([]string(nil), params.AllowedMemoryTypes...), MaxCandidates: params.MaxCandidates, MaxContentChars: params.MaxContentChars},
+		Policy: domain.ProcessingPolicy{AllowedMemoryTypes: append([]string(nil), params.AllowedMemoryTypes...), MaxCandidates: params.MaxCandidates, MaxContentChars: params.MaxContentChars, MaxCandidateChars: max(params.MaxCandidateChars, params.MaxContentChars), MaxTotalCandidateChars: max(params.MaxTotalCandidateChars, params.MaxContentChars)},
 	}
 	if params.MaxContextEvents > 0 {
 		rows, err := r.store.reader.QueryContext(ctx, eventSelect+` WHERE e.space_id=? AND e.event_id<>? AND e.occurred_at<=? ORDER BY e.occurred_at DESC, e.event_id DESC LIMIT ?`, target.SpaceID, target.EventID, target.OccurredAt.UTC().Format(time.RFC3339Nano), params.MaxContextEvents)
@@ -196,6 +203,23 @@ func (r *Repository) PrepareProcessing(ctx context.Context, claim ClaimedJob, pa
 					return domain.ProcessingInput{}, err
 				}
 				item.ValidUntil = &value
+			}
+			item.ProposalCapable = item.SpaceID == target.SpaceID
+			policy, err := r.EffectivePolicy(ctx, "processing", item.SpaceID)
+			if errors.Is(err, ErrNotFound) {
+				input.ContextMemories = append(input.ContextMemories, item)
+				continue
+			}
+			if err != nil {
+				rows.Close()
+				return domain.ProcessingInput{}, err
+			}
+			if policy.Decision != "allow" {
+				if input.OmissionSummary == nil {
+					input.OmissionSummary = make(map[string]int)
+				}
+				input.OmissionSummary["context_memory_policy_denied"]++
+				continue
 			}
 			input.ContextMemories = append(input.ContextMemories, item)
 		}
@@ -272,6 +296,53 @@ func (r *Repository) HeartbeatJob(ctx context.Context, claim ClaimedJob, leaseDu
 	return requested.Valid, nil
 }
 
+// MarkProviderAttempt records durable provenance immediately before a provider
+// call. Policy-blocked work never reaches this method and therefore cannot
+// consume the external-provider attempt budget.
+func (r *Repository) MarkProviderAttempt(ctx context.Context, claim ClaimedJob) error {
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var configurationGeneration, policyGeneration sql.NullInt64
+	var compatibility sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT configuration_generation, policy_generation, compatibility_identity FROM jobs WHERE job_id=? AND status='running' AND lease_owner=? AND lease_generation=? AND lease_until>?`, claim.Job.JobID, claim.LeaseOwner, claim.LeaseGeneration, formatTime(r.runtime.Now())).Scan(&configurationGeneration, &policyGeneration, &compatibility)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrLeaseLost
+	}
+	if err != nil {
+		return err
+	}
+	now := formatTime(r.runtime.Now())
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET provider_attempt_count=provider_attempt_count+1 WHERE job_id=?`, claim.Job.JobID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE job_attempts SET configuration_generation=?, policy_generation=?, compatibility_identity=?, external_call_started_at=coalesce(external_call_started_at,?) WHERE job_id=? AND lease_generation=? AND worker_id=? AND finished_at IS NULL`, configurationGeneration, policyGeneration, compatibility, now, claim.Job.JobID, claim.LeaseGeneration, claim.LeaseOwner)
+	if err != nil {
+		return err
+	}
+	if !oneRow(result) {
+		return ErrLeaseLost
+	}
+	return tx.Commit()
+}
+
+func (r *Repository) PrepareEmbeddingAttempt(ctx context.Context, claim ClaimedJob) error {
+	var spaceID string
+	err := r.store.reader.QueryRowContext(ctx, `SELECT space_id FROM memory_projections WHERE revision_id=? AND searchable=1`, claim.Job.TargetID).Scan(&spaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := r.RequireEffectivePolicy(ctx, "embedding", spaceID); err != nil {
+		return err
+	}
+	return r.MarkProviderAttempt(ctx, claim)
+}
+
 func (r *Repository) CompleteJob(ctx context.Context, claim ClaimedJob, completion JobResult) error {
 	encoded, err := json.Marshal(completion.Value)
 	if err != nil {
@@ -293,12 +364,7 @@ func (r *Repository) CompleteJob(ctx context.Context, claim ClaimedJob, completi
 	if err := closeAttempt(ctx, tx, claim, now, "succeeded", completion.Code, "", ""); err != nil {
 		return err
 	}
-	if claim.Job.JobType == "embed_memory" && completion.Code == "policy_rejected" {
-		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='cancelled', finished_at=?, last_error_code='embedding_policy_rejected', last_error_message='semantic rebuild blocked by embedding policy' WHERE job_type='rebuild_semantic' AND processing_version=? AND status IN ('pending','waiting','retrying')`, now, claim.ProcessingVersion); err != nil {
-			return err
-		}
-	}
-	if claim.Job.JobType == "rebuild_semantic" && claim.ProcessingVersion == r.embeddingIdentity() && r.embeddingProvider != nil && r.vectorIndex != nil {
+	if claim.Job.JobType == "rebuild_semantic" && claim.ProcessingVersion == r.embeddingIdentity() && r.emb().Provider != nil && r.emb().Index != nil {
 		dirty, err := r.semanticIndexDirty(ctx, tx)
 		if err != nil {
 			return err
@@ -312,16 +378,125 @@ func (r *Repository) CompleteJob(ctx context.Context, claim ClaimedJob, completi
 	return tx.Commit()
 }
 
+func (r *Repository) BlockJob(ctx context.Context, claim ClaimedJob, reason string) error {
+	if !safeReasonCode(reason) {
+		return fmt.Errorf("%w: blocked reason is required", ErrInvalidJobState)
+	}
+	now := formatTime(r.runtime.Now())
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='blocked_policy', lease_owner=NULL, lease_until=NULL, result_code=NULL, result_json=NULL, blocked_reason_code=?, last_error_code=NULL, last_error_message=NULL, finished_at=? WHERE job_id=? AND status='running' AND lease_owner=? AND lease_generation=? AND lease_until>?`, reason, now, claim.Job.JobID, claim.LeaseOwner, claim.LeaseGeneration, now)
+	if err != nil {
+		return err
+	}
+	if !oneRow(result) {
+		return ErrLeaseLost
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE raw_events SET processing_status='stored' WHERE event_id=(SELECT target_id FROM jobs WHERE job_id=? AND job_type='extract_memory' AND target_type='raw_event')`, claim.Job.JobID); err != nil {
+		return err
+	}
+	if err := closeAttempt(ctx, tx, claim, now, "blocked_policy", "", reason, ""); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *Repository) SupersedeJob(ctx context.Context, jobID, reason string) error {
+	if !safeReasonCode(reason) {
+		return fmt.Errorf("%w: supersession reason is required", ErrInvalidJobState)
+	}
+	now := formatTime(r.runtime.Now())
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE job_id=?`, jobID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if status == "superseded" {
+		return tx.Commit()
+	}
+	if !contains([]string{"pending", "waiting", "retrying", "running", "blocked_policy"}, status) {
+		return ErrInvalidJobState
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='superseded', lease_owner=NULL, lease_until=NULL, blocked_reason_code=?, result_code=NULL, result_json=NULL, last_error_code=NULL, last_error_message=NULL, finished_at=? WHERE job_id=? AND status=?`, reason, now, jobID, status)
+	if err != nil {
+		return err
+	}
+	if !oneRow(result) {
+		return ErrLeaseLost
+	}
+	if status == "running" {
+		if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET finished_at=?, outcome='superseded', error_code=?, error_message='job target superseded' WHERE job_id=? AND finished_at IS NULL`, now, reason, jobID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE raw_events SET processing_status='stored' WHERE event_id=(SELECT target_id FROM jobs WHERE job_id=? AND job_type='extract_memory' AND target_type='raw_event')`, jobID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func safeReasonCode(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if char != '_' && char != '-' && (char < 'a' || char > 'z') && (char < '0' || char > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// ReevaluateStaleJob closes an obsolete attempt without treating it as a
+// provider failure. The logical job is returned to pending for current-policy
+// evaluation and therefore does not consume retry budget.
+func (r *Repository) ReevaluateStaleJob(ctx context.Context, claim ClaimedJob) error {
+	now := formatTime(r.runtime.Now())
+	tx, err := r.store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='pending', lease_owner=NULL, lease_until=NULL, next_run_at=?, blocked_reason_code=NULL, finished_at=NULL WHERE job_id=? AND status='running' AND lease_owner=? AND lease_generation=? AND lease_until>?`, now, claim.Job.JobID, claim.LeaseOwner, claim.LeaseGeneration, now)
+	if err != nil {
+		return err
+	}
+	if !oneRow(result) {
+		return ErrLeaseLost
+	}
+	if err := closeAttempt(ctx, tx, claim, now, "stale_generation", "", "stale_generation", "configuration or policy generation changed"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE raw_events SET processing_status='stored' WHERE event_id=(SELECT target_id FROM jobs WHERE job_id=? AND job_type='extract_memory' AND target_type='raw_event')`, claim.Job.JobID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, input domain.ProcessingInput, commit ProcessingCommit) error {
 	result := commit.Result
 	status := "processed"
-	if result.Code == domain.ProcessingNoProcessor || result.Code == domain.ProcessingPolicyRejected {
+	if result.Code == domain.ProcessingNoProcessor {
 		status = "stored"
 	}
 	value := map[string]any{
 		"candidate_count": len(result.Candidates), "provider_identity": result.ProviderIdentity,
 		"model_identity": result.ModelIdentity, "policy_version": result.PolicyVersion,
 		"provider_request_id": result.ProviderRequestID, "usage": result.Usage,
+	}
+	if result.OmittedContextCount > 0 {
+		value["omitted_context_count"] = result.OmittedContextCount
+		value["omission_summary"] = result.OmissionSummary
 	}
 	if result.ReasonCode != "" {
 		value["reason_code"] = result.ReasonCode
@@ -435,6 +610,15 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 	if err := closeAttempt(ctx, tx, claim, now, "succeeded", string(result.Code), "", ""); err != nil {
 		return err
 	}
+	if result.OmittedContextCount > 0 {
+		summary, err := json.Marshal(result.OmissionSummary)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE job_attempts SET omitted_context_count=?, omission_summary=? WHERE job_id=? AND lease_generation=?`, result.OmittedContextCount, string(summary), claim.Job.JobID, claim.LeaseGeneration); err != nil {
+			return err
+		}
+	}
 	reason, _ := json.Marshal(map[string]string{"result_code": string(result.Code), "reason_code": result.ReasonCode, "provider_identity": result.ProviderIdentity, "model_identity": result.ModelIdentity, "policy_version": result.PolicyVersion, "provider_request_id": result.ProviderRequestID})
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,reason,created_at) VALUES (?,?,?,?, 'process_event','raw_event',?,'succeeded',?,?)`, ids[0], claim.Job.OperationID, claim.AttemptID, input.ProcessorIdentity, input.Target.EventID, string(reason), now); err != nil {
 		return err
@@ -524,7 +708,8 @@ func (r *Repository) FailProcessing(ctx context.Context, claim ClaimedJob, input
 
 func (r *Repository) requireProcessingFence(ctx context.Context, tx *sql.Tx, claim ClaimedJob, input domain.ProcessingInput) error {
 	var targetID, version string
-	err := tx.QueryRowContext(ctx, `SELECT target_id,processing_version FROM jobs WHERE job_id=? AND job_type='extract_memory' AND target_type='raw_event' AND status='running' AND lease_owner=? AND lease_generation=? AND lease_until>?`, claim.Job.JobID, claim.LeaseOwner, claim.LeaseGeneration, formatTime(r.runtime.Now())).Scan(&targetID, &version)
+	var cfgGen, polGen sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT target_id,processing_version,configuration_generation,policy_generation FROM jobs WHERE job_id=? AND job_type='extract_memory' AND target_type='raw_event' AND status='running' AND lease_owner=? AND lease_generation=? AND lease_until>?`, claim.Job.JobID, claim.LeaseOwner, claim.LeaseGeneration, formatTime(r.runtime.Now())).Scan(&targetID, &version, &cfgGen, &polGen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrLeaseLost
 	}
@@ -533,6 +718,11 @@ func (r *Repository) requireProcessingFence(ctx context.Context, tx *sql.Tx, cla
 	}
 	if targetID != input.Target.EventID || version != input.ProcessingVersion || input.JobID != claim.Job.JobID {
 		return ErrLeaseLost
+	}
+	if r.currentProcessingGeneration() > 0 || cfgGen.Valid || polGen.Valid {
+		if int(cfgGen.Int64) != r.currentProcessingGeneration() || int(polGen.Int64) != r.currentProcessingPolicyGeneration() {
+			return ErrStaleGeneration
+		}
 	}
 	return nil
 }
@@ -739,7 +929,7 @@ func (r *Repository) PromoteWaitingJobs(ctx context.Context, limit int) (int, er
 	if limit <= 0 {
 		return 0, nil
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='pending' WHERE job_id IN (SELECT job_id FROM jobs j WHERE status='waiting' AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?) AND (job_type<>'rebuild_semantic' OR (NOT EXISTS (SELECT 1 FROM jobs e WHERE e.job_type='embed_memory' AND e.processing_version=j.processing_version AND e.status IN ('pending','waiting','running','retrying')) AND NOT EXISTS (SELECT 1 FROM memory_projections p WHERE p.searchable=1 AND (p.embedding_state<>'current' OR p.embedding_provider<>? OR p.embedding_model<>?)))) ORDER BY priority DESC, created_at ASC, job_id ASC LIMIT ?)`, r.embeddingIdentity(), r.embeddingProviderIdentity, r.embeddingModelIdentity, limit)
+	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='pending' WHERE job_id IN (SELECT job_id FROM jobs j WHERE status='waiting' AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?) AND (job_type<>'rebuild_semantic' OR (NOT EXISTS (SELECT 1 FROM jobs e WHERE e.job_type='embed_memory' AND e.processing_version=j.processing_version AND e.status IN ('pending','waiting','running','retrying')) AND NOT EXISTS (SELECT 1 FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility x WHERE x.memory_id=p.memory_id AND x.revision_id=p.revision_id AND x.policy_generation=? AND x.eligible=1) AND (p.embedding_state<>'current' OR p.embedding_provider<>? OR p.embedding_model<>?)))) ORDER BY priority DESC, created_at ASC, job_id ASC LIMIT ?)`, r.embeddingIdentity(), r.emb().PolicyGeneration, r.emb().ProviderIdentity, r.emb().ModelIdentity, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -847,8 +1037,10 @@ func scanJob(row rowScanner) (domain.Job, error) {
 	var job domain.Job
 	var processingVersion, status, nextRunAt, createdAt string
 	var priority int
+	var capability, compatIdentity, blockedReason, reconRun sql.NullString
+	var configGen, policyGen, providerAttempts sql.NullInt64
 	var processor, cancelled, resultCode, resultJSON, errorCode, errorMessage, started, finished, expires sql.NullString
-	err := row.Scan(&job.JobID, &job.OperationID, &job.JobType, &job.TargetType, &job.TargetID, &processingVersion, &processor, &status, &priority, &job.AttemptCount, &job.MaxAttempts, &nextRunAt, &cancelled, &resultCode, &resultJSON, &errorCode, &errorMessage, &createdAt, &started, &finished, &expires)
+	err := row.Scan(&job.JobID, &job.OperationID, &job.JobType, &job.TargetType, &job.TargetID, &processingVersion, &processor, &status, &priority, &job.AttemptCount, &job.MaxAttempts, &nextRunAt, &cancelled, &capability, &configGen, &policyGen, &compatIdentity, &blockedReason, &reconRun, &providerAttempts, &resultCode, &resultJSON, &errorCode, &errorMessage, &createdAt, &started, &finished, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, ErrNotFound
 	}
@@ -866,6 +1058,27 @@ func scanJob(row rowScanner) (domain.Job, error) {
 	job.StartedAt = nullStringPointer(started)
 	job.FinishedAt = nullStringPointer(finished)
 	job.ExpiresAt = nullStringPointer(expires)
+	if capability.Valid {
+		job.Capability = capability.String
+	}
+	if configGen.Valid {
+		job.ConfigurationGeneration = int(configGen.Int64)
+	}
+	if policyGen.Valid {
+		job.PolicyGeneration = int(policyGen.Int64)
+	}
+	if compatIdentity.Valid {
+		job.CompatibilityIdentity = compatIdentity.String
+	}
+	if blockedReason.Valid {
+		job.BlockedReasonCode = blockedReason.String
+	}
+	if reconRun.Valid {
+		job.ReconciliationRunID = reconRun.String
+	}
+	if providerAttempts.Valid {
+		job.ProviderAttemptCount = int(providerAttempts.Int64)
+	}
 	if resultJSON.Valid {
 		decoder := json.NewDecoder(strings.NewReader(resultJSON.String))
 		decoder.UseNumber()

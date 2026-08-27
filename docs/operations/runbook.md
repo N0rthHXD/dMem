@@ -7,7 +7,15 @@ must be owned by the current user and must not resolve through unsafe symlinks.
 The runtime directory is mode `0700`, the socket is mode `0600`, and a lock in
 the data directory prevents a second writer.
 
-Important defaults are:
+The daemon reads exactly one strict TOML file. Its default location is
+`${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`; `--config PATH` is the
+only setting-related command-line option. Begin from
+`docs/operations/config.example.toml`, replace its example absolute paths, and
+publish edits by atomically renaming a private temporary file over the selected
+file. The file contains no secret values: enabled providers reference an
+environment variable that is resolved only after policy approval for a request.
+
+Important defaults are represented in that file:
 
 | Setting | Default |
 | --- | --- |
@@ -20,21 +28,17 @@ Important defaults are:
 | job lease / timeout / attempts | 30 seconds / 2 minutes / 3 |
 | disk soft/hard free thresholds | 1 GiB / 256 MiB |
 
-`DMEM_DATA_DIR`, `DMEM_RUNTIME_DIR`, `DMEM_DATABASE_PATH`, `DMEM_ENDPOINT`, and
-`DMEM_PROCESSING_VERSION` provide environment defaults for their corresponding
-flags. Other limits and provider settings are flag-only. Providers require
-explicit enablement, endpoint, model, policy
-allowlists, and secret environment-variable names. Disabled providers do not
-resolve secrets or make HTTP requests.
+Providers require explicit enablement, endpoint, model, default-deny policy, and
+an environment secret reference. Disabled providers do not resolve secrets or
+make HTTP requests. Paths, worker count, connection limits, and server timeout
+are restart-bound; a reload that changes one is rejected as a whole.
 
-Provider endpoints are full HTTPS request URLs. Processing endpoints must point
-to the chat-completions route, and embedding endpoints must point to the
-embeddings route; dMem does not append either path. Embedding configuration also
-accepts `--embedding-provider-embedding-dim` and
-`--embedding-provider-embedding-query-instructions`. A zero dimension is omitted
-from provider requests, and query instructions are prepended only to semantic
-search queries, not stored-memory embeddings. Empty optional request fields are
-not sent.
+Use `dmemd [--config PATH] config validate` to validate offline, `status` to
+inspect redacted state, and `reload` to synchronously reload. `SIGHUP` requests
+the same serialized reload pipeline; repeated signals are coalesced. Failed or
+rejected reloads preserve the prior complete snapshot. Correct a rejected file
+and reload it, then use status to inspect safe diagnostics and reconciliation
+state.
 
 ## Health And Failures
 
@@ -65,7 +69,7 @@ normal caller and idempotency headers.
 Initialize only a new database:
 
 ```sh
-dmemd init --data-dir "$DMEM_DATA_DIR"
+dmemd init
 ```
 
 There is no schema migration command. A database with an incompatible schema is
@@ -77,14 +81,14 @@ directory:
 
 ```sh
 install -d -m 0700 "$HOME/dmem-backups"
-dmemd backup --data-dir "$DMEM_DATA_DIR" \
+dmemd backup \
   --target "$HOME/dmem-backups/backup-$(date +%Y%m%dT%H%M%S)"
 ```
 
 Restore replaces the complete data directory. Stop the daemon first:
 
 ```sh
-dmemd restore --data-dir "$DMEM_DATA_DIR" \
+dmemd restore \
   --source "$HOME/dmem-backups/backup-20260826T120000" \
   --confirm-replace
 ```

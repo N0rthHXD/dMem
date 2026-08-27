@@ -15,14 +15,18 @@ Linux, Go 1.24 or newer, a C compiler, and SQLite FTS5 support are required.
 ```sh
 go mod download
 CGO_ENABLED=1 go build -tags sqlite_fts5 -o dmemd ./cmd/dmemd
-./dmemd init --data-dir "$HOME/.local/share/dmem"
+install -d -m 0700 "${XDG_CONFIG_HOME:-$HOME/.config}/dmem"
+cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml"
+# Edit the example's absolute data_dir and runtime_dir paths for this user.
+./dmemd config validate
+./dmemd init
 ./dmemd daemon
 ```
 
-By default the API socket is `${XDG_RUNTIME_DIR}/dmem/dmem.sock`, or
-`/tmp/dmem-$UID/dmem/dmem.sock` when `XDG_RUNTIME_DIR` is unset. The data
-directory defaults to `${XDG_DATA_HOME}/dmem`, or
-`$HOME/.local/share/dmem` when `XDG_DATA_HOME` is unset.
+The default configuration file is `${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`.
+Use `--config /absolute/path/config.toml` to select a different instance. The
+file chooses the API socket and data directory; it is the only source of daemon
+settings. Providers are disabled in the shipped example.
 
 All API requests except health require `X-Caller-ID`. Writes also require an
 `Idempotency-Key`.
