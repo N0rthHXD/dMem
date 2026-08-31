@@ -18,7 +18,7 @@ a new data directory instead of reusing an incompatible database.
 - [Logical portability](storage/logical-portability.md): Format v1 export/import library and its consistency boundary.
 - [Operations](operations/runbook.md): configuration, health, backup, restore, rebuilds, and failure handling.
 - [Testing](development/testing-and-evaluation.md): current build profile and executable checks.
-- [LongMemEval](development/longmemeval.md): external retrieval benchmark workflow and metric semantics.
+- [LongMemEval](../evaluation/longmemeval/README.md): external retrieval benchmark workflow and metric semantics.
 
 ## Executable Contracts
 
