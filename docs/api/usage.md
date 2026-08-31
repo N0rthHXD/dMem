@@ -33,7 +33,10 @@ orchestrate raw events, revisions, and lifecycle endpoints separately.
 memory types are `fact`, `preference`, `constraint`, `decision`, `task`,
 `event`, `project_context`, and `agent_experience`.
 
-`recall` supports `keyword`, `semantic`, and `hybrid` modes. Semantic execution
+`recall` accepts natural-language or ordinary keyword text, not SQLite FTS5
+expressions. Keyword retrieval extracts English content words and Chinese trigram
+fragments, then combines them as literal alternatives. It supports `keyword`,
+`semantic`, and `hybrid` modes. Semantic execution
 requires a configured embedding provider and a usable semantic index. Responses
 state the requested and executed modes, degradation reasons, ranking/index
 versions, cursor, truncation, and character use. Results are revalidated against

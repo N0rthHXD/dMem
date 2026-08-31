@@ -147,11 +147,12 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 		assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/search", "", body), http.StatusUnprocessableEntity, "invalid_request")
 	}
 	special := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": `NEAR(`, "space_ids": []string{root.SpaceID}})
-	if special.StatusCode == http.StatusOK {
+	if special.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(special.Body)
 		special.Body.Close()
-	} else {
-		assertSafeError(t, special, http.StatusUnprocessableEntity, "invalid_request")
+		t.Fatalf("literal FTS syntax status = %d: %s", special.StatusCode, data)
 	}
+	special.Body.Close()
 	semantic := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "mode": "semantic"})
 	if semantic.StatusCode != http.StatusServiceUnavailable {
 		data, _ := io.ReadAll(semantic.Body)

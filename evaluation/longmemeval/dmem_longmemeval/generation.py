@@ -7,14 +7,13 @@ written to ``hypotheses.jsonl`` in the official LongMemEval format.
 
 from __future__ import annotations
 
-import logging
+import sys
 
 from openai import OpenAI
 
 from .checkpoint import Checkpoint
 from .dataset import load_dataset
-
-logger = logging.getLogger(__name__)
+from .progress import tqdm
 
 PROMPT_PLAIN = (
     "I will give you several history chats between you and a user. "
@@ -58,55 +57,61 @@ def generate_answers(
     template = PROMPT_COT if cot else PROMPT_PLAIN
     count = 0
 
-    for case in cases:
-        if case.question_id in done:
-            continue
-        rec = retrieval_records.get(case.question_id)
-        if rec is None:
-            logger.warning("no retrieval for %s, skipping", case.question_id)
-            continue
-
-        ranked_items = rec.get("ranked_items", [])[:answer_cutoff]
-        ranked_items.sort(
-            key=lambda x: x.get("session_date") or "0000-01-01T00:00:00+00:00"
-        )
-
-        history_parts = []
-        for i, item in enumerate(ranked_items):
-            content = item.get("content", "")
-            date = item.get("session_date") or ""
-            history_parts.append(
-                f"### Session {i + 1}:\nSession Date: {date}\n"
-                f"Session Content:\n{content}"
+    eligible = [case for case in cases if case.question_id in retrieval_records]
+    todo = [case for case in eligible if case.question_id not in done]
+    with tqdm(
+        todo,
+        total=len(eligible),
+        initial=len(eligible) - len(todo),
+        desc="generate",
+        unit="q",
+        file=sys.stderr,
+    ) as bar:
+        for case in bar:
+            rec = retrieval_records[case.question_id]
+            ranked_items = rec.get("ranked_items", [])[:answer_cutoff]
+            ranked_items.sort(
+                key=lambda x: x.get("session_date") or "0000-01-01T00:00:00+00:00"
             )
-        history_string = "\n".join(history_parts)
 
-        qdate = case.question_date.strftime("%Y/%m/%d (%a) %H:%M")
-        prompt = template.format(history_string, qdate, case.question)
+            history_parts = []
+            for i, item in enumerate(ranked_items):
+                content = item.get("content", "")
+                date = item.get("session_date") or ""
+                history_parts.append(
+                    f"### Session {i + 1}:\nSession Date: {date}\n"
+                    f"Session Content:\n{content}"
+                )
+            history_string = "\n".join(history_parts)
 
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            n=1,
-            temperature=0,
-            max_tokens=gen_length,
-        )
-        answer = completion.choices[0].message.content.strip()
-        usage = completion.usage
-        pt = usage.prompt_tokens if usage else 0
-        ct = usage.completion_tokens if usage else 0
+            qdate = case.question_date.strftime("%Y/%m/%d (%a) %H:%M")
+            prompt = template.format(history_string, qdate, case.question)
 
-        cp.append_generation(
-            {
-                "question_id": case.question_id,
-                "model": model,
-                "hypothesis": answer,
-                "prompt_tokens": pt,
-                "completion_tokens": ct,
-            }
-        )
-        cp.append_hypothesis(case.question_id, answer)
-        count += 1
-        logger.info("generated: %s", case.question_id)
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                n=1,
+                temperature=0,
+                max_tokens=gen_length,
+            )
+            answer = completion.choices[0].message.content.strip()
+            usage = completion.usage
+            pt = usage.prompt_tokens if usage else 0
+            ct = usage.completion_tokens if usage else 0
+
+            cp.append_generation(
+                {
+                    "question_id": case.question_id,
+                    "model": model,
+                    "hypothesis": answer,
+                    "prompt_tokens": pt,
+                    "completion_tokens": ct,
+                }
+            )
+            cp.append_hypothesis(case.question_id, answer)
+            count += 1
+            bar.set_postfix_str(
+                f"q={case.question_id} tokens={pt + ct} generated={count}"
+            )
 
     return count

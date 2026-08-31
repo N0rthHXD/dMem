@@ -41,9 +41,9 @@ class Checkpoint:
         if manifest is None:
             return True, "no existing manifest"
         for key in (
-            "dataset_sha", "run_id", "retrieval_mode", "limit",
-            "max_chars", "cutoffs", "answer_cutoff", "answer_model",
-            "judge_model",
+            "dataset_sha", "run_id", "ingestion_profile",
+            "confirmation_policy", "retrieval_mode", "limit",
+            "max_chars", "cutoffs", "answer_cutoff",
         ):
             if manifest.get(key) != config.get(key):
                 return False, f"config mismatch on {key}"
@@ -94,7 +94,11 @@ class Checkpoint:
         return result
 
     def load_ingested_qids(self) -> set[str]:
-        return set(self.load_ingestion_records().keys())
+        return {
+            rec["question_id"]
+            for rec in self._read_jsonl(self.ingestion_path)
+            if rec.get("record_type") == "case_complete"
+        }
 
     def load_retrieval_records(self) -> dict[str, dict[str, Any]]:
         return {rec["question_id"]: rec for rec in self._read_jsonl(self.retrieval_path)}

@@ -8,6 +8,11 @@ Subcommands:
     judge      Judge generated answers with official LongMemEval prompts.
     summarize  Recompute and print aggregated metrics from checkpoint.
     cleanup    Logically forget all ingested memories for this run.
+
+Configuration is loaded from a TOML file (``--config``). CLI flags override
+config-file values, which override built-in defaults. API keys are never
+stored in the config file; they are read from environment variables named
+by ``api_key_env`` in the config.
 """
 
 from __future__ import annotations
@@ -15,13 +20,18 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 
 import numpy as np
 
 from .api import DMemClient
 from .checkpoint import Checkpoint
+from .config import (
+    EvalConfig,
+    load_config,
+    resolve_api_key,
+    resolve_socket,
+)
 from .dataset import load_dataset
 from .generation import generate_answers
 from .judge import judge_answers
@@ -47,20 +57,40 @@ def parse_cutoffs(s: str) -> list[int]:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
     cases, sha = load_dataset(args.dataset)
-    cutoffs = parse_cutoffs(args.cutoffs)
+
+    if args.max_cases is not None and args.max_cases > 0:
+        cases = cases[: args.max_cases]
+        logger.info("subset run: first %d cases", len(cases))
+
+    retrieval_mode = args.retrieval_mode or cfg.retrieval.mode
+    ingestion_profile = args.profile or cfg.ingestion.profile
+    confirmation_policy = (
+        args.confirmation_policy or cfg.ingestion.confirmation_policy
+    )
+    limit = args.limit if args.limit is not None else cfg.retrieval.limit
+    max_chars = args.max_chars if args.max_chars is not None else cfg.retrieval.max_chars
+    cutoffs = parse_cutoffs(args.cutoffs) if args.cutoffs else cfg.retrieval.cutoffs
+    answer_cutoff = (
+        args.answer_cutoff if args.answer_cutoff is not None
+        else cfg.answer.answer_cutoff
+    )
+    socket_path = resolve_socket(cfg, args.socket)
 
     config = RunConfig(
         run_id=args.run_id,
         dataset_sha=sha,
-        socket_path=args.socket,
-        retrieval_mode=args.retrieval_mode,
-        limit=args.limit,
-        max_chars=args.max_chars,
+        socket_path=socket_path,
+        ingestion_profile=ingestion_profile,
+        confirmation_policy=confirmation_policy,
+        job_poll_interval=cfg.ingestion.job_poll_interval,
+        job_timeout=cfg.ingestion.job_timeout,
+        retrieval_mode=retrieval_mode,
+        limit=limit,
+        max_chars=max_chars,
         cutoffs=cutoffs,
-        answer_cutoff=args.answer_cutoff,
-        answer_model=args.answer_model,
-        judge_model=args.judge_model,
+        answer_cutoff=answer_cutoff,
         caller_id=args.caller_id,
         output_dir=args.output,
         request_timeout=args.request_timeout,
@@ -73,13 +103,13 @@ def cmd_run(args: argparse.Namespace) -> None:
         compat = {
             "dataset_sha": sha,
             "run_id": args.run_id,
-            "retrieval_mode": args.retrieval_mode,
-            "limit": args.limit,
-            "max_chars": args.max_chars,
+            "ingestion_profile": ingestion_profile,
+            "confirmation_policy": confirmation_policy,
+            "retrieval_mode": retrieval_mode,
+            "limit": limit,
+            "max_chars": max_chars,
             "cutoffs": cutoffs,
-            "answer_cutoff": args.answer_cutoff,
-            "answer_model": args.answer_model,
-            "judge_model": args.judge_model,
+            "answer_cutoff": answer_cutoff,
         }
         ok, msg = cp.is_compatible(compat)
         if not ok:
@@ -88,12 +118,22 @@ def cmd_run(args: argparse.Namespace) -> None:
         logger.info("resume compatible: %s", msg)
 
     client = DMemClient(
-        args.socket, caller_id=args.caller_id, timeout=args.request_timeout
+        socket_path, caller_id=args.caller_id, timeout=args.request_timeout
     )
     try:
         health = client.health()
         if not health.get("ready"):
             print("daemon not ready", file=sys.stderr)
+            sys.exit(1)
+        if (
+            ingestion_profile == "processed-events"
+            and health.get("processor_state") == "not_configured"
+        ):
+            print(
+                "processed-events requires an enabled processing provider; "
+                "use a daemon config with [processing.provider].enabled=true",
+                file=sys.stderr,
+            )
             sys.exit(1)
         logger.info("daemon ready: mode=%s", health.get("mode"))
 
@@ -108,21 +148,33 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_generate(args: argparse.Namespace) -> None:
-    api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        print("API key required (--api-key or OPENAI_API_KEY)", file=sys.stderr)
+    cfg = load_config(args.config)
+
+    model = args.model or cfg.answer.model
+    if not model:
+        print(
+            "answer model required: set [answer].model in config or use --model",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    base_url = args.base_url or os.environ.get("OPENAI_BASE_URL")
+    base_url = args.base_url or cfg.answer.base_url or None
+    api_key = resolve_api_key(cfg.answer)
+    answer_cutoff = (
+        args.answer_cutoff if args.answer_cutoff is not None
+        else cfg.answer.answer_cutoff
+    )
+    gen_length = args.gen_length if args.gen_length is not None else cfg.answer.gen_length
+    cot = args.cot if args.cot is not None else cfg.answer.cot
 
     count = generate_answers(
         args.dataset,
         args.output,
-        model=args.model,
+        model=model,
         api_key=api_key,
         base_url=base_url,
-        answer_cutoff=args.answer_cutoff,
-        gen_length=args.gen_length,
-        cot=args.cot,
+        answer_cutoff=answer_cutoff,
+        gen_length=gen_length,
+        cot=cot,
     )
     print(f"generated {count} answers")
 
@@ -131,16 +183,22 @@ def cmd_generate(args: argparse.Namespace) -> None:
 
 
 def cmd_judge(args: argparse.Namespace) -> None:
-    api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        print("API key required (--api-key or OPENAI_API_KEY)", file=sys.stderr)
+    cfg = load_config(args.config)
+
+    model = args.model or cfg.judge.model
+    if not model:
+        print(
+            "judge model required: set [judge].model in config or use --model",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    base_url = args.base_url or os.environ.get("OPENAI_BASE_URL")
+    base_url = args.base_url or cfg.judge.base_url or None
+    api_key = resolve_api_key(cfg.judge)
 
     summary = judge_answers(
         args.dataset,
         args.output,
-        model=args.model,
+        model=model,
         api_key=api_key,
         base_url=base_url,
     )
@@ -203,6 +261,32 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         },
     }
 
+    ingestion_records = cp.load_ingestion_records()
+    ingestion_events = [
+        rec
+        for records in ingestion_records.values()
+        for rec in records
+        if rec.get("record_type", "event") == "event"
+    ]
+    if manifest:
+        result["ingestion"] = {
+            "profile": manifest.get("ingestion_profile", "direct-turn"),
+            "confirmation_policy": manifest.get(
+                "confirmation_policy", "confirm-all-new"
+            ),
+            "events": len(ingestion_events),
+            "candidates": sum(
+                len(rec.get("candidate_ids", [])) for rec in ingestion_events
+            ),
+            "confirmed": sum(
+                len(rec.get("confirmed", [])) for rec in ingestion_events
+            ),
+            "no_memory": sum(
+                "no_memory" in rec.get("processing_result_codes", [])
+                for rec in ingestion_events
+            ),
+        }
+
     if judge_records:
         case_map = {c.question_id: c for c in cases}
         all_acc: list[int] = []
@@ -241,6 +325,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
     cases, sha = load_dataset(args.dataset)
     cp = Checkpoint(args.output)
     manifest = cp.read_manifest()
@@ -248,16 +333,19 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
         print("no manifest found", file=sys.stderr)
         sys.exit(1)
 
+    socket_path = resolve_socket(cfg, args.socket)
+
     config = RunConfig(
         run_id=manifest["run_id"],
         dataset_sha=manifest["dataset_sha"],
-        socket_path=args.socket,
+        socket_path=socket_path,
         caller_id=manifest.get("caller_id", "longmemeval"),
         output_dir=args.output,
+        request_timeout=args.request_timeout,
     )
 
     client = DMemClient(
-        args.socket, caller_id=config.caller_id, timeout=args.request_timeout
+        socket_path, caller_id=config.caller_id, timeout=args.request_timeout
     )
     try:
         runner = Runner(client, config, cp)
@@ -275,24 +363,45 @@ def build_parser() -> argparse.ArgumentParser:
         prog="dmem-longmemeval",
         description="Evaluate dMem against the LongMemEval benchmark.",
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to TOML config file (e.g. eval_config.toml)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # -- run --
     p = sub.add_parser("run", help="Ingest + recall + retrieval metrics")
     p.add_argument("--dataset", required=True, help="Path to LongMemEval JSON")
-    p.add_argument("--socket", required=True, help="dMem Unix socket path")
+    p.add_argument("--socket", default=None, help="dMem Unix socket path")
     p.add_argument("--run-id", required=True, help="Unique run identifier")
     p.add_argument(
+        "--profile",
+        default=None,
+        choices=["direct-turn", "processed-events"],
+        help="Ingestion profile (default: [ingestion].profile or direct-turn)",
+    )
+    p.add_argument(
+        "--confirmation-policy",
+        default=None,
+        choices=["confirm-all-new", "none"],
+        help="Explicit candidate policy for processed-events",
+    )
+    p.add_argument(
         "--retrieval-mode",
-        default="keyword",
+        default=None,
         choices=["keyword", "semantic", "hybrid"],
     )
-    p.add_argument("--limit", type=int, default=100)
-    p.add_argument("--max-chars", type=int, default=100000)
-    p.add_argument("--cutoffs", default="1,3,5,10,30,50")
-    p.add_argument("--answer-cutoff", type=int, default=30)
-    p.add_argument("--answer-model", default=None)
-    p.add_argument("--judge-model", default=None)
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--max-chars", type=int, default=None)
+    p.add_argument("--cutoffs", default=None)
+    p.add_argument("--answer-cutoff", type=int, default=None)
+    p.add_argument(
+        "--max-cases",
+        type=int,
+        default=None,
+        help="Only run the first N cases (subset/smoke-test). Default: all.",
+    )
     p.add_argument("--caller-id", default="longmemeval")
     p.add_argument("--output", default="results/longmemeval")
     p.add_argument("--request-timeout", type=float, default=120.0)
@@ -304,21 +413,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("generate", help="Generate answers from retrieval results")
     p.add_argument("--dataset", required=True)
     p.add_argument("--output", default="results/longmemeval")
-    p.add_argument("--model", required=True)
-    p.add_argument("--api-key", default=None)
-    p.add_argument("--base-url", default=None)
-    p.add_argument("--answer-cutoff", type=int, default=30)
-    p.add_argument("--gen-length", type=int, default=500)
-    p.add_argument("--cot", action="store_true")
+    p.add_argument("--model", default=None, help="Override [answer].model")
+    p.add_argument("--base-url", default=None, help="Override [answer].base_url")
+    p.add_argument("--answer-cutoff", type=int, default=None)
+    p.add_argument("--gen-length", type=int, default=None)
+    p.add_argument("--cot", action=argparse.BooleanOptionalAction, default=None)
     p.set_defaults(func=cmd_generate)
 
     # -- judge --
     p = sub.add_parser("judge", help="Judge generated answers")
     p.add_argument("--dataset", required=True)
     p.add_argument("--output", default="results/longmemeval")
-    p.add_argument("--model", required=True)
-    p.add_argument("--api-key", default=None)
-    p.add_argument("--base-url", default=None)
+    p.add_argument("--model", default=None, help="Override [judge].model")
+    p.add_argument("--base-url", default=None, help="Override [judge].base_url")
     p.set_defaults(func=cmd_judge)
 
     # -- summarize --
@@ -330,7 +437,7 @@ def build_parser() -> argparse.ArgumentParser:
     # -- cleanup --
     p = sub.add_parser("cleanup", help="Logically delete ingested memories")
     p.add_argument("--dataset", required=True)
-    p.add_argument("--socket", required=True)
+    p.add_argument("--socket", default=None)
     p.add_argument("--output", default="results/longmemeval")
     p.add_argument("--request-timeout", type=float, default=120.0)
     p.set_defaults(func=cmd_cleanup)
@@ -345,4 +452,5 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     args.func(args)

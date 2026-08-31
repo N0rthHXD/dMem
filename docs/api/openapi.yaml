@@ -994,7 +994,7 @@ components:
       additionalProperties: false
       required: [query, space_ids]
       properties:
-        query: { type: string, minLength: 1 }
+        query: { type: string, minLength: 1, description: Natural-language or keyword text. It is compiled internally; SQLite FTS5 syntax is not accepted. }
         space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
         include_ancestors: { type: boolean, default: true }
         memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }
@@ -1863,7 +1863,7 @@ components:
       additionalProperties: false
       required: [query, space_ids]
       properties:
-        query: { type: string, minLength: 1 }
+        query: { type: string, minLength: 1, description: Natural-language or keyword text. It is compiled internally; SQLite FTS5 syntax is not accepted. }
         space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
         include_ancestors: { type: boolean, default: true }
         memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }

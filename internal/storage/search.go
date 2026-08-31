@@ -145,6 +145,13 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		}
 		return response, nil
 	}
+	ftsQuery, searchable := compileKeywordQuery(params.Query)
+	if !searchable {
+		if err := tx.Commit(); err != nil {
+			return domain.SearchResponse{}, err
+		}
+		return response, nil
+	}
 
 	query := `WITH ranked AS (
 		SELECT f.memory_id, f.revision_id, f.content, p.display_content, p.updated_at, bm25(memory_fts) AS score
@@ -152,7 +159,7 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		JOIN memory_projections p ON p.memory_id=f.memory_id AND p.revision_id=f.revision_id
 		JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state
 		WHERE memory_fts MATCH ? AND p.searchable=1`
-	args := []any{params.Query}
+	args := []any{ftsQuery}
 	query += ` AND p.space_id IN (` + placeholders(len(spaces)) + `)`
 	for _, id := range spaces {
 		args = append(args, id)

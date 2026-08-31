@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -222,8 +223,42 @@ class DMemClient:
         )
 
     # ------------------------------------------------------------------
-    # remember / recall
+    # ingest / remember / recall
     # ------------------------------------------------------------------
+
+    def ingest_event(
+        self,
+        *,
+        space_id: str,
+        content: str,
+        source_type: str = "conversation",
+        source_name: str = "longmemeval",
+        source_event_id: str | None = None,
+        occurred_at: str,
+        metadata: dict[str, Any] | None = None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "space_id": space_id,
+            "source_type": source_type,
+            "source_name": source_name,
+            "occurred_at": occurred_at,
+            "content": {
+                "kind": "text",
+                "media_type": "text/plain",
+                "text": content,
+            },
+        }
+        if source_event_id is not None:
+            body["source_event_id"] = source_event_id
+        if metadata is not None:
+            body["metadata"] = metadata
+        return self._request(
+            "POST", "/v1/events", json=body, idempotency_key=idempotency_key
+        )
+
+    def get_event(self, event_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/events/{event_id}")
 
     def remember(
         self,
@@ -315,6 +350,52 @@ class DMemClient:
         return self._request("GET", f"/v1/jobs/{job_id}")
 
     # ------------------------------------------------------------------
+    # candidates
+    # ------------------------------------------------------------------
+
+    def list_candidates(
+        self,
+        *,
+        space_id: str,
+        review_state: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "space_id": space_id,
+                "limit": min(limit, 200),
+            }
+            if review_state:
+                params["review_state"] = review_state
+            if cursor:
+                params["cursor"] = cursor
+            page = self._request("GET", "/v1/candidates", params=params)
+            results.extend(page.get("items", []))
+            cursor = page.get("next_cursor")
+            if not cursor:
+                return results
+
+    def confirm_candidate(
+        self,
+        *,
+        candidate_id: str,
+        reason_code: str,
+        note: str | None = None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"reason_code": reason_code}
+        if note is not None:
+            body["note"] = note
+        return self._request(
+            "POST",
+            f"/v1/candidates/{candidate_id}/confirm",
+            json=body,
+            idempotency_key=idempotency_key,
+        )
+
+    # ------------------------------------------------------------------
     # forget
     # ------------------------------------------------------------------
 
@@ -341,6 +422,7 @@ class DMemClient:
         *,
         poll_interval: float = 3.0,
         timeout: float = 600.0,
+        on_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Poll /v1/health until semantic_state == 'ready' and queue is empty.
 
@@ -356,7 +438,12 @@ class DMemClient:
             )
         deadline = time.monotonic() + timeout
         last = first
+        last_state: tuple[Any, Any] | None = None
         while time.monotonic() < deadline:
+            state = (last.get("semantic_state"), last.get("job_queue_depth"))
+            if on_status is not None and state != last_state:
+                on_status(last)
+                last_state = state
             if (
                 last.get("semantic_state") == "ready"
                 and last.get("job_queue_depth", 1) == 0
@@ -376,14 +463,22 @@ class DMemClient:
         *,
         poll_interval: float = 3.0,
         timeout: float = 600.0,
+        on_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Poll GET /v1/jobs/{job_id} until terminal status."""
         deadline = time.monotonic() + timeout
         last: dict[str, Any] = {}
+        last_status = ""
         while time.monotonic() < deadline:
             last = self.get_job(job_id)
             status = last.get("status", "")
-            if status in ("succeeded", "failed", "cancelled", "expired"):
+            if on_status is not None and status != last_status:
+                on_status(last)
+                last_status = status
+            if status in (
+                "succeeded", "failed", "cancelled", "expired",
+                "blocked_policy", "superseded",
+            ):
                 return last
             time.sleep(poll_interval)
         raise TimeoutError(
@@ -396,13 +491,22 @@ class DMemClient:
         poll_interval: float = 3.0,
         timeout: float = 600.0,
         idempotency_key: str,
+        on_status: Callable[[dict[str, Any]], None] | None = None,
+        on_job_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """Wait for semantic readiness, trigger a rebuild, wait for completion."""
-        self.wait_for_semantic_ready(poll_interval=poll_interval, timeout=timeout)
-        time.sleep(2.0)
+        """Trigger a rebuild, wait for it to finish, then confirm readiness."""
         result = self.rebuild_semantic(idempotency_key=idempotency_key)
         job_id = result.get("job_id") or ""
         if job_id:
-            self.wait_for_job(job_id, poll_interval=poll_interval, timeout=timeout)
-        self.wait_for_semantic_ready(poll_interval=poll_interval, timeout=timeout)
+            self.wait_for_job(
+                job_id,
+                poll_interval=poll_interval,
+                timeout=timeout,
+                on_status=on_job_status,
+            )
+        self.wait_for_semantic_ready(
+            poll_interval=poll_interval,
+            timeout=timeout,
+            on_status=on_status,
+        )
         return result

@@ -606,11 +606,15 @@ func relationKeywordRecall(ctx context.Context, tx *sql.Tx, query string, spaces
 	if len(spaces) == 0 {
 		return nil, nil
 	}
+	ftsQuery, searchable := compileKeywordQuery(query)
+	if !searchable {
+		return nil, nil
+	}
 	var state string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM relation_index_metadata WHERE singleton=1`).Scan(&state); err != nil || state != "ready" {
 		return nil, ErrIndexDegraded
 	}
-	args := []any{query}
+	args := []any{ftsQuery}
 	for _, s := range spaces {
 		args = append(args, s)
 	}

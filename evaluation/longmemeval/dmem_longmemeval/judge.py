@@ -7,16 +7,14 @@ per-type, and abstention accuracy.
 
 from __future__ import annotations
 
-import logging
+import sys
 
 import numpy as np
 from openai import OpenAI
 
 from .checkpoint import Checkpoint
 from .dataset import load_dataset
-
-logger = logging.getLogger(__name__)
-
+from .progress import tqdm
 
 def get_judge_prompt(
     task: str,
@@ -116,52 +114,68 @@ def judge_answers(
 
     client = OpenAI(api_key=api_key, base_url=base_url, max_retries=5)
 
+    existing_records = cp.load_judge_records()
     all_acc: list[int] = []
     type2acc: dict[str, list[int]] = {}
     abstention_acc: list[int] = []
-
     for case in cases:
-        if case.question_id in done:
+        existing = existing_records.get(case.question_id)
+        if existing is None:
             continue
-        gen_rec = generation_records.get(case.question_id)
-        if gen_rec is None:
-            logger.warning("no generation for %s, skipping", case.question_id)
-            continue
-
-        hyp = gen_rec["hypothesis"]
-        prompt = get_judge_prompt(
-            case.question_type,
-            case.question,
-            case.answer_string,
-            hyp,
-            abstention=case.is_abstention,
-        )
-
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            n=1,
-            temperature=0,
-            max_tokens=10,
-        )
-        eval_response = completion.choices[0].message.content.strip()
-        label = "yes" in eval_response.lower()
-
-        cp.append_judge(
-            {
-                "question_id": case.question_id,
-                "model": model,
-                "label": label,
-                "raw_response": eval_response,
-            }
-        )
-
-        acc = 1 if label else 0
+        acc = 1 if existing.get("label") else 0
         all_acc.append(acc)
         type2acc.setdefault(case.question_type, []).append(acc)
         if case.is_abstention:
             abstention_acc.append(acc)
-        logger.info("judged: %s -> %s", case.question_id, label)
+
+    eligible = [case for case in cases if case.question_id in generation_records]
+    todo = [case for case in eligible if case.question_id not in done]
+    with tqdm(
+        todo,
+        total=len(eligible),
+        initial=len(eligible) - len(todo),
+        desc="judge",
+        unit="q",
+        file=sys.stderr,
+    ) as bar:
+        for case in bar:
+            gen_rec = generation_records[case.question_id]
+            hyp = gen_rec["hypothesis"]
+            prompt = get_judge_prompt(
+                case.question_type,
+                case.question,
+                case.answer_string,
+                hyp,
+                abstention=case.is_abstention,
+            )
+
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                n=1,
+                temperature=0,
+                max_tokens=10,
+            )
+            eval_response = completion.choices[0].message.content.strip()
+            label = "yes" in eval_response.lower()
+
+            cp.append_judge(
+                {
+                    "question_id": case.question_id,
+                    "model": model,
+                    "label": label,
+                    "raw_response": eval_response,
+                }
+            )
+
+            acc = 1 if label else 0
+            all_acc.append(acc)
+            type2acc.setdefault(case.question_type, []).append(acc)
+            if case.is_abstention:
+                abstention_acc.append(acc)
+            bar.set_postfix_str(
+                f"q={case.question_id} correct={sum(all_acc)}/{len(all_acc)}"
+            )
 
     summary = {
         "overall_accuracy": float(np.mean(all_acc)) if all_acc else 0.0,

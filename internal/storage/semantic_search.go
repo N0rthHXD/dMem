@@ -417,8 +417,12 @@ func feedbackUsageScore(ctx context.Context, tx *sql.Tx, revisionID string, gene
 }
 
 func semanticKeywordRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, limit int) ([]hybridCandidate, error) {
+	ftsQuery, searchable := compileKeywordQuery(params.Query)
+	if !searchable {
+		return nil, nil
+	}
 	query := `SELECT f.memory_id,f.revision_id,p.content_hash,bm25(memory_fts) FROM memory_fts f JOIN memory_projections p ON p.memory_id=f.memory_id AND p.revision_id=f.revision_id JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE memory_fts MATCH ? AND f.content=p.display_content AND p.searchable=1 AND p.current_state IN ('active','contested') AND p.space_id IN (` + placeholders(len(spaces)) + `)`
-	args := []any{params.Query}
+	args := []any{ftsQuery}
 	for _, id := range spaces {
 		args = append(args, id)
 	}

@@ -1,0 +1,47 @@
+# LongMemEval evaluation configuration.
+#
+# Copy this file and edit for your environment:
+#   cp eval_config.example.toml eval_config.toml
+#
+# API keys are never stored in this file. Instead, ``api_key_env`` names the
+# environment variable to read at runtime:
+#   export OPENAI_API_KEY=sk-...
+
+config_version = 1
+
+[daemon]
+# Path to the dMem Unix socket. If empty, --socket CLI flag is required.
+socket_path = "/run/user/1000/dmem/dmem.sock"
+
+[ingestion]
+# direct-turn writes authoritative memories through /v1/remember.
+# processed-events evaluates extraction through /v1/events and jobs.
+profile = "direct-turn"
+# Explicit processed-events review policy: confirm-all-new | none.
+confirmation_policy = "confirm-all-new"
+job_poll_interval = 3.0
+job_timeout = 600.0
+
+[retrieval]
+# Retrieval mode: keyword | semantic | hybrid.
+# Semantic and hybrid require a configured embedding provider in dMem.
+mode = "keyword"
+limit = 100
+max_chars = 100000
+cutoffs = [1, 3, 5, 10, 30, 50]
+
+[answer]
+# OpenAI-compatible chat completions model for answer generation.
+# Leave model empty to skip the generate phase.
+model = "gpt-4o-mini-2024-07-18"
+base_url = ""  # empty = OpenAI default (https://api.openai.com/v1)
+api_key_env = "OPENAI_API_KEY"
+answer_cutoff = 30  # top-k retrieval results fed to the answer model
+gen_length = 500
+cot = false  # set true for chain-of-thought answer generation
+
+[judge]
+# OpenAI-compatible model for QA judging with official LongMemEval prompts.
+model = "gpt-4o-2024-08-06"
+base_url = ""
+api_key_env = "OPENAI_API_KEY"
