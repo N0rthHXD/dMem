@@ -409,7 +409,7 @@ func TestTransientFailureUsesBoundedBackoffAndAttemptLimit(t *testing.T) {
 	item := pendingJob("transient", 3)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
 	startService(t, repository, processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
-		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure, Message: "busy"}
+		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure, ReasonCode: "request_timeout_or_cancelled", Message: "busy"}
 	}))
 	waitFor(t, func() bool {
 		repository.mu.Lock()
@@ -423,9 +423,27 @@ func TestTransientFailureUsesBoundedBackoffAndAttemptLimit(t *testing.T) {
 	}
 	want := []time.Duration{10 * time.Millisecond, 15 * time.Millisecond, 15 * time.Millisecond}
 	for i, failure := range repository.failures {
-		if failure.Code != string(domain.ProcessingTransientFailure) || failure.Backoff != want[i] {
+		if failure.Code != "request_timeout_or_cancelled" || failure.Backoff != want[i] {
 			t.Fatalf("failure %d = %+v", i, failure)
 		}
+	}
+}
+
+func TestTransientFailureWithoutReasonUsesOutcomeCode(t *testing.T) {
+	item := pendingJob("transient-fallback", 1)
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	startService(t, repository, processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		return domain.ProcessingResult{Code: domain.ProcessingTransientFailure}
+	}))
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "failed"
+	})
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if item.failure.Code != string(domain.ProcessingTransientFailure) {
+		t.Fatalf("failure = %+v", item.failure)
 	}
 }
 
@@ -444,6 +462,26 @@ func TestProcessorMessageIsNeverPersisted(t *testing.T) {
 	defer repository.mu.Unlock()
 	if item.failure.Message != "processor transient failure" {
 		t.Fatalf("persisted failure message = %q", item.failure.Message)
+	}
+}
+
+func TestInvalidProcessorResultPreservesValidationCode(t *testing.T) {
+	item := pendingJob("invalid-output", 1)
+	item.job.Status, item.job.AttemptCount = "running", 1
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	service, err := NewService(repository, testConfig(), nil, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := validProcessingInput()
+	result := validProcessingResult()
+	result.Candidates[0].SuggestionKind = "supplement"
+	result.Candidates[0].Evidence[0].StartOffset = nil
+	result.Candidates[0].Evidence[0].EndOffset = nil
+	result.Candidates[0].RelatedMemoryIDs = []string{"memory-1"}
+	service.applyOutcome(storage.ClaimedJob{Job: item.job}, input, result)
+	if item.failure.Code != "invalid_evidence_reference" || item.failure.Message != "processor returned invalid output" || item.failure.Transient {
+		t.Fatalf("failure = %+v", item.failure)
 	}
 }
 

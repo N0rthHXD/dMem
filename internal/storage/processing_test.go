@@ -46,6 +46,28 @@ func TestProcessingCommitAtomicallyStoresCandidatesEvidenceAuditAttemptAndStatus
 	}
 }
 
+func TestProcessingCommitStoresEvolutionProposal(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: "existing memory", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "context"}
+	memory, _, err := repository.CreateMemory(context.Background(), memoryIdentity("evolution-context", "/v1/memories", params), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, input := claimProcessingJob(t, repository, 3)
+	candidate := processingCandidate("supplemented memory")
+	candidate.SuggestionKind = "supplement"
+	candidate.RelatedMemoryIDs = []string{memory.MemoryID}
+	result := domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Candidates: []domain.ProcessingCandidate{candidate}}
+	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	var action, proposedContent, relationSpecs, mentionSpecs, targetMemoryID, targetRevisionID, jobStatus string
+	err = repository.store.reader.QueryRow(`SELECT p.action,p.proposed_content,p.relation_specs_json,p.mention_specs_json,t.memory_id,t.expected_revision_id,(SELECT status FROM jobs WHERE job_id='process-job') FROM evolution_proposals p JOIN evolution_proposal_targets t ON t.proposal_id=p.proposal_id`).Scan(&action, &proposedContent, &relationSpecs, &mentionSpecs, &targetMemoryID, &targetRevisionID, &jobStatus)
+	if err != nil || action != "supplement" || proposedContent != candidate.Content || relationSpecs != "[]" || mentionSpecs != "[]" || targetMemoryID != memory.MemoryID || targetRevisionID != memory.CurrentRevision.RevisionID || jobStatus != "succeeded" {
+		t.Fatalf("proposal = %s/%s specs=%s/%s target=%s/%s status=%s err=%v", action, proposedContent, relationSpecs, mentionSpecs, targetMemoryID, targetRevisionID, jobStatus, err)
+	}
+}
+
 func TestProcessingCommitPersistsSafeOmissionSummary(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	claim, input := claimProcessingJob(t, repository, 3)

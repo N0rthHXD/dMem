@@ -485,7 +485,11 @@ func (s *Service) processClaim(serviceCtx context.Context, claim storage.Claimed
 func (s *Service) applyOutcome(claim storage.ClaimedJob, input domain.ProcessingInput, result domain.ProcessingResult) {
 	if err := validateProcessingResult(input, result); err != nil {
 		s.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingInvalidOutput})
-		s.failProcessing(claim, input, string(domain.ProcessingInvalidOutput), "processor returned invalid output", false)
+		code := result.ReasonCode
+		if code == "" {
+			code = processingValidationCode(err)
+		}
+		s.failProcessing(claim, input, code, "processor returned invalid output", false)
 		return
 	}
 	s.recordProcessorResult(result)
@@ -500,9 +504,17 @@ func (s *Service) applyOutcome(claim storage.ClaimedJob, input domain.Processing
 	case domain.ProcessingPolicyRejected:
 		s.logPersistenceError(context.Background(), "block_processing_job", claim, s.repository.BlockJob(context.Background(), claim, result.ReasonCode))
 	case domain.ProcessingTransientFailure:
-		s.failProcessing(claim, input, string(result.Code), "processor transient failure", true)
+		code := result.ReasonCode
+		if code == "" {
+			code = string(result.Code)
+		}
+		s.failProcessing(claim, input, code, "processor transient failure", true)
 	case domain.ProcessingPermanentFailure, domain.ProcessingInvalidOutput:
-		s.failProcessing(claim, input, string(result.Code), "processor permanent failure", false)
+		code := result.ReasonCode
+		if code == "" {
+			code = string(result.Code)
+		}
+		s.failProcessing(claim, input, code, "processor permanent failure", false)
 	}
 }
 

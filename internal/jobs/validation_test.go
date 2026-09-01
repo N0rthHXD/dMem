@@ -73,3 +73,47 @@ func TestValidateProcessingOutcomeCombinations(t *testing.T) {
 		t.Fatal("no_memory with candidates accepted")
 	}
 }
+
+func TestValidateProcessingResultReturnsSpecificContractErrors(t *testing.T) {
+	start, end := int64(0), int64(6)
+	for _, test := range []struct {
+		name   string
+		mutate func(*domain.ProcessingResult)
+		want   string
+	}{
+		{
+			name: "non-new whole-event evidence",
+			mutate: func(result *domain.ProcessingResult) {
+				result.Candidates[0].SuggestionKind = "supplement"
+				result.Candidates[0].Evidence[0].StartOffset = nil
+				result.Candidates[0].Evidence[0].EndOffset = nil
+			},
+			want: "invalid_evidence_reference",
+		},
+		{
+			name: "duplicate evidence",
+			mutate: func(result *domain.ProcessingResult) {
+				result.Candidates[0].Evidence = append(result.Candidates[0].Evidence, result.Candidates[0].Evidence[0])
+			},
+			want: "invalid_evidence_reference",
+		},
+		{
+			name: "missing supplement target",
+			mutate: func(result *domain.ProcessingResult) {
+				result.Candidates[0].SuggestionKind = "supplement"
+				result.Candidates[0].RelatedMemoryIDs = nil
+				result.Candidates[0].Evidence[0].StartOffset = &start
+				result.Candidates[0].Evidence[0].EndOffset = &end
+			},
+			want: "invalid_related_memory_reference",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := validProcessingResult()
+			test.mutate(&result)
+			if got := processingValidationCode(validateProcessingResult(validProcessingInput(), result)); got != test.want {
+				t.Fatalf("validation code = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

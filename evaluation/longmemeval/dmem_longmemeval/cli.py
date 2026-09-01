@@ -53,6 +53,13 @@ def parse_cutoffs(s: str) -> list[int]:
     return parts
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 # ------------------------------------------------------------------ run --
 
 
@@ -65,9 +72,13 @@ def cmd_run(args: argparse.Namespace) -> None:
         logger.info("subset run: first %d cases", len(cases))
 
     retrieval_mode = args.retrieval_mode or cfg.retrieval.mode
-    ingestion_profile = args.profile or cfg.ingestion.profile
     confirmation_policy = (
         args.confirmation_policy or cfg.ingestion.confirmation_policy
+    )
+    invalid_evidence_reference_retries = (
+        args.invalid_evidence_reference_retries
+        if args.invalid_evidence_reference_retries is not None
+        else cfg.ingestion.invalid_evidence_reference_retries
     )
     limit = args.limit if args.limit is not None else cfg.retrieval.limit
     max_chars = args.max_chars if args.max_chars is not None else cfg.retrieval.max_chars
@@ -82,10 +93,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         run_id=args.run_id,
         dataset_sha=sha,
         socket_path=socket_path,
-        ingestion_profile=ingestion_profile,
         confirmation_policy=confirmation_policy,
         job_poll_interval=cfg.ingestion.job_poll_interval,
         job_timeout=cfg.ingestion.job_timeout,
+        invalid_evidence_reference_retries=invalid_evidence_reference_retries,
         retrieval_mode=retrieval_mode,
         limit=limit,
         max_chars=max_chars,
@@ -95,6 +106,16 @@ def cmd_run(args: argparse.Namespace) -> None:
         output_dir=args.output,
         request_timeout=args.request_timeout,
         fail_on_degraded=args.fail_on_degraded,
+        ingestion_workers=(
+            args.ingestion_workers
+            if args.ingestion_workers is not None
+            else cfg.ingestion.workers
+        ),
+        retrieval_workers=(
+            args.retrieval_workers
+            if args.retrieval_workers is not None
+            else cfg.retrieval.workers
+        ),
     )
 
     cp = Checkpoint(args.output)
@@ -103,8 +124,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         compat = {
             "dataset_sha": sha,
             "run_id": args.run_id,
-            "ingestion_profile": ingestion_profile,
             "confirmation_policy": confirmation_policy,
+            "invalid_evidence_reference_retries": invalid_evidence_reference_retries,
             "retrieval_mode": retrieval_mode,
             "limit": limit,
             "max_chars": max_chars,
@@ -125,12 +146,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         if not health.get("ready"):
             print("daemon not ready", file=sys.stderr)
             sys.exit(1)
-        if (
-            ingestion_profile == "processed-events"
-            and health.get("processor_state") == "not_configured"
-        ):
+        if health.get("processor_state") == "not_configured":
             print(
-                "processed-events requires an enabled processing provider; "
+                "LongMemEval evaluation requires an enabled processing provider; "
                 "use a daemon config with [processing.provider].enabled=true",
                 file=sys.stderr,
             )
@@ -140,6 +158,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         runner = Runner(client, config, cp)
         summary = runner.run(cases)
         print(json.dumps(summary, indent=2))
+        if not summary.get("complete", False):
+            raise SystemExit(1)
     finally:
         client.close()
 
@@ -175,6 +195,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
         answer_cutoff=answer_cutoff,
         gen_length=gen_length,
         cot=cot,
+        workers=args.workers if args.workers is not None else cfg.answer.workers,
     )
     print(f"generated {count} answers")
 
@@ -201,6 +222,7 @@ def cmd_judge(args: argparse.Namespace) -> None:
         model=model,
         api_key=api_key,
         base_url=base_url,
+        workers=args.workers if args.workers is not None else cfg.judge.workers,
     )
     print(json.dumps(summary, indent=2))
 
@@ -217,6 +239,20 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 
     retrieval_records = cp.load_retrieval_records()
     judge_records = cp.load_judge_records()
+    ingested = cp.load_ingested_qids()
+    case_qids = {case.question_id for case in cases}
+    failure_records = cp.load_failure_records()
+    failures = {"ingestion": set(), "retrieval": set()}
+    for rec in failure_records:
+        qid = rec.get("question_id")
+        phase = rec.get("phase")
+        if qid not in case_qids or phase not in failures:
+            continue
+        if phase == "ingestion" and qid not in ingested:
+            failures[phase].add(qid)
+        elif phase == "retrieval" and qid not in retrieval_records:
+            failures[phase].add(qid)
+    failed_qids = set().union(*failures.values())
 
     all_metrics: list[dict[str, dict[str, float]]] = []
     excluded_abstention = 0
@@ -248,7 +284,19 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         qt: aggregate_metrics(entries, cutoffs) for qt, entries in per_type.items()
     }
 
+    completed_retrieval = sum(qid in retrieval_records for qid in case_qids)
     result: dict = {
+        "complete": not failed_qids and completed_retrieval == len(cases),
+        "coverage": completed_retrieval / len(cases) if cases else 1.0,
+        "failures": {
+            "total_cases": len(failed_qids),
+            "total_attempts": sum(
+                rec.get("question_id") in case_qids for rec in failure_records
+            ),
+            "by_phase": {
+                phase: len(qids) for phase, qids in failures.items() if qids
+            },
+        },
         "retrieval": {
             "metrics": summary_metrics,
             "per_type": per_type_metrics,
@@ -257,7 +305,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             "excluded_errors": excluded_errors,
             "degraded_cases": degraded_cases,
             "total_cases": len(cases),
+            "completed_cases": completed_retrieval,
             "evaluated_cases": len(all_metrics),
+            "failed_cases": len(failures["retrieval"]),
+            "skipped_ingestion_failures": len(failures["ingestion"]),
         },
     }
 
@@ -270,10 +321,11 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     ]
     if manifest:
         result["ingestion"] = {
-            "profile": manifest.get("ingestion_profile", "direct-turn"),
             "confirmation_policy": manifest.get(
                 "confirmation_policy", "confirm-all-new"
             ),
+            "completed_cases": len(ingested & case_qids),
+            "failed_cases": len(failures["ingestion"]),
             "events": len(ingestion_events),
             "candidates": sum(
                 len(rec.get("candidate_ids", [])) for rec in ingestion_events
@@ -376,16 +428,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--socket", default=None, help="dMem Unix socket path")
     p.add_argument("--run-id", required=True, help="Unique run identifier")
     p.add_argument(
-        "--profile",
-        default=None,
-        choices=["direct-turn", "processed-events"],
-        help="Ingestion profile (default: [ingestion].profile or direct-turn)",
-    )
-    p.add_argument(
         "--confirmation-policy",
         default=None,
         choices=["confirm-all-new", "none"],
-        help="Explicit candidate policy for processed-events",
+        help="Explicit candidate confirmation policy",
     )
     p.add_argument(
         "--retrieval-mode",
@@ -405,6 +451,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--caller-id", default="longmemeval")
     p.add_argument("--output", default="results/longmemeval")
     p.add_argument("--request-timeout", type=float, default=120.0)
+    p.add_argument("--ingestion-workers", type=positive_int, default=None)
+    p.add_argument("--retrieval-workers", type=positive_int, default=None)
+    p.add_argument(
+        "--invalid-evidence-reference-retries",
+        type=int,
+        default=None,
+        help="Retry failed extraction jobs with model output contract errors N times.",
+    )
     p.add_argument("--resume", action="store_true")
     p.add_argument("--fail-on-degraded", action="store_true")
     p.set_defaults(func=cmd_run)
@@ -418,6 +472,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--answer-cutoff", type=int, default=None)
     p.add_argument("--gen-length", type=int, default=None)
     p.add_argument("--cot", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--workers", type=positive_int, default=None)
     p.set_defaults(func=cmd_generate)
 
     # -- judge --
@@ -426,6 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default="results/longmemeval")
     p.add_argument("--model", default=None, help="Override [judge].model")
     p.add_argument("--base-url", default=None, help="Override [judge].base_url")
+    p.add_argument("--workers", type=positive_int, default=None)
     p.set_defaults(func=cmd_judge)
 
     # -- summarize --

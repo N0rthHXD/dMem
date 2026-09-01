@@ -12,8 +12,8 @@ directly.
 LongMemEval dataset
       │
       ▼
-namespace bootstrap + selected ingestion profile
-      │  POST /v1/remember, or /v1/events + jobs + candidate confirm
+namespace bootstrap + event ingestion + candidate confirmation
+      │  POST /v1/events + jobs + candidate confirm
       ▼
 dMem daemon (public API over Unix socket)
       │  POST /v1/recall
@@ -28,22 +28,18 @@ The runner creates a `user → project → task` namespace hierarchy:
 
 ```
 unique user root
-└── project: longmemeval:<dataset-sha>:<profile>:<run-id>
+└── project: longmemeval:<dataset-sha>:<run-id>
     ├── task: q:<question-id-1>
     ├── task: q:<question-id-2>
     └── task: q:<question-id-N>
 ```
 
 Retrieval is scoped to the question's task space with
-`include_ancestors=false`, ensuring strict inter-question isolation. Two
-ingestion profiles use the same paired user/assistant input units:
-
-- `direct-turn` writes authoritative event memories through `POST /v1/remember`.
-  It measures storage, retrieval, and QA while bypassing extraction and review.
-- `processed-events` submits raw conversations through `POST /v1/events`, waits
-  for every extraction job, discovers candidates belonging to the exact raw
-  event, and applies an explicit candidate confirmation policy. It measures the
-  complete extraction, review orchestration, retrieval, and QA chain.
+`include_ancestors=false`, ensuring strict inter-question isolation. The runner
+submits paired user/assistant input units as raw conversations through
+`POST /v1/events`, waits for every extraction job, discovers candidates belonging
+to the exact raw event, and applies an explicit candidate confirmation policy.
+It measures the complete extraction, review orchestration, retrieval, and QA chain.
 
 `confirm-all-new` is an evaluator policy, not daemon auto-confirmation. The
 daemon still requires an explicit `POST /v1/candidates/{id}/confirm` for every
@@ -76,16 +72,20 @@ The config file defines:
 | Section | Key | Description |
 |---|---|---|
 | `[daemon]` | `socket_path` | dMem Unix socket (or use `--socket`) |
-| `[ingestion]` | `profile` | `direct-turn` or `processed-events` |
 | `[ingestion]` | `confirmation_policy` | `confirm-all-new` or `none` |
 | `[ingestion]` | `job_poll_interval`, `job_timeout` | Extraction job polling |
+| `[ingestion]` | `invalid_evidence_reference_retries` | Bounded retry count for this model-output violation; default `1`, `0` disables it |
+| `[ingestion]` | `workers` | Cases ingested concurrently; built-in default `1` |
 | `[retrieval]` | `mode` | `keyword`, `semantic`, or `hybrid` |
 | `[retrieval]` | `limit`, `max_chars`, `cutoffs` | Retrieval parameters |
+| `[retrieval]` | `workers` | Recall requests issued concurrently; built-in default `1` |
 | `[answer]` | `model` | OpenAI-compatible model for answer generation |
 | `[answer]` | `base_url` | API endpoint (empty = OpenAI default) |
 | `[answer]` | `api_key_env` | Environment variable name for API key |
 | `[answer]` | `answer_cutoff`, `gen_length`, `cot` | Generation parameters |
+| `[answer]` | `workers` | Answer model requests issued concurrently; built-in default `1` |
 | `[judge]` | `model`, `base_url`, `api_key_env` | Judge model configuration |
+| `[judge]` | `workers` | Judge model requests issued concurrently; built-in default `1` |
 
 ## Usage
 
@@ -99,7 +99,6 @@ retrieval, QA, or both stages:
 ./evaluate.sh --stage retrieval \
   --dataset /path/to/longmemeval_s_cleaned.json \
   --run-id processed-001 \
-  --profile processed-events \
   --eval-config eval_config.toml
 
 # QA only, consuming an existing retrieval checkpoint.
@@ -112,21 +111,20 @@ retrieval, QA, or both stages:
 ./evaluate.sh --stage all \
   --dataset /path/to/longmemeval_s_cleaned.json \
   --run-id processed-001 \
-  --profile processed-events \
   --eval-config eval_config.toml
 ```
 
 Arguments after `--` are passed to the retrieval `run` command, for example
 `-- --confirmation-policy none --max-cases 10`.
 
-### Retrieval baseline
-
-```sh
-python -m dmem_longmemeval --config eval_config.toml run \
-  --dataset /path/to/longmemeval_s_cleaned.json \
-  --run-id baseline-001 \
-  --output results/longmemeval/baseline-001
-```
+The four stages support bounded case-level concurrency. Configure `workers` in
+their TOML sections, or override retrieval-stage values with
+`--ingestion-workers` and `--retrieval-workers`; `generate` and `judge` each
+accept `--workers`. Ingestion keeps events within each case ordered, and recall
+still starts only after all ingestion and the optional semantic barrier finish.
+Keep ingestion workers aligned with the daemon job worker count and provider
+`max_concurrent`/rate limits. Checkpoints are thread-safe within one evaluator,
+but multiple evaluator processes must not share an output directory.
 
 For semantic or hybrid retrieval, set `mode = "hybrid"` in the config or pass
 `--retrieval-mode hybrid` on the command line. Semantic and hybrid modes
@@ -134,43 +132,69 @@ require a configured embedding provider in the daemon. The runner triggers a
 single semantic rebuild after all ingestion is complete, then waits for
 readiness before querying.
 
-### Processed-events retrieval
+### Event Processing Retrieval
 
 The daemon must have an extraction processor and a processing policy that
 allows the benchmark's task spaces, `conversation` source type, and
-`text/plain` content. Run the extraction plus retrieval stage with:
+`text/plain` content. For semantic or hybrid retrieval, the embedding provider
+policy must also allow the `conversation` source type, or every memory's
+embedding job will be blocked with `embedding_policy_denied`. Run the extraction
+plus retrieval stage with:
 
 ```sh
 python -m dmem_longmemeval --config eval_config.toml run \
   --dataset /path/to/longmemeval_s_cleaned.json \
   --run-id processed-001 \
-  --profile processed-events \
   --confirmation-policy confirm-all-new \
   --output results/longmemeval/processed-001
 ```
 
-The run fails if an event has no extraction job, a job does not succeed, the
-processor reports `no_processor`, or the event does not reach `processed`.
-`no_memory` is a valid extraction result and is reported in the ingestion
-summary.
+The runner retries a failed extraction job on the same job ID when its error
+is a model output contract error, up to
+`invalid_evidence_reference_retries` times. This
+includes malformed processor JSON, invalid candidates, evidence references,
+related-memory references, and the generic `invalid_output` fallback. It does
+not re-ingest the event. All other failed job states fail the current case if an
+event has no extraction job, a job does not succeed, the processor reports
+`no_processor`, or the event does not reach `processed`. `no_memory` is a valid
+extraction result and is reported in the ingestion summary.
 
-`evaluate.sh` creates and manages a fresh daemon for the retrieval stage. It
+Failures are isolated at the case boundary. If any event in a case cannot be
+processed, that case is recorded in `failures.jsonl`, excluded from recall and
+metric denominators, and the runner continues with later cases. Retrieval
+failures are handled the same way. The final summary reports `coverage`,
+`complete`, and unresolved failure counts by phase. A partial run writes its
+summary and then exits non-zero; resume retries incomplete cases, and a later
+successful checkpoint resolves the earlier failure for summary purposes.
+
+`evaluate.sh` creates and manages an isolated daemon workspace for the retrieval stage. It
 defaults to `${DMEM_CONFIG:-~/.config/dmem/config.toml}` as the base daemon
 configuration. If that file has `[processing.provider].enabled = false`, pass
 an enabled provider configuration explicitly:
 
 ```sh
 ./evaluate.sh --stage all ... \
-  --profile processed-events \
   --daemon-config /path/to/processing-enabled.toml
 ```
 
 ### Resume
 
-Add `--resume` to continue a previously interrupted run. The runner validates
-that the dataset SHA-256, run ID, ingestion profile, confirmation policy,
-retrieval mode, limit, max-chars, cutoffs, and answer cutoff all match the
-existing checkpoint.
+`evaluate.sh` stores the daemon data directory at
+`<output>/daemon-workspace`, so use its `--resume` option to restart the daemon
+against the same data and continue an interrupted retrieval stage:
+
+```sh
+./evaluate.sh --stage retrieval \
+  --dataset /path/to/longmemeval_s_cleaned.json \
+  --run-id processed-001 \
+  --output results/longmemeval/processed-001 \
+  --resume
+```
+
+The Python runner uses its per-case checkpoints to skip completed ingestion and
+recall records. It validates
+that the dataset SHA-256, run ID, confirmation policy, retrieval mode, limit,
+max-chars, cutoffs, and answer cutoff all match the existing checkpoint.
 
 ### Answer generation
 
@@ -203,9 +227,8 @@ abstention judge prompts from the upstream LongMemEval `evaluate_qa.py`.
 Reports overall, task-averaged, per-type, and abstention accuracy.
 
 Together, `generate` and `judge` are the QA stage. They consume the retrieval
-checkpoint produced by either ingestion profile, so the commands are unchanged
-for `processed-events`. `evaluate.sh --stage all --profile processed-events`
-runs both stages and manages a fresh daemon for retrieval.
+checkpoint produced by the event-processing retrieval stage.
+`evaluate.sh --stage all` runs both stages and manages a fresh daemon for retrieval.
 
 ### Summarize
 
@@ -255,10 +278,12 @@ output_dir/
 ├── manifest.json          # run configuration and identity
 ├── ingestion.jsonl        # event records plus per-case completion markers
 ├── retrieval.jsonl        # one record per recalled question
+├── failures.jsonl         # append-only case failures by phase
 ├── generation.jsonl       # one record per generated answer
 ├── judge.jsonl            # one record per judged answer
 ├── hypotheses.jsonl       # official format for upstream evaluation
-└── summary.json           # aggregated metrics
+├── summary.json           # aggregated metrics and coverage
+└── daemon-workspace/      # daemon data retained for retrieval resume
 ```
 
 All JSONL files are append-only with `fsync` after each record, enabling safe

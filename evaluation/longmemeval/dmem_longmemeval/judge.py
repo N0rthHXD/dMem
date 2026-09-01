@@ -8,6 +8,8 @@ per-type, and abstention accuracy.
 from __future__ import annotations
 
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 
 import numpy as np
 from openai import OpenAI
@@ -105,8 +107,11 @@ def judge_answers(
     model: str,
     api_key: str,
     base_url: str | None = None,
+    workers: int = 1,
 ) -> dict:
     """Judge generated answers and return QA summary."""
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer")
     cases, _ = load_dataset(dataset_path)
     cp = Checkpoint(output_dir)
     generation_records = cp.load_generation_records()
@@ -130,52 +135,67 @@ def judge_answers(
 
     eligible = [case for case in cases if case.question_id in generation_records]
     todo = [case for case in eligible if case.question_id not in done]
+
+    def judge(case: Any) -> tuple[dict[str, Any], int]:
+        gen_rec = generation_records[case.question_id]
+        prompt = get_judge_prompt(
+            case.question_type,
+            case.question,
+            case.answer_string,
+            gen_rec["hypothesis"],
+            abstention=case.is_abstention,
+        )
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            n=1,
+            temperature=0,
+            max_tokens=10,
+        )
+        eval_response = completion.choices[0].message.content.strip()
+        label = "yes" in eval_response.lower()
+        return (
+            {
+                "question_id": case.question_id,
+                "model": model,
+                "label": label,
+                "raw_response": eval_response,
+            },
+            1 if label else 0,
+        )
+
+    first_error: Exception | None = None
     with tqdm(
-        todo,
         total=len(eligible),
         initial=len(eligible) - len(todo),
         desc="judge",
         unit="q",
         file=sys.stderr,
     ) as bar:
-        for case in bar:
-            gen_rec = generation_records[case.question_id]
-            hyp = gen_rec["hypothesis"]
-            prompt = get_judge_prompt(
-                case.question_type,
-                case.question,
-                case.answer_string,
-                hyp,
-                abstention=case.is_abstention,
-            )
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="lme-judge"
+        ) as executor:
+            futures = {executor.submit(judge, case): case for case in todo}
+            for future in as_completed(futures):
+                case = futures[future]
+                try:
+                    record, acc = future.result()
+                except Exception as exc:
+                    if first_error is None:
+                        first_error = exc
+                else:
+                    cp.append_judge(record)
+                    all_acc.append(acc)
+                    type2acc.setdefault(case.question_type, []).append(acc)
+                    if case.is_abstention:
+                        abstention_acc.append(acc)
+                    bar.set_postfix_str(
+                        f"q={case.question_id} correct={sum(all_acc)}/{len(all_acc)}"
+                    )
+                bar.update(1)
 
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                n=1,
-                temperature=0,
-                max_tokens=10,
-            )
-            eval_response = completion.choices[0].message.content.strip()
-            label = "yes" in eval_response.lower()
-
-            cp.append_judge(
-                {
-                    "question_id": case.question_id,
-                    "model": model,
-                    "label": label,
-                    "raw_response": eval_response,
-                }
-            )
-
-            acc = 1 if label else 0
-            all_acc.append(acc)
-            type2acc.setdefault(case.question_type, []).append(acc)
-            if case.is_abstention:
-                abstention_acc.append(acc)
-            bar.set_postfix_str(
-                f"q={case.question_id} correct={sum(all_acc)}/{len(all_acc)}"
-            )
+    if first_error is not None:
+        raise first_error
 
     summary = {
         "overall_accuracy": float(np.mean(all_acc)) if all_acc else 0.0,

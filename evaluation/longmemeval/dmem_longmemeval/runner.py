@@ -1,9 +1,10 @@
-"""Runner: namespace bootstrap, ingestion profiles, recall, and metrics.
+"""Runner: namespace bootstrap, processed-event ingestion, recall, and metrics.
 
 The runner drives three phases against a live dMem daemon:
 
 1. **Ingest** — create a ``user → project → task`` namespace hierarchy, then
-   write each LongMemEval haystack session through the selected profile.
+    submit each LongMemEval haystack session as a raw event, wait for extraction,
+    and explicitly confirm new candidates.
 2. **Semantic barrier** — for semantic/hybrid modes, trigger one semantic
    rebuild and wait for completion before querying.
 3. **Recall** — query each question's task scope, map recalled evidence back to
@@ -17,7 +18,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -32,8 +35,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CUTOFFS = [1, 3, 5, 10, 30, 50]
 RETRIEVAL_MODES = {"keyword", "semantic", "hybrid"}
-INGESTION_PROFILES = {"direct-turn", "processed-events"}
 CONFIRMATION_POLICIES = {"confirm-all-new", "none"}
+RETRYABLE_OUTPUT_ERRORS = {
+    "invalid_output",
+    "malformed_processor_output",
+    "invalid_candidate",
+    "candidate_out_of_bounds",
+    "invalid_evidence_reference",
+    "invalid_related_memory_reference",
+}
 RESULT_VERSION = "longmemeval-dmem-py-v2"
 
 
@@ -42,10 +52,10 @@ class RunConfig:
     run_id: str
     dataset_sha: str
     socket_path: str
-    ingestion_profile: str = "direct-turn"
     confirmation_policy: str = "confirm-all-new"
     job_poll_interval: float = 3.0
     job_timeout: float = 600.0
+    invalid_evidence_reference_retries: int = 1
     retrieval_mode: str = "keyword"
     limit: int = 100
     max_chars: int = 100000
@@ -55,6 +65,8 @@ class RunConfig:
     output_dir: str = "results/longmemeval"
     request_timeout: float = 120.0
     fail_on_degraded: bool = False
+    ingestion_workers: int = 1
+    retrieval_workers: int = 1
 
 
 def stable_key(*parts: str) -> str:
@@ -74,12 +86,21 @@ class Runner:
         self.cp = cp
         if config.retrieval_mode not in RETRIEVAL_MODES:
             raise ValueError(f"invalid retrieval_mode: {config.retrieval_mode}")
-        if config.ingestion_profile not in INGESTION_PROFILES:
-            raise ValueError(f"invalid ingestion_profile: {config.ingestion_profile}")
         if config.confirmation_policy not in CONFIRMATION_POLICIES:
             raise ValueError(
                 f"invalid confirmation_policy: {config.confirmation_policy}"
             )
+        if config.invalid_evidence_reference_retries < 0:
+            raise ValueError(
+                "invalid_evidence_reference_retries must be a non-negative integer"
+            )
+        for name, workers in (
+            ("ingestion_workers", config.ingestion_workers),
+            ("retrieval_workers", config.retrieval_workers),
+        ):
+            if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        self._progress_lock = threading.Lock()
         for k in config.cutoffs:
             if not (1 <= k <= config.limit):
                 raise ValueError(f"cutoff {k} must be in [1, limit={config.limit}]")
@@ -93,13 +114,17 @@ class Runner:
             "format_version": RESULT_VERSION,
             "run_id": self.config.run_id,
             "dataset_sha": self.config.dataset_sha,
-            "ingestion_profile": self.config.ingestion_profile,
             "confirmation_policy": self.config.confirmation_policy,
+            "invalid_evidence_reference_retries": (
+                self.config.invalid_evidence_reference_retries
+            ),
             "retrieval_mode": self.config.retrieval_mode,
             "limit": self.config.limit,
             "max_chars": self.config.max_chars,
             "cutoffs": self.config.cutoffs,
             "answer_cutoff": self.config.answer_cutoff,
+            "ingestion_workers": self.config.ingestion_workers,
+            "retrieval_workers": self.config.retrieval_workers,
             "socket_path": self.config.socket_path,
             "caller_id": self.config.caller_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -150,8 +175,7 @@ class Runner:
             logger.info("created user root: %s", user_id)
 
         project_ext = (
-            f"longmemeval:{self.config.dataset_sha[:16]}:"
-            f"{self.config.ingestion_profile}:{self.config.run_id}"
+            f"longmemeval:{self.config.dataset_sha[:16]}:{self.config.run_id}"
         )
         children = self.client.list_spaces(
             parent_space_id=user_id, space_type="project"
@@ -169,7 +193,6 @@ class Runner:
                 idempotency_key=stable_key(
                     "project",
                     self.config.dataset_sha,
-                    self.config.ingestion_profile,
                     self.config.run_id,
                 ),
             )
@@ -193,7 +216,6 @@ class Runner:
             idempotency_key=stable_key(
                 "task",
                 self.config.dataset_sha,
-                self.config.ingestion_profile,
                 self.config.run_id,
                 case.question_id,
             ),
@@ -216,7 +238,7 @@ class Runner:
         task_map: dict[str, str] = {}
 
         for qid, recs in ingestion_records.items():
-            if recs:
+            if qid in ingested and recs:
                 task_map[qid] = recs[0]["task_space_id"]
 
         todo = [c for c in cases if c.question_id not in ingested]
@@ -235,13 +257,41 @@ class Runner:
             file=sys.stderr,
         ) as bar:
             self._ingest_bar = bar
-            for case in todo:
-                task_id = self._get_or_create_task(case, project_id)
-                task_map[case.question_id] = task_id
-                self._ingest_case(case, task_id)
-            self._ingest_bar = None
+            try:
+                def ingest(case: Case) -> tuple[str, str, Exception | None]:
+                    try:
+                        task_id = self._get_or_create_task(case, project_id)
+                        self._ingest_case(case, task_id)
+                        return case.question_id, task_id, None
+                    except Exception as exc:
+                        return case.question_id, "", exc
+
+                with ThreadPoolExecutor(
+                    max_workers=self.config.ingestion_workers,
+                    thread_name_prefix="lme-ingest",
+                ) as executor:
+                    futures = [executor.submit(ingest, case) for case in todo]
+                    for future in as_completed(futures):
+                        qid, task_id, exc = future.result()
+                        if exc is None:
+                            task_map[qid] = task_id
+                        else:
+                            self._record_case_failure(qid, "ingestion", exc)
+            finally:
+                self._ingest_bar = None
 
         return task_map
+
+    def _record_case_failure(
+        self, question_id: str, phase: str, exc: Exception
+    ) -> None:
+        logger.error("%s failed for %s: %s", phase, question_id, exc)
+        self.cp.append_failure({
+            "question_id": question_id,
+            "phase": phase,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        })
 
     @staticmethod
     def _case_event_count(case: Case) -> int:
@@ -277,10 +327,11 @@ class Runner:
 
                 bar = getattr(self, "_ingest_bar", None)
                 if bar is not None:
-                    bar.set_postfix_str(
-                        f"q={case.question_id} session={session.session_id} "
-                        f"pair={pair_index + 1} submit"
-                    )
+                    with self._progress_lock:
+                        bar.set_postfix_str(
+                            f"q={case.question_id} session={session.session_id} "
+                            f"pair={pair_index + 1} submit"
+                        )
 
                 has_answer = any(
                     t.has_answer for t in pair if t.role == "user"
@@ -288,7 +339,6 @@ class Runner:
                 session_date_key = session.date.isoformat()
                 source_id = stable_key(
                     "source",
-                    self.config.ingestion_profile,
                     self.config.dataset_sha,
                     self.config.run_id,
                     case.question_id,
@@ -297,7 +347,6 @@ class Runner:
                     str(pair_index),
                 )
                 idem_key = stable_key(
-                    self.config.ingestion_profile,
                     self.config.dataset_sha,
                     self.config.run_id,
                     case.question_id,
@@ -315,38 +364,20 @@ class Runner:
                     "has_answer": has_answer,
                 }
 
-                if self.config.ingestion_profile == "processed-events":
-                    record = self._ingest_processed_event(
-                        case=case,
-                        task_space_id=task_space_id,
-                        session_id=session.session_id,
-                        pair_index=pair_index,
-                        content=content,
-                        occurred_at=to_rfc3339(session.date),
-                        source_id=source_id,
-                        metadata=metadata,
-                        idempotency_key=idem_key,
-                    )
-                else:
-                    result = self.client.remember(
-                        space_id=task_space_id,
-                        content=content,
-                        memory_type="event",
-                        source_name="longmemeval",
-                        source_event_id=source_id,
-                        occurred_at=to_rfc3339(session.date),
-                        metadata=metadata,
-                        reason="longmemeval_direct_turn",
-                        idempotency_key=idem_key,
-                    )
-                    record = {
-                        "event_id": result.get("event_id", ""),
-                        "memory_id": result.get("memory", {}).get("memory_id", ""),
-                    }
+                record = self._ingest_event(
+                    case=case,
+                    task_space_id=task_space_id,
+                    session_id=session.session_id,
+                    pair_index=pair_index,
+                    content=content,
+                    occurred_at=to_rfc3339(session.date),
+                    source_id=source_id,
+                    metadata=metadata,
+                    idempotency_key=idem_key,
+                )
 
                 self.cp.append_ingestion({
                     "record_type": "event",
-                    "profile": self.config.ingestion_profile,
                     "question_id": case.question_id,
                     "session_id": session.session_id,
                     "pair_index": pair_index,
@@ -355,22 +386,21 @@ class Runner:
                     **record,
                 })
                 if bar is not None:
-                    if self.config.ingestion_profile == "processed-events":
+                    with self._progress_lock:
                         bar.set_postfix_str(
                             f"q={case.question_id} candidates="
                             f"{len(record.get('candidate_ids', []))} confirmed="
                             f"{len(record.get('confirmed', []))}"
                         )
-                    bar.update(1)
+                        bar.update(1)
 
         self.cp.append_ingestion({
             "record_type": "case_complete",
-            "profile": self.config.ingestion_profile,
             "question_id": case.question_id,
             "task_space_id": task_space_id,
         })
 
-    def _ingest_processed_event(
+    def _ingest_event(
         self,
         *,
         case: Case,
@@ -397,20 +427,23 @@ class Runner:
         if not event_id:
             raise RuntimeError("POST /v1/events returned no event_id")
 
-        jobs = [
-            self.client.wait_for_job(
-                job_id,
-                poll_interval=self.config.job_poll_interval,
-                timeout=self.config.job_timeout,
-                on_status=lambda job: self._show_job_progress(
-                    case.question_id, pair_index, job
-                ),
+        jobs: list[dict[str, Any]] = []
+        retry_count = 0
+        first_error_codes: list[str] = []
+        for job_id in result.get("job_ids", []):
+            job, retries, first_error_code = self._wait_for_extraction_job(
+                event_id=event_id,
+                job_id=job_id,
+                question_id=case.question_id,
+                pair_index=pair_index,
             )
-            for job_id in result.get("job_ids", [])
-        ]
+            jobs.append(job)
+            retry_count += retries
+            if first_error_code:
+                first_error_codes.append(first_error_code)
         if not jobs:
             raise RuntimeError(
-                f"processed-events requires an extraction job for event {event_id}"
+                f"evaluation requires an extraction job for event {event_id}"
             )
         failed = [job for job in jobs if job.get("status") != "succeeded"]
         if failed:
@@ -428,7 +461,7 @@ class Runner:
         result_codes = [job.get("result_code") for job in jobs]
         if "no_processor" in result_codes:
             raise RuntimeError(
-                "processed-events requires a configured extraction processor"
+                "evaluation requires a configured extraction processor"
             )
 
         raw_event = self.client.get_event(event_id)
@@ -453,7 +486,7 @@ class Runner:
                     memory = self.client.confirm_candidate(
                         candidate_id=candidate_id,
                         reason_code="longmemeval_confirm_all_new",
-                        note="Explicit processed-events benchmark policy",
+                        note="Explicit LongMemEval benchmark policy",
                         idempotency_key=stable_key(
                             "confirm",
                             self.config.dataset_sha,
@@ -478,21 +511,77 @@ class Runner:
             "event_id": event_id,
             "job_ids": result.get("job_ids", []),
             "processing_result_codes": result_codes,
+            "processing_retry_count": retry_count,
+            "processing_first_error_codes": first_error_codes,
+            "processing_attempt_count": max(
+                (job.get("attempt_count", 0) for job in jobs), default=0
+            ),
             "candidate_ids": [c["candidate_id"] for c in candidates],
             "confirmed": confirmed,
             "memory_ids": [c["memory_id"] for c in confirmed if c["memory_id"]],
         }
+
+    def _wait_for_extraction_job(
+        self,
+        *,
+        event_id: str,
+        job_id: str,
+        question_id: str,
+        pair_index: int,
+    ) -> tuple[dict[str, Any], int, str]:
+        retries = 0
+        first_error_code = ""
+        while True:
+            job = self.client.wait_for_job(
+                job_id,
+                poll_interval=self.config.job_poll_interval,
+                timeout=self.config.job_timeout,
+                on_status=lambda current: self._show_job_progress(
+                    question_id, pair_index, current
+                ),
+            )
+            error_code = job.get("last_error_code", "")
+            if (
+                job.get("status") != "failed"
+                or error_code not in RETRYABLE_OUTPUT_ERRORS
+                or retries >= self.config.invalid_evidence_reference_retries
+            ):
+                return job, retries, first_error_code
+
+            if not first_error_code:
+                first_error_code = error_code
+            retries += 1
+            logger.warning(
+                "event %s extraction job %s failed with %s; retrying %d/%d",
+                event_id,
+                job_id,
+                error_code,
+                retries,
+                self.config.invalid_evidence_reference_retries,
+            )
+            self.client.retry_job(
+                job_id,
+                idempotency_key=stable_key(
+                    "retry-invalid-output",
+                    self.config.dataset_sha,
+                    self.config.run_id,
+                    event_id,
+                    job_id,
+                    str(retries),
+                ),
+            )
 
     def _show_job_progress(
         self, question_id: str, pair_index: int, job: dict[str, Any]
     ) -> None:
         bar = getattr(self, "_ingest_bar", None)
         if bar is not None:
-            bar.set_postfix_str(
-                f"q={question_id} pair={pair_index + 1} "
-                f"job={job.get('status', 'unknown')} "
-                f"attempt={job.get('attempt_count', 0)}"
-            )
+            with self._progress_lock:
+                bar.set_postfix_str(
+                    f"q={question_id} pair={pair_index + 1} "
+                    f"job={job.get('status', 'unknown')} "
+                    f"attempt={job.get('attempt_count', 0)}"
+                )
 
     # ------------------------------------------------------------------
     # semantic barrier
@@ -535,25 +624,38 @@ class Runner:
     ) -> None:
         done = self.cp.load_retrieval_qids()
         ingestion_records = self.cp.load_ingestion_records()
-        todo = [case for case in cases if case.question_id not in done]
+        todo = [
+            case for case in cases
+            if case.question_id in task_map and case.question_id not in done
+        ]
+        completed = sum(case.question_id in done for case in cases)
         with tqdm(
-            todo,
             total=len(cases),
-            initial=len(done),
+            initial=completed,
             desc="recall",
             unit="q",
             file=sys.stderr,
         ) as bar:
-            for case in bar:
-                task_id = task_map.get(case.question_id)
-                if not task_id:
-                    recs = ingestion_records.get(case.question_id)
-                    task_id = recs[0]["task_space_id"] if recs else None
-                if not task_id:
-                    logger.warning("no task space for %s, skipping", case.question_id)
-                    continue
-                self._recall_case(case, task_id, ingestion_records)
-                bar.set_postfix_str(case.question_id)
+            def recall(case: Case) -> tuple[str, Exception | None]:
+                try:
+                    self._recall_case(
+                        case, task_map[case.question_id], ingestion_records
+                    )
+                    return case.question_id, None
+                except Exception as exc:
+                    return case.question_id, exc
+
+            with ThreadPoolExecutor(
+                max_workers=self.config.retrieval_workers,
+                thread_name_prefix="lme-recall",
+            ) as executor:
+                futures = [executor.submit(recall, case) for case in todo]
+                for future in as_completed(futures):
+                    qid, exc = future.result()
+                    if exc is not None:
+                        self._record_case_failure(qid, "retrieval", exc)
+                    bar.set_postfix_str(qid)
+                    bar.update(1)
 
     def _recall_case(
         self, case: Case, task_space_id: str,
@@ -674,6 +776,13 @@ class Runner:
 
     def _summarize(self, cases: list[Case]) -> dict[str, Any]:
         retrieval_records = self.cp.load_retrieval_records()
+        ingested = self.cp.load_ingested_qids()
+        case_qids = {case.question_id for case in cases}
+        failures = self._unresolved_failures(case_qids, ingested, retrieval_records)
+        failed_by_phase = {
+            phase: len(qids) for phase, qids in failures.items() if qids
+        }
+        failed_qids = set().union(*failures.values()) if failures else set()
 
         all_metrics: list[dict[str, dict[str, float]]] = []
         excluded_abstention: list[str] = []
@@ -711,8 +820,20 @@ class Runner:
             for qt, entries in by_type.items()
         }
 
+        completed_retrieval = sum(qid in retrieval_records for qid in case_qids)
+        total_cases = len(cases)
         return {
-            "ingestion": self._summarize_ingestion(),
+            "complete": not failed_qids and completed_retrieval == total_cases,
+            "coverage": completed_retrieval / total_cases if total_cases else 1.0,
+            "failures": {
+                "total_cases": len(failed_qids),
+                "total_attempts": sum(
+                    rec.get("question_id") in case_qids
+                    for rec in self.cp.load_failure_records()
+                ),
+                "by_phase": failed_by_phase,
+            },
+            "ingestion": self._summarize_ingestion(cases, failures),
             "retrieval": {
                 "metrics": summary_metrics,
                 "per_type": per_type,
@@ -720,12 +841,37 @@ class Runner:
                 "excluded_no_labels": len(excluded_no_labels),
                 "excluded_errors": len(excluded_errors),
                 "degraded_cases": len(degraded_cases),
-                "total_cases": len(cases),
+                "total_cases": total_cases,
+                "completed_cases": completed_retrieval,
                 "evaluated_cases": len(all_metrics),
+                "failed_cases": len(failures["retrieval"]),
+                "skipped_ingestion_failures": len(failures["ingestion"]),
             },
         }
 
-    def _summarize_ingestion(self) -> dict[str, Any]:
+    def _unresolved_failures(
+        self,
+        case_qids: set[str],
+        ingested: set[str],
+        retrieval_records: dict[str, dict[str, Any]],
+    ) -> dict[str, set[str]]:
+        failures = {"ingestion": set(), "retrieval": set()}
+        for rec in self.cp.load_failure_records():
+            qid = rec.get("question_id")
+            phase = rec.get("phase")
+            if qid not in case_qids or phase not in failures:
+                continue
+            if phase == "ingestion" and qid not in ingested:
+                failures[phase].add(qid)
+            elif phase == "retrieval" and qid not in retrieval_records:
+                failures[phase].add(qid)
+        return failures
+
+    def _summarize_ingestion(
+        self, cases: list[Case], failures: dict[str, set[str]]
+    ) -> dict[str, Any]:
+        ingested = self.cp.load_ingested_qids()
+        case_qids = {case.question_id for case in cases}
         events = [
             rec
             for records in self.cp.load_ingestion_records().values()
@@ -733,8 +879,9 @@ class Runner:
             if rec.get("record_type", "event") == "event"
         ]
         return {
-            "profile": self.config.ingestion_profile,
             "confirmation_policy": self.config.confirmation_policy,
+            "completed_cases": len(ingested & case_qids),
+            "failed_cases": len(failures["ingestion"]),
             "events": len(events),
             "candidates": sum(len(rec.get("candidate_ids", [])) for rec in events),
             "confirmed": sum(len(rec.get("confirmed", [])) for rec in events),

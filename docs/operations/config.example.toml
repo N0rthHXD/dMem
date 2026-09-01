@@ -76,7 +76,7 @@ enabled = false
 # [processing.provider.policy]
 # default = "deny"
 # content_types = ["application/json", "text/plain"]
-# source_types = ["manual", "message"]
+# source_types = ["manual", "message", "conversation"]
 # sensitivities = ["normal"]
 #
 # [[processing.provider.policy.assignments]]
@@ -111,7 +111,7 @@ enabled = false
 # default = "deny"
 # query = "allow"
 # content_types = ["text/plain"]
-# source_types = ["manual", "message"]
+# source_types = ["manual", "message", "conversation"]
 # sensitivities = ["normal"]
 #
 # [[embedding.provider.policy.assignments]]

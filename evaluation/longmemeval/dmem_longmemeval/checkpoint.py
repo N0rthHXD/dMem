@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,10 @@ class Checkpoint:
         self.retrieval_path = self.dir / "retrieval.jsonl"
         self.generation_path = self.dir / "generation.jsonl"
         self.judge_path = self.dir / "judge.jsonl"
+        self.failure_path = self.dir / "failures.jsonl"
         self.summary_path = self.dir / "summary.json"
         self.hypotheses_path = self.dir / "hypotheses.jsonl"
+        self._lock = threading.RLock()
 
     # -- manifest --
 
@@ -32,19 +35,22 @@ class Checkpoint:
         self._atomic_write_json(self.manifest_path, manifest)
 
     def read_manifest(self) -> dict[str, Any] | None:
-        if not self.manifest_path.exists():
-            return None
-        return json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        with self._lock:
+            if not self.manifest_path.exists():
+                return None
+            return json.loads(self.manifest_path.read_text(encoding="utf-8"))
 
     def is_compatible(self, config: dict[str, Any]) -> tuple[bool, str]:
         manifest = self.read_manifest()
         if manifest is None:
             return True, "no existing manifest"
         for key in (
-            "dataset_sha", "run_id", "ingestion_profile",
-            "confirmation_policy", "retrieval_mode", "limit",
+            "dataset_sha", "run_id", "confirmation_policy", "retrieval_mode", "limit",
             "max_chars", "cutoffs", "answer_cutoff",
+            "invalid_evidence_reference_retries",
         ):
+            if key == "invalid_evidence_reference_retries" and key not in manifest:
+                continue
             if manifest.get(key) != config.get(key):
                 return False, f"config mismatch on {key}"
         return True, "compatible"
@@ -52,11 +58,12 @@ class Checkpoint:
     # -- append --
 
     def _append_line(self, path: Path, record: dict[str, Any]) -> None:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False))
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
+        payload = json.dumps(record, ensure_ascii=False) + "\n"
+        with self._lock:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
 
     def append_ingestion(self, record: dict[str, Any]) -> None:
         self._append_line(self.ingestion_path, record)
@@ -70,6 +77,9 @@ class Checkpoint:
     def append_judge(self, record: dict[str, Any]) -> None:
         self._append_line(self.judge_path, record)
 
+    def append_failure(self, record: dict[str, Any]) -> None:
+        self._append_line(self.failure_path, record)
+
     def append_hypothesis(self, qid: str, hypothesis: str) -> None:
         self._append_line(
             self.hypotheses_path,
@@ -79,12 +89,19 @@ class Checkpoint:
     # -- read-back --
 
     def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
+        with self._lock:
+            if not path.exists():
+                return []
+            lines = path.read_text(encoding="utf-8").splitlines()
         records = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for index, line in enumerate(lines):
             if line.strip():
-                records.append(json.loads(line))
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    if index == len(lines) - 1:
+                        break
+                    raise
         return records
 
     def load_ingestion_records(self) -> dict[str, list[dict[str, Any]]]:
@@ -118,6 +135,9 @@ class Checkpoint:
     def load_judge_records(self) -> dict[str, dict[str, Any]]:
         return {rec["question_id"]: rec for rec in self._read_jsonl(self.judge_path)}
 
+    def load_failure_records(self) -> list[dict[str, Any]]:
+        return self._read_jsonl(self.failure_path)
+
     # -- summary --
 
     def write_summary(self, summary: dict[str, Any]) -> None:
@@ -126,15 +146,16 @@ class Checkpoint:
     # -- helpers --
 
     def _atomic_write_json(self, path: Path, data: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except Exception:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        with self._lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+            except Exception:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise

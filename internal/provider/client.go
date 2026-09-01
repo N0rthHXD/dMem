@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,8 +41,8 @@ Every candidate object MUST contain EXACTLY these fields and no others:
 - "confidence": number between 0 and 1 inclusive.
 - "sensitivity": "normal" or "sensitive".
 - "suggestion_kind": one of "new", "duplicate", "supplement", "replacement", "conflict".
-- "evidence": non-empty array. Each element has EXACTLY {"event_id","evidence_type","start_offset","end_offset"}. "event_id" must be the target event_id or a context event_id present in the input. "evidence_type" is "direct_statement", "tool_result", or "manual_reference". Set BOTH "start_offset" and "end_offset" to null to cite the whole event, or set both to 0-based rune offsets into that event's content text with start_offset < end_offset and end_offset not exceeding the text length. Never set only one of the two.
-- "related_memory_ids": array of context memory ids this candidate relates to; use [] when there are none.
+- "evidence": non-empty array with no duplicate references. Each element has EXACTLY {"event_id","evidence_type","start_offset","end_offset"}. "event_id" must be the target event_id or a context event_id present in the input. "evidence_type" is "direct_statement", "tool_result", or "manual_reference". For "new", set BOTH "start_offset" and "end_offset" to null to cite the whole event, or set both to 0-based rune offsets into that event's content text with start_offset < end_offset and end_offset not exceeding the text length. For every other suggestion_kind, offsets must be a non-null range. Never set only one of the two.
+- "related_memory_ids": array of unique context memory ids this candidate relates to. "new" uses []; "supplement" and "replacement" require exactly one id; "duplicate" requires at least one id; "conflict" requires exactly two ids. Non-"new" candidates may only reference context memories marked proposal_capable=true.
 
 Optionally include "valid_from" and/or "valid_until" as RFC3339 strings only when an explicit time bound is present; "valid_until" must be after "valid_from".
 
@@ -682,6 +683,7 @@ func validateProcessOutput(output processOutput, request ProcessRequest, usage u
 			events[event.eventID] = event
 		}
 		evidence := make([]Evidence, len(item.Evidence))
+		seenEvidence := make(map[string]struct{}, len(item.Evidence))
 		for n, reference := range item.Evidence {
 			event, ok := events[reference.EventID]
 			if !ok || !validEvidenceType(reference.EvidenceType) || (reference.StartOffset == nil) != (reference.EndOffset == nil) {
@@ -690,21 +692,55 @@ func validateProcessOutput(output processOutput, request ProcessRequest, usage u
 			if reference.StartOffset != nil && (event.content.kind == "reference" || *reference.StartOffset < 0 || *reference.EndOffset <= *reference.StartOffset || *reference.EndOffset > int64(utf8.RuneCountInString(event.content.text))) {
 				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_evidence_reference")
 			}
+			if item.SuggestionKind != "new" && reference.StartOffset == nil {
+				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_evidence_reference")
+			}
+			key := evidenceKey(reference)
+			if _, duplicate := seenEvidence[key]; duplicate {
+				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_evidence_reference")
+			}
+			seenEvidence[key] = struct{}{}
 			evidence[n] = Evidence{eventID: reference.EventID, evidenceType: reference.EvidenceType, startOffset: cloneInt64(reference.StartOffset), endOffset: cloneInt64(reference.EndOffset)}
 		}
 		memoryIDs := make(map[string]Memory, len(request.contextMemories))
 		for _, memory := range request.contextMemories {
 			memoryIDs[memory.memoryID] = memory
 		}
+		seenMemoryIDs := make(map[string]struct{}, len(item.RelatedMemoryIDs))
 		for _, relatedID := range item.RelatedMemoryIDs {
 			memory, ok := memoryIDs[relatedID]
 			if !ok || !boundedString(relatedID) || item.SuggestionKind != "new" && !memory.proposalCapable {
+				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
+			}
+			if _, duplicate := seenMemoryIDs[relatedID]; duplicate {
+				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
+			}
+			seenMemoryIDs[relatedID] = struct{}{}
+		}
+		switch item.SuggestionKind {
+		case "supplement", "replacement":
+			if len(item.RelatedMemoryIDs) != 1 {
+				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
+			}
+		case "conflict":
+			if len(item.RelatedMemoryIDs) != 2 {
+				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
+			}
+		case "duplicate":
+			if len(item.RelatedMemoryIDs) == 0 {
 				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
 			}
 		}
 		candidates[i] = Candidate{content: item.Content, memoryType: item.MemoryType, spaceID: item.SpaceID, validFrom: cloneTime(item.ValidFrom), validUntil: cloneTime(item.ValidUntil), confidence: item.Confidence, sensitivity: item.Sensitivity, evidence: evidence, suggestion: item.SuggestionKind, relatedIDs: append([]string(nil), item.RelatedMemoryIDs...)}
 	}
 	return ProcessResult{category: output.Category, candidates: candidates, usage: usageFromWire(usage), requestID: requestID}, nil
+}
+
+func evidenceKey(value evidenceWire) string {
+	if value.StartOffset == nil {
+		return value.EventID + "|-"
+	}
+	return value.EventID + "|" + strconv.FormatInt(*value.StartOffset, 10) + "|" + strconv.FormatInt(*value.EndOffset, 10)
 }
 
 func decodeSingle(data []byte, output any) error {

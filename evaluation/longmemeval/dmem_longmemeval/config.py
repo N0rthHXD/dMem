@@ -25,10 +25,11 @@ class DaemonConfig:
 
 @dataclass
 class IngestionConfig:
-    profile: str = "direct-turn"
     confirmation_policy: str = "confirm-all-new"
     job_poll_interval: float = 3.0
     job_timeout: float = 600.0
+    invalid_evidence_reference_retries: int = 1
+    workers: int = 1
 
 
 @dataclass
@@ -37,6 +38,7 @@ class RetrievalConfig:
     limit: int = 100
     max_chars: int = 100000
     cutoffs: list[int] = field(default_factory=lambda: DEFAULT_CUTOFFS.copy())
+    workers: int = 1
 
 
 @dataclass
@@ -47,6 +49,7 @@ class AnswerConfig:
     answer_cutoff: int = 30
     gen_length: int = 500
     cot: bool = False
+    workers: int = 1
 
 
 @dataclass
@@ -54,6 +57,7 @@ class JudgeConfig:
     model: str = ""
     base_url: str = ""
     api_key_env: str = "OPENAI_API_KEY"
+    workers: int = 1
 
 
 @dataclass
@@ -85,12 +89,15 @@ def load_config(path: str | Path | None) -> EvalConfig:
 
     if "ingestion" in data:
         i = data["ingestion"]
-        cfg.ingestion.profile = i.get("profile", "direct-turn")
         cfg.ingestion.confirmation_policy = i.get(
             "confirmation_policy", "confirm-all-new"
         )
         cfg.ingestion.job_poll_interval = i.get("job_poll_interval", 3.0)
         cfg.ingestion.job_timeout = i.get("job_timeout", 600.0)
+        cfg.ingestion.invalid_evidence_reference_retries = i.get(
+            "invalid_evidence_reference_retries", 1
+        )
+        cfg.ingestion.workers = i.get("workers", 1)
 
     if "retrieval" in data:
         r = data["retrieval"]
@@ -98,6 +105,7 @@ def load_config(path: str | Path | None) -> EvalConfig:
         cfg.retrieval.limit = r.get("limit", 100)
         cfg.retrieval.max_chars = r.get("max_chars", 100000)
         cfg.retrieval.cutoffs = r.get("cutoffs", DEFAULT_CUTOFFS.copy())
+        cfg.retrieval.workers = r.get("workers", 1)
 
     if "answer" in data:
         a = data["answer"]
@@ -107,20 +115,29 @@ def load_config(path: str | Path | None) -> EvalConfig:
         cfg.answer.answer_cutoff = a.get("answer_cutoff", 30)
         cfg.answer.gen_length = a.get("gen_length", 500)
         cfg.answer.cot = a.get("cot", False)
+        cfg.answer.workers = a.get("workers", 1)
 
     if "judge" in data:
         j = data["judge"]
         cfg.judge.model = j.get("model", "")
         cfg.judge.base_url = j.get("base_url", "")
         cfg.judge.api_key_env = j.get("api_key_env", "OPENAI_API_KEY")
+        cfg.judge.workers = j.get("workers", 1)
 
     _validate(cfg)
     return cfg
 
 
 def _validate(cfg: EvalConfig) -> None:
-    if cfg.ingestion.profile not in ("direct-turn", "processed-events"):
-        raise ValueError(f"invalid ingestion.profile: {cfg.ingestion.profile!r}")
+    worker_counts = {
+        "ingestion.workers": cfg.ingestion.workers,
+        "retrieval.workers": cfg.retrieval.workers,
+        "answer.workers": cfg.answer.workers,
+        "judge.workers": cfg.judge.workers,
+    }
+    for name, workers in worker_counts.items():
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+            raise ValueError(f"{name} must be a positive integer")
     if cfg.ingestion.confirmation_policy not in ("confirm-all-new", "none"):
         raise ValueError(
             "invalid ingestion.confirmation_policy: "
@@ -130,6 +147,11 @@ def _validate(cfg: EvalConfig) -> None:
         raise ValueError("ingestion.job_poll_interval must be positive")
     if cfg.ingestion.job_timeout <= 0:
         raise ValueError("ingestion.job_timeout must be positive")
+    retries = cfg.ingestion.invalid_evidence_reference_retries
+    if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
+        raise ValueError(
+            "ingestion.invalid_evidence_reference_retries must be a non-negative integer"
+        )
     if cfg.retrieval.mode not in ("keyword", "semantic", "hybrid"):
         raise ValueError(
             f"invalid retrieval.mode: {cfg.retrieval.mode!r}"

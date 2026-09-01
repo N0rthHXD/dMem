@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -169,6 +170,43 @@ func TestProcessRejectsEvidenceFromOmittedContext(t *testing.T) {
 	denied := NewEvent("denied", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "private"))
 	_, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, []Event{denied}, nil, []string{"fact"}, 1, 100))
 	assertProviderError(t, err, ErrorInvalidOutput, "invalid_evidence_reference")
+}
+
+func TestProcessRejectsJobLayerOnlyCandidateViolations(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	for _, test := range []struct {
+		name     string
+		output   string
+		wantCode string
+	}{
+		{
+			name:     "non-new whole-event evidence",
+			output:   `{"category":"candidates_extracted","candidates":[{"content":"result","memory_type":"fact","space_id":"space-a","confidence":0.8,"sensitivity":"normal","evidence":[{"event_id":"event-a","evidence_type":"direct_statement","start_offset":null,"end_offset":null}],"suggestion_kind":"supplement","related_memory_ids":["memory-a"]}]}`,
+			wantCode: "invalid_evidence_reference",
+		},
+		{
+			name:     "missing supplement target",
+			output:   `{"category":"candidates_extracted","candidates":[{"content":"result","memory_type":"fact","space_id":"space-a","confidence":0.8,"sensitivity":"normal","evidence":[{"event_id":"event-a","evidence_type":"direct_statement","start_offset":0,"end_offset":6}],"suggestion_kind":"supplement","related_memory_ids":[]}]}`,
+			wantCode: "invalid_related_memory_reference",
+		},
+		{
+			name:     "duplicate memory target",
+			output:   `{"category":"candidates_extracted","candidates":[{"content":"result","memory_type":"fact","space_id":"space-a","confidence":0.8,"sensitivity":"normal","evidence":[{"event_id":"event-a","evidence_type":"direct_statement","start_offset":0,"end_offset":6}],"suggestion_kind":"duplicate","related_memory_ids":["memory-a","memory-a"]}]}`,
+			wantCode: "invalid_related_memory_reference",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(test.output) + `}}]}`))
+			}))
+			defer server.Close()
+			client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
+			target := NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "source text"))
+			memory := NewMemory("memory-a", "revision-a", "space-a", "context", "active", "normal", nil, nil)
+			_, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, []Memory{memory}, []string{"fact"}, 1, 100))
+			assertProviderError(t, err, ErrorInvalidOutput, test.wantCode)
+		})
+	}
 }
 
 func TestPolicyRejectsBeforeSecretAndNetwork(t *testing.T) {

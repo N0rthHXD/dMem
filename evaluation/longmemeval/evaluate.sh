@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ./evaluate.sh --stage retrieval --dataset DATASET --run-id RUN_ID [options]
+#   ./evaluate.sh --stage retrieval --dataset DATASET --run-id RUN_ID --resume [options]
 #   ./evaluate.sh --stage qa --dataset DATASET --output OUTPUT [options]
 #   ./evaluate.sh --stage all --dataset DATASET --run-id RUN_ID [options]
 #
@@ -11,13 +12,12 @@
 #   --dataset PATH        LongMemEval JSON dataset (required)
 #   --run-id ID           Run identifier (required for retrieval/all)
 #   --output DIR          Result directory (default: <repo>/results/longmemeval/<run-id>)
-#   --profile PROFILE     direct-turn|processed-events (default: config/default)
 #   --retrieval-mode MODE keyword|semantic|hybrid (default: config/default)
 #   --eval-config PATH    Evaluation TOML (required for QA)
 #   --daemon-config PATH  dmemd TOML (default: $DMEM_CONFIG or ~/.config/dmem/config.toml)
 #   --dmemd PATH          dmemd binary (default: $DMEMD or <repo>/dmemd)
 #   --python PATH         Python interpreter (default: python3)
-#   --keep                Keep the fresh retrieval daemon workspace
+#   --resume              Resume retrieval with the saved daemon workspace
 #   --                    Extra arguments passed to the retrieval run command
 
 set -euo pipefail
@@ -29,13 +29,12 @@ STAGE="all"
 DATASET=""
 RUN_ID=""
 OUTPUT=""
-PROFILE=""
 RETRIEVAL_MODE=""
 EVAL_CONFIG="${DMEM_EVAL_CONFIG:-}"
 DAEMON_CONFIG="${DMEM_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml}"
 DMEMD_BIN="${DMEMD:-}"
 PYTHON_BIN="${PYTHON:-python3}"
-KEEP=false
+RESUME=false
 RETRIEVAL_ARGS=()
 TMP_ROOT=""
 DAEMON_PID=""
@@ -52,13 +51,6 @@ cleanup() {
     kill -KILL "$DAEMON_PID" 2>/dev/null || true
     wait "$DAEMON_PID" 2>/dev/null || true
   fi
-  if [[ -n "$TMP_ROOT" ]]; then
-    if [[ "$KEEP" == true ]]; then
-      printf 'kept workspace: %s\n' "$TMP_ROOT" >&2
-    else
-      rm -rf "$TMP_ROOT"
-    fi
-  fi
   exit "$status"
 }
 
@@ -73,13 +65,12 @@ while [[ $# -gt 0 ]]; do
     --dataset) DATASET="$2"; shift 2;;
     --run-id) RUN_ID="$2"; shift 2;;
     --output) OUTPUT="$2"; shift 2;;
-    --profile) PROFILE="$2"; shift 2;;
     --retrieval-mode) RETRIEVAL_MODE="$2"; shift 2;;
     --eval-config) EVAL_CONFIG="$2"; shift 2;;
     --daemon-config) DAEMON_CONFIG="$2"; shift 2;;
     --dmemd) DMEMD_BIN="$2"; shift 2;;
     --python) PYTHON_BIN="$2"; shift 2;;
-    --keep) KEEP=true; shift;;
+    --resume) RESUME=true; shift;;
     --)
       shift
       while [[ $# -gt 0 ]]; do
@@ -148,7 +139,8 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
     exit 1
   }
 
-  TMP_ROOT="$(mktemp -d -t dmem-eval-XXXXXXXX)"
+  install -d "$OUTPUT"
+  TMP_ROOT="$OUTPUT/daemon-workspace"
   DATA_DIR="$TMP_ROOT/data"
   RUNTIME_DIR="$TMP_ROOT/runtime"
   SOCKET_PATH="$RUNTIME_DIR/dmem.sock"
@@ -156,8 +148,19 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   DAEMON_LOG="$TMP_ROOT/daemon.log"
   trap cleanup EXIT INT TERM
 
-  install -d -m 0700 "$DATA_DIR" "$RUNTIME_DIR"
-  awk -v data_dir="$DATA_DIR" -v runtime_dir="$RUNTIME_DIR" '
+  if [[ "$RESUME" == true ]]; then
+    [[ -f "$DAEMON_CONFIG_PATH" && -f "$DATA_DIR/dmem.db" ]] || {
+      printf 'error: resumable daemon workspace not found: %s\n' "$TMP_ROOT" >&2
+      exit 1
+    }
+    printf 'reusing daemon workspace: %s\n' "$TMP_ROOT" >&2
+  else
+    [[ ! -e "$TMP_ROOT" ]] || {
+      printf 'error: daemon workspace already exists; use --resume: %s\n' "$TMP_ROOT" >&2
+      exit 1
+    }
+    install -d -m 0700 "$DATA_DIR" "$RUNTIME_DIR"
+    awk -v data_dir="$DATA_DIR" -v runtime_dir="$RUNTIME_DIR" '
     /^\[instance\]$/ {
       found_instance = 1
       print
@@ -171,16 +174,19 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
     in_instance && /^\[/ { in_instance = 0 }
     !in_instance { print }
     END { if (!found_instance) exit 1 }
-  ' "$DAEMON_CONFIG" > "$DAEMON_CONFIG_PATH" || {
-    printf 'error: daemon config has no [instance] section: %s\n' "$DAEMON_CONFIG" >&2
-    exit 1
-  }
+    ' "$DAEMON_CONFIG" > "$DAEMON_CONFIG_PATH" || {
+      printf 'error: daemon config has no [instance] section: %s\n' "$DAEMON_CONFIG" >&2
+      exit 1
+    }
+  fi
 
   printf 'validating daemon config\n' >&2
   "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" config validate >/dev/null
-  printf 'initializing fresh database\n' >&2
-  "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" init >/dev/null
-  printf 'starting fresh daemon\n' >&2
+  if [[ "$RESUME" == false ]]; then
+    printf 'initializing fresh database\n' >&2
+    "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" init >/dev/null
+  fi
+  printf 'starting daemon\n' >&2
   "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" daemon >"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
 
@@ -199,7 +205,6 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
     exit 1
   fi
 
-  install -d "$OUTPUT"
   RETRIEVAL_CMD=(
     "$PYTHON_BIN" -m dmem_longmemeval
   )
@@ -211,7 +216,7 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
     --run-id "$RUN_ID"
     --output "$OUTPUT"
   )
-  [[ -n "$PROFILE" ]] && RETRIEVAL_CMD+=(--profile "$PROFILE")
+  [[ "$RESUME" == true ]] && RETRIEVAL_CMD+=(--resume)
   [[ -n "$RETRIEVAL_MODE" ]] && RETRIEVAL_CMD+=(--retrieval-mode "$RETRIEVAL_MODE")
   [[ ${#RETRIEVAL_ARGS[@]} -gt 0 ]] && RETRIEVAL_CMD+=("${RETRIEVAL_ARGS[@]}")
 

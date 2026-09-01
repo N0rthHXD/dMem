@@ -223,7 +223,7 @@ class DMemClient:
         )
 
     # ------------------------------------------------------------------
-    # ingest / remember / recall
+    # ingest / recall
     # ------------------------------------------------------------------
 
     def ingest_event(
@@ -259,36 +259,6 @@ class DMemClient:
 
     def get_event(self, event_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/events/{event_id}")
-
-    def remember(
-        self,
-        *,
-        space_id: str,
-        content: str,
-        memory_type: str = "event",
-        source_name: str = "longmemeval",
-        source_event_id: str | None = None,
-        occurred_at: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        reason: str = "longmemeval_direct_turn",
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "space_id": space_id,
-            "content": content,
-            "memory_type": memory_type,
-            "source_name": source_name,
-            "reason": reason,
-        }
-        if source_event_id is not None:
-            body["source_event_id"] = source_event_id
-        if occurred_at is not None:
-            body["occurred_at"] = occurred_at
-        if metadata is not None:
-            body["metadata"] = metadata
-        return self._request(
-            "POST", "/v1/remember", json=body, idempotency_key=idempotency_key
-        )
 
     def recall(
         self,
@@ -348,6 +318,17 @@ class DMemClient:
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/jobs/{job_id}")
+
+    def retry_job(
+        self, job_id: str, *, idempotency_key: str
+    ) -> dict[str, Any]:
+        """POST /v1/jobs/{job_id}/retry for a terminal failed job."""
+        return self._request(
+            "POST",
+            f"/v1/jobs/{job_id}/retry",
+            json={},
+            idempotency_key=idempotency_key,
+        )
 
     # ------------------------------------------------------------------
     # candidates

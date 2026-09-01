@@ -661,7 +661,7 @@ func processingEvolutionParams(input domain.ProcessingInput, result domain.Proce
 	if result.ModelIdentity == "" {
 		modelIdentity = nil
 	}
-	return CreateEvolutionProposalParams{EventID: input.Target.EventID, SpaceID: candidate.SpaceID, Action: candidate.SuggestionKind, ProposedContent: content, ValidFrom: timePointerText(candidate.ValidFrom), ValidUntil: timePointerText(candidate.ValidUntil), MemoryType: &memoryType, Sensitivity: candidate.Sensitivity, ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Targets: targets, Evidence: evidence}, nil
+	return CreateEvolutionProposalParams{EventID: input.Target.EventID, SpaceID: candidate.SpaceID, Action: candidate.SuggestionKind, ProposedContent: content, ValidFrom: timePointerText(candidate.ValidFrom), ValidUntil: timePointerText(candidate.ValidUntil), MemoryType: &memoryType, Sensitivity: candidate.Sensitivity, RelationSpecs: normalizeSpecs(nil), MentionSpecs: normalizeSpecs(nil), ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Targets: targets, Evidence: evidence}, nil
 }
 
 func (r *Repository) FailProcessing(ctx context.Context, claim ClaimedJob, input domain.ProcessingInput, failure JobFailure) error {

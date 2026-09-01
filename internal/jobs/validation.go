@@ -11,6 +11,24 @@ import (
 
 var errInvalidProcessingResult = errors.New("invalid processing result")
 
+type processingValidationError struct {
+	code string
+}
+
+func (e *processingValidationError) Error() string { return e.code }
+
+func invalidProcessingResult(code string) error {
+	return &processingValidationError{code: code}
+}
+
+func processingValidationCode(err error) string {
+	var validationErr *processingValidationError
+	if errors.As(err, &validationErr) {
+		return validationErr.code
+	}
+	return string(domain.ProcessingInvalidOutput)
+}
+
 func validateProcessingResult(input domain.ProcessingInput, result domain.ProcessingResult) error {
 	if input.Policy.MaxCandidateChars == 0 {
 		input.Policy.MaxCandidateChars = input.Policy.MaxContentChars
@@ -89,11 +107,11 @@ func validateProcessingResult(input domain.ProcessingInput, result domain.Proces
 				}
 			}
 			if candidate.SuggestionKind != "new" && evidence.StartOffset == nil {
-				return errInvalidProcessingResult
+				return invalidProcessingResult("invalid_evidence_reference")
 			}
 			key := evidenceKey(evidence)
 			if _, duplicate := seenEvidence[key]; duplicate {
-				return errInvalidProcessingResult
+				return invalidProcessingResult("invalid_evidence_reference")
 			}
 			seenEvidence[key] = struct{}{}
 		}
@@ -104,22 +122,22 @@ func validateProcessingResult(input domain.ProcessingInput, result domain.Proces
 				return errInvalidProcessingResult
 			}
 			if _, duplicate := seenMemories[memoryID]; duplicate {
-				return errInvalidProcessingResult
+				return invalidProcessingResult("invalid_related_memory_reference")
 			}
 			seenMemories[memoryID] = struct{}{}
 		}
 		switch candidate.SuggestionKind {
 		case "supplement", "replacement":
 			if len(candidate.RelatedMemoryIDs) != 1 {
-				return errInvalidProcessingResult
+				return invalidProcessingResult("invalid_related_memory_reference")
 			}
 		case "conflict":
 			if len(candidate.RelatedMemoryIDs) != 2 {
-				return errInvalidProcessingResult
+				return invalidProcessingResult("invalid_related_memory_reference")
 			}
 		case "duplicate":
 			if len(candidate.RelatedMemoryIDs) == 0 {
-				return errInvalidProcessingResult
+				return invalidProcessingResult("invalid_related_memory_reference")
 			}
 		}
 	}
