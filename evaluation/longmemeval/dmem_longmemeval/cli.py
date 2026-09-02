@@ -80,6 +80,11 @@ def cmd_run(args: argparse.Namespace) -> None:
         if args.invalid_evidence_reference_retries is not None
         else cfg.ingestion.invalid_evidence_reference_retries
     )
+    transient_retries = (
+        args.transient_retries
+        if args.transient_retries is not None
+        else cfg.ingestion.transient_retries
+    )
     limit = args.limit if args.limit is not None else cfg.retrieval.limit
     max_chars = args.max_chars if args.max_chars is not None else cfg.retrieval.max_chars
     cutoffs = parse_cutoffs(args.cutoffs) if args.cutoffs else cfg.retrieval.cutoffs
@@ -97,6 +102,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         job_poll_interval=cfg.ingestion.job_poll_interval,
         job_timeout=cfg.ingestion.job_timeout,
         invalid_evidence_reference_retries=invalid_evidence_reference_retries,
+        transient_retries=transient_retries,
         retrieval_mode=retrieval_mode,
         limit=limit,
         max_chars=max_chars,
@@ -458,6 +464,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Retry failed extraction jobs with model output contract errors N times.",
+    )
+    p.add_argument(
+        "--transient-retries",
+        type=int,
+        default=None,
+        help="Retry failed extraction jobs with transient provider errors N times.",
     )
     p.add_argument("--resume", action="store_true")
     p.add_argument("--fail-on-degraded", action="store_true")

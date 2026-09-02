@@ -260,6 +260,17 @@ class DMemClient:
     def get_event(self, event_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/events/{event_id}")
 
+    def replay_event(
+        self, event_id: str, *, idempotency_key: str
+    ) -> dict[str, Any]:
+        """POST /v1/events/{event_id}/replay — re-run extraction for an event."""
+        return self._request(
+            "POST",
+            f"/v1/events/{event_id}/replay",
+            json={},
+            idempotency_key=idempotency_key,
+        )
+
     def recall(
         self,
         *,

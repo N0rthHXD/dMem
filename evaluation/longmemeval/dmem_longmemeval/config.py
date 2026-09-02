@@ -29,6 +29,7 @@ class IngestionConfig:
     job_poll_interval: float = 3.0
     job_timeout: float = 600.0
     invalid_evidence_reference_retries: int = 1
+    transient_retries: int = 3
     workers: int = 1
 
 
@@ -97,6 +98,7 @@ def load_config(path: str | Path | None) -> EvalConfig:
         cfg.ingestion.invalid_evidence_reference_retries = i.get(
             "invalid_evidence_reference_retries", 1
         )
+        cfg.ingestion.transient_retries = i.get("transient_retries", 3)
         cfg.ingestion.workers = i.get("workers", 1)
 
     if "retrieval" in data:
@@ -151,6 +153,11 @@ def _validate(cfg: EvalConfig) -> None:
     if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
         raise ValueError(
             "ingestion.invalid_evidence_reference_retries must be a non-negative integer"
+        )
+    transient = cfg.ingestion.transient_retries
+    if isinstance(transient, bool) or not isinstance(transient, int) or transient < 0:
+        raise ValueError(
+            "ingestion.transient_retries must be a non-negative integer"
         )
     if cfg.retrieval.mode not in ("keyword", "semantic", "hybrid"):
         raise ValueError(

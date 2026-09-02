@@ -43,6 +43,12 @@ RETRYABLE_OUTPUT_ERRORS = {
     "candidate_out_of_bounds",
     "invalid_evidence_reference",
     "invalid_related_memory_reference",
+    "content_out_of_bounds",
+    "invalid_result_category",
+}
+TRANSIENT_ERRORS = {
+    "provider_temporarily_unavailable",
+    "request_timeout_or_cancelled",
 }
 RESULT_VERSION = "longmemeval-dmem-py-v2"
 
@@ -56,6 +62,7 @@ class RunConfig:
     job_poll_interval: float = 3.0
     job_timeout: float = 600.0
     invalid_evidence_reference_retries: int = 1
+    transient_retries: int = 3
     retrieval_mode: str = "keyword"
     limit: int = 100
     max_chars: int = 100000
@@ -118,6 +125,7 @@ class Runner:
             "invalid_evidence_reference_retries": (
                 self.config.invalid_evidence_reference_retries
             ),
+            "transient_retries": self.config.transient_retries,
             "retrieval_mode": self.config.retrieval_mode,
             "limit": self.config.limit,
             "max_chars": self.config.max_chars,
@@ -437,10 +445,22 @@ class Runner:
                 question_id=case.question_id,
                 pair_index=pair_index,
             )
-            jobs.append(job)
             retry_count += retries
             if first_error_code:
                 first_error_codes.append(first_error_code)
+            if job.get("status") != "succeeded":
+                replay_job, replay_retries, replay_error_code = (
+                    self._replay_and_wait(
+                        event_id=event_id,
+                        question_id=case.question_id,
+                        pair_index=pair_index,
+                    )
+                )
+                job = replay_job
+                retry_count += replay_retries
+                if replay_error_code:
+                    first_error_codes.append(replay_error_code)
+            jobs.append(job)
         if not jobs:
             raise RuntimeError(
                 f"evaluation requires an extraction job for event {event_id}"
@@ -521,6 +541,13 @@ class Runner:
             "memory_ids": [c["memory_id"] for c in confirmed if c["memory_id"]],
         }
 
+    def _retry_budget(self, error_code: str) -> int:
+        if error_code in TRANSIENT_ERRORS:
+            return self.config.transient_retries
+        if error_code in RETRYABLE_OUTPUT_ERRORS:
+            return self.config.invalid_evidence_reference_retries
+        return 0
+
     def _wait_for_extraction_job(
         self,
         *,
@@ -541,10 +568,11 @@ class Runner:
                 ),
             )
             error_code = job.get("last_error_code", "")
+            budget = self._retry_budget(error_code)
             if (
                 job.get("status") != "failed"
-                or error_code not in RETRYABLE_OUTPUT_ERRORS
-                or retries >= self.config.invalid_evidence_reference_retries
+                or budget <= 0
+                or retries >= budget
             ):
                 return job, retries, first_error_code
 
@@ -557,19 +585,57 @@ class Runner:
                 job_id,
                 error_code,
                 retries,
-                self.config.invalid_evidence_reference_retries,
+                budget,
             )
             self.client.retry_job(
                 job_id,
                 idempotency_key=stable_key(
-                    "retry-invalid-output",
+                    "retry",
                     self.config.dataset_sha,
                     self.config.run_id,
                     event_id,
                     job_id,
-                    str(retries),
+                    str(job.get("attempt_count", 0)),
                 ),
             )
+
+    def _replay_and_wait(
+        self,
+        *,
+        event_id: str,
+        question_id: str,
+        pair_index: int,
+    ) -> tuple[dict[str, Any], int, str]:
+        try:
+            replay = self.client.replay_event(
+                event_id,
+                idempotency_key=stable_key(
+                    "replay",
+                    self.config.dataset_sha,
+                    self.config.run_id,
+                    event_id,
+                ),
+            )
+        except DMemError as exc:
+            logger.warning("event %s replay failed: %s", event_id, exc)
+            return {
+                "status": "failed",
+                "job_id": "",
+                "last_error_code": exc.error_code,
+            }, 0, ""
+        new_job_id = replay.get("job_id", "")
+        if not new_job_id:
+            return {
+                "status": "failed",
+                "job_id": "",
+                "last_error_code": "replay_no_job",
+            }, 0, ""
+        return self._wait_for_extraction_job(
+            event_id=event_id,
+            job_id=new_job_id,
+            question_id=question_id,
+            pair_index=pair_index,
+        )
 
     def _show_job_progress(
         self, question_id: str, pair_index: int, job: dict[str, Any]
