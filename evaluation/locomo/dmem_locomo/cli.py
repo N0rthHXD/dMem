@@ -52,6 +52,19 @@ def parse_cutoffs(s: str) -> list[int]:
     return parts
 
 
+def parse_conversations(s: str) -> list[str]:
+    ids = [x.strip() for x in s.split(",") if x.strip()]
+    if not ids:
+        raise ValueError("--conversations requires at least one sample_id")
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for sid in ids:
+        if sid not in seen:
+            seen.add(sid)
+            ordered.append(sid)
+    return ordered
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -65,6 +78,22 @@ def positive_int(value: str) -> int:
 def cmd_run(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
     conversations, sha = load_dataset(args.dataset)
+
+    if args.conversations:
+        wanted = set(parse_conversations(args.conversations))
+        known = {c.sample_id for c in conversations}
+        missing = sorted(wanted - known)
+        if missing:
+            print(
+                "unknown conversation(s): " + ", ".join(missing),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        conversations = [c for c in conversations if c.sample_id in wanted]
+        logger.info(
+            "subset run: conversations %s",
+            ",".join(c.sample_id for c in conversations),
+        )
 
     if args.max_conversations is not None and args.max_conversations > 0:
         conversations = conversations[: args.max_conversations]
@@ -419,6 +448,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-conversations", type=int, default=None,
         help="Only run the first N conversations (subset/smoke-test).",
+    )
+    p.add_argument(
+        "--conversations", default=None,
+        help="Comma-separated sample_ids to run (e.g. conv-26,conv-30).",
     )
     p.add_argument("--caller-id", default="locomo")
     p.add_argument("--output", default="results/locomo")

@@ -24,7 +24,7 @@ from .dataset import CATEGORY_LABELS, Conversation, QA, _session_num_from_dia_id
 
 try:
     from nltk.stem import PorterStemmer
-    _stemmer = PorterStemmer()
+    _stemmer = PorterStemmer().stem
 except ImportError:  # pragma: no cover - optional dependency
     def _stemmer(word: str) -> str:  # type: ignore[misc]
         return word
