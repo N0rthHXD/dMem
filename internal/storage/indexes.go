@@ -8,7 +8,6 @@ import (
 	"syscall"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
-	"github.com/N0rthHXD/dMem/internal/vector"
 )
 
 const ftsIndexName = "memory_fts"
@@ -96,7 +95,7 @@ func (r *Repository) CreateSemanticRebuildJob(ctx context.Context, identity Writ
 }
 
 func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
-	if r.emb().Provider == nil || r.emb().Index == nil {
+	if r.emb().Provider == nil {
 		return nil
 	}
 	tx, err := r.store.writer.BeginTx(ctx, nil)
@@ -143,8 +142,7 @@ func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1)), coalesce(active_version,0), state, provider_identity, model_identity, source_revision_count FROM semantic_index_metadata WHERE singleton=1`, r.emb().PolicyGeneration).Scan(&searchable, &activeVersion, &state, &currentProvider, &currentModel, &sourceCount); err != nil {
 		return err
 	}
-	indexState := r.emb().Index.Status(activeVersion).State
-	needsRebuild := len(revisions) > 0 || state != "ready" || currentProvider.String != r.emb().ProviderIdentity || currentModel.String != r.emb().ModelIdentity || sourceCount != searchable || indexState != vector.StateReady && indexState != vector.StateStale
+	needsRebuild := len(revisions) > 0 || state != "ready" || currentProvider.String != r.emb().ProviderIdentity || currentModel.String != r.emb().ModelIdentity || sourceCount != searchable
 	if needsRebuild {
 		if _, err := r.enqueueSemanticRebuild(ctx, tx, now); err != nil {
 			return err

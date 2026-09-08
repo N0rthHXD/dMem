@@ -447,7 +447,7 @@ func TestEmbeddingReconciliationSupersedesBlockedPolicyEmbedJobs(t *testing.T) {
 	ctx := context.Background()
 	repo := newConfigTestRepository(t)
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	repo.SetEmbedding(nil, nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 2, 2)
+	repo.SetEmbedding(nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 2, 2)
 
 	commit := ActivationCommit{
 		Revision:   RevisionRecord{RevisionID: "embed-narrow-rev", SourceIdentity: "src", EffectiveIdentity: "eff", ConfigVersion: 1, LoadedAt: now},

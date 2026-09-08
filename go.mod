@@ -6,6 +6,8 @@ require github.com/mattn/go-sqlite3 v1.14.32
 
 require github.com/pelletier/go-toml/v2 v2.4.3
 
+require github.com/asg017/sqlite-vec-go-bindings v0.1.6
+
 require (
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect

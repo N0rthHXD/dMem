@@ -1174,9 +1174,8 @@ CREATE TABLE memory_embeddings (
     provider_identity TEXT NOT NULL,
     model_identity TEXT NOT NULL,
     dimension INTEGER NOT NULL CHECK (dimension > 0),
-    vector_json TEXT NOT NULL CHECK (json_valid(vector_json) AND json_type(vector_json) = 'array'),
+    vector_blob BLOB NOT NULL CHECK (typeof(vector_blob) = 'blob' AND vec_length(vector_blob) = dimension),
     processed_at TEXT NOT NULL,
-    index_version INTEGER NOT NULL CHECK (index_version > 0),
     PRIMARY KEY (memory_id, revision_id, content_hash, compatibility_identity),
     FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
 ) WITHOUT ROWID, STRICT;

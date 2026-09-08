@@ -435,6 +435,47 @@ func TestSemanticIndexGenerationFields(t *testing.T) {
 	}
 }
 
+func TestMemoryEmbeddingsUsesLiveFloat32BlobStorage(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "semantic-blobs.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "memory_embeddings", map[string]bool{
+		"memory_id": false, "revision_id": false, "content_hash": false,
+		"compatibility_identity": false, "dimension": false, "vector_blob": false,
+	}, map[string]bool{
+		"configuration_identity": false, "provider_identity": false,
+		"model_identity": false, "processed_at": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.reader.Query(`PRAGMA table_info(memory_embeddings)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ordinal, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&ordinal, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "index_version" || name == "vector_json" {
+			t.Fatalf("obsolete embedding column %q remains", name)
+		}
+		if name == "vector_blob" && columnType != "BLOB" {
+			t.Fatalf("vector_blob type = %q, want BLOB", columnType)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReconciliationRunsTable(t *testing.T) {
 	t.Parallel()
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "reconciliation-runs.db"), Options{})

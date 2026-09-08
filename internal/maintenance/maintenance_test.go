@@ -17,7 +17,6 @@ import (
 	"github.com/N0rthHXD/dMem/internal/jobs"
 	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/storage"
-	"github.com/N0rthHXD/dMem/internal/vector"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -123,9 +122,6 @@ func TestBackupRestoreDrill(t *testing.T) {
 	if err := restored.QueryRow(`SELECT count(*) FROM memories WHERE memory_id IN ('00000000-0000-4000-8000-000000000064','00000000-0000-4000-8000-000000000065')`).Scan(&probeRows); err != nil || probeRows != 0 {
 		t.Fatalf("staging probe rows published = %d, %v", probeRows, err)
 	}
-	if _, err := os.Stat(filepath.Join(dataDirectory, "semantic-index", "active.json")); err != nil {
-		t.Fatalf("restored semantic index missing: %v", err)
-	}
 	assertSQLiteChecks(t, restored)
 }
 
@@ -145,16 +141,12 @@ func validateSemanticRestore(ctx context.Context, staging, databaseFilename stri
 		return err
 	}
 	defer store.Close()
-	index, err := vector.Open(filepath.Join(staging, "semantic-index"))
-	if err != nil {
-		return err
-	}
 	counter := 0
 	repository := storage.NewRepository(store, domain.Runtime{Now: time.Now, ID: func() (string, error) {
 		counter++
 		return fmt.Sprintf("restore-validation-%d", counter), nil
 	}}, 100, 200, 3, "restore-validation")
-	repository.ConfigureSemantic(restoreEmbeddingProvider{}, index, "restore-provider", "restore-model")
+	repository.ConfigureSemantic(restoreEmbeddingProvider{}, "restore-provider", "restore-model")
 	if err := repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
 		return err
 	}

@@ -64,6 +64,15 @@ Rebuild operations are `POST /v1/indexes/fts/rebuild`,
 `POST /v1/feedback/aggregates/rebuild`. They create durable jobs and require the
 normal caller and idempotency headers.
 
+Semantic vectors are stored as compact `float32` blobs in the authority table
+`memory_embeddings` and retrieved with sqlite-vec exact cosine. The daemon
+verifies the sqlite-vec extension at startup (`vec_version()` plus a
+`vec_length()` sanity probe) and refuses to start if it is unavailable, so a
+missing or corrupted native build fails loudly rather than returning wrong
+retrieval results. To diagnose the linked extension on an operator box, run
+`SELECT vec_version()` against the authority database with the same `sqlite_fts5`
+build tag.
+
 ## Initialize, Backup, And Restore
 
 Initialize only a new database:

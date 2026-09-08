@@ -62,6 +62,10 @@ func Open(ctx context.Context, path string, options Options) (*Store, error) {
 		writer.Close()
 		return nil, fmt.Errorf("connect SQLite writer: %w", err)
 	}
+	if err := verifyVectorExtension(ctx, writer); err != nil {
+		writer.Close()
+		return nil, err
+	}
 	if newDatabase {
 		if _, err := writer.ExecContext(ctx, schemaV1); err != nil {
 			writer.Close()

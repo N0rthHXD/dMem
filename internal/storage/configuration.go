@@ -460,6 +460,7 @@ func (r *Repository) Reconcile(ctx context.Context, run ClaimedReconciliationRun
 		return batch, err
 	}
 	defer rows.Close()
+	eligibilityChanged := false
 	for rows.Next() {
 		var memoryID, revisionID, spaceID string
 		if err := rows.Scan(&memoryID, &revisionID, &spaceID); err != nil {
@@ -472,8 +473,14 @@ func (r *Repository) Reconcile(ctx context.Context, run ClaimedReconciliationRun
 		}
 		eligible := policy.Decision == "allow"
 		reason := policy.ReasonCode
-		if _, err := tx.ExecContext(ctx, `INSERT INTO embedding_eligibility(memory_id,revision_id,space_id,configuration_generation,policy_generation,eligible,reason_code,evaluated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(memory_id,revision_id,policy_generation) DO UPDATE SET eligible=excluded.eligible,reason_code=excluded.reason_code,evaluated_at=excluded.evaluated_at`, memoryID, revisionID, spaceID, run.ToConfigurationGeneration, policy.PolicyGeneration, boolInt(eligible), reason, formatTime(r.runtime.Now())); err != nil {
+		result, err := tx.ExecContext(ctx, `INSERT INTO embedding_eligibility(memory_id,revision_id,space_id,configuration_generation,policy_generation,eligible,reason_code,evaluated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(memory_id,revision_id,policy_generation) DO UPDATE SET space_id=excluded.space_id,configuration_generation=excluded.configuration_generation,eligible=excluded.eligible,reason_code=excluded.reason_code,evaluated_at=excluded.evaluated_at WHERE embedding_eligibility.space_id<>excluded.space_id OR coalesce(embedding_eligibility.configuration_generation,-1)<>coalesce(excluded.configuration_generation,-1) OR embedding_eligibility.eligible<>excluded.eligible OR embedding_eligibility.reason_code<>excluded.reason_code`, memoryID, revisionID, spaceID, run.ToConfigurationGeneration, policy.PolicyGeneration, boolInt(eligible), reason, formatTime(r.runtime.Now()))
+		if err != nil {
 			return batch, err
+		}
+		if changed, err := result.RowsAffected(); err != nil {
+			return batch, err
+		} else if changed > 0 {
+			eligibilityChanged = true
 		}
 		batch.NextCursor = memoryID
 		if !eligible {
@@ -503,6 +510,11 @@ func (r *Repository) Reconcile(ctx context.Context, run ClaimedReconciliationRun
 	}
 	if err := rows.Err(); err != nil {
 		return batch, err
+	}
+	if eligibilityChanged {
+		if err := advanceSemanticCorpusGeneration(ctx, tx, formatTime(r.runtime.Now()), true); err != nil {
+			return batch, err
+		}
 	}
 	batch.Complete = batch.Affected < limit || batch.NextCursor == run.ScanHighWatermark
 	if batch.Complete {

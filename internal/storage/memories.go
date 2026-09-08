@@ -797,17 +797,19 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 	searchable := state == "active" || state == "contested"
 	hash := sha256.Sum256([]byte(content))
 	contentHash := hex.EncodeToString(hash[:])
-	semanticChanged := true
-	var previousRevision, previousSpace, previousHash string
+	embeddingChanged, corpusChanged := true, true
+	var previousRevision, previousSpace, previousType, previousState, previousHash string
 	var previousSearchable bool
-	err := tx.QueryRowContext(ctx, `SELECT revision_id, space_id, content_hash, searchable FROM memory_projections WHERE memory_id=?`, memoryID).Scan(&previousRevision, &previousSpace, &previousHash, &previousSearchable)
+	var previousValidFrom, previousValidUntil sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT revision_id, space_id, memory_type, current_state, content_hash, searchable, valid_from, valid_until FROM memory_projections WHERE memory_id=?`, memoryID).Scan(&previousRevision, &previousSpace, &previousType, &previousState, &previousHash, &previousSearchable, &previousValidFrom, &previousValidUntil)
 	if err == nil {
-		semanticChanged = previousRevision != revisionID || previousSpace != spaceID || previousHash != contentHash || previousSearchable != searchable
+		embeddingChanged = previousRevision != revisionID || previousSpace != spaceID || previousHash != contentHash || previousSearchable != searchable
+		corpusChanged = embeddingChanged || previousType != memoryType || previousState != state || !equalNullableString(previousValidFrom, validFrom) || !equalNullableString(previousValidUntil, validUntil)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	projectionSQL := `INSERT INTO memory_projections(memory_id, revision_id, space_id, memory_type, current_state, searchable, display_content, content_hash, embedding_state, valid_from, valid_until, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stale', ?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET revision_id=excluded.revision_id, space_id=excluded.space_id, memory_type=excluded.memory_type, current_state=excluded.current_state, searchable=excluded.searchable, display_content=excluded.display_content, content_hash=excluded.content_hash, valid_from=excluded.valid_from, valid_until=excluded.valid_until, updated_at=excluded.updated_at`
-	if semanticChanged {
+	if embeddingChanged {
 		projectionSQL += `, embedding_state='stale', embedding_provider=NULL, embedding_model=NULL, embedding_dimension=NULL, embedding_content_hash=NULL`
 	}
 	if _, err := tx.ExecContext(ctx, projectionSQL, memoryID, revisionID, spaceID, memoryType, state, searchable, content, contentHash, validFrom, validUntil, now); err != nil {
@@ -831,11 +833,13 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 	if err != nil {
 		return err
 	}
-	if !semanticChanged {
-		return nil
+	if corpusChanged {
+		if err := advanceSemanticCorpusGeneration(ctx, tx, now, embeddingChanged); err != nil {
+			return err
+		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE semantic_index_metadata SET state=CASE WHEN active_version IS NULL THEN 'absent' ELSE 'stale' END, updated_at=? WHERE singleton=1`, now); err != nil {
-		return err
+	if !embeddingChanged {
+		return nil
 	}
 	if r.emb().Provider == nil {
 		return nil
@@ -857,11 +861,12 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 			return err
 		}
 	}
-	if r.emb().Index == nil {
-		return nil
-	}
 	_, err = r.enqueueSemanticRebuild(ctx, tx, now)
 	return err
+}
+
+func equalNullableString(stored sql.NullString, value *string) bool {
+	return value == nil && !stored.Valid || value != nil && stored.Valid && *value == stored.String
 }
 
 func (r *Repository) upsertCurrentEmbeddingEligibility(ctx context.Context, tx *sql.Tx, memoryID, revisionID, spaceID string, searchable bool, now string) (bool, error) {
@@ -911,6 +916,9 @@ func (r *Repository) ensureCurrentEmbeddingEligibility(ctx context.Context, tx *
 		if _, err := r.upsertCurrentEmbeddingEligibility(ctx, tx, item.memoryID, item.revisionID, item.spaceID, item.searchable, now); err != nil {
 			return err
 		}
+	}
+	if len(projections) > 0 {
+		return advanceSemanticCorpusGeneration(ctx, tx, now, true)
 	}
 	return nil
 }

@@ -192,7 +192,7 @@ The current semantic corpus includes only current searchable revisions with curr
 | `compatibility_identity` | Provider/model/dimension/preprocessing identity |
 | `provider_identity`, `model_identity` | Audit fields |
 | `configuration_identity` | Non-secret producer identity |
-| `dimension`, `vector`, `processed_at` | Existing validated derived value |
+| `dimension`, `vector_blob`, `processed_at` | Validated float32 embedding value |
 
 Primary identity includes content hash and compatibility identity, not policy generation. Compatible vectors can be reused after policy changes.
 
@@ -200,7 +200,7 @@ Primary identity includes content hash and compatibility identity, not policy ge
 
 | Field | Rules |
 |-------|-------|
-| `index_version` | Positive generation |
+| `active_version` | Monotonic live semantic corpus generation, not an immutable snapshot |
 | `compatibility_identity` | Must match query embedding identity |
 | `policy_generation` | Eligibility generation represented |
 | `state` | `building`, `ready`, `stale`, or `degraded` |
@@ -211,7 +211,7 @@ Primary identity includes content hash and compatibility identity, not policy ge
 | `corpus_fingerprint` | Canonical eligible revision/content set hash |
 | `created_at`, `activated_at` | UTC timestamps |
 
-An empty eligible corpus is valid and ready. Policy narrowing prevents excluded records from search immediately through eligibility filtering, before physical index compaction.
+An empty eligible corpus is valid and ready. Projection, current-policy eligibility, and compatible-vector membership changes advance the generation transactionally. Policy narrowing prevents excluded records from search immediately through eligibility filtering before top-k; no physical vector index compaction exists.
 
 ## Reconciliation Run
 

@@ -1,8 +1,11 @@
 # Testing And Evaluation
 
 Linux tests use a C compiler, `CGO_ENABLED=1`, and the `sqlite_fts5` build tag.
-Tests use deterministic providers or local `httptest` servers; they do not need
-live provider credentials.
+Vector storage statically links sqlite-vec (`github.com/asg017/sqlite-vec-go-bindings`
+`v0.1.6`); its C source is compiled into the same binary via `sqlite3_auto_extension`,
+so no external `.so` or runtime extension loading is required. Tests use
+deterministic providers or local `httptest` servers; they do not need live
+provider credentials.
 
 ## Core Checks
 

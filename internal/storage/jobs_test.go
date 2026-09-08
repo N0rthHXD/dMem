@@ -597,7 +597,7 @@ func TestBlockedPolicyEmbedJobDoesNotBlockSemanticRebuild(t *testing.T) {
 	ctx := context.Background()
 	repo, clock := newJobTestRepository(t)
 	now := formatTime(clock.now)
-	repo.SetEmbedding(nil, nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 1, 1)
+	repo.SetEmbedding(nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 1, 1)
 
 	embedIdentity := repo.embeddingIdentity()
 	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,capability,configuration_generation,policy_generation,blocked_reason_code,created_at) VALUES ('blocked-embed','op-blocked','embed_memory','memory_revision','rev-blocked',?,'blocked_policy',0,3,?,'embedding',1,1,'target_policy_denied',?)`, embedIdentity, now, now); err != nil {
@@ -628,7 +628,7 @@ func TestPendingEmbedJobStillBlocksSemanticRebuild(t *testing.T) {
 	ctx := context.Background()
 	repo, clock := newJobTestRepository(t)
 	now := formatTime(clock.now)
-	repo.SetEmbedding(nil, nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 1, 1)
+	repo.SetEmbedding(nil, "embedding-provider", "embedding-model", "compat-v1", "config-v1", 1, 1)
 
 	embedIdentity := repo.embeddingIdentity()
 	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,capability,configuration_generation,policy_generation,created_at) VALUES ('pending-embed','op-pending','embed_memory','memory_revision','rev-pending',?,'pending',0,3,?,'embedding',1,1,?)`, embedIdentity, now, now); err != nil {

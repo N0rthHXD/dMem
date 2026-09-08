@@ -14,7 +14,7 @@ Replace all setting-specific CLI flags and configuration environment variables w
 
 **Primary Dependencies**: Go standard library, `github.com/mattn/go-sqlite3`, `github.com/getkin/kin-openapi`, and a direct TOML decoder dependency with strict unknown-field diagnostics
 
-**Storage**: One authoritative SQLite database per instance; one user-owned TOML configuration file; rebuildable on-disk vector index
+**Storage**: One authoritative SQLite database per instance with sqlite-vec float32 BLOB exact search; one user-owned TOML configuration file
 
 **Testing**: Go unit and integration tests, deterministic local provider servers, OpenAPI contract validation, schema contract tests, race tests, and existing Makefile quality gates
 

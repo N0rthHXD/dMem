@@ -32,5 +32,6 @@
 | [0028](0028-aggregate-memories-and-freshness.md) | 普通 Aggregate memory 与 freshness descriptor |
 | [0029](0029-logical-format-v1.md) | 确定性 Logical format v1 |
 | [0030](0030-dynamic-provider-configuration.md) | 动态 provider 配置与在线恢复 |
+| [0031](0031-sqlite-vec-vector-storage.md) | sqlite-vec 精确向量存储与检索 |
 
 ADR 状态使用：`proposed`、`accepted`、`superseded` 或 `rejected`。

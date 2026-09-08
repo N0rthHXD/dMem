@@ -15,7 +15,6 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
-	"github.com/N0rthHXD/dMem/internal/vector"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -82,11 +81,13 @@ type Repository struct {
 	diskSoftFree                    uint64
 	diskHardFree                    uint64
 	embedding                       atomic.Pointer[embeddingRuntime]
+	semanticBuildHook               func()
+	semanticActivateHook            func()
+	semanticSearchErr               error
 }
 
 type embeddingRuntime struct {
 	Provider              provider.EmbeddingProvider
-	Index                 semanticVectorIndex
 	ProviderIdentity      string
 	ModelIdentity         string
 	CompatibilityIdentity string
@@ -95,26 +96,8 @@ type embeddingRuntime struct {
 	PolicyGeneration      int
 }
 
-type semanticVectorIndex interface {
-	Build(int, vector.Snapshot) error
-	Activate(int) error
-	Deactivate(int) error
-	Search([]float64, []string, []vector.Identity, int, int) ([]vector.Result, error)
-	Status(int) vector.Status
-}
-
 func (r *Repository) emb() *embeddingRuntime {
 	return r.embedding.Load()
-}
-
-func (r *Repository) semanticIndex() semanticVectorIndex {
-	return r.emb().Index
-}
-
-func (r *Repository) setSemanticIndex(idx semanticVectorIndex) {
-	prev := *r.emb()
-	prev.Index = idx
-	r.embedding.Store(&prev)
 }
 
 func (r *Repository) setEmbeddingProvider(p provider.EmbeddingProvider) {
@@ -123,21 +106,13 @@ func (r *Repository) setEmbeddingProvider(p provider.EmbeddingProvider) {
 	r.embedding.Store(&prev)
 }
 
-func (r *Repository) ConfigureSemantic(embedding provider.EmbeddingProvider, index *vector.Index, providerIdentity, modelIdentity string) {
-	r.SetEmbedding(embedding, index, providerIdentity, modelIdentity, providerIdentity+"/"+modelIdentity, providerIdentity+"/"+modelIdentity, 0, 0)
+func (r *Repository) ConfigureSemantic(embedding provider.EmbeddingProvider, providerIdentity, modelIdentity string) {
+	r.SetEmbedding(embedding, providerIdentity, modelIdentity, providerIdentity+"/"+modelIdentity, providerIdentity+"/"+modelIdentity, 0, 0)
 }
 
-func (r *Repository) SetEmbedding(embedding provider.EmbeddingProvider, index *vector.Index, providerIdentity, modelIdentity, compatibilityIdentity, configurationIdentity string, generation, policyGeneration int) {
-	prev := r.emb()
-	var idx semanticVectorIndex
-	if index != nil {
-		idx = index
-	} else if prev != nil {
-		idx = prev.Index
-	}
+func (r *Repository) SetEmbedding(embedding provider.EmbeddingProvider, providerIdentity, modelIdentity, compatibilityIdentity, configurationIdentity string, generation, policyGeneration int) {
 	r.embedding.Store(&embeddingRuntime{
 		Provider:              embedding,
-		Index:                 idx,
 		ProviderIdentity:      providerIdentity,
 		ModelIdentity:         modelIdentity,
 		CompatibilityIdentity: compatibilityIdentity,

@@ -25,7 +25,6 @@ import (
 	"github.com/N0rthHXD/dMem/internal/jobs"
 	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/storage"
-	"github.com/N0rthHXD/dMem/internal/vector"
 )
 
 type Daemon struct {
@@ -33,7 +32,6 @@ type Daemon struct {
 	store            *storage.Store
 	repository       *storage.Repository
 	aggregateService *aggregate.Service
-	vectorIndex      *vector.Index
 	manager          *config.Manager
 	listener         net.Listener
 	server           *http.Server
@@ -150,17 +148,12 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	repository := storage.NewRepository(d.store, domain.Runtime{Now: time.Now, ID: identity.UUID}, cfg.QueueSoftLimit, cfg.QueueHardLimit, cfg.MaxAttempts, cfg.ProcessingVersion)
 	d.repository = repository
 	repository.SetDiskFreeThresholds(cfg.DiskSoftFree, cfg.DiskHardFree)
-	index, err := vector.Open(filepath.Join(cfg.DataDir, "semantic-index"))
-	if err != nil {
-		return nil, err
-	}
-	d.vectorIndex = index
 	if cfg.EmbeddingProvider.Enabled {
 		embedding, providerErr := provider.New(cfg.EmbeddingProvider, nil)
 		if providerErr != nil {
 			return nil, providerErr
 		}
-		repository.ConfigureSemantic(embedding, index, cfg.EmbeddingProvider.Kind, cfg.EmbeddingProvider.Model)
+		repository.ConfigureSemantic(embedding, cfg.EmbeddingProvider.Kind, cfg.EmbeddingProvider.Model)
 		if err := repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
 			return nil, fmt.Errorf("prepare semantic recovery: %w", err)
 		}
@@ -503,12 +496,11 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		processingPolicyGeneration,
 	)
 	if embedding == nil {
-		d.repository.SetEmbedding(nil, d.vectorIndex, "", "", "", "", 0, 0)
+		d.repository.SetEmbedding(nil, "", "", "", "", 0, 0)
 		return nil
 	}
 	d.repository.SetEmbedding(
 		embedding,
-		d.vectorIndex,
 		snapshot.EmbeddingCapability.Kind,
 		snapshot.EmbeddingCapability.Model,
 		snapshot.EmbeddingCapability.CompatibilityIdentity,

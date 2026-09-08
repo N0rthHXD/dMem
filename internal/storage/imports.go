@@ -164,6 +164,7 @@ func (r *Repository) CommitImportBatch(ctx context.Context, operationID string, 
 		return ErrImportFenceLost
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	semanticCorpusChanged := false
 	var sourceID, exportID, targetSpace string
 	if err := tx.QueryRowContext(ctx, `SELECT source_id,export_id,target_space_id FROM import_operations WHERE import_operation_id=?`, operationID).Scan(&sourceID, &exportID, &targetSpace); err != nil {
 		return err
@@ -173,6 +174,7 @@ func (r *Repository) CommitImportBatch(ctx context.Context, operationID string, 
 			if err := importAuthorityObject(ctx, tx, object, targetSpace, operationID, now); err != nil {
 				return fmt.Errorf("import %s %s: %w", object.SourceType, object.SourceID, err)
 			}
+			semanticCorpusChanged = semanticCorpusChanged || object.SourceType == "revision"
 		} else if object.Action == "proposal" {
 			if err := importConflictProposal(ctx, tx, object, targetSpace, operationID, now); err != nil {
 				return err
@@ -185,6 +187,11 @@ func (r *Repository) CommitImportBatch(ctx context.Context, operationID string, 
 		}
 		provenanceID := stableImportID("provenance", operationID, mappingID)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO imported_provenance(provenance_id,import_operation_id,mapping_id,batch_number,imported_by,imported_at) VALUES (?,?,?,?,?,?) ON CONFLICT(import_operation_id,mapping_id) DO NOTHING`, provenanceID, operationID, mappingID, batch, importedBy, now); err != nil {
+			return err
+		}
+	}
+	if semanticCorpusChanged {
+		if err := advanceSemanticCorpusGeneration(ctx, tx, now, true); err != nil {
 			return err
 		}
 	}

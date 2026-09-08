@@ -364,7 +364,7 @@ func (r *Repository) CompleteJob(ctx context.Context, claim ClaimedJob, completi
 	if err := closeAttempt(ctx, tx, claim, now, "succeeded", completion.Code, "", ""); err != nil {
 		return err
 	}
-	if claim.Job.JobType == "rebuild_semantic" && claim.ProcessingVersion == r.embeddingIdentity() && r.emb().Provider != nil && r.emb().Index != nil {
+	if claim.Job.JobType == "rebuild_semantic" && claim.ProcessingVersion == r.embeddingIdentity() && r.emb().Provider != nil {
 		dirty, err := r.semanticIndexDirty(ctx, tx)
 		if err != nil {
 			return err

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"math"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"unicode"
 
 	"github.com/N0rthHXD/dMem/internal/provider"
-	"github.com/N0rthHXD/dMem/internal/vector"
 )
 
 type retrievalCorpus struct {
@@ -40,13 +38,13 @@ type retrievalQuery struct {
 }
 
 type retrievalGateConfig struct {
-	ConfigVersion      string `json:"config_version"`
-	CorpusVersion      string `json:"corpus_version"`
-	ProviderVersion    string `json:"provider_version"`
-	ProviderModel      string `json:"provider_model"`
-	IndexFormatVersion int    `json:"index_format_version"`
-	RankingVersion     string `json:"ranking_version"`
-	Quality            struct {
+	ConfigVersion   string `json:"config_version"`
+	CorpusVersion   string `json:"corpus_version"`
+	ProviderVersion string `json:"provider_version"`
+	ProviderModel   string `json:"provider_model"`
+	VectorStorage   string `json:"vector_storage"`
+	RankingVersion  string `json:"ranking_version"`
+	Quality         struct {
 		SemanticK                       int     `json:"semantic_k"`
 		MinimumKeywordExactRecall       float64 `json:"minimum_keyword_exact_recall"`
 		MinimumSemanticRecallAtK        float64 `json:"minimum_semantic_recall_at_k"`
@@ -105,7 +103,6 @@ func (p *deterministicEmbeddingProvider) Embed(_ context.Context, request provid
 
 type retrievalFixture struct {
 	repository *Repository
-	indexDir   string
 	docIDs     map[string]string
 }
 
@@ -115,8 +112,8 @@ func loadRetrievalEvaluation(t *testing.T) (retrievalCorpus, retrievalGateConfig
 	var config retrievalGateConfig
 	readJSONFixture(t, "testdata/retrieval-corpus-v1.json", &corpus)
 	readJSONFixture(t, "testdata/retrieval-gates-v1.json", &config)
-	if corpus.Version != config.CorpusVersion || config.ConfigVersion != "retrieval-gates-v1" || config.ProviderVersion != "deterministic-concepts-v1" || config.IndexFormatVersion != vector.FormatVersion || config.RankingVersion != rankingVersion {
-		t.Fatalf("evaluation identity mismatch: corpus=%q config=%q provider=%q index=%d ranking=%q", corpus.Version, config.ConfigVersion, config.ProviderVersion, config.IndexFormatVersion, config.RankingVersion)
+	if corpus.Version != config.CorpusVersion || config.ConfigVersion != "retrieval-gates-v1" || config.ProviderVersion != "deterministic-concepts-v1" || config.VectorStorage != "sqlite-vec-v0.1.6-f32" || config.RankingVersion != rankingVersion {
+		t.Fatalf("evaluation identity mismatch: corpus=%q config=%q provider=%q vectors=%q ranking=%q", corpus.Version, config.ConfigVersion, config.ProviderVersion, config.VectorStorage, config.RankingVersion)
 	}
 	if len(config.ConceptVocabulary) < 2 || config.Quality.SemanticK < 1 || config.Performance.TargetMemoryCount < 100 || config.Performance.QuerySamplesPerMode < 20 {
 		t.Fatal("retrieval gate configuration is not a meaningful target scale")
@@ -140,12 +137,7 @@ func readJSONFixture(t *testing.T, name string, target any) {
 func newRetrievalFixture(t *testing.T, config retrievalGateConfig, documents []retrievalDoc) retrievalFixture {
 	t.Helper()
 	repository, _ := newMemoryTestRepository(t)
-	indexDir := filepath.Join(t.TempDir(), "vectors")
-	index, err := vector.Open(indexDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository.ConfigureSemantic(newDeterministicEmbeddingProvider(config), index, config.ProviderVersion, config.ProviderModel)
+	repository.ConfigureSemantic(newDeterministicEmbeddingProvider(config), config.ProviderVersion, config.ProviderModel)
 	if _, err := repository.store.writer.Exec(`INSERT INTO memory_spaces(space_id, parent_space_id, space_type, external_id, display_name, created_at) VALUES ('space-sibling', 'space-1', 'project', 'project-sibling', 'Sibling', '2026-08-21T11:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +154,7 @@ func newRetrievalFixture(t *testing.T, config retrievalGateConfig, documents []r
 		}
 		ids[document.ID] = memory.MemoryID
 	}
-	return retrievalFixture{repository: repository, indexDir: indexDir, docIDs: ids}
+	return retrievalFixture{repository: repository, docIDs: ids}
 }
 
 func retrievalSearch(t *testing.T, repository *Repository, query, mode string, limit int) []string {
@@ -291,7 +283,7 @@ func TestRetrievalPerformanceSemanticRebuildResources(t *testing.T) {
 	runtime.GC()
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
-	var peakHeap, peakDisk atomic.Uint64
+	var peakHeap atomic.Uint64
 	peakHeap.Store(before.HeapAlloc)
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -303,7 +295,6 @@ func TestRetrievalPerformanceSemanticRebuildResources(t *testing.T) {
 			var stats runtime.MemStats
 			runtime.ReadMemStats(&stats)
 			updateMaximum(&peakHeap, stats.HeapAlloc)
-			updateMaximum(&peakDisk, directoryBytes(fixture.indexDir))
 			select {
 			case <-stop:
 				return
@@ -319,16 +310,20 @@ func TestRetrievalPerformanceSemanticRebuildResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updateMaximum(&peakDisk, directoryBytes(fixture.indexDir))
 	heapGrowth := uint64(0)
 	if peakHeap.Load() > before.HeapAlloc {
 		heapGrowth = peakHeap.Load() - before.HeapAlloc
 	}
-	rawPayload := uint64(len(documents) * newDeterministicEmbeddingProvider(config).dimension * 8)
-	diskAmplification := float64(peakDisk.Load()) / float64(rawPayload)
-	t.Logf("semantic rebuild performance: duration=%s peak_heap_growth=%d peak_disk=%d raw_vector_payload=%d disk_amplification=%.2fx", duration, heapGrowth, peakDisk.Load(), rawPayload, diskAmplification)
-	if float64(duration)/float64(time.Millisecond) > config.Performance.MaximumRebuildMS || heapGrowth > config.Performance.MaximumRebuildPeakHeapBytes || diskAmplification > config.Performance.MaximumRebuildDiskAmplification {
-		t.Fatalf("semantic rebuild thresholds exceeded: duration=%s heap=%d disk amplification=%.2fx", duration, heapGrowth, diskAmplification)
+	dimension := newDeterministicEmbeddingProvider(config).dimension
+	rawPayload := uint64(len(documents) * dimension * 4)
+	var blobBytes int64
+	if err := fixture.repository.store.reader.QueryRow(`SELECT coalesce(sum(length(vector_blob)),0) FROM memory_embeddings`).Scan(&blobBytes); err != nil {
+		t.Fatal(err)
+	}
+	amplification := float64(blobBytes) / float64(rawPayload)
+	t.Logf("semantic rebuild performance: duration=%s peak_heap_growth=%d vector_blob_bytes=%d raw_float32_payload=%d amplification=%.2fx", duration, heapGrowth, blobBytes, rawPayload, amplification)
+	if float64(duration)/float64(time.Millisecond) > config.Performance.MaximumRebuildMS || heapGrowth > config.Performance.MaximumRebuildPeakHeapBytes || amplification > config.Performance.MaximumRebuildDiskAmplification {
+		t.Fatalf("semantic rebuild thresholds exceeded: duration=%s heap=%d amplification=%.2fx", duration, heapGrowth, amplification)
 	}
 }
 
@@ -399,18 +394,4 @@ func percentile95(values []time.Duration) time.Duration {
 func updateMaximum(target *atomic.Uint64, value uint64) {
 	for current := target.Load(); value > current && !target.CompareAndSwap(current, value); current = target.Load() {
 	}
-}
-
-func directoryBytes(path string) uint64 {
-	var total uint64
-	_ = filepath.WalkDir(path, func(_ string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return nil
-		}
-		if info, infoErr := entry.Info(); infoErr == nil {
-			total += uint64(info.Size())
-		}
-		return nil
-	})
-	return total
 }

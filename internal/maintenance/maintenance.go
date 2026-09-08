@@ -573,9 +573,6 @@ func probeStagingDaemon(ctx context.Context, staging, databaseFilename string) e
 	if err := os.Rename(pristinePath, databasePath); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(filepath.Join(staging, "semantic-index")); err != nil {
-		return err
-	}
 	db, err := openMaintenanceDB(cfg.DatabasePath)
 	if err != nil {
 		return err

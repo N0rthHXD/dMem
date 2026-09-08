@@ -16,7 +16,7 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
-	"github.com/N0rthHXD/dMem/internal/vector"
+	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
 const rankingVersion = "rrf-v2"
@@ -62,7 +62,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return domain.SearchResponse{}, err
 	}
 	runtime := r.emb()
-	semanticAvailable := r.semanticQueryable(status)
+	semanticAvailable := r.semanticQueryable(status, 0)
 	keywordAvailable := ftsState == "ready"
 	executed := params.Mode
 	reasons := []string{}
@@ -153,7 +153,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	semanticAvailable = r.semanticQueryable(status) && len(queryVector) == status.Dimension
+	semanticAvailable = r.semanticQueryable(status, len(queryVector))
 	keywordAvailable = ftsState == "ready"
 	executed, reasons = params.Mode, []string{}
 	if params.Mode == "semantic" && !semanticAvailable {
@@ -191,10 +191,6 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			}
 		}
 	}
-	eligible, err := semanticVectorEligibility(ctx, tx, params, spaces, runtime.PolicyGeneration)
-	if err != nil {
-		return domain.SearchResponse{}, err
-	}
 	if current := r.emb(); current.Generation != runtime.Generation || current.PolicyGeneration != runtime.PolicyGeneration || current.CompatibilityIdentity != runtime.CompatibilityIdentity {
 		if executed == "hybrid" {
 			_ = tx.Rollback()
@@ -206,7 +202,30 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
-	semantic, err := runtime.Index.Search(queryVector, spaces, eligible, recallLimit, status.ActiveVersion)
+	queryBlob, err := vec.SerializeFloat32(queryVector)
+	if err != nil {
+		if executed == "hybrid" {
+			_ = tx.Rollback()
+			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(response.DegradationReasons, "semantic_unavailable"))
+			if keywordErr != nil {
+				return domain.SearchResponse{}, ErrIndexDegraded
+			}
+			return result, nil
+		}
+		return domain.SearchResponse{}, ErrIndexDegraded
+	}
+	if r.semanticSearchErr != nil {
+		if executed == "hybrid" {
+			_ = tx.Rollback()
+			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(response.DegradationReasons, "semantic_unavailable"))
+			if keywordErr != nil {
+				return domain.SearchResponse{}, ErrIndexDegraded
+			}
+			return result, nil
+		}
+		return domain.SearchResponse{}, ErrIndexDegraded
+	}
+	semantic, err := semanticVectorRecall(ctx, tx, params, spaces, runtime.PolicyGeneration, runtime.CompatibilityIdentity, len(queryVector), queryBlob, recallLimit)
 	if err != nil {
 		if executed == "hybrid" {
 			_ = tx.Rollback()
@@ -222,10 +241,10 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		if item.Score < minimumSemanticScore {
 			continue
 		}
-		key := item.Metadata.MemoryID + "\x00" + item.Metadata.RevisionID
+		key := item.MemoryID + "\x00" + item.RevisionID
 		candidate := all[key]
 		if candidate == nil {
-			candidate = &hybridCandidate{memoryID: item.Metadata.MemoryID, revisionID: item.Metadata.RevisionID, contentHash: item.Metadata.ContentHash}
+			candidate = &hybridCandidate{memoryID: item.MemoryID, revisionID: item.RevisionID, contentHash: item.ContentHash}
 			all[key] = candidate
 		}
 		candidate.semanticRank, candidate.semanticScore = i+1, item.Score
@@ -455,10 +474,15 @@ func semanticKeywordRecall(ctx context.Context, tx *sql.Tx, params SearchParams,
 	return result, rows.Err()
 }
 
-func semanticVectorEligibility(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policyGeneration int) ([]vector.Identity, error) {
-	query := `SELECT p.memory_id,p.revision_id,p.content_hash FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 AND p.current_state IN ('active','contested') AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) AND p.space_id IN (` + placeholders(len(spaces)) + `)`
-	args := make([]any, 0, len(spaces)+len(params.States)+len(params.MemoryTypes)+3)
-	args = append(args, policyGeneration)
+type semanticRecallItem struct {
+	MemoryID, RevisionID, ContentHash string
+	Score                             float64
+}
+
+func semanticVectorRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policyGeneration int, compatibilityIdentity string, dimension int, queryBlob []byte, limit int) ([]semanticRecallItem, error) {
+	query := `SELECT p.memory_id,p.revision_id,p.content_hash,vec_distance_cosine(e.vector_blob, ?) AS distance FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state JOIN memory_embeddings e ON e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash AND e.compatibility_identity=? AND e.dimension=? WHERE p.searchable=1 AND p.current_state IN ('active','contested') AND EXISTS (SELECT 1 FROM embedding_eligibility el WHERE el.memory_id=p.memory_id AND el.revision_id=p.revision_id AND el.policy_generation=? AND el.eligible=1) AND p.space_id IN (` + placeholders(len(spaces)) + `)`
+	args := make([]any, 0, len(spaces)+len(params.States)+len(params.MemoryTypes)+4)
+	args = append(args, queryBlob, compatibilityIdentity, dimension, policyGeneration)
 	for _, id := range spaces {
 		args = append(args, id)
 	}
@@ -472,20 +496,26 @@ func semanticVectorEligibility(ctx context.Context, tx *sql.Tx, params SearchPar
 			args = append(args, memoryType)
 		}
 	}
-	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?) ORDER BY p.memory_id,p.revision_id`
-	args = append(args, params.ReferenceTime, params.ReferenceTime)
+	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?) ORDER BY distance ASC,p.memory_id ASC,p.revision_id ASC LIMIT ?`
+	args = append(args, params.ReferenceTime, params.ReferenceTime, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []vector.Identity
+	var result []semanticRecallItem
 	for rows.Next() {
-		var identity vector.Identity
-		if err := rows.Scan(&identity.MemoryID, &identity.RevisionID, &identity.ContentHash); err != nil {
+		var item semanticRecallItem
+		var distance sql.NullFloat64
+		if err := rows.Scan(&item.MemoryID, &item.RevisionID, &item.ContentHash, &distance); err != nil {
 			return nil, err
 		}
-		result = append(result, identity)
+		if !distance.Valid {
+			item.Score = 0
+		} else {
+			item.Score = 1 - distance.Float64
+		}
+		result = append(result, item)
 	}
 	return result, rows.Err()
 }
@@ -493,12 +523,12 @@ func semanticVectorEligibility(ctx context.Context, tx *sql.Tx, params SearchPar
 func semanticSearchStatus(ctx context.Context, tx *sql.Tx) (SemanticStatus, string, int, error) {
 	var status SemanticStatus
 	var active, dimension sql.NullInt64
-	var providerName, model sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT state,active_version,provider_identity,model_identity,dimension,source_revision_count,coalesce(policy_generation,0) FROM semantic_index_metadata WHERE singleton=1`).Scan(&status.State, &active, &providerName, &model, &dimension, &status.SourceRevisionCount, &status.PolicyGeneration); err != nil {
+	var providerName, model, compatibilityIdentity sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT state,active_version,provider_identity,model_identity,compatibility_identity,dimension,source_revision_count,coalesce(policy_generation,0) FROM semantic_index_metadata WHERE singleton=1`).Scan(&status.State, &active, &providerName, &model, &compatibilityIdentity, &dimension, &status.SourceRevisionCount, &status.PolicyGeneration); err != nil {
 		return status, "", 0, err
 	}
 	status.ActiveVersion, status.Dimension = int(active.Int64), int(dimension.Int64)
-	status.Provider, status.Model = providerName.String, model.String
+	status.Provider, status.Model, status.CompatibilityIdentity = providerName.String, model.String, compatibilityIdentity.String
 	var ftsState string
 	var ftsVersion int
 	if err := tx.QueryRowContext(ctx, `SELECT state,index_version FROM index_metadata WHERE index_name='memory_fts'`).Scan(&ftsState, &ftsVersion); err != nil {

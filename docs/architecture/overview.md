@@ -9,8 +9,8 @@ and index metadata.
 
 Raw events are committed before optional automatic processing. Memories have a
 stable logical ID, immutable revisions, append-only state events, evidence, and
-a current projection. FTS rows, embeddings, vector indexes, entity/relation
-index metadata, feedback aggregates, and aggregate freshness are derived and
+a current projection. FTS rows, embeddings, semantic corpus metadata,
+entity/relation index metadata, feedback aggregates, and aggregate freshness are derived and
 rebuildable. Derived data must never overwrite authority.
 
 Memory content is text. Raw events can contain text, JSON, or an external
@@ -91,14 +91,19 @@ rather than storing authority without its required job.
 
 ## Retrieval
 
-Keyword retrieval uses SQLite FTS5. Semantic retrieval uses versioned
-embeddings and a Go vector index. Hybrid retrieval combines independent
-channels using versioned reciprocal-rank fusion. Entity and relation channels
-can add candidates, and bounded feedback aggregates act only as a post-ranking
-signal.
+Keyword retrieval uses SQLite FTS5. Semantic retrieval stores float32 embedding
+BLOBs in SQLite and uses statically linked sqlite-vec for exact cosine search.
+Authority, scope, policy, identity, and validity filters run before top-k.
+`semantic_index_version` is a monotonic generation of the live semantic corpus,
+not an immutable vector snapshot: projection eligibility and compatible vector
+membership changes advance it transactionally. Hybrid retrieval combines
+independent channels using versioned reciprocal-rank fusion. Entity and relation
+channels can add candidates, and bounded feedback aggregates act only as a
+post-ranking signal.
 
-Cursors bind the corpus generation and relevant ranking/index versions. A
-version change invalidates an old cursor rather than mixing snapshots. Before a
+Cursors bind the authority corpus generation, live semantic corpus generation,
+and relevant ranking/index versions. A generation change invalidates an old
+cursor rather than continuing over changed membership. Before a
 result is returned, dMem rechecks its space, current revision, lifecycle state,
 valid time, and result/character budgets. Responses report degraded channels
 instead of silently claiming full retrieval.

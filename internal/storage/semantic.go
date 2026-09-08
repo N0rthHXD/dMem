@@ -3,33 +3,28 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 
 	"github.com/N0rthHXD/dMem/internal/provider"
-	"github.com/N0rthHXD/dMem/internal/vector"
+	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
 const semanticIndexName = "memory_semantic"
 
 type EmbeddingIdentity struct {
 	MemoryID, RevisionID, ContentHash, Provider, Model string
-	Dimension, IndexVersion                            int
-}
-
-type ProjectionSnapshot struct {
-	MemoryID, RevisionID, SpaceID, Content, ContentHash string
+	Dimension                                          int
 }
 
 type SemanticStatus struct {
-	State, Provider, Model                                          string
+	State, Provider, Model, CompatibilityIdentity                   string
 	ActiveVersion, Dimension, SourceRevisionCount, PolicyGeneration int
 }
 
 func (r *Repository) SemanticHealth(ctx context.Context) (string, int) {
-	if r.emb().Provider == nil || r.emb().Index == nil {
+	if r.emb().Provider == nil {
 		var required int
 		if err := r.store.reader.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections WHERE searchable=1 AND embedding_state='stale'`).Scan(&required); err == nil && required > 0 {
 			return "rebuild_required", 0
@@ -46,9 +41,8 @@ func (r *Repository) SemanticHealth(ctx context.Context) (string, int) {
 		}
 		return "unavailable", 0
 	}
-	active := r.emb().Index.Status(status.ActiveVersion)
-	if active.State != vector.StateReady && active.State != vector.StateStale {
-		return "unavailable", status.ActiveVersion
+	if !r.semanticQueryable(status, 0) {
+		return "degraded", status.ActiveVersion
 	}
 	switch status.State {
 	case "ready":
@@ -60,24 +54,31 @@ func (r *Repository) SemanticHealth(ctx context.Context) (string, int) {
 	}
 }
 
-func (r *Repository) semanticQueryable(status SemanticStatus) bool {
-	if r.emb().Provider == nil || r.emb().Index == nil || status.ActiveVersion < 1 {
+func (r *Repository) semanticQueryable(status SemanticStatus, dimension int) bool {
+	runtime := r.emb()
+	if runtime.Provider == nil || status.ActiveVersion < 1 {
 		return false
 	}
-	active := r.emb().Index.Status(status.ActiveVersion)
-	return active.State == vector.StateReady || active.State == vector.StateStale
+	if status.State != "ready" && status.State != "stale" && status.State != "building" {
+		return false
+	}
+	return status.Provider == runtime.ProviderIdentity &&
+		status.Model == runtime.ModelIdentity &&
+		status.CompatibilityIdentity == runtime.CompatibilityIdentity &&
+		status.PolicyGeneration == runtime.PolicyGeneration &&
+		(dimension == 0 || status.Dimension == dimension)
 }
 
 func (r *Repository) SemanticStatus(ctx context.Context) (SemanticStatus, error) {
 	var result SemanticStatus
 	var active, dimension sql.NullInt64
-	var providerName, model sql.NullString
-	err := r.store.reader.QueryRowContext(ctx, `SELECT state, active_version, provider_identity, model_identity, dimension, source_revision_count, coalesce(policy_generation,0) FROM semantic_index_metadata WHERE singleton=1`).Scan(&result.State, &active, &providerName, &model, &dimension, &result.SourceRevisionCount, &result.PolicyGeneration)
+	var providerName, model, compatibilityIdentity sql.NullString
+	err := r.store.reader.QueryRowContext(ctx, `SELECT state, active_version, provider_identity, model_identity, compatibility_identity, dimension, source_revision_count, coalesce(policy_generation,0) FROM semantic_index_metadata WHERE singleton=1`).Scan(&result.State, &active, &providerName, &model, &compatibilityIdentity, &dimension, &result.SourceRevisionCount, &result.PolicyGeneration)
 	if err != nil {
 		return result, err
 	}
 	result.ActiveVersion, result.Dimension = int(active.Int64), int(dimension.Int64)
-	result.Provider, result.Model = providerName.String, model.String
+	result.Provider, result.Model, result.CompatibilityIdentity = providerName.String, model.String, compatibilityIdentity.String
 	return result, nil
 }
 
@@ -90,33 +91,13 @@ func (r *Repository) CurrentEmbeddingIdentity(ctx context.Context, memoryID stri
 	return item, err
 }
 
-func (r *Repository) ProjectionSnapshot(ctx context.Context) ([]ProjectionSnapshot, error) {
-	runtime := r.emb()
-	rows, err := r.store.reader.QueryContext(ctx, `SELECT p.memory_id, p.revision_id, p.space_id, p.display_content, p.content_hash FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) ORDER BY p.memory_id`, runtime.PolicyGeneration)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []ProjectionSnapshot
-	for rows.Next() {
-		var item ProjectionSnapshot
-		if err := rows.Scan(&item.MemoryID, &item.RevisionID, &item.SpaceID, &item.Content, &item.ContentHash); err != nil {
-			return nil, err
-		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
-}
-
-func validEmbedding(values []float32) ([]float64, error) {
+func validEmbedding(values []float32) ([]float32, error) {
 	if len(values) == 0 {
 		return nil, errors.New("empty embedding")
 	}
-	result := make([]float64, len(values))
 	nonzero := false
-	for i, value := range values {
-		result[i] = float64(value)
-		if math.IsNaN(result[i]) || math.IsInf(result[i], 0) {
+	for _, value := range values {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
 			return nil, errors.New("non-finite embedding")
 		}
 		nonzero = nonzero || value != 0
@@ -124,7 +105,7 @@ func validEmbedding(values []float32) ([]float64, error) {
 	if !nonzero {
 		return nil, errors.New("zero embedding")
 	}
-	return result, nil
+	return values, nil
 }
 
 func (r *Repository) EmbedMemory(ctx context.Context, revisionID string) error {
@@ -194,7 +175,7 @@ func (r *Repository) embedMemory(ctx context.Context, claim *ClaimedJob, revisio
 	if err != nil {
 		return err
 	}
-	encoded, err := json.Marshal(values)
+	blob, err := vec.SerializeFloat32(values)
 	if err != nil {
 		return err
 	}
@@ -223,16 +204,22 @@ func (r *Repository) embedMemory(ctx context.Context, claim *ClaimedJob, revisio
 	if currentRevision != revisionID || currentHash != hash || !searchable {
 		return nil
 	}
-	var version int
-	if err := tx.QueryRowContext(ctx, `SELECT coalesce(active_version, 1) FROM semantic_index_metadata WHERE singleton=1`).Scan(&version); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO memory_embeddings(memory_id, revision_id, content_hash, compatibility_identity, configuration_identity, provider_identity, model_identity, dimension, vector_json, processed_at, index_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(memory_id, revision_id, content_hash, compatibility_identity) DO UPDATE SET dimension=excluded.dimension, vector_json=excluded.vector_json, processed_at=excluded.processed_at, index_version=excluded.index_version, provider_identity=excluded.provider_identity, model_identity=excluded.model_identity, configuration_identity=excluded.configuration_identity`, memoryID, revisionID, hash, runtime.CompatibilityIdentity, runtime.ConfigurationIdentity, runtime.ProviderIdentity, runtime.ModelIdentity, len(values), string(encoded), now, version)
+	writeResult, err := tx.ExecContext(ctx, `INSERT INTO memory_embeddings(memory_id, revision_id, content_hash, compatibility_identity, configuration_identity, provider_identity, model_identity, dimension, vector_blob, processed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(memory_id, revision_id, content_hash, compatibility_identity) DO UPDATE SET dimension=excluded.dimension, vector_blob=excluded.vector_blob WHERE memory_embeddings.dimension<>excluded.dimension OR memory_embeddings.vector_blob<>excluded.vector_blob`, memoryID, revisionID, hash, runtime.CompatibilityIdentity, runtime.ConfigurationIdentity, runtime.ProviderIdentity, runtime.ModelIdentity, len(values), blob, now)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE memory_projections SET embedding_state='current', embedding_provider=?, embedding_model=?, embedding_dimension=?, embedding_content_hash=? WHERE memory_id=? AND revision_id=? AND content_hash=?`, runtime.ProviderIdentity, runtime.ModelIdentity, len(values), hash, memoryID, revisionID, hash)
 	if err != nil {
+		return err
+	}
+	if changed, err := writeResult.RowsAffected(); err != nil {
+		return err
+	} else if changed > 0 {
+		if err := advanceSemanticCorpusGeneration(ctx, tx, now, true); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE memory_embeddings SET configuration_identity=?, provider_identity=?, model_identity=?, processed_at=? WHERE memory_id=? AND revision_id=? AND content_hash=? AND compatibility_identity=?`, runtime.ConfigurationIdentity, runtime.ProviderIdentity, runtime.ModelIdentity, now, memoryID, revisionID, hash, runtime.CompatibilityIdentity); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -248,12 +235,8 @@ func (r *Repository) RebuildSemanticClaimed(ctx context.Context, claim ClaimedJo
 
 func (r *Repository) rebuildSemantic(ctx context.Context, claim *ClaimedJob) error {
 	runtime := r.emb()
-	if runtime.Provider == nil || runtime.Index == nil {
+	if runtime.Provider == nil {
 		return ErrIndexDegraded
-	}
-	snapshot, err := r.ProjectionSnapshot(ctx)
-	if err != nil {
-		return err
 	}
 	status, err := r.SemanticStatus(ctx)
 	if err != nil {
@@ -286,62 +269,14 @@ func (r *Repository) rebuildSemantic(ctx context.Context, claim *ClaimedJob) err
 	if err := initial.Commit(); err != nil {
 		return err
 	}
+
 	if claim == nil {
-		for _, item := range snapshot {
-			var exists int
-			if err := r.store.reader.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM memory_embeddings WHERE memory_id=? AND revision_id=? AND content_hash=? AND compatibility_identity=?)`, item.MemoryID, item.RevisionID, item.ContentHash, runtime.CompatibilityIdentity).Scan(&exists); err != nil {
-				r.markSemanticDegraded()
-				return err
-			}
-			if exists != 0 && status.ActiveVersion > 0 && status.State == "ready" && runtime.PolicyGeneration != status.PolicyGeneration {
-				continue
-			}
-			if err := r.embedMemory(ctx, nil, item.RevisionID); err != nil {
-				r.markSemanticDegraded()
-				return err
-			}
-		}
-	}
-	rows, err := r.store.reader.QueryContext(ctx, `SELECT p.memory_id, p.revision_id, p.space_id, p.content_hash, e.dimension, e.vector_json FROM memory_projections p JOIN memory_embeddings e ON e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash WHERE p.searchable=1 AND p.embedding_state='current' AND e.compatibility_identity=? AND EXISTS (SELECT 1 FROM embedding_eligibility eligibility WHERE eligibility.memory_id=p.memory_id AND eligibility.revision_id=p.revision_id AND eligibility.policy_generation=? AND eligibility.eligible=1) ORDER BY p.memory_id`, runtime.CompatibilityIdentity, runtime.PolicyGeneration)
-	if err != nil {
-		if !errors.Is(err, ErrLeaseLost) {
+		if err := r.embedEligibleCorpus(ctx, runtime, status); err != nil {
 			r.markSemanticDegraded()
-		}
-		return err
-	}
-	defer rows.Close()
-	var records []vector.Record
-	dimension := 0
-	for rows.Next() {
-		var metadata vector.Metadata
-		var raw string
-		if err := rows.Scan(&metadata.MemoryID, &metadata.RevisionID, &metadata.SpaceID, &metadata.ContentHash, &metadata.Dimension, &raw); err != nil {
 			return err
 		}
-		metadata.Provider, metadata.Model, metadata.IndexVersion = runtime.ProviderIdentity, runtime.ModelIdentity, version
-		var values []float64
-		if json.Unmarshal([]byte(raw), &values) != nil {
-			r.markSemanticDegraded()
-			return errors.New("malformed stored embedding")
-		}
-		if dimension == 0 {
-			dimension = metadata.Dimension
-		}
-		if metadata.Dimension != dimension || len(values) != dimension {
-			r.markSemanticDegraded()
-			return errors.New("embedding dimension mismatch")
-		}
-		records = append(records, vector.Record{Metadata: metadata, Vector: values})
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if len(records) == 0 {
-		dimension = status.Dimension
-		if dimension < 1 {
-			dimension = 1
-		}
-	}
+
 	if claim != nil {
 		if err := r.requireJobClaim(ctx, r.store.reader, *claim); err != nil {
 			return err
@@ -350,10 +285,17 @@ func (r *Repository) rebuildSemantic(ctx context.Context, claim *ClaimedJob) err
 	if current := r.emb(); current.Generation != runtime.Generation || current.CompatibilityIdentity != runtime.CompatibilityIdentity {
 		return ErrStaleGeneration
 	}
-	if err := runtime.Index.Build(version, vector.Snapshot{Provider: runtime.ProviderIdentity, Model: runtime.ModelIdentity, Dimension: dimension, Records: records}); err != nil {
+
+	dimension, err := r.semanticCorpusDimension(ctx, runtime, status.Dimension)
+	if err != nil {
 		r.markSemanticDegraded()
 		return err
 	}
+
+	if r.semanticBuildHook != nil {
+		r.semanticBuildHook()
+	}
+
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
 		r.markSemanticDegraded()
@@ -368,66 +310,125 @@ func (r *Repository) rebuildSemantic(ctx context.Context, claim *ClaimedJob) err
 			return err
 		}
 	}
-	var currentCount int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1)`, runtime.PolicyGeneration).Scan(&currentCount)
-	if err == nil && currentCount != len(records) {
-		err = errors.New("semantic rebuild source changed")
-	}
-	if err == nil {
-		for _, record := range records {
-			var exists int
-			err = tx.QueryRowContext(ctx, `SELECT 1 FROM memory_projections WHERE searchable=1 AND memory_id=? AND revision_id=? AND space_id=? AND content_hash=? AND embedding_state='current' AND embedding_provider=? AND embedding_model=? AND embedding_dimension=?`, record.Metadata.MemoryID, record.Metadata.RevisionID, record.Metadata.SpaceID, record.Metadata.ContentHash, runtime.ProviderIdentity, runtime.ModelIdentity, dimension).Scan(&exists)
-			if errors.Is(err, sql.ErrNoRows) {
-				err = errors.New("semantic rebuild source changed")
-			}
-			if err != nil {
-				break
-			}
-		}
-	}
+
+	sourceCount, embeddedCount, totalCount, err := r.semanticCorpusCounts(ctx, tx, runtime, dimension)
 	if err != nil {
 		_ = tx.Rollback()
 		r.markSemanticDegraded()
 		return err
 	}
-	if err := runtime.Index.Activate(version); err != nil {
+	if sourceCount != embeddedCount {
 		_ = tx.Rollback()
 		r.markSemanticDegraded()
-		return err
+		return errors.New("semantic rebuild source changed")
 	}
+	excludedCount := totalCount - sourceCount
+	if excludedCount < 0 {
+		excludedCount = 0
+	}
+
+	result, err := tx.ExecContext(ctx, `UPDATE semantic_index_metadata SET active_version=coalesce(active_version,0)+1, building_version=NULL, state='ready', provider_identity=?, model_identity=?, dimension=?, compatibility_identity=?, policy_generation=?, source_revision_count=?, eligible_revision_count=?, embedded_revision_count=?, excluded_revision_count=?, activated_at=?, updated_at=? WHERE singleton=1 AND building_version=?`, runtime.ProviderIdentity, runtime.ModelIdentity, dimension, runtime.CompatibilityIdentity, runtime.PolicyGeneration, sourceCount, sourceCount, embeddedCount, excludedCount, formatTime(r.runtime.Now()), formatTime(r.runtime.Now()), version)
+	if err != nil || !oneRow(result) {
+		_ = tx.Rollback()
+		r.markSemanticDegraded()
+		return fmt.Errorf("activate semantic metadata: %w", err)
+	}
+
+	if r.semanticActivateHook != nil {
+		r.semanticActivateHook()
+	}
+
 	if claim != nil {
 		if err := r.requireJobClaim(ctx, tx, *claim); err != nil {
-			r.restoreSemanticActivationFor(runtime, status.ActiveVersion, version)
 			return err
 		}
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE semantic_index_metadata SET active_version=?, building_version=NULL, state='ready', provider_identity=?, model_identity=?, dimension=?, compatibility_identity=?, policy_generation=?, source_revision_count=?, eligible_revision_count=?, embedded_revision_count=?, excluded_revision_count=(SELECT count(*) FROM memory_projections WHERE searchable=1)-?, activated_at=?, updated_at=? WHERE singleton=1 AND building_version=?`, version, runtime.ProviderIdentity, runtime.ModelIdentity, dimension, runtime.CompatibilityIdentity, runtime.PolicyGeneration, len(records), len(records), len(records), len(records), formatTime(r.runtime.Now()), formatTime(r.runtime.Now()), version)
-	if err != nil || !oneRow(result) {
-		r.restoreSemanticActivationFor(runtime, status.ActiveVersion, version)
-		return fmt.Errorf("activate semantic metadata: %w", err)
-	}
 	if err := tx.Commit(); err != nil {
-		r.restoreSemanticActivationFor(runtime, status.ActiveVersion, version)
+		r.markSemanticDegraded()
 		return err
 	}
 	return nil
 }
 
-func (r *Repository) restoreSemanticActivation(previous, rejected int) {
-	r.restoreSemanticActivationFor(r.emb(), previous, rejected)
+func (r *Repository) embedEligibleCorpus(ctx context.Context, runtime *embeddingRuntime, status SemanticStatus) error {
+	policyChanged := status.ActiveVersion > 0 && runtime.PolicyGeneration != status.PolicyGeneration
+	var query string
+	args := []any{runtime.PolicyGeneration}
+	if policyChanged {
+		query = `SELECT p.revision_id FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) AND NOT EXISTS (SELECT 1 FROM memory_embeddings m WHERE m.memory_id=p.memory_id AND m.revision_id=p.revision_id AND m.content_hash=p.content_hash AND m.compatibility_identity=?) ORDER BY p.memory_id`
+		args = append(args, runtime.CompatibilityIdentity)
+	} else {
+		query = `SELECT p.revision_id FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) ORDER BY p.memory_id`
+	}
+	rows, err := r.store.reader.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	var revisions []string
+	for rows.Next() {
+		var revision string
+		if err := rows.Scan(&revision); err != nil {
+			rows.Close()
+			return err
+		}
+		revisions = append(revisions, revision)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, revision := range revisions {
+		if err := r.embedMemory(ctx, nil, revision); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (r *Repository) restoreSemanticActivationFor(runtime *embeddingRuntime, previous, rejected int) {
-	if runtime == nil || runtime.Index == nil {
-		return
+func (r *Repository) semanticCorpusDimension(ctx context.Context, runtime *embeddingRuntime, fallback int) (int, error) {
+	var dimension sql.NullInt64
+	err := r.store.reader.QueryRowContext(ctx, `SELECT max(dimension) FROM memory_embeddings WHERE compatibility_identity=?`, runtime.CompatibilityIdentity).Scan(&dimension)
+	if err != nil {
+		return 0, err
 	}
-	if previous > 0 {
-		_ = runtime.Index.Activate(previous)
-		return
+	if dimension.Valid && dimension.Int64 > 0 {
+		return int(dimension.Int64), nil
 	}
-	_ = runtime.Index.Deactivate(rejected)
+	if fallback >= 1 {
+		return fallback, nil
+	}
+	return 1, nil
+}
+
+func (r *Repository) semanticCorpusCounts(ctx context.Context, tx *sql.Tx, runtime *embeddingRuntime, dimension int) (source, embedded, total int, err error) {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1)`, runtime.PolicyGeneration).Scan(&source); err != nil {
+		return 0, 0, 0, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections p WHERE p.searchable=1 AND p.embedding_state='current' AND EXISTS (SELECT 1 FROM memory_embeddings e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash AND e.compatibility_identity=? AND e.dimension=?) AND EXISTS (SELECT 1 FROM embedding_eligibility el WHERE el.memory_id=p.memory_id AND el.revision_id=p.revision_id AND el.policy_generation=? AND el.eligible=1)`, runtime.CompatibilityIdentity, dimension, runtime.PolicyGeneration).Scan(&embedded); err != nil {
+		return 0, 0, 0, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections WHERE searchable=1`).Scan(&total); err != nil {
+		return 0, 0, 0, err
+	}
+	return source, embedded, total, nil
 }
 
 func (r *Repository) markSemanticDegraded() {
 	_, _ = r.store.writer.Exec(`UPDATE semantic_index_metadata SET building_version=NULL, state=CASE WHEN active_version IS NULL THEN 'degraded' ELSE 'stale' END, updated_at=? WHERE singleton=1`, formatTime(r.runtime.Now()))
+}
+
+func advanceSemanticCorpusGeneration(ctx context.Context, tx *sql.Tx, now string, stale bool) error {
+	state := `state`
+	if stale {
+		state = `CASE WHEN active_version IS NULL THEN 'absent' ELSE 'stale' END`
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE semantic_index_metadata SET active_version=CASE WHEN active_version IS NULL THEN NULL ELSE active_version+1 END, state=`+state+`, updated_at=? WHERE singleton=1`, now)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return err
+	} else if rows != 1 {
+		return errors.New("semantic metadata singleton is missing")
+	}
+	return nil
 }
