@@ -21,6 +21,21 @@ self-relations, and enforce endpoint scope. Retrieval follows at most one hop;
 historical endpoints can explain history but do not make stale revision text a
 current result.
 
+## Entity Facts
+
+Entity facts (`entity_facts`) are distinct from revision-level relations: they
+describe typed relationships among resolved entities, such as
+`Alice --participates_in--> Alpha` or `Alpha --uses_database--> PostgreSQL`.
+A fact has a subject entity, a controlled predicate, and either an object entity
+or a typed literal (exactly one), plus source memory/revision provenance,
+confidence, state, and valid time. Predicates come from a controlled registry
+(`participates_in`, `uses_database`, `owned_by`, `located_in`, `depends_on`).
+
+Facts are append-only authority: confirming a newer fact supersedes older active
+facts with the same subject and predicate without deleting their history, so a
+default query returns only currently-valid facts while a historical
+`reference_time` can surface the fact valid at that time.
+
 ## Evolution
 
 Evolution proposals cover duplicates, supplements, replacements, and conflicts;

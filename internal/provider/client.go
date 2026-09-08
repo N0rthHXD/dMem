@@ -293,6 +293,301 @@ func (c *Client) PreflightProcess(request ProcessRequest) error {
 	return nil
 }
 
+const graphExtractSystemPrompt = `You are a knowledge-graph extraction processor. Given a confirmed memory revision (source_memory_id, source_revision_id, content) and, optionally, a list of context memories, extract structured knowledge.
+
+Respond with STRICT JSON ONLY (no markdown, no surrounding prose) matching this shape exactly:
+{"entities":[...],"mentions":[...],"facts":[...],"relations":[...]}
+
+Every array may be empty. Do not invent memory ids or revision ids that were not provided.
+
+- "entities": array of entity objects. Each has EXACTLY:
+  - "local_id": string. A short local identifier (e.g. "e0") unique within this response.
+  - "canonical_name": string. A non-empty canonical display name.
+  - "entity_type": one of "person","organization","place","project","product","event","concept","other".
+  - "aliases": array of strings (may be empty). Alternative names or surface forms for this entity.
+  - "confidence": number between 0 and 1 inclusive.
+- "mentions": array of mention objects. Each has EXACTLY:
+  - "entity_local_id": string. Must reference an "entities" local_id in this response.
+  - "text": string. The exact surface text as it appears in content.
+  - "start_rune": integer. 0-based rune offset into content.
+  - "end_rune": integer. Exclusive 0-based rune offset into content. start_rune < end_rune and end_rune must not exceed the rune length of content, and content[start_rune:end_rune] (by runes) must equal "text".
+  - "confidence": number between 0 and 1 inclusive.
+- "facts": array of entity-fact objects. Each has EXACTLY:
+  - "subject_local_id": string. Must reference an "entities" local_id.
+  - "predicate": one of "participates_in","uses_database","owned_by","located_in","depends_on".
+  - "object_local_id": string. Required when the object is another entity; must reference a DIFFERENT "entities" local_id. Omit or set to "" when using object_literal.
+  - "object_literal": string. Required when the object is a literal value; omit otherwise.
+  - "object_literal_type": "string","number", or "boolean". Required only when object_literal is present.
+  - "confidence": number between 0 and 1 inclusive.
+  - "valid_from", "valid_until": optional RFC3339 strings; valid_until must be after valid_from.
+  Exactly one of "object_local_id" (non-empty) and "object_literal" (non-empty) must be present.
+- "relations": array of memory-relation objects between the source revision and a context memory. Each has EXACTLY:
+  - "relation_type": one of "supports","contradicts","supersedes","derived_from","related_to".
+  - "target_memory_id": string. Must reference a context memory id provided in the input.
+  - "target_revision_id": string. The current revision id of that context memory.
+  - "confidence": number between 0 and 1 inclusive.
+  - "evidence": array (may be empty) of {"start_rune","end_rune"} rune ranges into content. Each start_rune < end_rune and within content bounds.
+
+Do not add any field beyond those listed.`
+
+var validGraphPredicates = map[string]struct{}{
+	"participates_in": {}, "uses_database": {}, "owned_by": {}, "located_in": {}, "depends_on": {},
+}
+
+func validGraphPredicate(value string) bool {
+	_, ok := validGraphPredicates[value]
+	return ok
+}
+
+func (c *Client) PreflightGraphExtract(request GraphExtractRequest) error {
+	if !c.Enabled() {
+		return failure(ErrorDisabled, "provider_disabled")
+	}
+	if !boundedString(request.processorIdentity) || !boundedString(request.processingVersion) || !boundedString(request.jobID) || request.attempt < 1 ||
+		!boundedString(request.memoryID) || !boundedString(request.revisionID) || !boundedString(request.spaceID) ||
+		request.content == "" || utf8.RuneCountInString(request.content) > c.maxEgressInput ||
+		request.maxEntities < 1 || request.maxFacts < 1 || request.maxRelations < 1 || request.maxContentChars < 1 {
+		return failure(ErrorInvalidInput, "invalid_graph_extract_request")
+	}
+	if _, ok := c.sensitivities[request.sensitivity]; !ok {
+		return failure(ErrorPolicy, "sensitivity_not_allowed")
+	}
+	return nil
+}
+
+func (c *Client) GraphExtract(ctx context.Context, request GraphExtractRequest) (GraphExtractResult, error) {
+	if err := c.PreflightGraphExtract(request); err != nil {
+		return GraphExtractResult{}, err
+	}
+	remaining := c.maxEgressInput - utf8.RuneCountInString(request.content)
+	contextMemories, _ := c.minimizeMemories(request.contextMemories, remaining, max(0, c.maxContext))
+	request.contextMemories = acceptedMemories(request.contextMemories, contextMemories)
+	payload := chatRequest{Model: c.model, ResponseFormat: responseFormat{Type: "json_object"}}
+	prompt := graphExtractPrompt{
+		ProcessorIdentity: request.processorIdentity, ProcessingVersion: request.processingVersion,
+		JobID: request.jobID, Attempt: request.attempt, SourceMemoryID: request.memoryID, SourceRevisionID: request.revisionID,
+		SpaceID: request.spaceID, Content: request.content, ContextMemories: contextMemories,
+		MaxEntities: request.maxEntities, MaxFacts: request.maxFacts, MaxRelations: request.maxRelations,
+	}
+	promptJSON, err := json.Marshal(prompt)
+	if err != nil {
+		return GraphExtractResult{}, failure(ErrorInvalidInput, "invalid_graph_extract_request")
+	}
+	payload.Messages = []chatMessage{{Role: "system", Content: graphExtractSystemPrompt}, {Role: "user", Content: string(promptJSON)}}
+	var response chatResponse
+	requestID, err := c.post(ctx, payload, &response)
+	if err != nil {
+		return GraphExtractResult{}, err
+	}
+	if len(response.Choices) != 1 || response.Choices[0].Message.Content == "" {
+		return GraphExtractResult{}, failure(ErrorInvalidOutput, "malformed_chat_response")
+	}
+	var output graphExtractOutput
+	if err := decodeSingleStrict([]byte(response.Choices[0].Message.Content), &output); err != nil {
+		return GraphExtractResult{}, failure(ErrorInvalidOutput, "malformed_graph_extract_output")
+	}
+	result, err := validateGraphExtractOutput(output, request, response.Usage, requestID)
+	if err != nil {
+		return GraphExtractResult{}, err
+	}
+	return result, nil
+}
+
+func validateGraphExtractOutput(output graphExtractOutput, request GraphExtractRequest, usage usageWire, requestID string) (GraphExtractResult, error) {
+	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 {
+		return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_usage")
+	}
+	contentRunes := []rune(request.content)
+	entityIDs := make(map[string]struct{}, len(output.Entities))
+	entities := make([]GraphEntity, 0, len(output.Entities))
+	for _, item := range output.Entities {
+		if item.LocalID == "" || !boundedString(item.LocalID) {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
+		}
+		if _, duplicate := entityIDs[item.LocalID]; duplicate {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "duplicate_graph_entity")
+		}
+		entityIDs[item.LocalID] = struct{}{}
+		if strings.TrimSpace(item.CanonicalName) == "" || !boundedString(item.CanonicalName) || !validEntityTypeGraph(item.EntityType) {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
+		}
+		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
+		}
+		aliases := make([]string, 0, len(item.Aliases))
+		for _, alias := range item.Aliases {
+			if strings.TrimSpace(alias) == "" || !boundedString(alias) {
+				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
+			}
+			aliases = append(aliases, alias)
+		}
+		entities = append(entities, GraphEntity{localID: item.LocalID, canonicalName: strings.TrimSpace(item.CanonicalName), entityType: item.EntityType, aliases: aliases, confidence: item.Confidence})
+	}
+	mentions := make([]GraphMention, 0, len(output.Mentions))
+	for _, item := range output.Mentions {
+		if _, ok := entityIDs[item.EntityLocalID]; !ok {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_mention_entity")
+		}
+		if item.Text == "" || item.StartRune < 0 || item.EndRune <= item.StartRune || item.EndRune > len(contentRunes) {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_mention")
+		}
+		if string(contentRunes[item.StartRune:item.EndRune]) != item.Text {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_mention")
+		}
+		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_mention")
+		}
+		mentions = append(mentions, GraphMention{entityLocalID: item.EntityLocalID, text: item.Text, startRune: item.StartRune, endRune: item.EndRune, confidence: item.Confidence})
+	}
+	facts := make([]GraphFact, 0, len(output.Facts))
+	for _, item := range output.Facts {
+		if _, ok := entityIDs[item.SubjectLocalID]; !ok {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_fact_subject")
+		}
+		if !validGraphPredicate(item.Predicate) {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_predicate")
+		}
+		hasObject := item.ObjectLocalID != ""
+		hasLiteral := item.ObjectLiteral != ""
+		if hasObject == hasLiteral {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_object")
+		}
+		if hasObject {
+			if _, ok := entityIDs[item.ObjectLocalID]; !ok {
+				return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_fact_object")
+			}
+			if item.ObjectLocalID == item.SubjectLocalID {
+				return GraphExtractResult{}, failure(ErrorInvalidOutput, "self_fact_relation")
+			}
+		}
+		if hasLiteral {
+			if item.ObjectLiteralType != "string" && item.ObjectLiteralType != "number" && item.ObjectLiteralType != "boolean" {
+				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_literal_type")
+			}
+			if !boundedString(item.ObjectLiteral) {
+				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_literal")
+			}
+		}
+		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_confidence")
+		}
+		if item.ValidFrom != nil && item.ValidUntil != nil && !item.ValidFrom.Before(*item.ValidUntil) {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_validity")
+		}
+		facts = append(facts, GraphFact{subjectLocalID: item.SubjectLocalID, predicate: item.Predicate, objectLocalID: item.ObjectLocalID, objectLiteral: item.ObjectLiteral, objectLiteralType: item.ObjectLiteralType, confidence: item.Confidence, validFrom: cloneTime(item.ValidFrom), validUntil: cloneTime(item.ValidUntil)})
+	}
+	contextMemories := make(map[string]Memory, len(request.contextMemories))
+	for _, memory := range request.contextMemories {
+		contextMemories[memory.memoryID] = memory
+	}
+	relations := make([]GraphMemoryRelation, 0, len(output.Relations))
+	for _, item := range output.Relations {
+		if !validMemoryRelationType(item.RelationType) {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_relation_type")
+		}
+		memory, ok := contextMemories[item.TargetMemoryID]
+		if !ok || memory.revisionID != item.TargetRevisionID {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_relation_target")
+		}
+		if item.TargetMemoryID == request.memoryID && item.TargetRevisionID == request.revisionID {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "self_memory_relation")
+		}
+		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
+			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_relation_confidence")
+		}
+		evidence := make([]GraphRelationEvidence, 0, len(item.Evidence))
+		for _, ref := range item.Evidence {
+			if ref.StartRune < 0 || ref.EndRune <= ref.StartRune || ref.EndRune > len(contentRunes) {
+				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_relation_evidence")
+			}
+			evidence = append(evidence, GraphRelationEvidence{startRune: ref.StartRune, endRune: ref.EndRune})
+		}
+		relations = append(relations, GraphMemoryRelation{relationType: item.RelationType, targetMemoryID: item.TargetMemoryID, targetRevisionID: item.TargetRevisionID, confidence: item.Confidence, evidence: evidence})
+	}
+	if len(entities) > request.maxEntities || len(facts) > request.maxFacts || len(relations) > request.maxRelations {
+		return GraphExtractResult{}, failure(ErrorInvalidOutput, "graph_output_out_of_bounds")
+	}
+	return GraphExtractResult{entities: entities, mentions: mentions, facts: facts, relations: relations, usage: usageFromWire(usage), requestID: requestID}, nil
+}
+
+func validEntityTypeGraph(value string) bool {
+	switch value {
+	case "person", "organization", "place", "project", "product", "event", "concept", "other":
+		return true
+	}
+	return false
+}
+
+func validMemoryRelationType(value string) bool {
+	switch value {
+	case "supports", "contradicts", "supersedes", "derived_from", "related_to":
+		return true
+	}
+	return false
+}
+
+type graphExtractPrompt struct {
+	ProcessorIdentity string         `json:"processor_identity"`
+	ProcessingVersion string         `json:"processing_version"`
+	JobID             string         `json:"job_id"`
+	Attempt           int            `json:"attempt"`
+	SourceMemoryID    string         `json:"source_memory_id"`
+	SourceRevisionID  string         `json:"source_revision_id"`
+	SpaceID           string         `json:"space_id"`
+	Content           string         `json:"content"`
+	ContextMemories   []egressMemory `json:"context_memories,omitempty"`
+	MaxEntities       int            `json:"max_entities"`
+	MaxFacts          int            `json:"max_facts"`
+	MaxRelations      int            `json:"max_relations"`
+}
+
+type graphEntityWire struct {
+	LocalID       string   `json:"local_id"`
+	CanonicalName string   `json:"canonical_name"`
+	EntityType    string   `json:"entity_type"`
+	Aliases       []string `json:"aliases"`
+	Confidence    float64  `json:"confidence"`
+}
+
+type graphMentionWire struct {
+	EntityLocalID string  `json:"entity_local_id"`
+	Text          string  `json:"text"`
+	StartRune     int     `json:"start_rune"`
+	EndRune       int     `json:"end_rune"`
+	Confidence    float64 `json:"confidence"`
+}
+
+type graphFactWire struct {
+	SubjectLocalID    string     `json:"subject_local_id"`
+	Predicate         string     `json:"predicate"`
+	ObjectLocalID     string     `json:"object_local_id"`
+	ObjectLiteral     string     `json:"object_literal"`
+	ObjectLiteralType string     `json:"object_literal_type"`
+	Confidence        float64    `json:"confidence"`
+	ValidFrom         *time.Time `json:"valid_from"`
+	ValidUntil        *time.Time `json:"valid_until"`
+}
+
+type graphRelationWire struct {
+	RelationType     string                  `json:"relation_type"`
+	TargetMemoryID   string                  `json:"target_memory_id"`
+	TargetRevisionID string                  `json:"target_revision_id"`
+	Confidence       float64                 `json:"confidence"`
+	Evidence         []graphRelationEvidence `json:"evidence"`
+}
+
+type graphRelationEvidence struct {
+	StartRune int `json:"start_rune"`
+	EndRune   int `json:"end_rune"`
+}
+
+type graphExtractOutput struct {
+	Entities  []graphEntityWire   `json:"entities"`
+	Mentions  []graphMentionWire  `json:"mentions"`
+	Facts     []graphFactWire     `json:"facts"`
+	Relations []graphRelationWire `json:"relations"`
+}
+
 func acceptedEvents(events []Event, accepted []egressEvent) []Event {
 	ids := make(map[string]struct{}, len(accepted))
 	for _, event := range accepted {

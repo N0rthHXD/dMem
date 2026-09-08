@@ -226,6 +226,143 @@ func (r ProcessResult) OmissionSummary() map[string]int {
 	return result
 }
 
+type GraphExtractRequest struct {
+	processorIdentity string
+	processingVersion string
+	jobID             string
+	attempt           int
+	spaceID           string
+	memoryID          string
+	revisionID        string
+	content           string
+	sensitivity       string
+	contextMemories   []Memory
+	maxEntities       int
+	maxFacts          int
+	maxRelations      int
+	maxContentChars   int
+}
+
+func NewGraphExtractRequest(processorIdentity, processingVersion, jobID string, attempt int, spaceID, memoryID, revisionID, content, sensitivity string, contextMemories []Memory, maxEntities, maxFacts, maxRelations, maxContentChars int) GraphExtractRequest {
+	return GraphExtractRequest{
+		processorIdentity: processorIdentity, processingVersion: processingVersion, jobID: jobID, attempt: attempt,
+		spaceID: spaceID, memoryID: memoryID, revisionID: revisionID, content: content, sensitivity: sensitivity,
+		contextMemories: append([]Memory(nil), contextMemories...),
+		maxEntities:     maxEntities, maxFacts: maxFacts, maxRelations: maxRelations, maxContentChars: maxContentChars,
+	}
+}
+
+func (r GraphExtractRequest) ProcessorIdentity() string { return r.processorIdentity }
+func (r GraphExtractRequest) ProcessingVersion() string { return r.processingVersion }
+func (r GraphExtractRequest) JobID() string             { return r.jobID }
+func (r GraphExtractRequest) Attempt() int              { return r.attempt }
+func (r GraphExtractRequest) SpaceID() string           { return r.spaceID }
+func (r GraphExtractRequest) MemoryID() string          { return r.memoryID }
+func (r GraphExtractRequest) RevisionID() string        { return r.revisionID }
+func (r GraphExtractRequest) Content() string           { return r.content }
+func (r GraphExtractRequest) Sensitivity() string       { return r.sensitivity }
+func (r GraphExtractRequest) ContextMemories() []Memory {
+	return append([]Memory(nil), r.contextMemories...)
+}
+func (r GraphExtractRequest) MaxEntities() int     { return r.maxEntities }
+func (r GraphExtractRequest) MaxFacts() int        { return r.maxFacts }
+func (r GraphExtractRequest) MaxRelations() int    { return r.maxRelations }
+func (r GraphExtractRequest) MaxContentChars() int { return r.maxContentChars }
+
+type GraphEntity struct {
+	localID       string
+	canonicalName string
+	entityType    string
+	aliases       []string
+	confidence    float64
+}
+
+func (e GraphEntity) LocalID() string       { return e.localID }
+func (e GraphEntity) CanonicalName() string { return e.canonicalName }
+func (e GraphEntity) EntityType() string    { return e.entityType }
+func (e GraphEntity) Aliases() []string     { return append([]string(nil), e.aliases...) }
+func (e GraphEntity) Confidence() float64   { return e.confidence }
+
+type GraphMention struct {
+	entityLocalID string
+	text          string
+	startRune     int
+	endRune       int
+	confidence    float64
+}
+
+func (m GraphMention) EntityLocalID() string { return m.entityLocalID }
+func (m GraphMention) Text() string          { return m.text }
+func (m GraphMention) StartRune() int        { return m.startRune }
+func (m GraphMention) EndRune() int          { return m.endRune }
+func (m GraphMention) Confidence() float64   { return m.confidence }
+
+type GraphFact struct {
+	subjectLocalID    string
+	predicate         string
+	objectLocalID     string
+	objectLiteral     string
+	objectLiteralType string
+	confidence        float64
+	validFrom         *time.Time
+	validUntil        *time.Time
+}
+
+func (f GraphFact) SubjectLocalID() string    { return f.subjectLocalID }
+func (f GraphFact) Predicate() string         { return f.predicate }
+func (f GraphFact) ObjectLocalID() string     { return f.objectLocalID }
+func (f GraphFact) ObjectLiteral() string     { return f.objectLiteral }
+func (f GraphFact) ObjectLiteralType() string { return f.objectLiteralType }
+func (f GraphFact) Confidence() float64       { return f.confidence }
+func (f GraphFact) ValidFrom() *time.Time     { return cloneTime(f.validFrom) }
+func (f GraphFact) ValidUntil() *time.Time    { return cloneTime(f.validUntil) }
+
+type GraphMemoryRelation struct {
+	relationType     string
+	targetMemoryID   string
+	targetRevisionID string
+	confidence       float64
+	evidence         []GraphRelationEvidence
+}
+
+func (r GraphMemoryRelation) RelationType() string     { return r.relationType }
+func (r GraphMemoryRelation) TargetMemoryID() string   { return r.targetMemoryID }
+func (r GraphMemoryRelation) TargetRevisionID() string { return r.targetRevisionID }
+func (r GraphMemoryRelation) Confidence() float64      { return r.confidence }
+func (r GraphMemoryRelation) Evidence() []GraphRelationEvidence {
+	return append([]GraphRelationEvidence(nil), r.evidence...)
+}
+
+type GraphRelationEvidence struct {
+	startRune int
+	endRune   int
+}
+
+func (e GraphRelationEvidence) StartRune() int { return e.startRune }
+func (e GraphRelationEvidence) EndRune() int   { return e.endRune }
+
+type GraphExtractResult struct {
+	entities  []GraphEntity
+	mentions  []GraphMention
+	facts     []GraphFact
+	relations []GraphMemoryRelation
+	usage     Usage
+	requestID string
+}
+
+func (r GraphExtractResult) Entities() []GraphEntity {
+	return append([]GraphEntity(nil), r.entities...)
+}
+func (r GraphExtractResult) Mentions() []GraphMention {
+	return append([]GraphMention(nil), r.mentions...)
+}
+func (r GraphExtractResult) Facts() []GraphFact { return append([]GraphFact(nil), r.facts...) }
+func (r GraphExtractResult) Relations() []GraphMemoryRelation {
+	return append([]GraphMemoryRelation(nil), r.relations...)
+}
+func (r GraphExtractResult) Usage() Usage              { return r.usage }
+func (r GraphExtractResult) ProviderRequestID() string { return r.requestID }
+
 type EmbeddingRequest struct {
 	spaceID     string
 	contentType string

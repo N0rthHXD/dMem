@@ -11,6 +11,10 @@ type searchMetadata struct {
 	feedbackAggregateVersion int64
 	entityIndexVersion       int64
 	relationIndexVersion     int64
+	graphIndexVersion        int64
+	entityIndexGeneration    int64
+	relationIndexGeneration  int64
+	graphIndexGeneration     int64
 }
 
 func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error) {
@@ -23,6 +27,10 @@ func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error)
 		{`SELECT generation FROM feedback_aggregate_metadata WHERE singleton=1`, &result.feedbackAggregateVersion},
 		{`SELECT active_version FROM entity_index_metadata WHERE singleton=1`, &result.entityIndexVersion},
 		{`SELECT active_version FROM relation_index_metadata WHERE singleton=1`, &result.relationIndexVersion},
+		{`SELECT active_version FROM graph_index_metadata WHERE singleton=1`, &result.graphIndexVersion},
+		{`SELECT generation FROM entity_index_metadata WHERE singleton=1`, &result.entityIndexGeneration},
+		{`SELECT generation FROM relation_index_metadata WHERE singleton=1`, &result.relationIndexGeneration},
+		{`SELECT generation FROM graph_index_metadata WHERE singleton=1`, &result.graphIndexGeneration},
 	}
 	for _, read := range reads {
 		if err := tx.QueryRowContext(ctx, read.query).Scan(read.value); err != nil {

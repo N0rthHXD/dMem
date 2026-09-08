@@ -43,6 +43,13 @@ make offline-default
 - `quality` runs fixed corpora for keyword, semantic, hybrid, scope isolation,
   conflict references, feedback poisoning, and stale-revision behavior. It also
   enforces broad shared Linux CI quality thresholds.
+- Knowledge-graph tests cover graph extraction scheduling/idempotency, provider
+  output validation (unknown fields, rune ranges, illegal predicates, NaN
+  confidence, self relations), build-time entity resolution, auto-confirm vs
+  pending review, fact temporal evolution, entity-fact/list/proposal APIs,
+  query-time entity resolution (English and Chinese aliases), 0-hop/1-hop/2-hop
+  and memory-relation recall, graph cursor invalidation, and concurrent fact
+  confirmation.
 - `performance` checks broad shared Linux CI bounds for latency, allocation,
   rebuild cost, portability throughput, and storage growth. These are regression
   gates, not production capacity promises.

@@ -82,6 +82,10 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	if doc.Processing.Version == DefaultProcessingVersion && processing.Enabled {
 		return Config{}, newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_processing_version", Path: "processing.version"})
 	}
+	graphEnabled := true
+	if doc.Processing.GraphEnabled != nil {
+		graphEnabled = *doc.Processing.GraphEnabled
+	}
 	cfg := Config{
 		ConfigVersion:       doc.ConfigVersion,
 		DataDir:             doc.Instance.DataDir,
@@ -107,6 +111,7 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 		ProcessingVersion:   doc.Processing.Version,
 		ProcessingProvider:  processing,
 		EmbeddingProvider:   embedding,
+		GraphEnabled:        graphEnabled,
 	}
 	cfg.SourceIdentity = sourceIdentity(data)
 	cfg.EffectiveIdentity = effectiveIdentity(cfg)

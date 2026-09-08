@@ -1196,7 +1196,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 CREATE TABLE jobs (
     job_id TEXT PRIMARY KEY,
     operation_id TEXT NOT NULL,
-    job_type TEXT NOT NULL CHECK (job_type IN ('extract_memory', 'extract_entity', 'extract_relation', 'embed_memory', 'rebuild_fts', 'rebuild_semantic', 'rebuild_entity_index', 'rebuild_relation_index', 'aggregate_feedback', 'rebuild_feedback_aggregates', 'build_aggregate', 'rebuild_aggregate', 'logical_export', 'logical_import')),
+    job_type TEXT NOT NULL CHECK (job_type IN ('extract_memory', 'extract_entity', 'extract_relation', 'extract_graph', 'embed_memory', 'rebuild_fts', 'rebuild_semantic', 'rebuild_entity_index', 'rebuild_relation_index', 'rebuild_graph_index', 'aggregate_feedback', 'rebuild_feedback_aggregates', 'build_aggregate', 'rebuild_aggregate', 'logical_export', 'logical_import')),
     target_type TEXT NOT NULL CHECK (target_type IN ('raw_event', 'memory_revision', 'feedback_revision', 'aggregate', 'index', 'export_operation', 'import_operation')),
     target_id TEXT NOT NULL,
     processing_version TEXT NOT NULL,
@@ -1466,5 +1466,172 @@ CREATE TABLE reconciliation_runs (
 
 CREATE INDEX reconciliation_runs_state_idx
 ON reconciliation_runs(state, capability, created_at);
+
+CREATE TABLE predicates (
+    predicate TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL
+) STRICT;
+
+INSERT INTO predicates(predicate, description, created_at) VALUES
+    ('participates_in', 'entity participates in a project or activity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('uses_database', 'entity uses a database system', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('owned_by', 'entity is owned by another entity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('located_in', 'entity is located in a place', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('depends_on', 'entity depends on another entity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+CREATE TABLE entity_facts (
+    fact_id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    subject_entity_id TEXT NOT NULL REFERENCES entities(entity_id) ON DELETE RESTRICT,
+    predicate TEXT NOT NULL REFERENCES predicates(predicate) ON DELETE RESTRICT,
+    object_entity_id TEXT REFERENCES entities(entity_id) ON DELETE RESTRICT,
+    object_literal TEXT,
+    object_literal_type TEXT CHECK (object_literal_type IS NULL OR object_literal_type IN ('string', 'number', 'boolean')),
+    source_memory_id TEXT NOT NULL,
+    source_revision_id TEXT NOT NULL,
+    confidence REAL CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
+    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'dismissed', 'superseded')),
+    source TEXT NOT NULL CHECK (source IN ('processor_review', 'human_confirmation', 'auto_review', 'import')),
+    specification_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    processing_version TEXT NOT NULL,
+    valid_from TEXT,
+    valid_until TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK ((object_entity_id IS NULL) <> (object_literal IS NULL)),
+    CHECK (object_literal IS NULL OR object_literal_type IS NOT NULL),
+    CHECK (object_entity_id IS NULL OR subject_entity_id <> object_entity_id),
+    CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from),
+    FOREIGN KEY (source_memory_id, source_revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT,
+    UNIQUE (subject_entity_id, predicate, object_entity_id, object_literal, source_revision_id, specification_hash)
+) STRICT;
+
+CREATE INDEX entity_facts_subject_idx ON entity_facts(subject_entity_id, state, predicate, fact_id);
+CREATE INDEX entity_facts_object_idx ON entity_facts(object_entity_id, state, predicate, fact_id) WHERE object_entity_id IS NOT NULL;
+CREATE INDEX entity_facts_predicate_idx ON entity_facts(predicate, state, subject_entity_id, fact_id);
+CREATE INDEX entity_facts_source_revision_idx ON entity_facts(source_memory_id, source_revision_id, state, fact_id);
+CREATE INDEX entity_facts_space_idx ON entity_facts(space_id, state, predicate, created_at DESC, fact_id DESC);
+
+CREATE TRIGGER entity_facts_immutable_fields
+BEFORE UPDATE ON entity_facts WHEN OLD.space_id IS NOT NEW.space_id OR OLD.subject_entity_id IS NOT NEW.subject_entity_id
+ OR OLD.predicate IS NOT NEW.predicate OR OLD.object_entity_id IS NOT NEW.object_entity_id OR OLD.object_literal IS NOT NEW.object_literal
+ OR OLD.object_literal_type IS NOT NEW.object_literal_type OR OLD.source_memory_id IS NOT NEW.source_memory_id OR OLD.source_revision_id IS NOT NEW.source_revision_id
+ OR OLD.confidence IS NOT NEW.confidence OR OLD.source IS NOT NEW.source OR OLD.specification_hash IS NOT NEW.specification_hash
+ OR OLD.created_by IS NOT NEW.created_by OR OLD.processing_version IS NOT NEW.processing_version OR OLD.valid_from IS NOT NEW.valid_from
+ OR OLD.valid_until IS NOT NEW.valid_until OR OLD.created_at IS NOT NEW.created_at
+BEGIN SELECT RAISE(ABORT, 'entity fact assertion is immutable'); END;
+CREATE TRIGGER entity_facts_no_delete BEFORE DELETE ON entity_facts BEGIN SELECT RAISE(ABORT, 'entity facts cannot be deleted'); END;
+
+CREATE TABLE entity_fact_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    fact_id TEXT NOT NULL REFERENCES entity_facts(fact_id) ON DELETE RESTRICT,
+    evidence_type TEXT NOT NULL CHECK (evidence_type IN ('raw_event_range', 'revision_range', 'human_confirmation')),
+    event_id TEXT REFERENCES raw_events(event_id) ON DELETE RESTRICT,
+    memory_id TEXT,
+    revision_id TEXT,
+    start_offset INTEGER CHECK (start_offset IS NULL OR start_offset >= 0),
+    end_offset INTEGER,
+    note TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (end_offset IS NULL OR (start_offset IS NOT NULL AND end_offset > start_offset)),
+    CHECK ((evidence_type = 'raw_event_range' AND event_id IS NOT NULL AND memory_id IS NULL AND revision_id IS NULL AND start_offset IS NOT NULL AND end_offset IS NOT NULL) OR
+           (evidence_type = 'revision_range' AND event_id IS NULL AND memory_id IS NOT NULL AND revision_id IS NOT NULL AND start_offset IS NOT NULL AND end_offset IS NOT NULL) OR
+           (evidence_type = 'human_confirmation' AND event_id IS NULL AND memory_id IS NULL AND revision_id IS NULL AND start_offset IS NULL AND end_offset IS NULL)),
+    FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) STRICT;
+CREATE INDEX entity_fact_evidence_fact_idx ON entity_fact_evidence(fact_id, evidence_id);
+CREATE TRIGGER entity_fact_evidence_no_update BEFORE UPDATE ON entity_fact_evidence BEGIN SELECT RAISE(ABORT, 'entity fact evidence is immutable'); END;
+CREATE TRIGGER entity_fact_evidence_no_delete BEFORE DELETE ON entity_fact_evidence BEGIN SELECT RAISE(ABORT, 'entity fact evidence is immutable'); END;
+
+CREATE TABLE entity_fact_state_events (
+    state_event_id TEXT PRIMARY KEY,
+    fact_id TEXT NOT NULL REFERENCES entity_facts(fact_id) ON DELETE RESTRICT,
+    operation_id TEXT NOT NULL,
+    from_state TEXT CHECK (from_state IS NULL OR from_state IN ('active', 'dismissed', 'superseded')),
+    to_state TEXT NOT NULL CHECK (to_state IN ('active', 'dismissed', 'superseded')),
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK ((from_state IS NULL AND to_state = 'active') OR (from_state IS NOT NULL AND from_state <> to_state))
+) STRICT;
+CREATE INDEX entity_fact_state_events_fact_idx ON entity_fact_state_events(fact_id, created_at DESC, state_event_id DESC);
+CREATE TRIGGER entity_fact_state_events_no_update BEFORE UPDATE ON entity_fact_state_events BEGIN SELECT RAISE(ABORT, 'entity fact state events are append-only'); END;
+CREATE TRIGGER entity_fact_state_events_no_delete BEFORE DELETE ON entity_fact_state_events BEGIN SELECT RAISE(ABORT, 'entity fact state events are append-only'); END;
+
+CREATE TABLE entity_fact_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    subject_entity_id TEXT NOT NULL REFERENCES entities(entity_id) ON DELETE RESTRICT,
+    predicate TEXT NOT NULL REFERENCES predicates(predicate) ON DELETE RESTRICT,
+    object_entity_id TEXT REFERENCES entities(entity_id) ON DELETE RESTRICT,
+    object_literal TEXT,
+    object_literal_type TEXT CHECK (object_literal_type IS NULL OR object_literal_type IN ('string', 'number', 'boolean')),
+    source_memory_id TEXT NOT NULL,
+    source_revision_id TEXT NOT NULL,
+    confidence REAL CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
+    valid_from TEXT,
+    valid_until TEXT,
+    evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json) AND json_type(evidence_json) = 'array'),
+    processor_identity TEXT NOT NULL,
+    provider_identity TEXT,
+    model_identity TEXT,
+    processing_version TEXT NOT NULL,
+    specification_hash TEXT NOT NULL,
+    auto_review_version TEXT,
+    review_state TEXT NOT NULL DEFAULT 'pending' CHECK (review_state IN ('pending', 'confirmed', 'rejected')),
+    result_fact_id TEXT REFERENCES entity_facts(fact_id) ON DELETE RESTRICT,
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    CHECK ((object_entity_id IS NULL) <> (object_literal IS NULL)),
+    CHECK (object_literal IS NULL OR object_literal_type IS NOT NULL),
+    CHECK (object_entity_id IS NULL OR subject_entity_id <> object_entity_id),
+    CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from),
+    CHECK ((review_state = 'pending' AND reviewed_at IS NULL AND result_fact_id IS NULL) OR (review_state = 'rejected' AND reviewed_at IS NOT NULL AND result_fact_id IS NULL) OR (review_state = 'confirmed' AND reviewed_at IS NOT NULL AND result_fact_id IS NOT NULL)),
+    FOREIGN KEY (source_memory_id, source_revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT,
+    UNIQUE (event_id, processing_version, specification_hash)
+) STRICT;
+CREATE INDEX entity_fact_proposals_review_idx ON entity_fact_proposals(space_id, review_state, created_at DESC, proposal_id DESC);
+CREATE TRIGGER entity_fact_proposals_immutable_fields BEFORE UPDATE ON entity_fact_proposals WHEN OLD.event_id IS NOT NEW.event_id OR OLD.space_id IS NOT NEW.space_id
+ OR OLD.subject_entity_id IS NOT NEW.subject_entity_id OR OLD.predicate IS NOT NEW.predicate OR OLD.object_entity_id IS NOT NEW.object_entity_id
+ OR OLD.object_literal IS NOT NEW.object_literal OR OLD.object_literal_type IS NOT NEW.object_literal_type OR OLD.source_memory_id IS NOT NEW.source_memory_id
+ OR OLD.source_revision_id IS NOT NEW.source_revision_id OR OLD.confidence IS NOT NEW.confidence OR OLD.valid_from IS NOT NEW.valid_from OR OLD.valid_until IS NOT NEW.valid_until
+ OR OLD.evidence_json IS NOT NEW.evidence_json OR OLD.processor_identity IS NOT NEW.processor_identity OR OLD.provider_identity IS NOT NEW.provider_identity
+ OR OLD.model_identity IS NOT NEW.model_identity OR OLD.processing_version IS NOT NEW.processing_version OR OLD.specification_hash IS NOT NEW.specification_hash OR OLD.created_at IS NOT NEW.created_at
+BEGIN SELECT RAISE(ABORT, 'entity fact proposal specification is immutable'); END;
+CREATE TRIGGER entity_fact_proposals_terminal_state BEFORE UPDATE ON entity_fact_proposals WHEN OLD.review_state <> 'pending' OR NEW.review_state NOT IN ('confirmed', 'rejected') BEGIN SELECT RAISE(ABORT, 'entity fact proposal review state is terminal'); END;
+CREATE TRIGGER entity_fact_proposals_no_delete BEFORE DELETE ON entity_fact_proposals BEGIN SELECT RAISE(ABORT, 'entity fact proposals cannot be deleted'); END;
+
+CREATE TABLE entity_fact_proposal_reviews (
+    review_id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL REFERENCES entity_fact_proposals(proposal_id) ON DELETE RESTRICT,
+    operation_id TEXT NOT NULL,
+    from_state TEXT NOT NULL CHECK (from_state = 'pending'),
+    to_state TEXT NOT NULL CHECK (to_state IN ('confirmed', 'rejected')),
+    reason_code TEXT NOT NULL,
+    note TEXT,
+    reviewer_id TEXT NOT NULL,
+    fact_id TEXT REFERENCES entity_facts(fact_id) ON DELETE RESTRICT,
+    created_at TEXT NOT NULL,
+    CHECK ((to_state = 'confirmed' AND fact_id IS NOT NULL) OR (to_state = 'rejected' AND fact_id IS NULL))
+) STRICT;
+CREATE UNIQUE INDEX entity_fact_proposal_reviews_terminal_once ON entity_fact_proposal_reviews(proposal_id);
+CREATE TRIGGER entity_fact_proposal_reviews_no_update BEFORE UPDATE ON entity_fact_proposal_reviews BEGIN SELECT RAISE(ABORT, 'entity fact proposal reviews are append-only'); END;
+CREATE TRIGGER entity_fact_proposal_reviews_no_delete BEFORE DELETE ON entity_fact_proposal_reviews BEGIN SELECT RAISE(ABORT, 'entity fact proposal reviews are append-only'); END;
+
+CREATE TABLE graph_index_metadata (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    active_version INTEGER NOT NULL CHECK (active_version > 0),
+    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+    state TEXT NOT NULL CHECK (state IN ('ready', 'degraded', 'rebuilding', 'stale')),
+    source_fact_count INTEGER NOT NULL DEFAULT 0 CHECK (source_fact_count >= 0),
+    source_entity_count INTEGER NOT NULL DEFAULT 0 CHECK (source_entity_count >= 0),
+    source_relation_count INTEGER NOT NULL DEFAULT 0 CHECK (source_relation_count >= 0),
+    updated_at TEXT NOT NULL
+) STRICT;
+INSERT INTO graph_index_metadata(singleton, active_version, state, updated_at) VALUES (1, 1, 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 COMMIT;

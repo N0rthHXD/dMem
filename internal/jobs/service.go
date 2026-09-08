@@ -42,6 +42,7 @@ type Service struct {
 	indexes            IndexRepository
 	entityIndexes      EntityIndexRepository
 	relationIndexes    RelationIndexRepository
+	graphIndexes       GraphIndexRepository
 	feedbackAggregates FeedbackAggregateRepository
 	aggregates         AggregateRebuilder
 	diskPressure       DiskPressureSource
@@ -145,6 +146,7 @@ type Dependencies struct {
 	Indexes            IndexRepository
 	EntityIndexes      EntityIndexRepository
 	RelationIndexes    RelationIndexRepository
+	GraphIndexes       GraphIndexRepository
 	FeedbackAggregates FeedbackAggregateRepository
 	AggregateRebuilder AggregateRebuilder
 	DiskPressure       DiskPressureSource
@@ -194,6 +196,7 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 		indexes:            dependencies.Indexes,
 		entityIndexes:      dependencies.EntityIndexes,
 		relationIndexes:    dependencies.RelationIndexes,
+		graphIndexes:       dependencies.GraphIndexes,
 		feedbackAggregates: dependencies.FeedbackAggregates,
 		aggregates:         dependencies.AggregateRebuilder,
 		diskPressure:       dependencies.DiskPressure,
@@ -394,8 +397,12 @@ func (s *Service) worker(ctx context.Context, index int) {
 func (s *Service) processClaim(serviceCtx context.Context, claim storage.ClaimedJob) {
 	processCtx, cancel := context.WithTimeout(serviceCtx, s.perJobTimeout)
 	defer cancel()
-	if claim.Job.JobType == "rebuild_fts" || claim.Job.JobType == "rebuild_semantic" || claim.Job.JobType == "rebuild_entity_index" || claim.Job.JobType == "rebuild_relation_index" || claim.Job.JobType == "embed_memory" || claim.Job.JobType == "aggregate_feedback" || claim.Job.JobType == "rebuild_feedback_aggregates" || claim.Job.JobType == "rebuild_aggregate" {
+	if claim.Job.JobType == "rebuild_fts" || claim.Job.JobType == "rebuild_semantic" || claim.Job.JobType == "rebuild_entity_index" || claim.Job.JobType == "rebuild_relation_index" || claim.Job.JobType == "rebuild_graph_index" || claim.Job.JobType == "embed_memory" || claim.Job.JobType == "aggregate_feedback" || claim.Job.JobType == "rebuild_feedback_aggregates" || claim.Job.JobType == "rebuild_aggregate" {
 		s.processIndexClaim(processCtx, claim)
+		return
+	}
+	if claim.Job.JobType == "extract_graph" {
+		s.processGraphClaim(processCtx, claim)
 		return
 	}
 	runtime := s.currentProcessing()
@@ -518,6 +525,129 @@ func (s *Service) applyOutcome(claim storage.ClaimedJob, input domain.Processing
 	}
 }
 
+type GraphExtractor interface {
+	PrepareGraphExtraction(context.Context, storage.ClaimedJob, storage.ProcessingPreparationParams) (domain.GraphExtractionInput, error)
+	CommitGraphExtraction(context.Context, storage.ClaimedJob, domain.GraphExtractionInput, storage.GraphExtractionCommit) error
+}
+
+func (s *Service) processGraphClaim(serviceCtx context.Context, claim storage.ClaimedJob) {
+	extractor, ok := s.repository.(GraphExtractor)
+	if !ok {
+		s.logPersistenceError(context.Background(), "complete_unsupported_graph_job", claim, s.repository.CompleteJob(context.Background(), claim, storage.JobResult{Code: "unsupported"}))
+		return
+	}
+	processCtx, cancel := context.WithTimeout(serviceCtx, s.perJobTimeout)
+	defer cancel()
+	runtime := s.currentProcessing()
+	input, err := extractor.PrepareGraphExtraction(processCtx, claim, runtime.preparation)
+	if err != nil {
+		if errors.Is(err, storage.ErrLeaseLost) {
+			return
+		}
+		if errors.Is(err, storage.ErrPolicyDenied) {
+			s.logPersistenceError(context.Background(), "block_graph_job", claim, s.repository.BlockJob(context.Background(), claim, "target_policy_denied"))
+			return
+		}
+		if errors.Is(err, storage.ErrRevisionConflict) || errors.Is(err, storage.ErrNotFound) {
+			s.logPersistenceError(context.Background(), "complete_stale_graph_job", claim, s.repository.CompleteJob(context.Background(), claim, storage.JobResult{Code: "stale_revision"}))
+			return
+		}
+		s.failTransientJob(claim, "preparation_failed", "graph extraction preparation failed")
+		return
+	}
+	if recorder, ok := s.repository.(interface {
+		MarkProviderAttempt(context.Context, storage.ClaimedJob) error
+	}); ok {
+		if err := recorder.MarkProviderAttempt(processCtx, claim); err != nil {
+			if !errors.Is(err, storage.ErrLeaseLost) {
+				s.failTransientJob(claim, "attempt_record_failed", "provider attempt could not be recorded")
+			}
+			return
+		}
+	}
+	results := make(chan domain.GraphExtractionResult, 1)
+	go func() {
+		if graphProcessor, ok := runtime.processor.(GraphProcessor); ok {
+			results <- graphProcessor.ProcessGraph(processCtx, input)
+			return
+		}
+		results <- domain.GraphExtractionResult{Code: domain.GraphExtractionNoProcessor}
+	}()
+	heartbeat := time.NewTicker(s.leaseDuration / 3)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case outcome := <-results:
+			if serviceCtx.Err() != nil {
+				s.failTransientJob(claim, "processor_shutdown", "graph extraction interrupted by shutdown")
+				return
+			}
+			if errors.Is(processCtx.Err(), context.DeadlineExceeded) {
+				s.failTransientJob(claim, "processor_timeout", "graph extraction timed out")
+				return
+			}
+			s.applyGraphOutcome(extractor, claim, input, outcome)
+			return
+		case <-heartbeat.C:
+			cancelRequested, err := s.repository.HeartbeatJob(serviceCtx, claim, s.leaseDuration)
+			if errors.Is(err, storage.ErrLeaseLost) {
+				cancel()
+				return
+			}
+			if err != nil {
+				cancel()
+				s.failTransientJob(claim, "heartbeat_failed", "job heartbeat failed")
+				return
+			}
+			if cancelRequested {
+				cancel()
+				err := s.repository.CancelClaimedJob(context.Background(), claim)
+				s.logPersistenceError(context.Background(), "cancel_claimed_job", claim, err)
+				return
+			}
+		case <-processCtx.Done():
+			cancel()
+			s.failTransientJob(claim, string(domain.ProcessingTransientFailure), "graph extraction interrupted")
+			return
+		}
+	}
+}
+
+func (s *Service) applyGraphOutcome(extractor GraphExtractor, claim storage.ClaimedJob, input domain.GraphExtractionInput, result domain.GraphExtractionResult) {
+	s.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted})
+	switch result.Code {
+	case domain.GraphExtractionNoProcessor, domain.GraphExtractionEmpty, domain.GraphExtractionExtracted:
+		err := extractor.CommitGraphExtraction(context.Background(), claim, input, storage.GraphExtractionCommit{Result: result})
+		if errors.Is(err, storage.ErrStaleGeneration) {
+			s.reevaluateStale(claim)
+			return
+		}
+		if errors.Is(err, storage.ErrRevisionConflict) {
+			s.logPersistenceError(context.Background(), "complete_stale_graph_job", claim, s.repository.CompleteJob(context.Background(), claim, storage.JobResult{Code: "stale_revision"}))
+			return
+		}
+		s.logPersistenceError(context.Background(), "commit_graph_extraction", claim, err)
+	case domain.GraphExtractionPolicyRejected:
+		reason := result.ReasonCode
+		if reason == "" {
+			reason = "target_policy_denied"
+		}
+		s.logPersistenceError(context.Background(), "block_graph_job", claim, s.repository.BlockJob(context.Background(), claim, reason))
+	case domain.GraphExtractionTransientFailure:
+		code := result.ReasonCode
+		if code == "" {
+			code = string(result.Code)
+		}
+		s.failTransientJob(claim, code, "graph extraction transient failure")
+	case domain.GraphExtractionPermanentFailure, domain.GraphExtractionInvalidOutput:
+		code := result.ReasonCode
+		if code == "" {
+			code = string(result.Code)
+		}
+		s.logPersistenceError(context.Background(), "fail_graph_job", claim, s.repository.FailJob(context.Background(), claim, storage.JobFailure{Code: code, Message: "graph extraction failed", Transient: false}))
+	}
+}
+
 func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJob) {
 	operationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -570,6 +700,14 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 				err = errors.New("relation index rebuild is unavailable")
 			} else {
 				err = s.relationIndexes.RebuildRelationIndexClaimed(operationCtx, claim)
+			}
+		case "rebuild_graph_index":
+			if claim.Job.TargetType != "index" || claim.Job.TargetID != "graph_recall" {
+				err = errors.New("invalid graph index target")
+			} else if s.graphIndexes == nil {
+				err = errors.New("graph index rebuild is unavailable")
+			} else {
+				err = s.graphIndexes.RebuildGraphIndexClaimed(operationCtx, claim)
 			}
 		case "embed_memory":
 			if claim.Job.TargetType != "memory_revision" {

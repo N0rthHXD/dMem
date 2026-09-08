@@ -37,6 +37,8 @@ type Health struct {
 	EntityIndexVersion       int64  `json:"entity_index_version"`
 	RelationIndexState       string `json:"relation_index_state"`
 	RelationIndexVersion     int64  `json:"relation_index_version"`
+	GraphIndexState          string `json:"graph_index_state"`
+	GraphIndexVersion        int64  `json:"graph_index_version"`
 	FeedbackAggregateState   string `json:"feedback_aggregate_state"`
 	FeedbackAggregateVersion int64  `json:"feedback_aggregate_version"`
 	AggregateState           string `json:"aggregate_state"`
@@ -150,6 +152,13 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/conflict-cases/{case_id}/{action}", h.conflictCase)
 	mux.HandleFunc("GET /v1/relations", h.relations)
 	mux.HandleFunc("GET /v1/relations/{relation_id}", h.relation)
+	mux.HandleFunc("GET /v1/entity-facts", h.entityFacts)
+	mux.HandleFunc("GET /v1/entity-facts/{fact_id}", h.entityFact)
+	mux.HandleFunc("GET /v1/fact-proposals", h.factProposals)
+	mux.HandleFunc("POST /v1/fact-proposals", h.factProposals)
+	mux.HandleFunc("GET /v1/fact-proposals/{proposal_id}", h.factProposal)
+	mux.HandleFunc("POST /v1/fact-proposals/{proposal_id}/{action}", h.factProposal)
+	mux.HandleFunc("POST /v1/indexes/graph/rebuild", h.rebuildGraphIndex)
 	mux.HandleFunc("GET /v1/jobs/{job_id}", h.job)
 	mux.HandleFunc("POST /v1/jobs/{job_id}/{action}", h.job)
 	mux.HandleFunc("POST /v1/search", h.search)
@@ -181,6 +190,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	semanticState, semanticVersion := "not_configured", 0
 	entityState, entityVersion := "unavailable", int64(0)
 	relationState, relationVersion := "unavailable", int64(0)
+	graphState, graphVersion := "unavailable", int64(0)
 	feedbackState, feedbackVersion := "unavailable", int64(0)
 	aggregateState, aggregateFresh, aggregateStale, aggregateRebuilds := "unavailable", 0, 0, 0
 	if h.repository != nil {
@@ -199,6 +209,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		semanticState, semanticVersion = h.repository.SemanticHealth(r.Context())
 		entityState, entityVersion = h.repository.EntityIndexHealth(r.Context())
 		relationState, relationVersion = h.repository.RelationIndexHealth(r.Context())
+		graphState, graphVersion = h.repository.GraphIndexHealth(r.Context())
 		if status, err := h.repository.FeedbackAggregateHealth(r.Context()); err == nil {
 			feedbackState, feedbackVersion = status.State, status.Generation
 		}
@@ -223,7 +234,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		mode = "unavailable"
 	} else if diskPressure == "hard" {
 		mode = "read_only"
-	} else if ftsState != "ready" || entityState != "ready" || relationState != "ready" || feedbackState != "ready" || aggregateState != "ready" || queueState != "ready" || processorState == "degraded" || processorState == "unavailable" || semanticState == "degraded" || semanticState == "unavailable" || semanticState == "rebuilding" || semanticState == "rebuild_required" || diskPressure == "soft" {
+	} else if ftsState != "ready" || entityState != "ready" || relationState != "ready" || graphState != "ready" || feedbackState != "ready" || aggregateState != "ready" || queueState != "ready" || processorState == "degraded" || processorState == "unavailable" || semanticState == "degraded" || semanticState == "unavailable" || semanticState == "rebuilding" || semanticState == "rebuild_required" || diskPressure == "soft" {
 		mode = "degraded"
 	}
 	acceptingWrites := serviceReady && diskPressure != "hard"
@@ -258,6 +269,8 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		EntityIndexVersion:       entityVersion,
 		RelationIndexState:       relationState,
 		RelationIndexVersion:     relationVersion,
+		GraphIndexState:          graphState,
+		GraphIndexVersion:        graphVersion,
 		FeedbackAggregateState:   feedbackState,
 		FeedbackAggregateVersion: feedbackVersion,
 		AggregateState:           aggregateState,

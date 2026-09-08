@@ -716,27 +716,33 @@ type SearchResult struct {
 	KeywordRelevance *float64      `json:"keyword_relevance,omitempty"`
 	SemanticScore    *float64      `json:"semantic_relevance,omitempty"`
 	MatchedChannels  []string      `json:"matched_channels"`
+	GraphSignals     []GraphSignal `json:"graph_signals,omitempty"`
+	GraphFacts       []EntityFact  `json:"graph_facts,omitempty"`
+	GraphPaths       []GraphPath   `json:"graph_paths,omitempty"`
 	SelectionReason  string        `json:"selection_reason"`
 	ConflictRefs     []ConflictRef `json:"conflict_refs,omitempty"`
 }
 
 type SearchResponse struct {
-	Results                  []SearchResult `json:"results"`
-	Truncated                bool           `json:"truncated"`
-	CharsUsed                int            `json:"chars_used"`
-	IndexState               string         `json:"index_state"`
-	NextCursor               *string        `json:"next_cursor"`
-	RequestedMode            string         `json:"requested_mode"`
-	ExecutedMode             string         `json:"executed_mode"`
-	Degraded                 bool           `json:"degraded"`
-	DegradationReasons       []string       `json:"degradation_reasons"`
-	FTSIndexVersion          int            `json:"fts_index_version"`
-	SemanticIndexVersion     int            `json:"semantic_index_version"`
-	RankingVersion           string         `json:"ranking_version"`
-	CorpusGeneration         int64          `json:"corpus_generation"`
-	FeedbackAggregateVersion int64          `json:"feedback_aggregate_version"`
-	EntityIndexVersion       int64          `json:"entity_index_version"`
-	RelationIndexVersion     int64          `json:"relation_index_version"`
+	Results                  []SearchResult   `json:"results"`
+	Truncated                bool             `json:"truncated"`
+	CharsUsed                int              `json:"chars_used"`
+	IndexState               string           `json:"index_state"`
+	NextCursor               *string          `json:"next_cursor"`
+	RequestedMode            string           `json:"requested_mode"`
+	ExecutedMode             string           `json:"executed_mode"`
+	Degraded                 bool             `json:"degraded"`
+	DegradationReasons       []string         `json:"degradation_reasons"`
+	FTSIndexVersion          int              `json:"fts_index_version"`
+	SemanticIndexVersion     int              `json:"semantic_index_version"`
+	RankingVersion           string           `json:"ranking_version"`
+	CorpusGeneration         int64            `json:"corpus_generation"`
+	FeedbackAggregateVersion int64            `json:"feedback_aggregate_version"`
+	EntityIndexVersion       int64            `json:"entity_index_version"`
+	RelationIndexVersion     int64            `json:"relation_index_version"`
+	GraphIndexVersion        int64            `json:"graph_index_version"`
+	GraphIndexState          string           `json:"graph_index_state,omitempty"`
+	ResolvedEntities         []ResolvedEntity `json:"resolved_entities,omitempty"`
 }
 
 type FeedbackSearchContext struct {

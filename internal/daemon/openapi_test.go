@@ -204,6 +204,25 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodGet, "/v1/relations?space_id="+space.SpaceID+"&memory_id="+memory.MemoryID+"&direction=outgoing", "", nil))
 	c.close(c.do(http.MethodGet, "/v1/relations/"+*relationProposal.ResultRelationID+"?space_id="+space.SpaceID, "", nil))
 
+	factBody := map[string]any{"event_id": event.EventID, "space_id": space.SpaceID, "subject_entity_id": *entityProposal.ResultEntityID, "predicate": "uses_database", "object_literal": "PostgreSQL", "object_literal_type": "string", "source_memory_id": memory.MemoryID, "source_revision_id": memory.CurrentRevision.RevisionID, "confidence": 0.9, "evidence": []map[string]any{{"evidence_type": "human_confirmation"}}, "processor_identity": "contract/processor", "processing_version": "contract-v3"}
+	response = c.do(http.MethodPost, "/v1/fact-proposals", "fact-create", factBody)
+	var factProposal domain.FactProposal
+	decodeResponse(t, response, &factProposal)
+	c.replay(http.MethodPost, "/v1/fact-proposals", "fact-create", factBody)
+	c.close(c.do(http.MethodGet, "/v1/fact-proposals?space_id="+space.SpaceID, "", nil))
+	c.close(c.do(http.MethodGet, "/v1/fact-proposals/"+factProposal.ProposalID, "", nil))
+	response = c.do(http.MethodPost, "/v1/fact-proposals/"+factProposal.ProposalID+"/confirm", "fact-confirm", entityReview)
+	decodeResponse(t, response, &factProposal)
+	c.replay(http.MethodPost, "/v1/fact-proposals/"+factProposal.ProposalID+"/confirm", "fact-confirm", entityReview)
+	factRejectBody := withField(factBody, "object_literal", "MySQL")
+	response = c.do(http.MethodPost, "/v1/fact-proposals", "fact-reject-create", factRejectBody)
+	var factReject domain.FactProposal
+	decodeResponse(t, response, &factReject)
+	c.close(c.do(http.MethodPost, "/v1/fact-proposals/"+factReject.ProposalID+"/reject", "fact-reject", entityReview))
+	c.replay(http.MethodPost, "/v1/fact-proposals/"+factReject.ProposalID+"/reject", "fact-reject", entityReview)
+	c.close(c.do(http.MethodGet, "/v1/entity-facts?space_id="+space.SpaceID+"&predicate=uses_database", "", nil))
+	c.close(c.do(http.MethodGet, "/v1/entity-facts/"+*factProposal.ResultFactID+"?space_id="+space.SpaceID, "", nil))
+
 	targets := []map[string]any{{"memory_id": memory.MemoryID, "expected_revision_id": memory.CurrentRevision.RevisionID}, {"memory_id": targetMemory.MemoryID, "expected_revision_id": targetMemory.CurrentRevision.RevisionID}}
 	evolutionBody := map[string]any{"event_id": event.EventID, "space_id": space.SpaceID, "action": "conflict", "proposed_content": "contract conflict", "sensitivity": "normal", "processor_identity": "contract/processor", "processing_version": "contract-v3", "targets": targets, "evidence": []map[string]any{{"evidence_type": "raw_event_range", "event_id": event.EventID, "start_offset": 0, "end_offset": 8}}}
 	response = c.do(http.MethodPost, "/v1/evolution-proposals", "evolution-create", evolutionBody)
@@ -290,7 +309,7 @@ func TestOpenAPIContract(t *testing.T) {
 	decodeResponse(t, response, &semanticRebuild)
 	c.replay(http.MethodPost, "/v1/indexes/semantic/rebuild", "semantic-rebuild", nil)
 	c.close(c.expect(http.StatusConflict, http.MethodPost, "/v1/indexes/semantic/rebuild", "semantic-rebuild-active", nil))
-	for _, jobType := range []string{"rebuild_entity_index", "rebuild_relation_index", "rebuild_feedback_aggregates"} {
+	for _, jobType := range []string{"rebuild_entity_index", "rebuild_relation_index", "rebuild_graph_index", "rebuild_feedback_aggregates"} {
 		if _, err := db.Exec(`UPDATE jobs SET status='succeeded', finished_at=CURRENT_TIMESTAMP WHERE job_type=? AND status IN ('pending','waiting','running','retrying')`, jobType); err != nil {
 			t.Fatal(err)
 		}
@@ -298,6 +317,7 @@ func TestOpenAPIContract(t *testing.T) {
 	for _, rebuildRoute := range []struct{ path, key string }{
 		{"/v1/indexes/entities/rebuild", "entity-index-rebuild"},
 		{"/v1/indexes/relations/rebuild", "relation-index-rebuild"},
+		{"/v1/indexes/graph/rebuild", "graph-index-rebuild"},
 		{"/v1/feedback/aggregates/rebuild", "feedback-rebuild"},
 	} {
 		c.close(c.expect(http.StatusAccepted, http.MethodPost, rebuildRoute.path, rebuildRoute.key, nil))
@@ -356,6 +376,13 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodPost, "/v1/relation-proposals/" + relationProposal.ProposalID + "/confirm", "relation-confirm-terminal", http.StatusConflict, entityReview},
 		{http.MethodPost, "/v1/relation-proposals/" + relationReject.ProposalID + "/reject", "relation-reject-terminal", http.StatusConflict, entityReview},
 		{http.MethodGet, "/v1/relations/" + unknownID + "?space_id=" + space.SpaceID, "", http.StatusNotFound, nil},
+		{http.MethodGet, "/v1/fact-proposals/" + unknownID, "", http.StatusNotFound, nil},
+		{http.MethodPost, "/v1/fact-proposals/" + unknownID + "/confirm", "fact-confirm-missing", http.StatusNotFound, entityReview},
+		{http.MethodPost, "/v1/fact-proposals/" + unknownID + "/reject", "fact-reject-missing", http.StatusNotFound, entityReview},
+		{http.MethodPost, "/v1/fact-proposals/" + factProposal.ProposalID + "/confirm", "fact-confirm-terminal", http.StatusConflict, entityReview},
+		{http.MethodPost, "/v1/fact-proposals/" + factReject.ProposalID + "/reject", "fact-reject-terminal", http.StatusConflict, entityReview},
+		{http.MethodGet, "/v1/entity-facts/" + unknownID + "?space_id=" + space.SpaceID, "", http.StatusNotFound, nil},
+		{http.MethodPost, "/v1/fact-proposals", "fact-create", http.StatusConflict, withField(factBody, "object_literal", "different")},
 		{http.MethodPost, "/v1/evolution-proposals", "evolution-create", http.StatusConflict, withField(evolutionBody, "proposed_content", "different")},
 		{http.MethodGet, "/v1/evolution-proposals/" + unknownID, "", http.StatusNotFound, nil},
 		{http.MethodPost, "/v1/evolution-proposals/" + unknownID + "/confirm", "evolution-confirm-missing", http.StatusNotFound, evolutionReview},
@@ -437,6 +464,17 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodGet, "/v1/relations?space_id=bad", "", "", http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/relations/not-a-uuid?space_id=" + space.SpaceID, "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/indexes/relations/rebuild", "", "", http.StatusUnprocessableEntity},
+		{http.MethodPost, "/v1/fact-proposals", "fact-json", "{", http.StatusBadRequest},
+		{http.MethodPost, "/v1/fact-proposals", "fact-invalid", `{}`, http.StatusUnprocessableEntity},
+		{http.MethodGet, "/v1/fact-proposals?space_id=bad", "", "", http.StatusUnprocessableEntity},
+		{http.MethodGet, "/v1/fact-proposals/not-a-uuid", "", "", http.StatusUnprocessableEntity},
+		{http.MethodPost, "/v1/fact-proposals/" + factProposal.ProposalID + "/confirm", "fact-confirm-json", "{", http.StatusBadRequest},
+		{http.MethodPost, "/v1/fact-proposals/" + factProposal.ProposalID + "/confirm", "fact-confirm-invalid", `{}`, http.StatusUnprocessableEntity},
+		{http.MethodPost, "/v1/fact-proposals/" + factReject.ProposalID + "/reject", "fact-reject-json", "{", http.StatusBadRequest},
+		{http.MethodPost, "/v1/fact-proposals/" + factReject.ProposalID + "/reject", "fact-reject-invalid", `{}`, http.StatusUnprocessableEntity},
+		{http.MethodGet, "/v1/entity-facts?space_id=bad", "", "", http.StatusUnprocessableEntity},
+		{http.MethodGet, "/v1/entity-facts/not-a-uuid?space_id=" + space.SpaceID, "", "", http.StatusUnprocessableEntity},
+		{http.MethodPost, "/v1/indexes/graph/rebuild", "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/evolution-proposals", "evolution-json", "{", http.StatusBadRequest},
 		{http.MethodPost, "/v1/evolution-proposals", "evolution-invalid", `{}`, http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/evolution-proposals?space_id=bad", "", "", http.StatusUnprocessableEntity},
@@ -531,6 +569,7 @@ func exerciseResourceExhaustedContract(t *testing.T, router routers.Router, seen
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/semantic/rebuild", "pressure-semantic", nil))
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/entities/rebuild", "pressure-entities", nil))
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/relations/rebuild", "pressure-relations", nil))
+	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/graph/rebuild", "pressure-graph", nil))
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/feedback/aggregates/rebuild", "pressure-feedback", nil))
 }
 

@@ -50,6 +50,10 @@ type searchCursor struct {
 	FeedbackAggregateVersion int64  `json:"av"`
 	EntityIndexVersion       int64  `json:"ev"`
 	RelationIndexVersion     int64  `json:"lv"`
+	GraphIndexVersion        int64  `json:"gv"`
+	EntityIndexGeneration    int64  `json:"eg"`
+	RelationIndexGeneration  int64  `json:"lg"`
+	GraphIndexGeneration     int64  `json:"gg"`
 	Limit                    int    `json:"l"`
 	MaxChars                 int    `json:"b"`
 	ScoreBits                string `json:"s"`
@@ -64,7 +68,11 @@ type searchCandidate struct {
 	ftsContent, projectionContent         string
 	keywordScore, rrfScore, score         float64
 	keywordRank, entityRank, relationRank int
+	graphRank                             int
 	entity, relation                      bool
+	graphSignals                          []domain.GraphSignal
+	graphFacts                            []domain.EntityFact
+	graphPaths                            []domain.GraphPath
 }
 
 func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
@@ -135,10 +143,14 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 	if requestedMode == "" {
 		requestedMode = params.Mode
 	}
-	if after != nil && (after.QueryHash != hash || after.ReferenceTime != params.ReferenceTime || after.RequestedMode != requestedMode || after.ExecutedMode != "keyword" || after.FTSVersion != ftsVersion || after.SemanticVersion != params.SemanticVersion || after.CorpusGeneration != metadata.corpusGeneration || after.FeedbackAggregateVersion != metadata.feedbackAggregateVersion || after.EntityIndexVersion != metadata.entityIndexVersion || after.RelationIndexVersion != metadata.relationIndexVersion || after.Limit != params.Limit || after.MaxChars != params.MaxChars) {
+	if after != nil && (after.QueryHash != hash || after.ReferenceTime != params.ReferenceTime || after.RequestedMode != requestedMode || after.ExecutedMode != "keyword" || after.FTSVersion != ftsVersion || after.SemanticVersion != params.SemanticVersion || after.CorpusGeneration != metadata.corpusGeneration || after.FeedbackAggregateVersion != metadata.feedbackAggregateVersion || after.EntityIndexVersion != metadata.entityIndexVersion || after.RelationIndexVersion != metadata.relationIndexVersion || after.GraphIndexVersion != metadata.graphIndexVersion || after.EntityIndexGeneration != metadata.entityIndexGeneration || after.RelationIndexGeneration != metadata.relationIndexGeneration || after.GraphIndexGeneration != metadata.graphIndexGeneration || after.Limit != params.Limit || after.MaxChars != params.MaxChars) {
 		return domain.SearchResponse{}, ErrInvalidCursor
 	}
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, IndexState: indexState, RequestedMode: requestedMode, ExecutedMode: "keyword", DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion}
+	response := domain.SearchResponse{Results: []domain.SearchResult{}, IndexState: indexState, RequestedMode: requestedMode, ExecutedMode: "keyword", DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, GraphIndexVersion: metadata.graphIndexVersion}
+	if indexState != "ready" {
+		response.Degraded = true
+		response.DegradationReasons = append(response.DegradationReasons, "keyword_unavailable")
+	}
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
 		if err := tx.Commit(); err != nil {
 			return domain.SearchResponse{}, err
@@ -177,7 +189,8 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?)`
 	args = append(args, params.ReferenceTime, params.ReferenceTime)
 	query += `) SELECT memory_id, revision_id, content, display_content, updated_at, score FROM ranked`
-	query += ` ORDER BY score ASC, updated_at DESC, memory_id ASC`
+	query += ` ORDER BY score ASC, updated_at DESC, memory_id ASC LIMIT ?`
+	args = append(args, max(100, params.Limit*10))
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		var sqliteErr sqlite3.Error
@@ -250,6 +263,29 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 			}
 		}
 	}
+	seeds := make([]string, 0, len(all))
+	for key := range all {
+		memoryID, revisionID, _ := strings.Cut(key, "\x00")
+		_ = memoryID
+		seeds = append(seeds, revisionID)
+	}
+	graph, graphErr := r.graphChannelRecall(ctx, tx, params, spaces, nil, seeds, max(100, params.Limit*10))
+	if graphErr != nil {
+		return domain.SearchResponse{}, graphErr
+	}
+	response.ResolvedEntities = graph.resolvedEntities
+	for i := range graph.items {
+		item := graph.items[i]
+		key := item.memoryID + "\x00" + item.revisionID
+		if existing := all[key]; existing != nil {
+			existing.graphRank = item.graphRank
+			existing.graphSignals = item.signals
+			existing.graphFacts = item.facts
+			existing.graphPaths = item.paths
+		} else {
+			all[key] = &searchCandidate{memoryID: item.memoryID, revisionID: item.revisionID, graphRank: item.graphRank, graphSignals: item.signals, graphFacts: item.facts, graphPaths: item.paths}
+		}
+	}
 	candidates = candidates[:0]
 	for _, item := range all {
 		if item.keywordRank > 0 {
@@ -260,6 +296,9 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		}
 		if item.relationRank > 0 {
 			item.rrfScore += 1 / float64(60+item.relationRank)
+		}
+		if item.graphRank > 0 {
+			item.rrfScore += 1 / float64(60+item.graphRank)
 		}
 		usage, err := feedbackUsageScore(ctx, tx, item.revisionID, metadata.feedbackAggregateVersion)
 		if err != nil {
@@ -362,11 +401,22 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 				relevance = nil
 			}
 		}
+		if candidate.graphRank > 0 {
+			channels = append(channels, "graph")
+			if len(channels) == 1 {
+				reason = "graph_match"
+			} else {
+				reason = "hybrid_fusion"
+			}
+			if candidate.keywordRank == 0 && candidate.entityRank == 0 && candidate.relationRank == 0 {
+				relevance = nil
+			}
+		}
 		refs, err := conflictRefs(ctx, tx, memory.MemoryID, memory.CurrentRevision.RevisionID)
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordScore: score, KeywordRelevance: relevance, MatchedChannels: channels, SelectionReason: reason, ConflictRefs: refs})
+		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordScore: score, KeywordRelevance: relevance, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs})
 		returned[memory.MemoryID] = struct{}{}
 		response.CharsUsed += chars
 	}
@@ -382,7 +432,7 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 
 func candidateBestRank(candidate searchCandidate) int {
 	best := 0
-	for _, rank := range []int{candidate.keywordRank, candidate.entityRank, candidate.relationRank} {
+	for _, rank := range []int{candidate.keywordRank, candidate.entityRank, candidate.relationRank, candidate.graphRank} {
 		if rank > 0 && (best == 0 || rank < best) {
 			best = rank
 		}
@@ -391,10 +441,13 @@ func candidateBestRank(candidate searchCandidate) int {
 }
 
 func searchCandidateCurrent(memory domain.Memory, candidate searchCandidate, spaces []string, params SearchParams) bool {
-	return memory.CurrentRevision.RevisionID == candidate.revisionID &&
-		memory.CurrentRevision.Content == candidate.ftsContent &&
-		memory.CurrentRevision.Content == candidate.projectionContent &&
-		searchMemoryCurrent(memory, spaces, params)
+	if memory.CurrentRevision.RevisionID != candidate.revisionID {
+		return false
+	}
+	if candidate.ftsContent != "" && (memory.CurrentRevision.Content != candidate.ftsContent || memory.CurrentRevision.Content != candidate.projectionContent) {
+		return false
+	}
+	return searchMemoryCurrent(memory, spaces, params)
 }
 
 func searchScope(ctx context.Context, tx *sql.Tx, starts []string, ancestors bool) ([]string, error) {
@@ -480,7 +533,7 @@ func encodeSearchCursor(hash string, params SearchParams, ftsVersion int, metada
 	if requestedMode == "" {
 		requestedMode = params.Mode
 	}
-	value := searchCursor{Version: 3, QueryHash: hash, RequestedMode: requestedMode, ExecutedMode: "keyword", RankingVersion: rankingVersion, FTSVersion: ftsVersion, SemanticVersion: params.SemanticVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, Limit: params.Limit, MaxChars: params.MaxChars, ScoreBits: strconv.FormatUint(math.Float64bits(candidate.score), 16), UpdatedAt: candidate.updatedAt, MemoryID: candidate.memoryID, RevisionID: candidate.revisionID, ReferenceTime: params.ReferenceTime}
+	value := searchCursor{Version: 3, QueryHash: hash, RequestedMode: requestedMode, ExecutedMode: "keyword", RankingVersion: rankingVersion, FTSVersion: ftsVersion, SemanticVersion: params.SemanticVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, GraphIndexVersion: metadata.graphIndexVersion, EntityIndexGeneration: metadata.entityIndexGeneration, RelationIndexGeneration: metadata.relationIndexGeneration, GraphIndexGeneration: metadata.graphIndexGeneration, Limit: params.Limit, MaxChars: params.MaxChars, ScoreBits: strconv.FormatUint(math.Float64bits(candidate.score), 16), UpdatedAt: candidate.updatedAt, MemoryID: candidate.memoryID, RevisionID: candidate.revisionID, ReferenceTime: params.ReferenceTime}
 	encoded, _ := json.Marshal(value)
 	return base64.RawURLEncoding.EncodeToString(encoded)
 }

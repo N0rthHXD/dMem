@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -190,6 +192,132 @@ func TestEnabledEmbedding(t *testing.T) {
 	}
 	if cfg.EmbeddingProvider.Options.QueryInstructions != "query: " {
 		t.Errorf("QueryInstructions = %q", cfg.EmbeddingProvider.Options.QueryInstructions)
+	}
+}
+
+func TestGraphEnabledDefaultsToTrue(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.GraphEnabled {
+		t.Error("GraphEnabled should default to true when omitted")
+	}
+}
+
+func TestGraphEnabledExplicitFalse(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	doc := `config_version = 1
+
+[instance]
+data_dir = "/tmp/dmem-test/data"
+runtime_dir = "/tmp/dmem-test/run"
+database_filename = "dmem.db"
+socket_filename = "dmem.sock"
+
+[server]
+request_timeout = "30s"
+shutdown_grace_period = "15s"
+max_connections = 64
+max_request_bytes = 4194304
+
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+[processing]
+version = "builtin-noop-v1"
+graph_enabled = false
+
+[processing.provider]
+enabled = false
+
+[embedding.provider]
+enabled = false
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GraphEnabled {
+		t.Error("GraphEnabled should be false when explicitly disabled")
+	}
+}
+
+func TestGraphEnabledChangesEffectiveIdentity(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	enabledPath := filepath.Join(dir, "enabled.toml")
+	disabledPath := filepath.Join(dir, "disabled.toml")
+	base := `config_version = 1
+
+[instance]
+data_dir = "/tmp/dmem-test/data"
+runtime_dir = "/tmp/dmem-test/run"
+database_filename = "dmem.db"
+socket_filename = "dmem.sock"
+
+[server]
+request_timeout = "30s"
+shutdown_grace_period = "15s"
+max_connections = 64
+max_request_bytes = 4194304
+
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+[processing]
+version = "builtin-noop-v1"
+%s
+
+[processing.provider]
+enabled = false
+
+[embedding.provider]
+enabled = false
+`
+	if err := os.WriteFile(enabledPath, []byte(fmt.Sprintf(base, "graph_enabled = true")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(disabledPath, []byte(fmt.Sprintf(base, "graph_enabled = false")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	enabledCfg, err := Load(enabledPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledCfg, err := Load(disabledPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabledCfg.EffectiveIdentity == disabledCfg.EffectiveIdentity {
+		t.Fatal("effective identity should change when graph_enabled changes")
 	}
 }
 

@@ -230,10 +230,15 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 		}
 	}
 	if request.ReferenceTime != nil {
-		if isNull(request.ReferenceTime) || json.Unmarshal(request.ReferenceTime, &query.ReferenceTime) != nil {
+		var value string
+		if isNull(request.ReferenceTime) || json.Unmarshal(request.ReferenceTime, &value) != nil {
 			return application.RecallQuery{}, errors.New("reference_time must be RFC3339")
 		}
-		query.ReferenceTimeSet = true
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return application.RecallQuery{}, errors.New("reference_time must be RFC3339")
+		}
+		query.ReferenceTime, query.ReferenceTimeSet = formatAPITime(parsed), true
 	}
 	if request.Mode != nil && (isNull(request.Mode) || json.Unmarshal(request.Mode, &query.Mode) != nil) {
 		return application.RecallQuery{}, errors.New("mode must be a string")

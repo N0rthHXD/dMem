@@ -26,6 +26,50 @@ func (p *ProviderProcessor) Process(ctx context.Context, input domain.Processing
 	return p.result(input, output, err)
 }
 
+func (p *ProviderProcessor) ProcessGraph(ctx context.Context, input domain.GraphExtractionInput) domain.GraphExtractionResult {
+	request := provider.NewGraphExtractRequest(input.ProcessorIdentity, input.ProcessingVersion, input.JobID, input.Attempt, input.SpaceID, input.MemoryID, input.RevisionID, input.Content, input.Sensitivity, providerMemories(input.ContextMemories), input.Policy.MaxEntities, input.Policy.MaxFacts, input.Policy.MaxRelations, input.Policy.MaxContentChars)
+	output, err := p.client.GraphExtract(ctx, request)
+	if err != nil {
+		result := domain.GraphExtractionResult{Code: domain.GraphExtractionPermanentFailure, Message: "provider graph extraction failed", ProviderIdentity: p.client.Identity(), ModelIdentity: p.client.ModelIdentity()}
+		var providerErr *provider.Error
+		if errors.As(err, &providerErr) {
+			result.ReasonCode = providerErr.Code()
+			switch providerErr.Class() {
+			case provider.ErrorDisabled:
+				result.Code = domain.GraphExtractionNoProcessor
+			case provider.ErrorPolicy:
+				result.Code = domain.GraphExtractionPolicyRejected
+			case provider.ErrorTransient:
+				result.Code = domain.GraphExtractionTransientFailure
+			case provider.ErrorInvalidInput, provider.ErrorInvalidOutput:
+				result.Code = domain.GraphExtractionInvalidOutput
+			}
+		}
+		return result
+	}
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted, ProviderIdentity: p.client.Identity(), ModelIdentity: p.client.ModelIdentity(), ProviderRequestID: output.ProviderRequestID(), Usage: domain.ProcessingUsage{InputTokens: output.Usage().InputTokens(), OutputTokens: output.Usage().OutputTokens()}}
+	for _, entity := range output.Entities() {
+		result.Entities = append(result.Entities, domain.GraphEntity{LocalID: entity.LocalID(), CanonicalName: entity.CanonicalName(), EntityType: entity.EntityType(), Aliases: entity.Aliases(), Confidence: entity.Confidence()})
+	}
+	for _, mention := range output.Mentions() {
+		result.Mentions = append(result.Mentions, domain.GraphMention{EntityLocalID: mention.EntityLocalID(), Text: mention.Text(), StartRune: mention.StartRune(), EndRune: mention.EndRune(), Confidence: mention.Confidence()})
+	}
+	for _, fact := range output.Facts() {
+		result.Facts = append(result.Facts, domain.GraphFact{SubjectLocalID: fact.SubjectLocalID(), Predicate: fact.Predicate(), ObjectLocalID: fact.ObjectLocalID(), ObjectLiteral: fact.ObjectLiteral(), ObjectLiteralType: fact.ObjectLiteralType(), Confidence: fact.Confidence(), ValidFrom: fact.ValidFrom(), ValidUntil: fact.ValidUntil()})
+	}
+	for _, relation := range output.Relations() {
+		item := domain.GraphMemoryRelation{RelationType: relation.RelationType(), TargetMemoryID: relation.TargetMemoryID(), TargetRevisionID: relation.TargetRevisionID(), Confidence: relation.Confidence()}
+		for _, evidence := range relation.Evidence() {
+			item.Evidence = append(item.Evidence, domain.GraphRelationEvidence{StartRune: evidence.StartRune(), EndRune: evidence.EndRune()})
+		}
+		result.Relations = append(result.Relations, item)
+	}
+	if len(result.Entities) == 0 && len(result.Mentions) == 0 && len(result.Facts) == 0 && len(result.Relations) == 0 {
+		result.Code = domain.GraphExtractionEmpty
+	}
+	return result
+}
+
 func (p *ProviderProcessor) Preflight(input domain.ProcessingInput) *domain.ProcessingResult {
 	err := p.client.PreflightProcess(providerRequest(input))
 	if err == nil {

@@ -37,9 +37,14 @@ memory types are `fact`, `preference`, `constraint`, `decision`, `task`,
 expressions. Keyword retrieval extracts English content words and Chinese trigram
 fragments, then combines them as literal alternatives. It supports `keyword`,
 `semantic`, and `hybrid` modes. Semantic execution
-requires a configured embedding provider and a usable semantic index. Responses
+requires a configured embedding provider and a usable semantic index. Entity
+mentions inside a natural-language query are resolved deterministically (alias
+longest-match) before retrieval, and the graph channel can add candidates through
+direct mentions, one-hop entity facts, bounded two-hop paths, and memory
+relations. Responses
 state the requested and executed modes, degradation reasons, ranking/index
-versions, cursor, truncation, and character use. Results are revalidated against
+versions, resolved entities, graph signals/facts/paths, cursor, truncation, and
+character use. Results are revalidated against
 scope, current revision, state, and valid time before return.
 
 Feedback types are `useful`, `irrelevant`, `correct`, `supplement`, and
@@ -68,6 +73,8 @@ The same contract exposes lower-level operations for:
 - processing candidates and durable jobs;
 - FTS and semantic rebuilds;
 - entity and relation proposals, review, query, and index rebuilds;
+- entity facts (list/detail) and entity-fact proposals (create/list/review);
+- graph index rebuild;
 - evolution proposals and conflict-case resolution;
 - feedback listing and feedback-aggregate health/rebuild;
 - aggregate proposals, review, query, and provenance.

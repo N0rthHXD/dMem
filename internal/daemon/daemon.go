@@ -148,6 +148,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	repository := storage.NewRepository(d.store, domain.Runtime{Now: time.Now, ID: identity.UUID}, cfg.QueueSoftLimit, cfg.QueueHardLimit, cfg.MaxAttempts, cfg.ProcessingVersion)
 	d.repository = repository
 	repository.SetDiskFreeThresholds(cfg.DiskSoftFree, cfg.DiskHardFree)
+	repository.SetGraphExtractionEnabled(cfg.ProcessingProvider.Enabled && cfg.GraphEnabled)
 	if cfg.EmbeddingProvider.Enabled {
 		embedding, providerErr := provider.New(cfg.EmbeddingProvider, nil)
 		if providerErr != nil {
@@ -165,7 +166,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	aggregateService := aggregate.NewService(repository, aggregateProvider, "aggregate/provider", policyIdentity, cfg.ProcessingVersion, cfg.ProcessingProvider.Limits.MaxContextItems)
 	d.aggregateService = aggregateService
 	d.jobs, err = jobs.NewService(repository, cfg, processor, jobs.Dependencies{
-		Indexes: repository, EntityIndexes: repository, RelationIndexes: repository,
+		Indexes: repository, EntityIndexes: repository, RelationIndexes: repository, GraphIndexes: repository,
 		FeedbackAggregates: repository, AggregateRebuilder: aggregateService, DiskPressure: repository,
 	})
 	if err != nil {
@@ -382,15 +383,15 @@ func (d *Daemon) recordNonActivatedActivation(ctx context.Context, result config
 		},
 		Activation: storage.ActivationRecord{
 			ActivationID:         result.AttemptID,
-			RevisionID:            result.AttemptID,
+			RevisionID:           result.AttemptID,
 			PreviousActivationID: previousActivationID,
-			Trigger:               string(result.Trigger),
-			RequestedBy:           "daemon",
-			Outcome:               string(result.Outcome),
-			ErrorCode:             result.ErrorCode,
-			Diagnostics:           diagnostics,
-			StartedAt:             result.StartedAt,
-			FinishedAt:            result.FinishedAt,
+			Trigger:              string(result.Trigger),
+			RequestedBy:          "daemon",
+			Outcome:              string(result.Outcome),
+			ErrorCode:            result.ErrorCode,
+			Diagnostics:          diagnostics,
+			StartedAt:            result.StartedAt,
+			FinishedAt:           result.FinishedAt,
 		},
 	}
 	return d.repository.CommitActivation(ctx, commit)
@@ -473,6 +474,7 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 	processingPolicyGeneration := d.policyGeneration(ctx, previous, snapshot, "processing")
 	embeddingPolicyGeneration := d.policyGeneration(ctx, previous, snapshot, "embedding")
 	d.repository.SetProcessingGeneration(snapshot.ActivationGeneration, processingPolicyGeneration, snapshot.ProcessingCapability.CompatibilityIdentity)
+	d.repository.SetGraphExtractionEnabled(snapshot.ProcessingCapability.Enabled && snapshot.Config.GraphEnabled)
 	d.jobs.SetProcessing(jobs.ProcessingConfig{
 		Processor:              processor,
 		ProcessorIdentity:      processingIdentity,

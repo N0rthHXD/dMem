@@ -10,8 +10,16 @@ and index metadata.
 Raw events are committed before optional automatic processing. Memories have a
 stable logical ID, immutable revisions, append-only state events, evidence, and
 a current projection. FTS rows, embeddings, semantic corpus metadata,
-entity/relation index metadata, feedback aggregates, and aggregate freshness are derived and
+entity/relation/graph index metadata, feedback aggregates, and aggregate freshness are derived and
 rebuildable. Derived data must never overwrite authority.
+
+A confirmed memory revision is the stable input for knowledge-graph extraction;
+the raw event remains provenance/evidence. Extraction produces entity, alias,
+mention, entity-fact, and memory-relation proposals, which are deterministically
+validated, risk-classified, and either auto-confirmed (recorded with an
+auto-review rule version) or queued for review. Entity facts (`entity_facts`)
+describe typed relationships among resolved entities and are distinct from
+revision-level `memory_relations`.
 
 Memory content is text. Raw events can contain text, JSON, or an external
 reference; binary content and managed attachment storage are not implemented.
@@ -96,14 +104,22 @@ BLOBs in SQLite and uses statically linked sqlite-vec for exact cosine search.
 Authority, scope, policy, identity, and validity filters run before top-k.
 `semantic_index_version` is a monotonic generation of the live semantic corpus,
 not an immutable vector snapshot: projection eligibility and compatible vector
-membership changes advance it transactionally. Hybrid retrieval combines
-independent channels using versioned reciprocal-rank fusion. Entity and relation
-channels can add candidates, and bounded feedback aggregates act only as a
-post-ranking signal.
+membership changes advance it transactionally.
+
+Retrieval has three top-level channels: `keyword`, `semantic`, and `graph`.
+Entity resolution is query understanding (retrieval pre-processing), not a
+separate channel: deterministic alias longest-match maps natural-language
+mentions to resolved entity IDs. The graph channel internally distinguishes
+signals — `direct_entity_mention` (0-hop), `exact_predicate_fact` / `one_hop_fact`
+(1-hop), `two_hop_path` (bounded 2-hop), and `memory_relation` /
+`graph_conflict` — and can expand from the unified keyword/semantic/entity seed
+set. Hybrid retrieval combines independent channels using versioned
+reciprocal-rank fusion. Entity, relation, and graph channels can add candidates,
+and bounded feedback aggregates act only as a post-ranking signal.
 
 Cursors bind the authority corpus generation, live semantic corpus generation,
-and relevant ranking/index versions. A generation change invalidates an old
-cursor rather than continuing over changed membership. Before a
+and relevant ranking/index versions and generations. A generation change
+invalidates an old cursor rather than continuing over changed membership. Before a
 result is returned, dMem rechecks its space, current revision, lifecycle state,
 valid time, and result/character budgets. Responses report degraded channels
 instead of silently claiming full retrieval.

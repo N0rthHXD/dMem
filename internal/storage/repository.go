@@ -78,6 +78,7 @@ type Repository struct {
 	processingGeneration            atomic.Int64
 	processingPolicyGeneration      atomic.Int64
 	processingCompatibilityIdentity atomic.Value
+	graphExtractionEnabled          atomic.Bool
 	diskSoftFree                    uint64
 	diskHardFree                    uint64
 	embedding                       atomic.Pointer[embeddingRuntime]
@@ -120,6 +121,14 @@ func (r *Repository) SetEmbedding(embedding provider.EmbeddingProvider, provider
 		Generation:            generation,
 		PolicyGeneration:      policyGeneration,
 	})
+}
+
+func (r *Repository) SetGraphExtractionEnabled(enabled bool) {
+	r.graphExtractionEnabled.Store(enabled)
+}
+
+func (r *Repository) graphExtractionOn() bool {
+	return r.graphExtractionEnabled.Load()
 }
 
 func (r *Repository) SetProcessingGeneration(generation, policyGeneration int, compatibilityIdentity string) {

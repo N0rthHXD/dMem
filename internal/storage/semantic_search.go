@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -28,7 +29,11 @@ type hybridCandidate struct {
 	memoryID, revisionID, contentHash                   string
 	keywordScore, semanticScore                         float64
 	keywordRank, semanticRank, entityRank, relationRank int
+	graphRank                                           int
 	rrfScore, score                                     float64
+	graphSignals                                        []domain.GraphSignal
+	graphFacts                                          []domain.EntityFact
+	graphPaths                                          []domain.GraphPath
 }
 
 type hybridCursor struct {
@@ -37,6 +42,9 @@ type hybridCursor struct {
 	FTSVersion, SemanticVersion, Limit, MaxChars           int
 	CorpusGeneration, FeedbackAggregateVersion             int64
 	EntityIndexVersion, RelationIndexVersion               int64
+	GraphIndexVersion                                      int64
+	EntityIndexGeneration, RelationIndexGeneration         int64
+	GraphIndexGeneration                                   int64
 	ReferenceTime, ScoreBits, MemoryID, RevisionID         string
 }
 
@@ -282,6 +290,29 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			candidate.relationRank = i + 1
 		}
 	}
+	seeds := make([]string, 0, len(all))
+	for key := range all {
+		_, revisionID, _ := strings.Cut(key, "\x00")
+		seeds = append(seeds, revisionID)
+	}
+	graph, graphErr := r.graphChannelRecall(ctx, tx, params, spaces, nil, seeds, recallLimit)
+	if graphErr != nil {
+		return domain.SearchResponse{}, graphErr
+	}
+	response.ResolvedEntities = graph.resolvedEntities
+	for i := range graph.items {
+		item := graph.items[i]
+		key := item.memoryID + "\x00" + item.revisionID
+		candidate := all[key]
+		if candidate == nil {
+			candidate = &hybridCandidate{memoryID: item.memoryID, revisionID: item.revisionID}
+			all[key] = candidate
+		}
+		candidate.graphRank = item.graphRank
+		candidate.graphSignals = item.signals
+		candidate.graphFacts = item.facts
+		candidate.graphPaths = item.paths
+	}
 	list := make([]hybridCandidate, 0, len(all))
 	for _, item := range all {
 		if item.keywordRank > 0 {
@@ -295,6 +326,9 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 		if item.relationRank > 0 {
 			item.rrfScore += 1 / float64(60+item.relationRank)
+		}
+		if item.graphRank > 0 {
+			item.rrfScore += 1 / float64(60+item.graphRank)
 		}
 		usage, err := feedbackUsageScore(ctx, tx, item.revisionID, metadata.feedbackAggregateVersion)
 		if err != nil {
@@ -325,7 +359,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		if err != nil {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
-		if cursor.ReferenceTime != params.ReferenceTime || cursor.QueryHash != semanticQueryHash(params) || cursor.RequestedMode != params.Mode || cursor.ExecutedMode != executed || cursor.RankingVersion != rankingVersion || cursor.FTSVersion != ftsVersion || cursor.SemanticVersion != status.ActiveVersion || cursor.CorpusGeneration != metadata.corpusGeneration || cursor.FeedbackAggregateVersion != metadata.feedbackAggregateVersion || cursor.EntityIndexVersion != metadata.entityIndexVersion || cursor.RelationIndexVersion != metadata.relationIndexVersion || cursor.Limit != params.Limit || cursor.MaxChars != params.MaxChars {
+		if cursor.ReferenceTime != params.ReferenceTime || cursor.QueryHash != semanticQueryHash(params) || cursor.RequestedMode != params.Mode || cursor.ExecutedMode != executed || cursor.RankingVersion != rankingVersion || cursor.FTSVersion != ftsVersion || cursor.SemanticVersion != status.ActiveVersion || cursor.CorpusGeneration != metadata.corpusGeneration || cursor.FeedbackAggregateVersion != metadata.feedbackAggregateVersion || cursor.EntityIndexVersion != metadata.entityIndexVersion || cursor.RelationIndexVersion != metadata.relationIndexVersion || cursor.GraphIndexVersion != metadata.graphIndexVersion || cursor.EntityIndexGeneration != metadata.entityIndexGeneration || cursor.RelationIndexGeneration != metadata.relationIndexGeneration || cursor.GraphIndexGeneration != metadata.graphIndexGeneration || cursor.Limit != params.Limit || cursor.MaxChars != params.MaxChars {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
 		found := false
@@ -398,6 +432,14 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 				reason = "hybrid_fusion"
 			}
 		}
+		if candidate.graphRank > 0 {
+			channels = append(channels, "graph")
+			if len(channels) == 1 {
+				reason = "graph_match"
+			} else {
+				reason = "hybrid_fusion"
+			}
+		}
 		if len(channels) >= 2 {
 			reason = "hybrid_fusion"
 		}
@@ -405,7 +447,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keyword, SemanticScore: semanticScore, MatchedChannels: channels, SelectionReason: reason, ConflictRefs: refs})
+		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keyword, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs})
 		response.CharsUsed += chars
 		copy := candidate
 		last = &copy
@@ -538,7 +580,7 @@ func semanticSearchStatus(ctx context.Context, tx *sql.Tx) (SemanticStatus, stri
 }
 
 func semanticSearchResponse(params SearchParams, executed string, reasons []string, status SemanticStatus, ftsState string, ftsVersion int, metadata searchMetadata) domain.SearchResponse {
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, IndexState: ftsState, RequestedMode: params.Mode, ExecutedMode: executed, Degraded: len(reasons) > 0 || status.State == "stale", DegradationReasons: reasons, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion}
+	response := domain.SearchResponse{Results: []domain.SearchResult{}, IndexState: ftsState, RequestedMode: params.Mode, ExecutedMode: executed, Degraded: len(reasons) > 0 || status.State == "stale", DegradationReasons: reasons, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, GraphIndexVersion: metadata.graphIndexVersion}
 	if status.State == "stale" {
 		response.DegradationReasons = append(response.DegradationReasons, "semantic_stale")
 	}
@@ -574,7 +616,7 @@ func semanticQueryHash(params SearchParams) string {
 	return hex.EncodeToString(sum[:])
 }
 func encodeHybridCursor(hash string, p SearchParams, executed string, ftsVersion, semanticVersion int, metadata searchMetadata, c hybridCandidate) string {
-	value := hybridCursor{Version: 3, QueryHash: hash, RequestedMode: p.Mode, ExecutedMode: executed, RankingVersion: rankingVersion, FTSVersion: ftsVersion, SemanticVersion: semanticVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, Limit: p.Limit, MaxChars: p.MaxChars, ReferenceTime: p.ReferenceTime, ScoreBits: strconv.FormatUint(math.Float64bits(c.score), 16), MemoryID: c.memoryID, RevisionID: c.revisionID}
+	value := hybridCursor{Version: 3, QueryHash: hash, RequestedMode: p.Mode, ExecutedMode: executed, RankingVersion: rankingVersion, FTSVersion: ftsVersion, SemanticVersion: semanticVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, GraphIndexVersion: metadata.graphIndexVersion, EntityIndexGeneration: metadata.entityIndexGeneration, RelationIndexGeneration: metadata.relationIndexGeneration, GraphIndexGeneration: metadata.graphIndexGeneration, Limit: p.Limit, MaxChars: p.MaxChars, ReferenceTime: p.ReferenceTime, ScoreBits: strconv.FormatUint(math.Float64bits(c.score), 16), MemoryID: c.memoryID, RevisionID: c.revisionID}
 	raw, _ := json.Marshal(value)
 	return base64.RawURLEncoding.EncodeToString(raw)
 }

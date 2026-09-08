@@ -424,6 +424,10 @@ func (h *Handler) repositoryError(w http.ResponseWriter, err error, requestID st
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "relation proposal is invalid", requestID, "", false, nil)
 	case errors.Is(err, storage.ErrRelationProposalReviewed):
 		h.writeError(w, http.StatusConflict, "proposal_already_reviewed", "relation proposal review state is terminal", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrInvalidFactProposal):
+		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "entity fact proposal is invalid", requestID, "", false, nil)
+	case errors.Is(err, storage.ErrFactProposalReviewed):
+		h.writeError(w, http.StatusConflict, "proposal_already_reviewed", "entity fact proposal review state is terminal", requestID, "", false, nil)
 	case errors.Is(err, storage.ErrInvalidAggregateProposal):
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "aggregate proposal is invalid", requestID, "", false, nil)
 	case errors.Is(err, storage.ErrAggregateProposalReviewed):

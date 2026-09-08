@@ -92,6 +92,7 @@ type RedactedConfig struct {
 	DiskSoftFree        uint64             `json:"disk_soft_free_bytes"`
 	DiskHardFree        uint64             `json:"disk_hard_free_bytes"`
 	ProcessingVersion   string             `json:"processing_version"`
+	GraphEnabled        bool               `json:"graph_enabled"`
 	Processing          RedactedCapability `json:"processing"`
 	Embedding           RedactedCapability `json:"embedding"`
 }
@@ -139,6 +140,7 @@ func (s Snapshot) Redacted() RedactedConfig {
 		DiskSoftFree:        s.Config.DiskSoftFree,
 		DiskHardFree:        s.Config.DiskHardFree,
 		ProcessingVersion:   s.Config.ProcessingVersion,
+		GraphEnabled:        s.Config.GraphEnabled,
 		Processing:          redactCapability(s.ProcessingCapability),
 		Embedding:           redactCapability(s.EmbeddingCapability),
 	}

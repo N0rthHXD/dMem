@@ -108,6 +108,7 @@ type canonicalConfigStruct struct {
 	DiskSoftFree        uint64            `json:"disk_soft_free_bytes"`
 	DiskHardFree        uint64            `json:"disk_hard_free_bytes"`
 	ProcessingVersion   string            `json:"processing_version"`
+	GraphEnabled        bool              `json:"graph_enabled"`
 	ProcessingProvider  canonicalProvider `json:"processing_provider"`
 	EmbeddingProvider   canonicalProvider `json:"embedding_provider"`
 }
@@ -187,6 +188,7 @@ func canonicalConfig(cfg Config) canonicalConfigStruct {
 		DiskSoftFree:        cfg.DiskSoftFree,
 		DiskHardFree:        cfg.DiskHardFree,
 		ProcessingVersion:   cfg.ProcessingVersion,
+		GraphEnabled:        cfg.GraphEnabled,
 		ProcessingProvider:  canonicalProviderConfig(cfg.ProcessingProvider, true),
 		EmbeddingProvider:   canonicalProviderConfig(cfg.EmbeddingProvider, false),
 	}

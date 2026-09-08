@@ -732,6 +732,97 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/InvalidRequest' }
         '507': { $ref: '#/components/responses/ResourceExhausted' }
+  /entity-facts:
+    get:
+      operationId: listEntityFacts
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: state, in: query, schema: { type: string, enum: [active, dismissed, superseded] } }
+        - { name: predicate, in: query, schema: { $ref: '#/components/schemas/Predicate' } }
+        - { name: subject_entity_id, in: query, schema: { type: string, format: uuid } }
+        - { name: object_entity_id, in: query, schema: { type: string, format: uuid } }
+        - { name: direction, in: query, schema: { type: string, enum: [incoming, outgoing, both] } }
+        - { name: reference_time, in: query, schema: { type: string } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Entity fact page, content: { application/json: { schema: { $ref: '#/components/schemas/EntityFactPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /entity-facts/{fact_id}:
+    get:
+      operationId: getEntityFact
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: fact_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Entity fact, content: { application/json: { schema: { $ref: '#/components/schemas/EntityFact' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /fact-proposals:
+    get:
+      operationId: listFactProposals
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: review_state, in: query, schema: { $ref: '#/components/schemas/ReviewState' } }
+        - { name: predicate, in: query, schema: { $ref: '#/components/schemas/Predicate' } }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200': { description: Fact proposal page, content: { application/json: { schema: { $ref: '#/components/schemas/FactProposalPage' } } } }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+    post:
+      operationId: createFactProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateFactProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/FactProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /fact-proposals/{proposal_id}:
+    get:
+      operationId: getFactProposal
+      parameters:
+        - $ref: '#/components/parameters/callerId'
+        - { name: proposal_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Fact proposal, content: { application/json: { schema: { $ref: '#/components/schemas/FactProposal' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /fact-proposals/{proposal_id}/confirm:
+    post:
+      operationId: confirmFactProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { name: proposal_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '201': { $ref: '#/components/responses/FactProposalCreated' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /fact-proposals/{proposal_id}/reject:
+    post:
+      operationId: rejectFactProposal
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }, { name: proposal_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewProposalRequest' } } } }
+      responses:
+        '200': { $ref: '#/components/responses/FactProposalOK' }
+        '400': { $ref: '#/components/responses/InvalidJSON' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+  /indexes/graph/rebuild:
+    post:
+      operationId: rebuildGraphIndex
+      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
+      responses:
+        '202': { $ref: '#/components/responses/RebuildAccepted' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidRequest' }
+        '507': { $ref: '#/components/responses/ResourceExhausted' }
   /evolution-proposals:
     post:
       operationId: createEvolutionProposal
@@ -1310,6 +1401,116 @@ components:
     Sensitivity: { type: string, enum: [normal, sensitive] }
     EntityProposalKind: { type: string, enum: [entity, alias, mention] }
     RelationType: { type: string, enum: [supports, contradicts, supersedes, derived_from, related_to] }
+    Predicate: { type: string, enum: [participates_in, uses_database, owned_by, located_in, depends_on] }
+    EntityFact:
+      type: object
+      additionalProperties: false
+      required: [fact_id, space_id, subject_entity_id, predicate, source_memory_id, source_revision_id, state, source, specification_hash, created_by, processing_version, created_at, updated_at, evidence, state_events]
+      properties:
+        fact_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        subject_entity_id: { type: string, format: uuid }
+        predicate: { $ref: '#/components/schemas/Predicate' }
+        object_entity_id: { type: [string, 'null'], format: uuid }
+        object_literal: { type: [string, 'null'] }
+        object_literal_type: { type: [string, 'null'], enum: [string, number, boolean] }
+        source_memory_id: { type: string, format: uuid }
+        source_revision_id: { type: string, format: uuid }
+        confidence: { type: number }
+        state: { type: string, enum: [active, dismissed, superseded] }
+        source: { type: string, enum: [processor_review, human_confirmation, auto_review, import] }
+        specification_hash: { type: string }
+        created_by: { type: string }
+        processing_version: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
+        valid_from: { type: [string, 'null'] }
+        valid_until: { type: [string, 'null'] }
+        evidence: { type: array, items: { $ref: '#/components/schemas/EntityFactEvidence' } }
+        state_events: { type: array, items: { $ref: '#/components/schemas/EntityFactStateEvent' } }
+    EntityFactEvidence:
+      type: object
+      required: [evidence_type]
+      properties:
+        evidence_id: { type: string, format: uuid }
+        evidence_type: { type: string, enum: [raw_event_range, revision_range, human_confirmation] }
+        event_id: { type: [string, 'null'], format: uuid }
+        memory_id: { type: [string, 'null'], format: uuid }
+        revision_id: { type: [string, 'null'], format: uuid }
+        start_offset: { type: [integer, 'null'], minimum: 0 }
+        end_offset: { type: [integer, 'null'], minimum: 0 }
+        note: { type: [string, 'null'] }
+        created_by: { type: string }
+        created_at: { type: string }
+    EntityFactStateEvent:
+      type: object
+      required: [state_event_id, operation_id, to_state, reason, created_by, created_at]
+      properties:
+        state_event_id: { type: string, format: uuid }
+        operation_id: { type: string, format: uuid }
+        from_state: { type: [string, 'null'], enum: [active, dismissed, superseded] }
+        to_state: { type: string, enum: [active, dismissed, superseded] }
+        reason: { type: string }
+        created_by: { type: string }
+        created_at: { type: string }
+    EntityFactPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/EntityFact' } }
+        next_cursor: { type: [string, 'null'] }
+        index_state: { type: string }
+        degraded: { type: boolean }
+    FactProposal:
+      type: object
+      additionalProperties: false
+      required: [proposal_id, event_id, space_id, subject_entity_id, predicate, source_memory_id, source_revision_id, evidence, processor_identity, processing_version, specification_hash, review_state, created_at, reviews]
+      properties:
+        proposal_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        subject_entity_id: { type: string, format: uuid }
+        predicate: { $ref: '#/components/schemas/Predicate' }
+        object_entity_id: { type: [string, 'null'], format: uuid }
+        object_literal: { type: [string, 'null'] }
+        object_literal_type: { type: [string, 'null'], enum: [string, number, boolean] }
+        source_memory_id: { type: string, format: uuid }
+        source_revision_id: { type: string, format: uuid }
+        confidence: { type: number }
+        valid_from: { type: [string, 'null'] }
+        valid_until: { type: [string, 'null'] }
+        evidence: { type: array, items: { $ref: '#/components/schemas/EntityFactEvidence' } }
+        processor_identity: { type: string }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+        processing_version: { type: string }
+        specification_hash: { type: string }
+        auto_review_version: { type: [string, 'null'] }
+        review_state: { $ref: '#/components/schemas/ReviewState' }
+        result_fact_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string }
+        reviewed_at: { type: [string, 'null'] }
+        reviews: { type: array, items: { $ref: '#/components/schemas/FactProposalReview' } }
+    FactProposalReview:
+      type: object
+      required: [review_id, from_state, to_state, reason_code, reviewer_id, created_at]
+      properties:
+        review_id: { type: string, format: uuid }
+        from_state: { type: string }
+        to_state: { type: string }
+        reason_code: { type: string }
+        note: { type: [string, 'null'] }
+        reviewer_id: { type: string }
+        fact_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string }
+    FactProposalPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/FactProposal' } }
+        next_cursor: { type: [string, 'null'] }
     EvolutionAction: { type: string, enum: [duplicate, supplement, replacement, conflict] }
     ConflictState: { type: string, enum: [open, resolved, dismissed] }
     AggregateKind: { type: string, enum: [scene, topic] }
@@ -1476,6 +1677,28 @@ components:
         target_revision_id: { type: string, format: uuid }
         confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
         evidence: { type: array, items: { $ref: '#/components/schemas/RelationEvidence' } }
+        processor_identity: { type: string, minLength: 1 }
+        processing_version: { type: string, minLength: 1 }
+        provider_identity: { type: [string, 'null'] }
+        model_identity: { type: [string, 'null'] }
+    CreateFactProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [event_id, space_id, subject_entity_id, predicate, source_memory_id, source_revision_id, evidence, processor_identity, processing_version]
+      properties:
+        event_id: { type: string, format: uuid }
+        space_id: { type: string, format: uuid }
+        subject_entity_id: { type: string, format: uuid }
+        predicate: { $ref: '#/components/schemas/Predicate' }
+        object_entity_id: { type: [string, 'null'], format: uuid }
+        object_literal: { type: [string, 'null'] }
+        object_literal_type: { type: [string, 'null'], enum: [string, number, boolean] }
+        source_memory_id: { type: string, format: uuid }
+        source_revision_id: { type: string, format: uuid }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        valid_from: { type: [string, 'null'] }
+        valid_until: { type: [string, 'null'] }
+        evidence: { type: array, items: { $ref: '#/components/schemas/EntityFactEvidence' } }
         processor_identity: { type: string, minLength: 1 }
         processing_version: { type: string, minLength: 1 }
         provider_identity: { type: [string, 'null'] }
@@ -1884,7 +2107,10 @@ components:
         keyword_score: { type: number }
         keyword_relevance: { type: number }
         semantic_relevance: { type: number }
-        matched_channels: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, entity, relation] } }
+        matched_channels: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, entity, relation, graph] } }
+        graph_signals: { type: array, items: { $ref: '#/components/schemas/GraphSignal' } }
+        graph_facts: { type: array, items: { $ref: '#/components/schemas/EntityFact' } }
+        graph_paths: { type: array, items: { $ref: '#/components/schemas/GraphPath' } }
         selection_reason: { type: string }
         conflict_refs: { type: array, items: { $ref: '#/components/schemas/ConflictRef' } }
     ConflictRef:
@@ -1916,6 +2142,42 @@ components:
         feedback_aggregate_version: { type: integer, minimum: 0 }
         entity_index_version: { type: integer, minimum: 0 }
         relation_index_version: { type: integer, minimum: 0 }
+        graph_index_version: { type: integer, minimum: 0 }
+        graph_index_state: { type: string, enum: [ready, degraded, rebuilding, stale] }
+        resolved_entities: { type: array, items: { $ref: '#/components/schemas/ResolvedEntity' } }
+    GraphSignal:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [direct_entity_mention, exact_predicate_fact, one_hop_fact, two_hop_path, memory_relation, graph_conflict] }
+        entity_id: { type: string, format: uuid }
+        predicate: { type: string }
+        fact_id: { type: string, format: uuid }
+        relation_id: { type: string, format: uuid }
+        relation_type: { $ref: '#/components/schemas/RelationType' }
+        relation_direction: { type: string, enum: [outgoing, incoming] }
+        hop: { type: integer, minimum: 0 }
+        entity_confidence: { type: number }
+        fact_confidence: { type: number }
+    GraphPath:
+      type: object
+      required: [subject_entity_id, steps, object_entity_id, hop]
+      properties:
+        subject_entity_id: { type: string, format: uuid }
+        steps: { type: array, items: { type: string } }
+        object_entity_id: { type: string, format: uuid }
+        hop: { type: integer, minimum: 0 }
+    ResolvedEntity:
+      type: object
+      required: [entity_id, entity_type, alias, confidence, match_kind, start_rune, end_rune]
+      properties:
+        entity_id: { type: string, format: uuid }
+        entity_type: { type: string }
+        alias: { type: string }
+        confidence: { type: number }
+        match_kind: { type: string }
+        start_rune: { type: integer, minimum: 0 }
+        end_rune: { type: integer, minimum: 0 }
     JobReference:
       type: object
       required: [operation_id, job_id]
@@ -1928,7 +2190,7 @@ components:
       properties:
         job_id: { type: string, format: uuid }
         operation_id: { type: string, format: uuid }
-        job_type: { type: string, enum: [extract_memory, embed_memory, rebuild_fts, rebuild_semantic, rebuild_entity_index, rebuild_relation_index, aggregate_feedback, rebuild_feedback_aggregates, rebuild_aggregate] }
+        job_type: { type: string, enum: [extract_memory, extract_graph, embed_memory, rebuild_fts, rebuild_semantic, rebuild_entity_index, rebuild_relation_index, rebuild_graph_index, aggregate_feedback, rebuild_feedback_aggregates, rebuild_aggregate] }
         target_type: { type: string, enum: [raw_event, memory_revision, index, aggregate] }
         target_id: { type: string }
         status: { $ref: '#/components/schemas/JobStatus' }
@@ -1942,7 +2204,7 @@ components:
     Health:
       type: object
       additionalProperties: false
-      required: [process_alive, mode, overall_status, ready, accepting_writes, query_available, storage_state, storage_healthy, storage_writable, schema_compatibility, queue_state, fts_state, fts_index_state, fts_freshness, processor_state, processor_identity, semantic_state, semantic_index_state, semantic_index_version, entity_index_state, entity_index_version, relation_index_state, relation_index_version, feedback_aggregate_state, feedback_aggregate_version, aggregate_state, aggregate_fresh_count, aggregate_stale_count, aggregate_pending_rebuilds, backup_state, job_queue_depth, oldest_job_age_seconds, disk_pressure]
+      required: [process_alive, mode, overall_status, ready, accepting_writes, query_available, storage_state, storage_healthy, storage_writable, schema_compatibility, queue_state, fts_state, fts_index_state, fts_freshness, processor_state, processor_identity, semantic_state, semantic_index_state, semantic_index_version, entity_index_state, entity_index_version, relation_index_state, relation_index_version, graph_index_state, graph_index_version, feedback_aggregate_state, feedback_aggregate_version, aggregate_state, aggregate_fresh_count, aggregate_stale_count, aggregate_pending_rebuilds, backup_state, job_queue_depth, oldest_job_age_seconds, disk_pressure]
       properties:
         process_alive: { type: boolean }
         mode: { type: string, enum: [healthy, degraded, read_only, maintenance, unavailable] }
@@ -1967,6 +2229,8 @@ components:
         entity_index_version: { type: integer, minimum: 0 }
         relation_index_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
         relation_index_version: { type: integer, minimum: 0 }
+        graph_index_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
+        graph_index_version: { type: integer, minimum: 0 }
         feedback_aggregate_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
         feedback_aggregate_version: { type: integer, minimum: 0 }
         aggregate_state: { type: string, enum: [ready, stale, rebuilding, unavailable] }
@@ -2120,6 +2384,14 @@ components:
       description: Relation proposal rejected
       headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
       content: { application/json: { schema: { $ref: '#/components/schemas/RelationProposal' } } }
+    FactProposalCreated:
+      description: Fact proposal created or confirmed
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/FactProposal' } } }
+    FactProposalOK:
+      description: Fact proposal rejected
+      headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/FactProposal' } } }
     EvolutionProposalCreated:
       description: Evolution proposal created or confirmed
       headers: { Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' } }

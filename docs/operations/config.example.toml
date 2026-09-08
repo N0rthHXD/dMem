@@ -38,6 +38,10 @@ disk_hard_free_bytes = 268435456
 
 [processing]
 version = "builtin-noop-v1"
+# Controls knowledge-graph extraction (extract_graph). Defaults to true so that
+# graph extraction follows the processing provider. Set false to run processing
+# without graph extraction (for example, to isolate retrieval baselines).
+# graph_enabled = true
 
 [processing.provider]
 enabled = false
@@ -47,9 +51,13 @@ enabled = false
 
 # A provider is enabled by replacing its minimal disabled section with a
 # complete section. Secret values are supplied externally and never stored here.
+# The processing provider drives both memory-candidate extraction
+# (extract_memory) and knowledge-graph extraction (extract_graph).
+# Knowledge-graph extraction is additionally gated by [processing].graph_enabled.
 #
 # [processing]
 # version = "processor-v1"
+# graph_enabled = true
 #
 # [processing.provider]
 # enabled = true

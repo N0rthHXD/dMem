@@ -85,7 +85,7 @@ func (h *Handler) validateSearch(request searchRequest) (storage.SearchParams, e
 			return storage.SearchParams{}, errors.New("memory_types is invalid")
 		}
 	}
-	validStates := map[string]bool{"active": true, "contested": true, "superseded": true, "archived": true, "expired": true, "retracted": true, "deleted": true}
+	validStates := map[string]bool{"active": true, "contested": true}
 	if request.States != nil {
 		if isNull(request.States) || json.Unmarshal(request.States, &params.States) != nil || !validValues(params.States, validStates) {
 			return storage.SearchParams{}, errors.New("states is invalid")

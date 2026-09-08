@@ -215,6 +215,15 @@ func (p *heldProcessor) Process(ctx context.Context, _ domain.ProcessingInput) d
 	}
 }
 
+func (p *heldProcessor) ProcessGraph(ctx context.Context, _ domain.GraphExtractionInput) domain.GraphExtractionResult {
+	select {
+	case <-p.release:
+		return domain.GraphExtractionResult{Code: domain.GraphExtractionNoProcessor}
+	case <-ctx.Done():
+		return domain.GraphExtractionResult{Code: domain.GraphExtractionTransientFailure, Message: ctx.Err().Error()}
+	}
+}
+
 func waitForJobStatus(t *testing.T, client *http.Client, jobID, status string) domain.Job {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

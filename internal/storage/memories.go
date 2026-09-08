@@ -798,12 +798,14 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 	hash := sha256.Sum256([]byte(content))
 	contentHash := hex.EncodeToString(hash[:])
 	embeddingChanged, corpusChanged := true, true
+	revisionChanged := true
 	var previousRevision, previousSpace, previousType, previousState, previousHash string
 	var previousSearchable bool
 	var previousValidFrom, previousValidUntil sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT revision_id, space_id, memory_type, current_state, content_hash, searchable, valid_from, valid_until FROM memory_projections WHERE memory_id=?`, memoryID).Scan(&previousRevision, &previousSpace, &previousType, &previousState, &previousHash, &previousSearchable, &previousValidFrom, &previousValidUntil)
 	if err == nil {
-		embeddingChanged = previousRevision != revisionID || previousSpace != spaceID || previousHash != contentHash || previousSearchable != searchable
+		revisionChanged = previousRevision != revisionID
+		embeddingChanged = revisionChanged || previousSpace != spaceID || previousHash != contentHash || previousSearchable != searchable
 		corpusChanged = embeddingChanged || previousType != memoryType || previousState != state || !equalNullableString(previousValidFrom, validFrom) || !equalNullableString(previousValidUntil, validUntil)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -835,6 +837,11 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 	}
 	if corpusChanged {
 		if err := advanceSemanticCorpusGeneration(ctx, tx, now, embeddingChanged); err != nil {
+			return err
+		}
+	}
+	if revisionChanged && searchable {
+		if err := r.scheduleGraphExtraction(ctx, tx, revisionID, now); err != nil {
 			return err
 		}
 	}

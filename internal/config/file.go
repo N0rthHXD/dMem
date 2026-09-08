@@ -51,8 +51,9 @@ type storageTable struct {
 }
 
 type processingTable struct {
-	Version  string                  `toml:"version"`
-	Provider processingProviderTable `toml:"provider"`
+	Version      string                  `toml:"version"`
+	GraphEnabled *bool                   `toml:"graph_enabled"`
+	Provider     processingProviderTable `toml:"provider"`
 }
 
 type embeddingTable struct {

@@ -46,6 +46,8 @@ type Config struct {
 	ProcessingVersion  string
 	ProcessingProvider ProviderConfig
 	EmbeddingProvider  ProviderConfig
+
+	GraphEnabled bool
 }
 
 func Default() (Config, error) {
@@ -80,6 +82,7 @@ func Default() (Config, error) {
 		DiskSoftFree:        1 << 30,
 		DiskHardFree:        256 << 20,
 		ProcessingVersion:   DefaultProcessingVersion,
+		GraphEnabled:        true,
 	}, nil
 }
 

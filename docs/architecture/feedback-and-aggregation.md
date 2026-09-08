@@ -18,8 +18,10 @@ does not directly archive, retract, delete, or revise a memory.
 Raw feedback events are authority. Rebuildable aggregates retain the latest
 feedback per caller and revision within a 90-day window, count positive and
 negative observations, and clamp the usage score to `[-1, 1]`. This bounded
-score is applied after keyword, semantic, entity, and relation retrieval; it
-cannot bypass scope, current-revision, lifecycle, time, or budget checks.
+score is applied after keyword, semantic, and graph retrieval (graph internally
+distinguishes entity mentions, entity facts, bounded paths, and memory
+relations); it cannot bypass scope, current-revision, lifecycle, time, or budget
+checks.
 
 Feedback belongs to the referenced revision and is not inherited by a newer
 revision. Search responses and cursors carry the feedback aggregate version so

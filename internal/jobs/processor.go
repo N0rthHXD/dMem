@@ -15,6 +15,10 @@ type Processor interface {
 	Process(context.Context, domain.ProcessingInput) domain.ProcessingResult
 }
 
+type GraphProcessor interface {
+	ProcessGraph(context.Context, domain.GraphExtractionInput) domain.GraphExtractionResult
+}
+
 type NoopProcessor struct{}
 
 func (NoopProcessor) Enabled() bool    { return false }
@@ -22,6 +26,10 @@ func (NoopProcessor) Identity() string { return "none" }
 
 func (NoopProcessor) Process(context.Context, domain.ProcessingInput) domain.ProcessingResult {
 	return domain.ProcessingResult{Code: domain.ProcessingNoProcessor}
+}
+
+func (NoopProcessor) ProcessGraph(context.Context, domain.GraphExtractionInput) domain.GraphExtractionResult {
+	return domain.GraphExtractionResult{Code: domain.GraphExtractionNoProcessor}
 }
 
 type IndexRepository interface {
@@ -36,6 +44,10 @@ type EntityIndexRepository interface {
 
 type RelationIndexRepository interface {
 	RebuildRelationIndexClaimed(context.Context, storage.ClaimedJob) error
+}
+
+type GraphIndexRepository interface {
+	RebuildGraphIndexClaimed(context.Context, storage.ClaimedJob) error
 }
 
 type FeedbackAggregateRepository interface {
