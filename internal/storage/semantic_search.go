@@ -4,15 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
@@ -20,34 +17,26 @@ import (
 	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
-const rankingVersion = "rrf-v2"
+const rankingVersion = "rrf-v3"
 
 // Exact cosine search has no native cutoff; zero and negative similarity are not relevant recalls.
 const minimumSemanticScore = 0.2
 
 type hybridCandidate struct {
-	memoryID, revisionID, contentHash                   string
-	keywordScore, semanticScore                         float64
-	keywordRank, semanticRank, entityRank, relationRank int
-	graphRank                                           int
-	rrfScore, score                                     float64
-	graphSignals                                        []domain.GraphSignal
-	graphFacts                                          []domain.EntityFact
-	graphPaths                                          []domain.GraphPath
+	memoryID, revisionID, contentHash string
+	keywordScore, semanticScore       float64
+	keywordRank, semanticRank         int
+	graphRank                         int
+	rrfScore, score                   float64
+	graphSignals                      []domain.GraphSignal
+	graphFacts                        []domain.EntityFact
+	graphPaths                        []domain.GraphPath
 }
 
-type hybridCursor struct {
-	Version                                                int `json:"v"`
-	QueryHash, RequestedMode, ExecutedMode, RankingVersion string
-	FTSVersion, SemanticVersion, Limit, MaxChars           int
-	CorpusGeneration, FeedbackAggregateVersion             int64
-	EntityIndexVersion, RelationIndexVersion               int64
-	GraphIndexVersion                                      int64
-	EntityIndexGeneration, RelationIndexGeneration         int64
-	GraphIndexGeneration                                   int64
-	ReferenceTime, ScoreBits, MemoryID, RevisionID         string
-}
-
+// searchSemanticHybrid executes the semantic channel (plus keyword and graph
+// when requested) and performs three-channel RRF v3 fusion. Requested
+// channels that are unavailable are dropped with an explicit degradation
+// reason; a request whose executed set becomes empty fails.
 func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
 	if params.ReferenceTime == "" {
 		params.ReferenceTime = formatTime(r.runtime.Now())
@@ -70,25 +59,20 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return domain.SearchResponse{}, err
 	}
 	runtime := r.emb()
-	semanticAvailable := r.semanticQueryable(status, 0)
-	keywordAvailable := ftsState == "ready"
-	executed := params.Mode
+	executed := append([]string{}, params.EffectiveChannels...)
 	reasons := []string{}
-	if params.Mode == "semantic" && !semanticAvailable {
+	if hasChannel(executed, ChannelSemantic) && !r.semanticQueryable(status, 0) {
+		executed = channelsWithout(executed, ChannelSemantic)
+		reasons = append(reasons, "semantic_unavailable")
+	}
+	if hasChannel(executed, ChannelKeyword) && ftsState != "ready" {
+		executed = channelsWithout(executed, ChannelKeyword)
+		reasons = append(reasons, "keyword_unavailable")
+	}
+	if len(executed) == 0 {
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
-	if params.Mode == "hybrid" {
-		if !semanticAvailable {
-			executed, reasons = "keyword", append(reasons, "semantic_unavailable")
-		}
-		if !keywordAvailable {
-			executed, reasons = "semantic", append(reasons, "keyword_unavailable")
-		}
-		if !semanticAvailable && !keywordAvailable {
-			return domain.SearchResponse{}, ErrIndexDegraded
-		}
-	}
-	if executed == "keyword" {
+	if !hasChannel(executed, ChannelSemantic) {
 		return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, reasons)
 	}
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
@@ -107,19 +91,19 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		err = closeErr
 	}
 	if err != nil {
-		if executed == "hybrid" && keywordAvailable {
+		if hasChannel(params.Channels, ChannelKeyword) && ftsState == "ready" {
 			return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_policy_denied"))
 		}
 		return domain.SearchResponse{}, err
 	}
 	if len(scope) == 0 {
-		if executed == "hybrid" && keywordAvailable {
+		if hasChannel(params.Channels, ChannelKeyword) && ftsState == "ready" {
 			return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_policy_denied"))
 		}
 		return domain.SearchResponse{}, ErrPolicyDenied
 	}
 	if policyGeneration > 0 && runtime.PolicyGeneration != policyGeneration {
-		if executed == "hybrid" && keywordAvailable {
+		if hasChannel(params.Channels, ChannelKeyword) && ftsState == "ready" {
 			return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_policy_changed"))
 		}
 		return domain.SearchResponse{}, ErrPolicyDenied
@@ -127,7 +111,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 
 	queryResult, err := runtime.Provider.Embed(ctx, provider.NewEmbeddingQueryRequest(scope[0], "text/plain", "normal", []string{"semantic_query"}, []string{params.Query}))
 	if err != nil || len(queryResult.Vectors()) != 1 {
-		if executed == "hybrid" {
+		if hasChannel(params.Channels, ChannelKeyword) {
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_unavailable"))
 			if keywordErr != nil {
 				return domain.SearchResponse{}, ErrIndexDegraded
@@ -138,7 +122,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	}
 	queryVector, err := validEmbedding(queryResult.Vectors()[0])
 	if err != nil {
-		if executed == "hybrid" {
+		if hasChannel(params.Channels, ChannelKeyword) {
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_unavailable"))
 			if keywordErr != nil {
 				return domain.SearchResponse{}, ErrIndexDegraded
@@ -161,23 +145,19 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	semanticAvailable = r.semanticQueryable(status, len(queryVector))
-	keywordAvailable = ftsState == "ready"
-	executed, reasons = params.Mode, []string{}
-	if params.Mode == "semantic" && !semanticAvailable {
-		return domain.SearchResponse{}, ErrIndexDegraded
+	semanticAvailable := r.semanticQueryable(status, len(queryVector))
+	keywordAvailable := ftsState == "ready"
+	executed, reasons = append([]string{}, params.EffectiveChannels...), []string{}
+	if hasChannel(executed, ChannelSemantic) && !semanticAvailable {
+		_ = tx.Rollback()
+		if !hasChannel(params.Channels, ChannelKeyword) || !keywordAvailable {
+			return domain.SearchResponse{}, ErrIndexDegraded
+		}
+		return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, []string{"semantic_unavailable"})
 	}
-	if params.Mode == "hybrid" {
-		if !semanticAvailable {
-			_ = tx.Rollback()
-			if !keywordAvailable {
-				return domain.SearchResponse{}, ErrIndexDegraded
-			}
-			return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, []string{"semantic_unavailable"})
-		}
-		if !keywordAvailable {
-			executed, reasons = "semantic", append(reasons, "keyword_unavailable")
-		}
+	if hasChannel(executed, ChannelKeyword) && !keywordAvailable {
+		executed = channelsWithout(executed, ChannelKeyword)
+		reasons = append(reasons, "keyword_unavailable")
 	}
 	spaces, err := searchScope(ctx, tx, params.SpaceIDs, params.IncludeAncestors)
 	if err != nil {
@@ -186,10 +166,11 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	response := semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, metadata)
 	recallLimit := max(100, params.Limit*10)
 	all := map[string]*hybridCandidate{}
-	if executed == "hybrid" {
+	if hasChannel(executed, ChannelKeyword) {
 		keyword, err := semanticKeywordRecall(ctx, tx, params, spaces, recallLimit)
 		if err != nil {
-			executed, response.ExecutedMode, response.Degraded = "semantic", "semantic", true
+			executed = channelsWithout(executed, ChannelKeyword)
+			response.ExecutedChannels, response.Degraded = executed, true
 			response.DegradationReasons = append(response.DegradationReasons, "keyword_unavailable")
 		} else {
 			for i, item := range keyword {
@@ -200,7 +181,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 	}
 	if current := r.emb(); current.Generation != runtime.Generation || current.PolicyGeneration != runtime.PolicyGeneration || current.CompatibilityIdentity != runtime.CompatibilityIdentity {
-		if executed == "hybrid" {
+		if hasChannel(params.Channels, ChannelKeyword) {
 			_ = tx.Rollback()
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(response.DegradationReasons, "semantic_unavailable"))
 			if keywordErr != nil {
@@ -212,7 +193,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	}
 	queryBlob, err := vec.SerializeFloat32(queryVector)
 	if err != nil {
-		if executed == "hybrid" {
+		if hasChannel(params.Channels, ChannelKeyword) {
 			_ = tx.Rollback()
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(response.DegradationReasons, "semantic_unavailable"))
 			if keywordErr != nil {
@@ -223,7 +204,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
 	if r.semanticSearchErr != nil {
-		if executed == "hybrid" {
+		if hasChannel(params.Channels, ChannelKeyword) {
 			_ = tx.Rollback()
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(response.DegradationReasons, "semantic_unavailable"))
 			if keywordErr != nil {
@@ -235,7 +216,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	}
 	semantic, err := semanticVectorRecall(ctx, tx, params, spaces, runtime.PolicyGeneration, runtime.CompatibilityIdentity, len(queryVector), queryBlob, recallLimit)
 	if err != nil {
-		if executed == "hybrid" {
+		if hasChannel(params.Channels, ChannelKeyword) {
 			_ = tx.Rollback()
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(response.DegradationReasons, "semantic_unavailable"))
 			if keywordErr != nil {
@@ -257,109 +238,55 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 		candidate.semanticRank, candidate.semanticScore = i+1, item.Score
 	}
-	entity, err := entityRecall(ctx, tx, params.Query, spaces, recallLimit)
-	if err != nil {
-		return domain.SearchResponse{}, err
-	}
-	for i, item := range entity {
-		key := item.memoryID + "\x00" + item.revisionID
-		candidate := all[key]
-		if candidate == nil {
-			copy := item
-			candidate = &copy
-			all[key] = candidate
-		}
-		candidate.entityRank = i + 1
-	}
-	relation, relationErr := relationRecall(ctx, tx, params.Query, spaces, recallLimit)
-	if errors.Is(relationErr, ErrIndexDegraded) {
-		response.Degraded = true
-		response.DegradationReasons = append(response.DegradationReasons, "relation_unavailable")
-	} else if relationErr != nil {
-		return domain.SearchResponse{}, relationErr
-	}
-	if relationErr == nil {
-		for i, item := range relation {
-			key := item.memoryID + "\x00" + item.revisionID
-			candidate := all[key]
-			if candidate == nil {
-				copy := item
-				candidate = &copy
-				all[key] = candidate
-			}
-			candidate.relationRank = i + 1
-		}
-	}
+	// Graph channel: strict seeds are the raw keyword and semantic candidates
+	// only; relation-expanded candidates never join the seed set.
 	seeds := make([]string, 0, len(all))
 	for key := range all {
 		_, revisionID, _ := strings.Cut(key, "\x00")
 		seeds = append(seeds, revisionID)
 	}
-	graph, graphErr := r.graphChannelRecall(ctx, tx, params, spaces, nil, seeds, recallLimit)
-	if graphErr != nil {
-		return domain.SearchResponse{}, graphErr
-	}
-	response.ResolvedEntities = graph.resolvedEntities
-	for i := range graph.items {
-		item := graph.items[i]
-		key := item.memoryID + "\x00" + item.revisionID
-		candidate := all[key]
-		if candidate == nil {
-			candidate = &hybridCandidate{memoryID: item.memoryID, revisionID: item.revisionID}
-			all[key] = candidate
-		}
-		candidate.graphRank = item.graphRank
-		candidate.graphSignals = item.signals
-		candidate.graphFacts = item.facts
-		candidate.graphPaths = item.paths
-	}
-	list := make([]hybridCandidate, 0, len(all))
-	for _, item := range all {
-		if item.keywordRank > 0 {
-			item.rrfScore += 1 / float64(60+item.keywordRank)
-		}
-		if item.semanticRank > 0 {
-			item.rrfScore += 1 / float64(60+item.semanticRank)
-		}
-		if item.entityRank > 0 {
-			item.rrfScore += 1 / float64(60+item.entityRank)
-		}
-		if item.relationRank > 0 {
-			item.rrfScore += 1 / float64(60+item.relationRank)
-		}
-		if item.graphRank > 0 {
-			item.rrfScore += 1 / float64(60+item.graphRank)
-		}
-		usage, err := feedbackUsageScore(ctx, tx, item.revisionID, metadata.feedbackAggregateVersion)
+	if hasChannel(executed, ChannelGraph) {
+		resolved, err := resolveQueryEntities(ctx, tx, params.Query, spaces)
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		item.score = item.rrfScore + 0.001*usage
+		graph, graphErr := r.graphChannelRecall(ctx, tx, params, spaces, resolved, seeds, recallLimit)
+		if graphErr != nil {
+			return domain.SearchResponse{}, graphErr
+		}
+		response.ResolvedEntities = graph.resolvedEntities
+		for i := range graph.items {
+			item := graph.items[i]
+			key := item.memoryID + "\x00" + item.revisionID
+			candidate := all[key]
+			if candidate == nil {
+				candidate = &hybridCandidate{memoryID: item.memoryID, revisionID: item.revisionID}
+				all[key] = candidate
+			}
+			candidate.graphRank = item.graphRank
+			candidate.graphSignals = item.signals
+			candidate.graphFacts = item.facts
+			candidate.graphPaths = item.paths
+		}
+	}
+	usageScores, err := feedbackUsageScores(ctx, tx, hybridRevisionKeys(all), metadata.feedbackAggregateVersion)
+	if err != nil {
+		return domain.SearchResponse{}, err
+	}
+	list := make([]hybridCandidate, 0, len(all))
+	for _, item := range all {
+		item.rrfScore = rrfScore(item.keywordRank, item.semanticRank, item.graphRank)
+		item.score = item.rrfScore + 0.001*usageScores[item.revisionID]
 		list = append(list, *item)
 	}
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].score != list[j].score {
-			return list[i].score > list[j].score
-		}
-		if list[i].rrfScore != list[j].rrfScore {
-			return list[i].rrfScore > list[j].rrfScore
-		}
-		bi, bj := bestRank(list[i]), bestRank(list[j])
-		if bi != bj {
-			return bi < bj
-		}
-		if list[i].memoryID != list[j].memoryID {
-			return list[i].memoryID < list[j].memoryID
-		}
-		return list[i].revisionID < list[j].revisionID
-	})
+	sortHybridCandidates(list)
 	start := 0
 	if params.Cursor != "" {
-		cursor, err := decodeHybridCursor(params.Cursor)
+		cursor, err := decodeSearchCursor(params.Cursor)
 		if err != nil {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
-		if cursor.ReferenceTime != params.ReferenceTime || cursor.QueryHash != semanticQueryHash(params) || cursor.RequestedMode != params.Mode || cursor.ExecutedMode != executed || cursor.RankingVersion != rankingVersion || cursor.FTSVersion != ftsVersion || cursor.SemanticVersion != status.ActiveVersion || cursor.CorpusGeneration != metadata.corpusGeneration || cursor.FeedbackAggregateVersion != metadata.feedbackAggregateVersion || cursor.EntityIndexVersion != metadata.entityIndexVersion || cursor.RelationIndexVersion != metadata.relationIndexVersion || cursor.GraphIndexVersion != metadata.graphIndexVersion || cursor.EntityIndexGeneration != metadata.entityIndexGeneration || cursor.RelationIndexGeneration != metadata.relationIndexGeneration || cursor.GraphIndexGeneration != metadata.graphIndexGeneration || cursor.Limit != params.Limit || cursor.MaxChars != params.MaxChars {
+		if !searchCursorMatches(cursor, semanticQueryHash(params), params, ftsVersion, status.ActiveVersion, metadata) {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
 		found := false
@@ -402,46 +329,31 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		if !params.IncludeEvidence {
 			memory.CurrentRevision.Evidence = nil
 		}
-		channels := []string{}
-		reason := "semantic_match"
+		channels := make([]string, 0, 3)
+		reason := ""
 		var keyword, semanticScore *float64
 		if candidate.keywordRank > 0 {
-			channels = append(channels, "keyword")
+			channels = append(channels, ChannelKeyword)
 			value := candidate.keywordScore
 			keyword = &value
 			reason = "keyword_match"
 		}
 		if candidate.semanticRank > 0 {
-			channels = append(channels, "semantic")
+			channels = append(channels, ChannelSemantic)
 			value := candidate.semanticScore
 			semanticScore = &value
-		}
-		if candidate.entityRank > 0 {
-			channels = append(channels, "entity")
-			if len(channels) == 1 {
-				reason = "entity_match"
-			} else {
-				reason = "hybrid_fusion"
-			}
-		}
-		if candidate.relationRank > 0 {
-			channels = append(channels, "relation")
-			if len(channels) == 1 {
-				reason = "relation_match"
-			} else {
-				reason = "hybrid_fusion"
+			if reason == "" {
+				reason = "semantic_match"
 			}
 		}
 		if candidate.graphRank > 0 {
-			channels = append(channels, "graph")
-			if len(channels) == 1 {
+			channels = append(channels, ChannelGraph)
+			if reason == "" {
 				reason = "graph_match"
-			} else {
-				reason = "hybrid_fusion"
 			}
 		}
 		if len(channels) >= 2 {
-			reason = "hybrid_fusion"
+			reason = "channel_fusion"
 		}
 		refs, err := conflictRefs(ctx, tx, memory.MemoryID, memory.CurrentRevision.RevisionID)
 		if err != nil {
@@ -459,7 +371,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 	}
 	if response.Truncated && last != nil {
-		value := encodeHybridCursor(hash, params, executed, ftsVersion, status.ActiveVersion, metadata, *last)
+		value := encodeSearchCursor(hash, params, ftsVersion, status.ActiveVersion, metadata, searchCandidate{memoryID: last.memoryID, revisionID: last.revisionID, score: last.score})
 		response.NextCursor = &value
 	}
 	if err := tx.Commit(); err != nil {
@@ -475,6 +387,42 @@ func feedbackUsageScore(ctx context.Context, tx *sql.Tx, revisionID string, gene
 		return 0, nil
 	}
 	return score, err
+}
+
+// feedbackUsageScores batch-loads bounded usage scores for a candidate window,
+// replacing per-candidate point queries during fusion.
+func feedbackUsageScores(ctx context.Context, tx *sql.Tx, revisionIDs []string, generation int64) (map[string]float64, error) {
+	result := make(map[string]float64, len(revisionIDs))
+	const batchSize = 400
+	for start := 0; start < len(revisionIDs); start += batchSize {
+		end := min(start+batchSize, len(revisionIDs))
+		batch := revisionIDs[start:end]
+		args := make([]any, 0, len(batch)+2)
+		query := `SELECT revision_id, bounded_usage_score FROM feedback_aggregates WHERE revision_id IN (` + placeholders(len(batch)) + `) AND algorithm_version='v1' AND generation=? AND state='current'`
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		args = append(args, generation)
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var revisionID string
+			var score float64
+			if err := rows.Scan(&revisionID, &score); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			result[revisionID] = score
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return result, nil
 }
 
 func semanticKeywordRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, limit int) ([]hybridCandidate, error) {
@@ -579,59 +527,78 @@ func semanticSearchStatus(ctx context.Context, tx *sql.Tx) (SemanticStatus, stri
 	return status, ftsState, ftsVersion, nil
 }
 
-func semanticSearchResponse(params SearchParams, executed string, reasons []string, status SemanticStatus, ftsState string, ftsVersion int, metadata searchMetadata) domain.SearchResponse {
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, IndexState: ftsState, RequestedMode: params.Mode, ExecutedMode: executed, Degraded: len(reasons) > 0 || status.State == "stale", DegradationReasons: reasons, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, GraphIndexVersion: metadata.graphIndexVersion}
+func semanticSearchResponse(params SearchParams, executed []string, reasons []string, status SemanticStatus, ftsState string, ftsVersion int, metadata searchMetadata) domain.SearchResponse {
+	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, Degraded: len(reasons) > 0 || status.State == "stale", DegradationReasons: reasons, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
 	if status.State == "stale" {
 		response.DegradationReasons = append(response.DegradationReasons, "semantic_stale")
 	}
 	return response
 }
 
+// semanticKeywordFallback re-dispatches the request without the semantic
+// channel while preserving the requested channel set for cursor identity.
+// The inner response already carries the accurate executed channel set, so
+// only the outer degradation reasons are merged in.
 func (r *Repository) semanticKeywordFallback(ctx context.Context, params SearchParams, semanticVersion int, reasons []string) (domain.SearchResponse, error) {
-	keywordParams := withMode(params, "keyword")
-	keywordParams.RequestedMode, keywordParams.SemanticVersion = params.Mode, semanticVersion
+	keywordParams := params
+	keywordParams.EffectiveChannels = channelsWithout(params.EffectiveChannels, ChannelSemantic)
+	keywordParams.SemanticVersion = semanticVersion
 	result, err := r.SearchMemories(ctx, keywordParams)
 	if err != nil {
 		return result, err
 	}
-	result.RequestedMode, result.ExecutedMode = params.Mode, "keyword"
-	result.Degraded, result.DegradationReasons = len(reasons) > 0, reasons
+	result.RequestedChannels = params.Channels
 	result.SemanticIndexVersion = semanticVersion
+	for _, reason := range result.DegradationReasons {
+		if !contains(reasons, reason) {
+			reasons = append(reasons, reason)
+		}
+	}
+	result.DegradationReasons = reasons
+	result.Degraded = len(reasons) > 0
 	return result, nil
 }
 
-func withMode(params SearchParams, mode string) SearchParams { params.Mode = mode; return params }
-func bestRank(c hybridCandidate) int {
+func hybridRevisionKeys(all map[string]*hybridCandidate) []string {
+	keys := make([]string, 0, len(all))
+	for key := range all {
+		_, revisionID, _ := strings.Cut(key, "\x00")
+		keys = append(keys, revisionID)
+	}
+	return keys
+}
+
+func sortHybridCandidates(list []hybridCandidate) {
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].score != list[j].score {
+			return list[i].score > list[j].score
+		}
+		if list[i].rrfScore != list[j].rrfScore {
+			return list[i].rrfScore > list[j].rrfScore
+		}
+		bi, bj := hybridBestRank(list[i]), hybridBestRank(list[j])
+		if bi != bj {
+			return bi < bj
+		}
+		if list[i].memoryID != list[j].memoryID {
+			return list[i].memoryID < list[j].memoryID
+		}
+		return list[i].revisionID < list[j].revisionID
+	})
+}
+
+func hybridBestRank(c hybridCandidate) int {
 	best := 0
-	for _, rank := range []int{c.keywordRank, c.semanticRank, c.entityRank, c.relationRank} {
+	for _, rank := range []int{c.keywordRank, c.semanticRank, c.graphRank} {
 		if rank > 0 && (best == 0 || rank < best) {
 			best = rank
 		}
 	}
 	return best
 }
+
 func semanticQueryHash(params SearchParams) string {
 	value := searchQueryHash(params)
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
-}
-func encodeHybridCursor(hash string, p SearchParams, executed string, ftsVersion, semanticVersion int, metadata searchMetadata, c hybridCandidate) string {
-	value := hybridCursor{Version: 3, QueryHash: hash, RequestedMode: p.Mode, ExecutedMode: executed, RankingVersion: rankingVersion, FTSVersion: ftsVersion, SemanticVersion: semanticVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, GraphIndexVersion: metadata.graphIndexVersion, EntityIndexGeneration: metadata.entityIndexGeneration, RelationIndexGeneration: metadata.relationIndexGeneration, GraphIndexGeneration: metadata.graphIndexGeneration, Limit: p.Limit, MaxChars: p.MaxChars, ReferenceTime: p.ReferenceTime, ScoreBits: strconv.FormatUint(math.Float64bits(c.score), 16), MemoryID: c.memoryID, RevisionID: c.revisionID}
-	raw, _ := json.Marshal(value)
-	return base64.RawURLEncoding.EncodeToString(raw)
-}
-func decodeHybridCursor(value string) (hybridCursor, error) {
-	var cursor hybridCursor
-	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || json.Unmarshal(raw, &cursor) != nil || cursor.Version != 3 || cursor.QueryHash == "" || cursor.MemoryID == "" || cursor.RevisionID == "" || cursor.ReferenceTime == "" {
-		return cursor, ErrInvalidCursor
-	}
-	if _, err = time.Parse(time.RFC3339Nano, cursor.ReferenceTime); err != nil {
-		return cursor, ErrInvalidCursor
-	}
-	bits, err := strconv.ParseUint(cursor.ScoreBits, 16, 64)
-	if err != nil || math.IsNaN(math.Float64frombits(bits)) || math.IsInf(math.Float64frombits(bits), 0) {
-		return cursor, ErrInvalidCursor
-	}
-	return cursor, nil
 }

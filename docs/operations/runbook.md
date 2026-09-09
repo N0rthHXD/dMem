@@ -59,8 +59,7 @@ Treat authority failures differently from derived-index failures:
   remain available.
 
 Rebuild operations are `POST /v1/indexes/fts/rebuild`,
-`POST /v1/indexes/semantic/rebuild`, `POST /v1/indexes/entities/rebuild`,
-`POST /v1/indexes/relations/rebuild`, and
+`POST /v1/indexes/semantic/rebuild`, `POST /v1/indexes/graph/rebuild`, and
 `POST /v1/feedback/aggregates/rebuild`. They create durable jobs and require the
 normal caller and idempotency headers.
 

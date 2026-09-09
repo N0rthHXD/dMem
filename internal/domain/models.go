@@ -712,7 +712,6 @@ type ConflictRef struct {
 type SearchResult struct {
 	Memory           Memory        `json:"memory"`
 	Rank             int           `json:"rank"`
-	KeywordScore     float64       `json:"keyword_score"`
 	KeywordRelevance *float64      `json:"keyword_relevance,omitempty"`
 	SemanticScore    *float64      `json:"semantic_relevance,omitempty"`
 	MatchedChannels  []string      `json:"matched_channels"`
@@ -727,21 +726,18 @@ type SearchResponse struct {
 	Results                  []SearchResult   `json:"results"`
 	Truncated                bool             `json:"truncated"`
 	CharsUsed                int              `json:"chars_used"`
-	IndexState               string           `json:"index_state"`
 	NextCursor               *string          `json:"next_cursor"`
-	RequestedMode            string           `json:"requested_mode"`
-	ExecutedMode             string           `json:"executed_mode"`
+	RequestedChannels        []string         `json:"requested_channels"`
+	ExecutedChannels         []string         `json:"executed_channels"`
 	Degraded                 bool             `json:"degraded"`
 	DegradationReasons       []string         `json:"degradation_reasons"`
 	FTSIndexVersion          int              `json:"fts_index_version"`
 	SemanticIndexVersion     int              `json:"semantic_index_version"`
+	GraphIndexVersion        int64            `json:"graph_index_version"`
+	GraphIndexState          string           `json:"graph_index_state"`
 	RankingVersion           string           `json:"ranking_version"`
 	CorpusGeneration         int64            `json:"corpus_generation"`
 	FeedbackAggregateVersion int64            `json:"feedback_aggregate_version"`
-	EntityIndexVersion       int64            `json:"entity_index_version"`
-	RelationIndexVersion     int64            `json:"relation_index_version"`
-	GraphIndexVersion        int64            `json:"graph_index_version"`
-	GraphIndexState          string           `json:"graph_index_state,omitempty"`
 	ResolvedEntities         []ResolvedEntity `json:"resolved_entities,omitempty"`
 }
 

@@ -164,7 +164,7 @@ func TestSearchContestedConflictRefs(t *testing.T) {
 	a, b := createTestMemory(t, r, "search-conflict-a"), createTestMemory(t, r, "search-conflict-b")
 	p := createEvolutionTest(t, r, "search-conflict", evolutionParams("conflict", a, b))
 	confirmEvolutionTest(t, r, "search-conflict-confirm", p, nil)
-	response, err := r.SearchMemories(context.Background(), SearchParams{Query: "searchable", SpaceIDs: []string{"space-1"}, States: []string{"contested"}, Mode: "keyword", Limit: 10, MaxChars: 10000})
+	response, err := r.SearchMemories(context.Background(), SearchParams{Query: "searchable", SpaceIDs: []string{"space-1"}, States: []string{"contested"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000})
 	if err != nil || len(response.Results) != 2 {
 		t.Fatalf("contested conflict search response=%+v, error=%v", response, err)
 	}

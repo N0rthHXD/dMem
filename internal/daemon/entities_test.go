@@ -72,11 +72,6 @@ func TestEntityManualCapabilityWithoutProvider(t *testing.T) {
 	if apiErr.ErrorCode != "unsupported_operation" {
 		t.Fatalf("merge error=%+v", apiErr)
 	}
-	response = requestJSON(t, client, http.MethodPost, "/v1/indexes/entities/rebuild", "entity-rebuild-active", map[string]any{})
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("duplicate rebuild status=%d", response.StatusCode)
-	}
-	response.Body.Close()
 	response = requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
 	var health api.Health
 	decodeResponse(t, response, &health)

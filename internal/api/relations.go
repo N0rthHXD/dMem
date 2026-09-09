@@ -212,30 +212,6 @@ func (h *Handler) relation(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, 200, v)
 }
 
-func (h *Handler) rebuildRelationIndex(w http.ResponseWriter, r *http.Request) {
-	requestID := h.requestID()
-	caller, ok := h.requireCaller(w, r, requestID)
-	if !ok {
-		return
-	}
-	key, ok := h.requireIdempotency(w, r, requestID)
-	if !ok {
-		return
-	}
-	identity := writeIdentity(caller, key, requestID, r.Method, "/v1/indexes/relations/rebuild", struct{}{})
-	v, replay, err := h.repository.CreateRelationIndexRebuildJob(r.Context(), identity)
-	if err != nil {
-		if errors.Is(err, storage.ErrJobAlreadyActive) {
-			h.writeError(w, 409, "job_already_active", "an active relation index rebuild job already exists", requestID, "", false, map[string]any{"job_id": v.JobID})
-			return
-		}
-		h.repositoryError(w, err, requestID)
-		return
-	}
-	w.Header().Set("Idempotent-Replay", strconv.FormatBool(replay))
-	h.writeJSON(w, 202, v)
-}
-
 func validateRelationProposalRequest(p storage.CreateRelationProposalParams) error {
 	if !validUUID(p.EventID) || !validUUID(p.SpaceID) || !validUUID(p.SourceMemoryID) || !validUUID(p.SourceRevisionID) || !validUUID(p.TargetMemoryID) || !validUUID(p.TargetRevisionID) || !validRelationTypeAPI(p.RelationType) || p.ProcessorIdentity == "" || p.ProcessingVersion == "" {
 		return errors.New("invalid relation proposal")

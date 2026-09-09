@@ -69,11 +69,6 @@ func TestRelationManualCapabilityWithoutProvider(t *testing.T) {
 	if len(page.Items) != 0 {
 		t.Fatalf("relation type filter returned non-matching relations: %+v", page)
 	}
-	response = requestJSON(t, client, http.MethodPost, "/v1/indexes/relations/rebuild", "relation-rebuild-active", map[string]any{})
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("active rebuild=%d", response.StatusCode)
-	}
-	response.Body.Close()
 	response = requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
 	var health api.Health
 	decodeResponse(t, response, &health)

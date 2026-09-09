@@ -107,7 +107,7 @@ func searchQualityGateFixture(t *testing.T) (*Repository, searchQualityCorpus, s
 
 func TestSearchQualitySiblingSpaceContaminationZero(t *testing.T) {
 	r, corpus, gates := searchQualityGateFixture(t)
-	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.EntityQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"active", "contested"}, Mode: "keyword", Limit: 20, MaxChars: 10000})
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.EntityQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"active", "contested"}, Channels: []string{"keyword", "graph"}, Limit: 20, MaxChars: 10000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestSearchQualitySiblingSpaceContaminationZero(t *testing.T) {
 
 func TestSearchQualityStaleRevisionRecallZero(t *testing.T) {
 	r, corpus, gates := searchQualityGateFixture(t)
-	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.EntityQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"active"}, Mode: "keyword", Limit: 20, MaxChars: 10000})
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.EntityQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 20, MaxChars: 10000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestSearchQualityStaleRevisionRecallZero(t *testing.T) {
 
 func TestSearchQualityConflictRecallAndReferenceCompleteness(t *testing.T) {
 	r, corpus, gates := searchQualityGateFixture(t)
-	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.ConflictQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"contested"}, Mode: "keyword", Limit: 20, MaxChars: 10000})
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: corpus.ConflictQuery, SpaceIDs: []string{corpus.PrimarySpace}, States: []string{"contested"}, Channels: []string{"keyword", "graph"}, Limit: 20, MaxChars: 10000})
 	if err != nil {
 		t.Fatal(err)
 	}

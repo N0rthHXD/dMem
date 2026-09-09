@@ -228,27 +228,3 @@ func containsAPI(values []string, v string) bool {
 	}
 	return false
 }
-
-func (h *Handler) rebuildEntityIndex(w http.ResponseWriter, r *http.Request) {
-	requestID := h.requestID()
-	caller, ok := h.requireCaller(w, r, requestID)
-	if !ok {
-		return
-	}
-	key, ok := h.requireIdempotency(w, r, requestID)
-	if !ok {
-		return
-	}
-	identity := writeIdentity(caller, key, requestID, r.Method, "/v1/indexes/entities/rebuild", struct{}{})
-	result, replay, err := h.repository.CreateEntityIndexRebuildJob(r.Context(), identity)
-	if err != nil {
-		if errors.Is(err, storage.ErrJobAlreadyActive) {
-			h.writeError(w, 409, "job_already_active", "an active entity index rebuild job already exists", requestID, "", false, map[string]any{"job_id": result.JobID})
-			return
-		}
-		h.repositoryError(w, err, requestID)
-		return
-	}
-	w.Header().Set("Idempotent-Replay", strconv.FormatBool(replay))
-	h.writeJSON(w, 202, result)
-}

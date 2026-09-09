@@ -17,8 +17,10 @@ entity merge route is unsupported.
 Relations are independent authority between concrete revisions. Supported types
 are `supports`, `contradicts`, `supersedes`, `derived_from`, and `related_to`.
 Entity mentions are separate authority. Relation assertions require evidence or explicit human confirmation, reject
-self-relations, and enforce endpoint scope. Retrieval follows at most one hop;
-historical endpoints can explain history but do not make stale revision text a
+self-relations, and enforce endpoint scope. Public relation queries follow at
+most one hop; the graph retrieval channel additionally runs bounded two-hop
+entity-fact paths behind explicit predicate intent (ADR 0033). Historical
+endpoints can explain history but do not make stale revision text a
 current result.
 
 ## Entity Facts

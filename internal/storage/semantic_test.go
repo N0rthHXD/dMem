@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -343,7 +344,7 @@ func TestSemanticRebuildSearchAndAuthoritativeExclusion(t *testing.T) {
 	if err != nil || status.State != "ready" || status.ActiveVersion != 1 || status.SourceRevisionCount != 1 {
 		t.Fatalf("semantic status = %+v, %v", status, err)
 	}
-	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "semantic", Limit: 10, MaxChars: 1000})
+	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"semantic"}, Limit: 10, MaxChars: 1000})
 	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != memory.MemoryID || result.Results[0].SelectionReason != "semantic_match" {
 		t.Fatalf("semantic result = %+v, %v", result, err)
 	}
@@ -354,7 +355,7 @@ func TestSemanticRebuildSearchAndAuthoritativeExclusion(t *testing.T) {
 		if state, version := repository.SemanticHealth(context.Background()); state != healthState || version != 1 {
 			t.Fatalf("%s health with active version = %q/%d", metadataState, state, version)
 		}
-		result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "semantic", Limit: 10, MaxChars: 1000})
+		result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"semantic"}, Limit: 10, MaxChars: 1000})
 		if metadataState == "building" {
 			if err != nil || len(result.Results) != 1 {
 				t.Fatalf("building live-corpus query = %+v, %v", result, err)
@@ -370,7 +371,7 @@ func TestSemanticRebuildSearchAndAuthoritativeExclusion(t *testing.T) {
 	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("semantic-archive", "/v1/memories/{memory_id}/state", archive), memory.MemoryID, archive); err != nil {
 		t.Fatal(err)
 	}
-	result, err = repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "semantic", Limit: 10, MaxChars: 1000})
+	result, err = repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"semantic"}, Limit: 10, MaxChars: 1000})
 	if err != nil || len(result.Results) != 0 {
 		t.Fatalf("archived semantic result = %+v, %v", result, err)
 	}
@@ -674,14 +675,14 @@ func TestSearchModesExcludeSiblingSpaces(t *testing.T) {
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"keyword", "semantic", "hybrid"} {
+	for _, channels := range [][]string{{"keyword"}, {"semantic"}, {"keyword", "semantic", "graph"}} {
 		params := hybridParams("scopeword")
-		params.Mode = mode
+		params.Channels = channels
 		params.SpaceIDs = []string{"space-local"}
 		params.IncludeAncestors = false
 		result, err := repository.SearchMemories(context.Background(), params)
 		if err != nil || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != inScope.MemoryID {
-			t.Fatalf("%s sibling isolation = %+v, %v", mode, result, err)
+			t.Fatalf("%s sibling isolation = %+v, %v", strings.Join(channels, "+"), result, err)
 		}
 	}
 }
@@ -697,7 +698,7 @@ func TestHybridFallbacksAndNeitherChannelAvailable(t *testing.T) {
 
 	provider.err = errors.New("provider unavailable")
 	result, err := repository.SearchMemories(context.Background(), hybridParams("fallbackword"))
-	if err != nil || result.ExecutedMode != "keyword" || !result.Degraded || len(result.Results) != 1 {
+	if err != nil || !reflect.DeepEqual(result.ExecutedChannels, []string{"keyword", "graph"}) || !result.Degraded || len(result.Results) != 1 {
 		t.Fatalf("semantic-to-keyword fallback = %+v, %v", result, err)
 	}
 	if _, err := repository.SearchMemories(context.Background(), semanticParams("fallbackword")); !errors.Is(err, ErrIndexDegraded) {
@@ -705,7 +706,7 @@ func TestHybridFallbacksAndNeitherChannelAvailable(t *testing.T) {
 	}
 	provider.err, provider.malformed = nil, true
 	result, err = repository.SearchMemories(context.Background(), hybridParams("fallbackword"))
-	if err != nil || result.ExecutedMode != "keyword" || !result.Degraded || len(result.Results) != 1 {
+	if err != nil || !reflect.DeepEqual(result.ExecutedChannels, []string{"keyword", "graph"}) || !result.Degraded || len(result.Results) != 1 {
 		t.Fatalf("malformed semantic fallback = %+v, %v", result, err)
 	}
 	provider.malformed = false
@@ -714,12 +715,13 @@ func TestHybridFallbacksAndNeitherChannelAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err = repository.SearchMemories(context.Background(), hybridParams("car"))
-	if err != nil || result.ExecutedMode != "semantic" || !result.Degraded || len(result.Results) != 1 {
+	if err != nil || !reflect.DeepEqual(result.ExecutedChannels, []string{"semantic", "graph"}) || !result.Degraded || len(result.Results) != 1 {
 		t.Fatalf("keyword-to-semantic fallback = %+v, %v", result, err)
 	}
 	repository.setEmbeddingProvider(nil)
-	if _, err := repository.SearchMemories(context.Background(), hybridParams("fallbackword")); !errors.Is(err, ErrIndexDegraded) {
-		t.Fatalf("neither channel error = %v", err)
+	result, err = repository.SearchMemories(context.Background(), hybridParams("fallbackword"))
+	if err != nil || !result.Degraded || len(result.Results) != 0 || !contains(result.DegradationReasons, "semantic_unavailable") || !contains(result.DegradationReasons, "keyword_unavailable") || !reflect.DeepEqual(result.ExecutedChannels, []string{"graph"}) {
+		t.Fatalf("neither primary channel partial result = %+v, %v", result, err)
 	}
 }
 
@@ -736,12 +738,12 @@ func TestHybridKeywordFallbackCursorPaginates(t *testing.T) {
 	params := hybridParams("fallbackpage")
 	params.Limit = 1
 	first, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || first.ExecutedMode != "keyword" || first.NextCursor == nil || len(first.Results) != 1 {
+	if err != nil || !reflect.DeepEqual(first.ExecutedChannels, []string{"keyword", "graph"}) || first.NextCursor == nil || len(first.Results) != 1 {
 		t.Fatalf("first fallback page = %+v, %v", first, err)
 	}
 	params.Cursor = *first.NextCursor
 	second, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || second.ExecutedMode != "keyword" || len(second.Results) != 1 || second.Results[0].Memory.MemoryID == first.Results[0].Memory.MemoryID {
+	if err != nil || !reflect.DeepEqual(second.ExecutedChannels, []string{"keyword", "graph"}) || len(second.Results) != 1 || second.Results[0].Memory.MemoryID == first.Results[0].Memory.MemoryID {
 		t.Fatalf("second fallback page = %+v, %v", second, err)
 	}
 }
@@ -906,7 +908,7 @@ func TestHybridFallsBackWhenVectorSearchFails(t *testing.T) {
 	}
 	repository.semanticSearchErr = errors.New("vector distance unavailable")
 	result, err := repository.SearchMemories(context.Background(), hybridParams("vectorfallback"))
-	if err != nil || result.ExecutedMode != "keyword" || !result.Degraded || len(result.Results) != 1 {
+	if err != nil || !reflect.DeepEqual(result.ExecutedChannels, []string{"keyword", "graph"}) || !result.Degraded || len(result.Results) != 1 {
 		t.Fatalf("vector search fallback = %+v, %v", result, err)
 	}
 }
@@ -971,9 +973,9 @@ func TestSemanticQueryDenialExplicitlyDegradesHybrid(t *testing.T) {
 		t.Fatalf("denied semantic scope called provider: %d -> %d", requests, len(provider.requests))
 	}
 
-	params.Mode = "hybrid"
+	params.Channels = []string{"keyword", "semantic", "graph"}
 	result, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || result.ExecutedMode != "keyword" || !result.Degraded || strings.Join(result.DegradationReasons, ",") != "semantic_policy_denied" || len(result.Results) != 2 {
+	if err != nil || !reflect.DeepEqual(result.ExecutedChannels, []string{"keyword", "graph"}) || !result.Degraded || strings.Join(result.DegradationReasons, ",") != "semantic_policy_denied" || len(result.Results) != 2 {
 		t.Fatalf("hybrid denied scope = %+v, %v", result, err)
 	}
 	if len(provider.requests) != requests {
@@ -1022,7 +1024,7 @@ func TestFTSRebuildAdvancesVersionAndRejectsOldKeywordCursor(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	createMemoryWithContent(t, repository, "fts-version-a", "versionword one")
 	createMemoryWithContent(t, repository, "fts-version-b", "versionword two")
-	params := SearchParams{Query: "versionword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 1, MaxChars: 1000}
+	params := SearchParams{Query: "versionword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 1, MaxChars: 1000}
 	first, err := repository.SearchMemories(context.Background(), params)
 	if err != nil || first.FTSIndexVersion != 1 || first.NextCursor == nil {
 		t.Fatalf("first search = %+v, %v", first, err)
@@ -1049,9 +1051,9 @@ func TestKeywordCursorBindsCorpusAndRankingVersions(t *testing.T) {
 	}
 	createMemoryWithContent(t, repository, "cursor-contract-a", "contractword one")
 	createMemoryWithContent(t, repository, "cursor-contract-b", "contractword two")
-	params := SearchParams{Query: "contractword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 1, MaxChars: 1000}
+	params := SearchParams{Query: "contractword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 1, MaxChars: 1000}
 	first, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || first.NextCursor == nil || first.CorpusGeneration != 3 || first.FeedbackAggregateVersion != 7 || first.EntityIndexVersion != 8 || first.RelationIndexVersion != 9 {
+	if err != nil || first.NextCursor == nil || first.CorpusGeneration != 3 || first.FeedbackAggregateVersion != 7 {
 		t.Fatalf("versioned response = %+v, %v", first, err)
 	}
 	for _, update := range []string{
@@ -1097,12 +1099,12 @@ func TestHybridCursorBindsCorpusAndRankingVersions(t *testing.T) {
 }
 
 func semanticParams(query string) SearchParams {
-	return SearchParams{Query: query, SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "semantic", Limit: 10, MaxChars: 1000}
+	return SearchParams{Query: query, SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"semantic"}, Limit: 10, MaxChars: 1000}
 }
 
 func hybridParams(query string) SearchParams {
 	params := semanticParams(query)
-	params.Mode = "hybrid"
+	params.Channels = []string{"keyword", "semantic", "graph"}
 	return params
 }
 

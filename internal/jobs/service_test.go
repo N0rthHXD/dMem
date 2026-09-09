@@ -447,6 +447,60 @@ func TestTransientFailureWithoutReasonUsesOutcomeCode(t *testing.T) {
 	}
 }
 
+type graphExtractorStub struct{}
+
+func (graphExtractorStub) PrepareGraphExtraction(context.Context, storage.ClaimedJob, storage.ProcessingPreparationParams) (domain.GraphExtractionInput, error) {
+	return domain.GraphExtractionInput{}, nil
+}
+
+func (graphExtractorStub) CommitGraphExtraction(context.Context, storage.ClaimedJob, domain.GraphExtractionInput, storage.GraphExtractionCommit) error {
+	return nil
+}
+
+func TestGraphInvalidOutputRetriesTransiently(t *testing.T) {
+	item := pendingJob("graph-invalid-output", 3)
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	service, err := NewService(repository, testConfig(), NoopProcessor{}, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := repository.ClaimJob(context.Background(), storage.ClaimJobParams{WorkerID: "graph-worker", LeaseDuration: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.applyGraphOutcome(graphExtractorStub{}, claim, domain.GraphExtractionInput{}, domain.GraphExtractionResult{Code: domain.GraphExtractionInvalidOutput, ReasonCode: "invalid_graph_mention"})
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if len(repository.failures) != 1 || !repository.failures[0].Transient {
+		t.Fatalf("graph invalid output should be transient, failures=%+v", repository.failures)
+	}
+	if item.job.Status != "retrying" {
+		t.Fatalf("job status=%s, want retrying", item.job.Status)
+	}
+}
+
+func TestGraphPermanentFailureDoesNotRetry(t *testing.T) {
+	item := pendingJob("graph-permanent", 3)
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	service, err := NewService(repository, testConfig(), NoopProcessor{}, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := repository.ClaimJob(context.Background(), storage.ClaimJobParams{WorkerID: "graph-worker", LeaseDuration: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.applyGraphOutcome(graphExtractorStub{}, claim, domain.GraphExtractionInput{}, domain.GraphExtractionResult{Code: domain.GraphExtractionPermanentFailure, ReasonCode: "invalid_graph_extract_request"})
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if len(repository.failures) != 1 || repository.failures[0].Transient {
+		t.Fatalf("graph permanent failure should not be transient, failures=%+v", repository.failures)
+	}
+	if item.job.Status != "failed" {
+		t.Fatalf("job status=%s, want failed", item.job.Status)
+	}
+}
+
 func TestProcessorMessageIsNeverPersisted(t *testing.T) {
 	item := pendingJob("malicious", 1)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}

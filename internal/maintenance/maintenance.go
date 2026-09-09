@@ -666,16 +666,18 @@ func probeStagingHTTP(ctx context.Context, endpoint string) error {
 		return errors.New("staging daemon is not ready")
 	}
 	for _, probe := range []struct {
-		query, mode, executed string
-		degraded              bool
-		reasons               []string
-		wantID                string
+		query    string
+		channels []string
+		executed []string
+		degraded bool
+		reasons  []string
+		wantID   string
 	}{
-		{"firstonly", "keyword", "keyword", false, []string{}, "00000000-0000-4000-8000-000000000064"},
-		{"common", "hybrid", "keyword", true, []string{"semantic_unavailable"}, "00000000-0000-4000-8000-000000000064"},
+		{"firstonly", []string{"keyword"}, []string{"keyword"}, false, []string{}, "00000000-0000-4000-8000-000000000064"},
+		{"common", []string{"keyword", "semantic"}, []string{"keyword"}, true, []string{"semantic_unavailable"}, "00000000-0000-4000-8000-000000000064"},
 	} {
-		body, _ := json.Marshal(map[string]any{"query": probe.query, "space_ids": []string{"00000000-0000-4000-8000-000000000062"}, "mode": probe.mode, "limit": 10})
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/v1/search", bytes.NewReader(body))
+		body, _ := json.Marshal(map[string]any{"query": probe.query, "space_ids": []string{"00000000-0000-4000-8000-000000000062"}, "channels": probe.channels, "limit": 10})
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/v1/recall", bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
@@ -688,7 +690,7 @@ func probeStagingHTTP(ctx context.Context, endpoint string) error {
 		var result domain.SearchResponse
 		err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result)
 		closeErr = response.Body.Close()
-		if err != nil || closeErr != nil || response.StatusCode != http.StatusOK || result.RequestedMode != probe.mode || result.ExecutedMode != probe.executed || result.Degraded != probe.degraded || !reflect.DeepEqual(result.DegradationReasons, probe.reasons) || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != probe.wantID {
+		if err != nil || closeErr != nil || response.StatusCode != http.StatusOK || !reflect.DeepEqual(result.RequestedChannels, probe.channels) || !reflect.DeepEqual(result.ExecutedChannels, probe.executed) || result.Degraded != probe.degraded || !reflect.DeepEqual(result.DegradationReasons, probe.reasons) || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != probe.wantID {
 			return errors.New("staging retrieval probe failed")
 		}
 	}

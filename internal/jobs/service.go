@@ -126,6 +126,7 @@ func (s *Service) SetProcessing(cfg ProcessingConfig) {
 			MaxCandidates:          20,
 			MaxCandidateChars:      maxContentChars,
 			MaxTotalCandidateChars: max(cfg.MaxTotalCandidateChars, maxContentChars),
+			MaxContentChars:        maxContentChars,
 			MaxContextEvents:       maxContext,
 			MaxContextMemories:     maxContext,
 		},
@@ -639,7 +640,13 @@ func (s *Service) applyGraphOutcome(extractor GraphExtractor, claim storage.Clai
 			code = string(result.Code)
 		}
 		s.failTransientJob(claim, code, "graph extraction transient failure")
-	case domain.GraphExtractionPermanentFailure, domain.GraphExtractionInvalidOutput:
+	case domain.GraphExtractionInvalidOutput:
+		code := result.ReasonCode
+		if code == "" {
+			code = string(result.Code)
+		}
+		s.failTransientJob(claim, code, "graph extraction produced invalid output")
+	case domain.GraphExtractionPermanentFailure:
 		code := result.ReasonCode
 		if code == "" {
 			code = string(result.Code)

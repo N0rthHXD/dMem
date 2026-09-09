@@ -144,7 +144,7 @@ func (c *benchCorpus) recall(b *testing.B, topK int) {
 	b.Helper()
 	params := SearchParams{
 		Query: "benchmark", SpaceIDs: []string{"bench-space"}, States: []string{"active"},
-		Mode: "semantic", Limit: 10, MaxChars: 100000,
+		Channels: []string{"semantic"}, Limit: 10, MaxChars: 100000,
 		ReferenceTime: formatTime(time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)),
 	}
 	runtime := c.repository.emb()

@@ -570,6 +570,18 @@ func (r *Repository) markEntityIndexStale(ctx context.Context, tx *sql.Tx, now s
 	return err
 }
 
+func (r *Repository) markRelationIndexStale(ctx context.Context, tx *sql.Tx, now string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE relation_index_metadata SET state='stale', generation=generation+1, updated_at=? WHERE singleton=1`, now); err != nil {
+		return err
+	}
+	ids, err := r.newIDs(2)
+	if err != nil {
+		return err
+	}
+	_, err = enqueueRelationIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, now)
+	return err
+}
+
 // factConflictExists reports whether an active fact already asserts the same
 // subject+predicate from a different source revision.
 func (r *Repository) factConflictExists(ctx context.Context, tx *sql.Tx, p createFactProposalParams) bool {

@@ -97,7 +97,7 @@ func TestFeedbackAggregateDeleteAndRebuildIsDeterministic(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := readAggregate(t, repository, memory.CurrentRevision.RevisionID)
-	if first.positive != 1 || first.negative != 2 || first.score != -0.125 {
+	if first.positive != 0 || first.negative != 1 || first.score != -0.125 {
 		t.Fatalf("aggregate = %+v", first)
 	}
 	if _, err := repository.store.writer.Exec(`DELETE FROM feedback_aggregates`); err != nil {
@@ -168,11 +168,11 @@ func TestRankingKeepsRecallAndUsesBoundedPostFusionSignal(t *testing.T) {
 	if err := repository.RebuildFeedbackAggregates(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "rankword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 1000})
+	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "rankword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RankingVersion != "rrf-v2" || len(result.Results) != 2 || result.Results[0].Memory.MemoryID != b.MemoryID {
+	if result.RankingVersion != "rrf-v3" || len(result.Results) != 2 || result.Results[0].Memory.MemoryID != b.MemoryID {
 		t.Fatalf("ranking v2 result = %+v", result)
 	}
 }
@@ -214,7 +214,7 @@ func TestAggregateVersionSwitchRejectsCursor(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	createMemoryWithContent(t, repository, "rank-cursor-a", "cursorfeedback one")
 	createMemoryWithContent(t, repository, "rank-cursor-b", "cursorfeedback two")
-	p := SearchParams{Query: "cursorfeedback", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 1, MaxChars: 1000}
+	p := SearchParams{Query: "cursorfeedback", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 1, MaxChars: 1000}
 	first, err := repository.SearchMemories(context.Background(), p)
 	if err != nil || first.NextCursor == nil {
 		t.Fatalf("first page = %+v, %v", first, err)

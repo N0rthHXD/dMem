@@ -51,7 +51,7 @@ func TestKeywordSearchCompilesNaturalLanguageQueries(t *testing.T) {
 		{query: "我上次去上海旅游住的是哪家酒店？", want: chinese.MemoryID},
 		{query: "NEAR(", want: literal.MemoryID},
 	} {
-		result, err := repository.SearchMemories(context.Background(), SearchParams{Query: test.query, SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 10000})
+		result, err := repository.SearchMemories(context.Background(), SearchParams{Query: test.query, SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000})
 		if err != nil {
 			t.Fatalf("keyword search %q: %v", test.query, err)
 		}

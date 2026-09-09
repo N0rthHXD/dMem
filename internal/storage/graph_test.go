@@ -186,6 +186,41 @@ func TestGraphFactSupersedesOlderFactOnNewRevision(t *testing.T) {
 	}
 }
 
+func TestGraphCommitEnqueuesRelationIndexRebuild(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	createGraphMemory(t, r, "graph-rel-source", "Alice works on Alpha")
+	createGraphMemory(t, r, "graph-rel-target", "Alpha is a project")
+
+	if _, err := r.store.writer.Exec(`UPDATE jobs SET status='succeeded', finished_at='2026-08-21T12:00:00Z' WHERE job_type IN ('rebuild_entity_index','rebuild_graph_index','rebuild_relation_index') AND status IN ('pending','waiting','running','retrying')`); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := r.ClaimJob(context.Background(), ClaimJobParams{WorkerID: "graph-worker", LeaseDuration: time.Hour})
+	if err != nil || claim.Job.JobType != "extract_graph" {
+		t.Fatalf("claim=%+v err=%v", claim, err)
+	}
+	input, err := r.PrepareGraphExtraction(context.Background(), claim, ProcessingPreparationParams{ProcessorIdentity: "processor/graph", MaxCandidates: 20, MaxContentChars: 12000, MaxContextMemories: 5})
+	if err != nil {
+		t.Fatalf("prepare graph: %v", err)
+	}
+	if len(input.ContextMemories) == 0 {
+		t.Fatal("expected context memories for relation target")
+	}
+	target := input.ContextMemories[0]
+
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities:  []domain.GraphEntity{{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95}},
+		Relations: []domain.GraphMemoryRelation{{RelationType: "supports", TargetMemoryID: target.MemoryID, TargetRevisionID: target.RevisionID, Confidence: 0.95}},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
+		t.Fatalf("commit graph: %v", err)
+	}
+	var count int
+	if err := r.store.reader.QueryRow(`SELECT count(*) FROM jobs WHERE job_type='rebuild_relation_index' AND status IN ('pending','waiting','running','retrying','succeeded')`).Scan(&count); err != nil || count == 0 {
+		t.Fatalf("rebuild_relation_index jobs=%d err=%v", count, err)
+	}
+}
+
 func TestGraphStaleSourceRevisionRejected(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	enableGraphExtraction(r)
@@ -214,11 +249,17 @@ func TestEntityResolutionQueryFindsAliasesInNaturalLanguage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	resolved := resolveQueryEntities(context.Background(), tx, "What did Alice decide about Alpha?", []string{"space-1"})
+	resolved, resolveErr := resolveQueryEntities(context.Background(), tx, "What did Alice decide about Alpha?", []string{"space-1"})
+	if resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
 	if len(resolved) != 2 {
 		t.Fatalf("english resolution=%+v", resolved)
 	}
-	cn := resolveQueryEntities(context.Background(), tx, "爱丽丝参与了哪个项目？", []string{"space-1"})
+	cn, cnErr := resolveQueryEntities(context.Background(), tx, "爱丽丝参与了哪个项目？", []string{"space-1"})
+	if cnErr != nil {
+		t.Fatal(cnErr)
+	}
 	if len(cn) != 1 || cn[0].EntityID != "entity-cn" {
 		t.Fatalf("chinese resolution=%+v", cn)
 	}
@@ -244,7 +285,7 @@ func TestGraphRecallDirectMentionAndFactAndMemoryRelation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "Alice participates in Alpha", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 20, MaxChars: 10000})
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "Alice participates in Alpha", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 20, MaxChars: 10000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +307,7 @@ func TestGraphIndexGenerationChangeInvalidatesCursor(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	createGraphMemory(t, r, "graph-cursor-a", "graphcursor one")
 	createGraphMemory(t, r, "graph-cursor-b", "graphcursor two")
-	params := SearchParams{Query: "graphcursor", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 1, MaxChars: 1000}
+	params := SearchParams{Query: "graphcursor", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 1, MaxChars: 1000}
 	first, err := r.SearchMemories(context.Background(), params)
 	if err != nil || first.NextCursor == nil {
 		t.Fatalf("first=%+v err=%v", first, err)

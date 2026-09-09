@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
-	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -41,7 +40,7 @@ func TestKeywordSearchScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 	result := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{session.SpaceID}, "reference_time": "2026-08-21T11:00:00Z", "include_evidence": true})
 	assertSearchSet(t, result, []string{memories[root.SpaceID].MemoryID, memories[project.SpaceID].MemoryID, memories[task.SpaceID].MemoryID, memories[session.SpaceID].MemoryID})
 	for _, item := range result.Results {
-		if item.Rank < 1 || item.SelectionReason != "keyword_match" || math.IsNaN(item.KeywordScore) {
+		if item.Rank < 1 || item.SelectionReason != "keyword_match" {
 			t.Fatalf("invalid search result metadata: %+v", item)
 		}
 		if len(item.Memory.CurrentRevision.Evidence) != 1 {
@@ -136,7 +135,7 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	if len(emptyStates.Results) != 0 || len(emptyTypes.Results) != 0 {
 		t.Fatalf("explicit empty filters returned results: states=%+v types=%+v", emptyStates, emptyTypes)
 	}
-	badCursor := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": "different", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5, "cursor": *first.NextCursor})
+	badCursor := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{"query": "different", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5, "cursor": *first.NextCursor})
 	assertSafeError(t, badCursor, http.StatusUnprocessableEntity, "invalid_request")
 	for _, body := range []map[string]any{
 		{"query": "", "space_ids": []string{root.SpaceID}},
@@ -144,16 +143,16 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 		{"query": "分页符", "space_ids": []string{"11111111-1111-4111-8111-111111111111"}},
 		{"query": "分页符", "space_ids": []string{root.SpaceID}, "unknown": true},
 	} {
-		assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/search", "", body), http.StatusUnprocessableEntity, "invalid_request")
+		assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/recall", "", body), http.StatusUnprocessableEntity, "invalid_request")
 	}
-	special := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": `NEAR(`, "space_ids": []string{root.SpaceID}})
+	special := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{"query": `NEAR(`, "space_ids": []string{root.SpaceID}})
 	if special.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(special.Body)
 		special.Body.Close()
 		t.Fatalf("literal FTS syntax status = %d: %s", special.StatusCode, data)
 	}
 	special.Body.Close()
-	semantic := requestJSON(t, client, http.MethodPost, "/v1/search", "", map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "mode": "semantic"})
+	semantic := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "channels": []string{"semantic"}})
 	if semantic.StatusCode != http.StatusServiceUnavailable {
 		data, _ := io.ReadAll(semantic.Body)
 		semantic.Body.Close()
@@ -180,8 +179,8 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	degraded := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}})
-	if degraded.IndexState != "degraded" {
-		t.Fatalf("degraded search state = %q", degraded.IndexState)
+	if !degraded.Degraded || !containsString(degraded.DegradationReasons, "keyword_unavailable") {
+		t.Fatalf("degraded search reasons = %+v", degraded.DegradationReasons)
 	}
 	response := requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
 	var health api.Health
@@ -214,7 +213,7 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	close(release)
 	waitForJobStatus(t, client, job.JobID, "succeeded")
 	after := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}})
-	if after.IndexState != "ready" || len(after.Results) != 3 {
+	if len(after.Results) != 3 || containsString(after.DegradationReasons, "keyword_unavailable") {
 		t.Fatalf("post-rebuild search = %+v", after)
 	}
 	var stale int
@@ -288,7 +287,7 @@ func TestSearchDiskHardLimitAndCommittedReplay(t *testing.T) {
 
 func search(t *testing.T, client *http.Client, body map[string]any) domain.SearchResponse {
 	t.Helper()
-	response := requestJSON(t, client, http.MethodPost, "/v1/search", "", body)
+	response := requestJSON(t, client, http.MethodPost, "/v1/recall", "", body)
 	if response.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(response.Body)
 		response.Body.Close()
@@ -313,4 +312,13 @@ func assertSearchSet(t *testing.T, result domain.SearchResponse, want []string) 
 			t.Fatalf("search IDs = %v; missing %s", got, id)
 		}
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

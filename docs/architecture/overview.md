@@ -112,10 +112,11 @@ separate channel: deterministic alias longest-match maps natural-language
 mentions to resolved entity IDs. The graph channel internally distinguishes
 signals — `direct_entity_mention` (0-hop), `exact_predicate_fact` / `one_hop_fact`
 (1-hop), `two_hop_path` (bounded 2-hop), and `memory_relation` /
-`graph_conflict` — and can expand from the unified keyword/semantic/entity seed
-set. Hybrid retrieval combines independent channels using versioned
-reciprocal-rank fusion. Entity, relation, and graph channels can add candidates,
-and bounded feedback aggregates act only as a post-ranking signal.
+`graph_conflict` — and expands from a strict unified seed set of keyword
+candidates, semantic candidates, and resolved-entity direct mentions.
+Requests select explicit `channels`; channels are fused with versioned
+reciprocal-rank fusion (`rrf-v3`), each authority evidence contributing at
+most once, and bounded feedback aggregates act only as a post-ranking signal.
 
 Cursors bind the authority corpus generation, live semantic corpus generation,
 and relevant ranking/index versions and generations. A generation change

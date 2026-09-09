@@ -261,7 +261,7 @@ func (r *Repository) confirmRelationProposalTx(ctx context.Context, tx *sql.Tx, 
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE relation_index_metadata SET state='stale', generation=generation+1, updated_at=? WHERE singleton=1`, now); err != nil {
+		if err := r.markRelationIndexStale(ctx, tx, now); err != nil {
 			return err
 		}
 	}

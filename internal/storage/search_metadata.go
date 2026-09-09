@@ -15,6 +15,7 @@ type searchMetadata struct {
 	entityIndexGeneration    int64
 	relationIndexGeneration  int64
 	graphIndexGeneration     int64
+	graphIndexState          string
 }
 
 func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error) {
@@ -36,6 +37,9 @@ func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error)
 		if err := tx.QueryRowContext(ctx, read.query).Scan(read.value); err != nil {
 			return searchMetadata{}, err
 		}
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM graph_index_metadata WHERE singleton=1`).Scan(&result.graphIndexState); err != nil {
+		return searchMetadata{}, err
 	}
 	return result, nil
 }

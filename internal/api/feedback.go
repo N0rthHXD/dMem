@@ -102,7 +102,7 @@ func validateFeedback(request appendFeedbackRequest) (storage.AppendFeedbackPara
 		if !validUUID(s.SearchOperationID) || len(s.QueryHash) != 64 || s.ResultRank < 1 || s.RankingVersion == "" || len(s.MatchedChannels) == 0 {
 			return storage.AppendFeedbackParams{}, errors.New("search context is invalid")
 		}
-		allowed, seen := map[string]bool{"keyword": true, "semantic": true, "entity": true, "relation": true}, map[string]bool{}
+		allowed, seen := map[string]bool{"keyword": true, "semantic": true, "graph": true}, map[string]bool{}
 		for _, channel := range s.MatchedChannels {
 			if !allowed[channel] || seen[channel] {
 				return storage.AppendFeedbackParams{}, errors.New("matched_channels is invalid")

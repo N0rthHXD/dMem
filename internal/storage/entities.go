@@ -557,54 +557,6 @@ func (r *Repository) EntityIndexHealth(ctx context.Context) (string, int64) {
 	return state, version
 }
 
-func (r *Repository) CreateEntityIndexRebuildJob(ctx context.Context, identity WriteIdentity) (domain.JobReference, bool, error) {
-	tx, err := r.store.writer.BeginTx(ctx, nil)
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	defer tx.Rollback()
-	if status, body, found, e := readIdempotency(ctx, tx, identity); e != nil {
-		return domain.JobReference{}, false, e
-	} else if found {
-		var v domain.JobReference
-		if status != 202 || json.Unmarshal([]byte(body), &v) != nil {
-			return v, false, errors.New("invalid stored idempotency response")
-		}
-		return v, true, nil
-	}
-	var active string
-	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs WHERE job_type='rebuild_entity_index' AND target_type='index' AND target_id=? AND status IN ('pending','waiting','running','retrying')`, entityIndexName).Scan(&active)
-	if err == nil {
-		return domain.JobReference{JobID: active}, false, ErrJobAlreadyActive
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return domain.JobReference{}, false, err
-	}
-	if err = r.requireDiskWritable(); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	ids, err := r.newIDs(3)
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	now := formatTime(r.runtime.Now())
-	if _, err = enqueueEntityIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, now); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	result := domain.JobReference{JobID: ids[0], OperationID: ids[1]}
-	body, _ := json.Marshal(result)
-	if err = writeIdempotency(ctx, tx, identity, ids[1], 202, body, now); err != nil {
-		return result, false, err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,created_at) VALUES (?,?,?,?,'rebuild_entity_index','index',?,'accepted',?)`, ids[2], ids[1], identity.RequestID, identity.CallerID, entityIndexName, now); err != nil {
-		return result, false, err
-	}
-	if err = tx.Commit(); err != nil {
-		return result, false, err
-	}
-	return result, false, nil
-}
-
 func (r *Repository) RebuildEntityIndexClaimed(ctx context.Context, claim ClaimedJob) error {
 	return r.rebuildEntityIndex(ctx, &claim)
 }
@@ -641,60 +593,4 @@ func (r *Repository) rebuildEntityIndex(ctx context.Context, claim *ClaimedJob) 
 		return err
 	}
 	return tx.Commit()
-}
-
-func entityRecall(ctx context.Context, tx *sql.Tx, query string, spaces []string, limit int) ([]hybridCandidate, error) {
-	if len(spaces) == 0 {
-		return nil, nil
-	}
-	normalized := normalizeEntityName(query)
-	if normalized == "" {
-		return nil, nil
-	}
-	args := []any{normalized}
-	for _, space := range spaces {
-		args = append(args, space)
-	}
-	args = append(args, limit)
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT em.memory_id,em.revision_id,p.content_hash FROM entity_mentions em JOIN entities e ON e.entity_id=em.entity_id JOIN entity_aliases a ON a.entity_id=e.entity_id JOIN memories m ON m.memory_id=em.memory_id AND m.current_revision_id=em.revision_id JOIN memory_projections p ON p.memory_id=em.memory_id AND p.revision_id=em.revision_id WHERE a.normalized_alias=? AND a.state='active' AND e.state='active' AND e.space_id IN (`+placeholders(len(spaces))+`) AND p.searchable=1 ORDER BY em.memory_id,em.revision_id LIMIT ?`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []hybridCandidate
-	for rows.Next() {
-		var c hybridCandidate
-		if err = rows.Scan(&c.memoryID, &c.revisionID, &c.contentHash); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-func entityKeywordRecall(ctx context.Context, tx *sql.Tx, query string, spaces []string, limit int) ([]searchCandidate, error) {
-	if len(spaces) == 0 {
-		return nil, nil
-	}
-	normalized := normalizeEntityName(query)
-	args := []any{normalized}
-	for _, space := range spaces {
-		args = append(args, space)
-	}
-	args = append(args, limit)
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT p.memory_id,p.revision_id,p.display_content,p.display_content,p.updated_at FROM entity_mentions em JOIN entities e ON e.entity_id=em.entity_id JOIN entity_aliases a ON a.entity_id=e.entity_id JOIN memories m ON m.memory_id=em.memory_id AND m.current_revision_id=em.revision_id JOIN memory_projections p ON p.memory_id=em.memory_id AND p.revision_id=em.revision_id WHERE a.normalized_alias=? AND a.state='active' AND e.state='active' AND e.space_id IN (`+placeholders(len(spaces))+`) AND p.searchable=1 ORDER BY p.updated_at DESC,p.memory_id LIMIT ?`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []searchCandidate
-	for rows.Next() {
-		var c searchCandidate
-		c.entity = true
-		if err = rows.Scan(&c.memoryID, &c.revisionID, &c.ftsContent, &c.projectionContent, &c.updatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
 }

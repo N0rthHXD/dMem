@@ -1,6 +1,6 @@
 # ADR 0032：知识图谱构建与检索
 
-- 状态：accepted
+- 状态：accepted（排名与融合部分被 ADR 0033 修订：三通道 rrf-v3、graph-score-v2、严格 seed 集）
 - 日期：2026-09-08
 
 ## 决策

@@ -60,6 +60,8 @@ def mrr(ranked: Sequence[str], gold: set[str]) -> float:
 def ndcg(ranked: Sequence[str], gold: set[str], k: int) -> float:
     """Binary-relevance normalized DCG over the ranked evidence list."""
     rel = [1 if d in gold else 0 for d in ranked[:k]]
+    if not rel:
+        return 0.0
     ideal = sorted(rel, reverse=True)
     idcg = ideal[0] + sum(ideal[i] / math.log2(i + 2) for i in range(1, len(ideal)))
     if idcg == 0:

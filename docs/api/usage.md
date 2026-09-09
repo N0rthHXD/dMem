@@ -24,7 +24,7 @@ orchestrate raw events, revisions, and lifecycle endpoints separately.
 | Operation | Behavior |
 | --- | --- |
 | `POST /v1/remember` | Atomically creates a manual source event, memory, initial immutable revision, evidence, active projection, audit data, and required index work. |
-| `POST /v1/recall` | Searches one or more spaces with a result-count and character budget. Defaults to ancestor inclusion, hybrid mode, active/contested states, 10 results, and 12,000 characters. |
+| `POST /v1/recall` | Searches one or more spaces with a result-count and character budget. Defaults to ancestor inclusion, all three retrieval channels, active/contested states, 10 results, and 12,000 characters. |
 | `POST /v1/memories/{memory_id}/feedback` | Appends feedback to the memory's current revision and can request a corrective evolution proposal. |
 | `POST /v1/memories/{memory_id}/forget` | Logically deletes the memory, removes it from recall, and retains authority and audit history. |
 
@@ -35,16 +35,17 @@ memory types are `fact`, `preference`, `constraint`, `decision`, `task`,
 
 `recall` accepts natural-language or ordinary keyword text, not SQLite FTS5
 expressions. Keyword retrieval extracts English content words and Chinese trigram
-fragments, then combines them as literal alternatives. It supports `keyword`,
-`semantic`, and `hybrid` modes. Semantic execution
-requires a configured embedding provider and a usable semantic index. Entity
-mentions inside a natural-language query are resolved deterministically (alias
-longest-match) before retrieval, and the graph channel can add candidates through
-direct mentions, one-hop entity facts, bounded two-hop paths, and memory
-relations. Responses
-state the requested and executed modes, degradation reasons, ranking/index
-versions, resolved entities, graph signals/facts/paths, cursor, truncation, and
-character use. Results are revalidated against
+fragments, then combines them as literal alternatives. Requests select explicit
+`channels` from `keyword`, `semantic`, and `graph` (default: all three); there is
+no separate entity or relation channel — entity resolution is query understanding,
+and entity facts plus memory relations are internal graph signals. Semantic
+execution requires a configured embedding provider and a usable semantic index.
+Entity mentions inside a natural-language query are resolved deterministically
+(alias longest-match) before retrieval, and the graph channel can add candidates
+through direct mentions, one-hop entity facts, bounded two-hop paths, and memory
+relations. Responses state the requested and executed channels, degradation
+reasons, ranking/index versions, resolved entities, graph signals/facts/paths,
+cursor, truncation, and character use. Results are revalidated against
 scope, current revision, state, and valid time before return.
 
 Feedback types are `useful`, `irrelevant`, `correct`, `supplement`, and
@@ -72,7 +73,7 @@ The same contract exposes lower-level operations for:
 - spaces, raw events, replay, memories, revisions, lifecycle state, and search;
 - processing candidates and durable jobs;
 - FTS and semantic rebuilds;
-- entity and relation proposals, review, query, and index rebuilds;
+- entity and relation proposals, review, and query;
 - entity facts (list/detail) and entity-fact proposals (create/list/review);
 - graph index rebuild;
 - evolution proposals and conflict-case resolution;

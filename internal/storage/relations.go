@@ -516,54 +516,6 @@ func (r *Repository) RelationIndexHealth(ctx context.Context) (string, int64) {
 	}
 	return state, version
 }
-func (r *Repository) CreateRelationIndexRebuildJob(ctx context.Context, identity WriteIdentity) (domain.JobReference, bool, error) {
-	tx, err := r.store.writer.BeginTx(ctx, nil)
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	defer tx.Rollback()
-	if s, b, found, e := readIdempotency(ctx, tx, identity); e != nil {
-		return domain.JobReference{}, false, e
-	} else if found {
-		var v domain.JobReference
-		if s != 202 || json.Unmarshal([]byte(b), &v) != nil {
-			return v, false, errors.New("invalid stored idempotency response")
-		}
-		return v, true, nil
-	}
-	var active string
-	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs WHERE job_type='rebuild_relation_index' AND target_type='index' AND target_id=? AND status IN ('pending','waiting','running','retrying')`, relationIndexName).Scan(&active)
-	if err == nil {
-		return domain.JobReference{JobID: active}, false, ErrJobAlreadyActive
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return domain.JobReference{}, false, err
-	}
-	if err = r.requireDiskWritable(); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	ids, err := r.newIDs(3)
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	now := formatTime(r.runtime.Now())
-	if _, err = enqueueRelationIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, now); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	v := domain.JobReference{JobID: ids[0], OperationID: ids[1]}
-	body, _ := json.Marshal(v)
-	if err = writeIdempotency(ctx, tx, identity, ids[1], 202, body, now); err != nil {
-		return v, false, err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,created_at) VALUES (?,?,?,?,'rebuild_relation_index','index',?,'accepted',?)`, ids[2], ids[1], identity.RequestID, identity.CallerID, relationIndexName, now)
-	if err != nil {
-		return v, false, err
-	}
-	if err = tx.Commit(); err != nil {
-		return v, false, err
-	}
-	return v, false, nil
-}
 func (r *Repository) RebuildRelationIndexClaimed(ctx context.Context, claim ClaimedJob) error {
 	return r.rebuildRelationIndex(ctx, &claim)
 }
@@ -600,58 +552,4 @@ func (r *Repository) rebuildRelationIndex(ctx context.Context, claim *ClaimedJob
 		return err
 	}
 	return tx.Commit()
-}
-
-func relationKeywordRecall(ctx context.Context, tx *sql.Tx, query string, spaces []string, limit int) ([]searchCandidate, error) {
-	if len(spaces) == 0 {
-		return nil, nil
-	}
-	ftsQuery, searchable := compileKeywordQuery(query)
-	if !searchable {
-		return nil, nil
-	}
-	var state string
-	if err := tx.QueryRowContext(ctx, `SELECT state FROM relation_index_metadata WHERE singleton=1`).Scan(&state); err != nil || state != "ready" {
-		return nil, ErrIndexDegraded
-	}
-	args := []any{ftsQuery}
-	for _, s := range spaces {
-		args = append(args, s)
-	}
-	args = append(args, limit)
-	for _, s := range spaces {
-		args = append(args, s)
-	}
-	args = append(args, limit)
-	rows, err := tx.QueryContext(ctx, `WITH seeds AS (SELECT f.memory_id,f.revision_id FROM memory_fts f JOIN memory_projections p ON p.memory_id=f.memory_id AND p.revision_id=f.revision_id WHERE memory_fts MATCH ? AND p.space_id IN (`+placeholders(len(spaces))+`) AND p.searchable=1 LIMIT ?) SELECT DISTINCT p.memory_id,p.revision_id,p.display_content,p.display_content,p.updated_at FROM seeds s JOIN memory_relations r ON r.state='active' AND ((r.source_memory_id=s.memory_id AND r.source_revision_id=s.revision_id) OR (r.target_memory_id=s.memory_id AND r.target_revision_id=s.revision_id)) JOIN memory_projections p ON ((p.memory_id=r.target_memory_id AND p.revision_id=r.target_revision_id AND r.source_memory_id=s.memory_id) OR (p.memory_id=r.source_memory_id AND p.revision_id=r.source_revision_id AND r.target_memory_id=s.memory_id)) JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id WHERE p.searchable=1 AND r.space_id IN (`+placeholders(len(spaces))+`) ORDER BY p.updated_at DESC,p.memory_id LIMIT ?`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []searchCandidate
-	for rows.Next() {
-		var c searchCandidate
-		c.relation = true
-		if err = rows.Scan(&c.memoryID, &c.revisionID, &c.ftsContent, &c.projectionContent, &c.updatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-func relationRecall(ctx context.Context, tx *sql.Tx, query string, spaces []string, limit int) ([]hybridCandidate, error) {
-	items, err := relationKeywordRecall(ctx, tx, query, spaces, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]hybridCandidate, 0, len(items))
-	for _, item := range items {
-		var hash string
-		if err = tx.QueryRowContext(ctx, `SELECT content_hash FROM memory_projections WHERE memory_id=? AND revision_id=?`, item.memoryID, item.revisionID).Scan(&hash); err != nil {
-			return nil, err
-		}
-		out = append(out, hybridCandidate{memoryID: item.memoryID, revisionID: item.revisionID, contentHash: hash})
-	}
-	return out, nil
 }

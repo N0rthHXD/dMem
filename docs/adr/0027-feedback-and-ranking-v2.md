@@ -1,6 +1,6 @@
 # ADR 0027：Feedback aggregate v1 与 ranking v2
 
-- 状态：accepted
+- 状态：accepted（通道枚举与 mode 映射部分被 ADR 0033 取代）
 - 日期：2026-08-25
 
 ## 决策

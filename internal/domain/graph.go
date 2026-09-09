@@ -227,10 +227,22 @@ type GraphSignal struct {
 	FactConfidence    float64 `json:"fact_confidence,omitempty"`
 }
 
-// GraphPath is a bounded traversal path through entity facts.
+// GraphPath is a bounded traversal path through entity facts. Hop always
+// equals len(Edges) and every edge references its confirmed supporting fact
+// and source memory revision so paths stay auditable end to end.
 type GraphPath struct {
-	SubjectEntityID string   `json:"subject_entity_id"`
-	Steps           []string `json:"steps"`
-	ObjectEntityID  string   `json:"object_entity_id"`
-	Hop             int      `json:"hop"`
+	StartEntityID string          `json:"start_entity_id"`
+	Edges         []GraphPathEdge `json:"edges"`
+	EndEntityID   string          `json:"end_entity_id"`
+	Hop           int             `json:"hop"`
+}
+
+type GraphPathEdge struct {
+	FactID           string  `json:"fact_id"`
+	SubjectEntityID  string  `json:"subject_entity_id"`
+	Predicate        string  `json:"predicate"`
+	ObjectEntityID   string  `json:"object_entity_id"`
+	Confidence       float64 `json:"confidence,omitempty"`
+	SourceMemoryID   string  `json:"source_memory_id,omitempty"`
+	SourceRevisionID string  `json:"source_revision_id,omitempty"`
 }

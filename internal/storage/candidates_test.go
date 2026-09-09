@@ -227,14 +227,14 @@ func TestPendingCandidateExcludedFromMemoryListAndAllSearchModes(t *testing.T) {
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"keyword", "semantic", "hybrid"} {
-		result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "searchable", SpaceIDs: []string{"space-1"}, IncludeAncestors: true, States: []string{"active"}, Mode: mode, Limit: 10, MaxChars: 1000})
+	for _, channels := range [][]string{{"keyword"}, {"semantic"}, {"keyword", "semantic", "graph"}} {
+		result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "searchable", SpaceIDs: []string{"space-1"}, IncludeAncestors: true, States: []string{"active"}, Channels: channels, Limit: 10, MaxChars: 1000})
 		if err != nil {
-			t.Fatalf("%s search = %+v, %v", mode, result, err)
+			t.Fatalf("%v search = %+v, %v", channels, result, err)
 		}
 		for _, item := range result.Results {
 			if item.Memory.CurrentRevision.Content == candidate.Content {
-				t.Fatalf("%s search returned pending candidate: %+v", mode, item)
+				t.Fatalf("%v search returned pending candidate: %+v", channels, item)
 			}
 		}
 	}

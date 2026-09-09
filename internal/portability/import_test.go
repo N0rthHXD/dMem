@@ -381,7 +381,7 @@ func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) 
 	if err := fresh.repo.RebuildFTS(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	result, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 1000})
+	result, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000})
 	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.CurrentRevision.Content != "alpha" {
 		t.Fatalf("imported memory retrieval = %+v, error = %v", result, err)
 	}

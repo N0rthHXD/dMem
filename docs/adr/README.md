@@ -34,5 +34,6 @@
 | [0030](0030-dynamic-provider-configuration.md) | 动态 provider 配置与在线恢复 |
 | [0031](0031-sqlite-vec-vector-storage.md) | sqlite-vec 精确向量存储与检索 |
 | [0032](0032-knowledge-graph-construction-and-retrieval.md) | 知识图谱构建与检索 |
+| [0033](0033-three-channel-retrieval-fusion.md) | 三通道检索融合（rrf-v3） |
 
 ADR 状态使用：`proposed`、`accepted`、`superseded` 或 `rejected`。

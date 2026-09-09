@@ -44,7 +44,7 @@ func TestAgentMemoryAPI(t *testing.T) {
 	}
 
 	response = requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
-		"query": "concise Go examples", "space_ids": []string{space.SpaceID}, "mode": "keyword",
+		"query": "concise Go examples", "space_ids": []string{space.SpaceID}, "channels": []string{"keyword"},
 	})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("recall status = %d", response.StatusCode)

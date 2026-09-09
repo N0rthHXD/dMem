@@ -265,7 +265,10 @@ func (r *Repository) rebuildFeedbackAggregates(ctx context.Context, claim *Claim
 	if err := tx.QueryRowContext(ctx, `SELECT generation+1 FROM feedback_aggregate_metadata WHERE singleton=1`).Scan(&generation); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `WITH latest AS (SELECT revision_id,caller_id,feedback_type,feedback_id,created_at,row_number() OVER (PARTITION BY revision_id,caller_id ORDER BY created_at DESC,feedback_id DESC) n FROM feedback_events WHERE created_at>=? AND created_at<=?) SELECT revision_id,sum(feedback_type IN ('useful','correct')),sum(feedback_type IN ('irrelevant','contest')) FROM latest WHERE n=1 GROUP BY revision_id ORDER BY revision_id`, startText, endText)
+	// Aggregate v1 counts only relevance feedback: the latest useful or
+	// irrelevant event per (revision, caller) inside the 90-day window.
+	// Corrective types (correct/contest/supplement) never rank memories.
+	rows, err := tx.QueryContext(ctx, `WITH latest AS (SELECT revision_id,caller_id,feedback_type,feedback_id,created_at,row_number() OVER (PARTITION BY revision_id,caller_id ORDER BY created_at DESC,feedback_id DESC) n FROM feedback_events WHERE created_at>=? AND created_at<=? AND feedback_type IN ('useful','irrelevant')) SELECT revision_id,sum(feedback_type='useful'),sum(feedback_type='irrelevant') FROM latest WHERE n=1 GROUP BY revision_id ORDER BY revision_id`, startText, endText)
 	if err != nil {
 		return err
 	}

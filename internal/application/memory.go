@@ -56,7 +56,7 @@ type RecallQuery struct {
 	States                 []string
 	ReferenceTime          string
 	ReferenceTimeSet       bool
-	Mode                   string
+	Channels               []string
 	Limit                  int
 	MaxChars               int
 	IncludeEvidence        bool
@@ -133,7 +133,7 @@ func (s *Service) Recall(ctx context.Context, query RecallQuery) (domain.SearchR
 	return s.repository.SearchMemories(ctx, storage.SearchParams{
 		Query: query.Query, SpaceIDs: query.SpaceIDs, IncludeAncestors: query.IncludeAncestors,
 		MemoryTypes: query.MemoryTypes, MemoryTypesSet: query.MemoryTypesSet, States: query.States,
-		ReferenceTime: query.ReferenceTime, ReferenceTimeSet: query.ReferenceTimeSet, Mode: query.Mode,
+		ReferenceTime: query.ReferenceTime, ReferenceTimeSet: query.ReferenceTimeSet, Channels: query.Channels,
 		Limit: query.Limit, MaxChars: query.MaxChars, IncludeEvidence: query.IncludeEvidence,
 		ExcludeStaleAggregates: query.ExcludeStaleAggregates, Cursor: query.Cursor,
 	})
@@ -193,8 +193,13 @@ func validateRecall(query RecallQuery) error {
 	if strings.TrimSpace(query.Query) == "" || len(query.SpaceIDs) == 0 || query.Limit < 1 || query.Limit > 100 || query.MaxChars < 1 || query.MaxChars > 100000 {
 		return errors.New("recall query, scope, limit, or character budget is invalid")
 	}
-	if query.Mode != "keyword" && query.Mode != "semantic" && query.Mode != "hybrid" {
-		return errors.New("recall mode is invalid")
+	if len(query.Channels) == 0 {
+		return errors.New("recall channels must contain at least one channel")
+	}
+	for _, channel := range query.Channels {
+		if channel != "keyword" && channel != "semantic" && channel != "graph" {
+			return errors.New("recall channels is invalid")
+		}
 	}
 	validTypes := map[string]bool{"fact": true, "preference": true, "constraint": true, "decision": true, "task": true, "event": true, "project_context": true, "agent_experience": true, "aggregate": true}
 	for _, value := range query.MemoryTypes {
@@ -232,6 +237,12 @@ func validateFeedback(command FeedbackCommand) error {
 	if command.Search != nil {
 		if command.Search.SearchOperationID == "" || len(command.Search.QueryHash) != 64 || command.Search.ResultRank < 1 || command.Search.RankingVersion == "" || len(command.Search.MatchedChannels) == 0 {
 			return errors.New("search context is invalid")
+		}
+		validChannels := map[string]bool{"keyword": true, "semantic": true, "graph": true}
+		for _, channel := range command.Search.MatchedChannels {
+			if !validChannels[channel] {
+				return errors.New("search context matched_channels is invalid")
+			}
 		}
 		sort.Strings(command.Search.MatchedChannels)
 	}

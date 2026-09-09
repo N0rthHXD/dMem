@@ -41,7 +41,9 @@ func (p *ProviderProcessor) ProcessGraph(ctx context.Context, input domain.Graph
 				result.Code = domain.GraphExtractionPolicyRejected
 			case provider.ErrorTransient:
 				result.Code = domain.GraphExtractionTransientFailure
-			case provider.ErrorInvalidInput, provider.ErrorInvalidOutput:
+			case provider.ErrorInvalidInput:
+				result.Code = domain.GraphExtractionPermanentFailure
+			case provider.ErrorInvalidOutput:
 				result.Code = domain.GraphExtractionInvalidOutput
 			}
 		}

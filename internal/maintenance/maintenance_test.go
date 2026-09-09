@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -180,9 +181,9 @@ func validateSemanticRestore(ctx context.Context, staging, databaseFilename stri
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
-	for _, mode := range []string{"semantic", "hybrid"} {
-		result, err := repository.SearchMemories(ctx, storage.SearchParams{Query: "restored concept", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: mode, Limit: 10, MaxChars: 1000})
-		if err != nil || result.ExecutedMode != mode || result.Degraded || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != "memory-1" || result.Results[0].Memory.CurrentRevision.Content != "restorable content" {
+	for _, channels := range [][]string{{"semantic"}, {"keyword", "semantic"}} {
+		result, err := repository.SearchMemories(ctx, storage.SearchParams{Query: "restored concept", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: channels, Limit: 10, MaxChars: 1000})
+		if err != nil || !reflect.DeepEqual(result.ExecutedChannels, channels) || result.Degraded || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != "memory-1" || result.Results[0].Memory.CurrentRevision.Content != "restorable content" {
 			return errors.New("semantic restore retrieval validation failed")
 		}
 	}

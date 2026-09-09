@@ -159,7 +159,13 @@ func newRetrievalFixture(t *testing.T, config retrievalGateConfig, documents []r
 
 func retrievalSearch(t *testing.T, repository *Repository, query, mode string, limit int) []string {
 	t.Helper()
-	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: query, SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: mode, Limit: limit, MaxChars: 100000})
+	channels := []string{"keyword"}
+	if mode == "semantic" {
+		channels = []string{"semantic"}
+	} else if mode == "hybrid" {
+		channels = []string{"keyword", "semantic"}
+	}
+	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: query, SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: channels, Limit: limit, MaxChars: 100000})
 	if err != nil {
 		t.Fatalf("%s search %q: %v", mode, query, err)
 	}

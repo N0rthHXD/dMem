@@ -195,7 +195,7 @@ func semanticRecallQuery(t *testing.T, repository *Repository, states []string, 
 		t.Fatal(err)
 	}
 	params := SearchParams{
-		Query: "car", SpaceIDs: []string{"space-1"}, States: states, Mode: "semantic",
+		Query: "car", SpaceIDs: []string{"space-1"}, States: states, Channels: []string{"semantic"},
 		Limit: limit, MaxChars: 1000, MemoryTypesSet: memoryTypesSet, MemoryTypes: memoryTypes,
 		ReferenceTime: formatTime(repository.runtime.Now()),
 	}
@@ -405,7 +405,7 @@ func TestHybridFallsBackWhenSemanticIdentityDoesNotMatchRuntime(t *testing.T) {
 		t.Fatalf("semantic identity mismatch error = %v", err)
 	}
 	result, err := repository.SearchMemories(context.Background(), hybridParams("identityfallback"))
-	if err != nil || result.ExecutedMode != "keyword" || !result.Degraded || len(result.Results) != 1 {
+	if err != nil || !reflect.DeepEqual(result.ExecutedChannels, []string{"keyword", "graph"}) || !result.Degraded || len(result.Results) != 1 {
 		t.Fatalf("identity mismatch fallback = %+v, %v", result, err)
 	}
 }

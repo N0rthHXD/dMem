@@ -131,7 +131,7 @@ func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	if _, _, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("mention-recall", "confirm", proposal.ID, review), proposal.ID, review); err != nil {
 		t.Fatal(err)
 	}
-	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 10000})
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
 	if err != nil || len(result.Results) != 1 {
 		t.Fatalf("current recall=%+v err=%v", result, err)
 	}
@@ -140,7 +140,7 @@ func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	if _, err = r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,?,'replacement','replacement-hash','test','v',?); UPDATE memories SET current_revision_id=?,updated_at=? WHERE memory_id=?`, newRevision, memory.MemoryID, memory.CurrentRevision.RevisionID, now, newRevision, now, memory.MemoryID); err != nil {
 		t.Fatal(err)
 	}
-	result, err = r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Mode: "keyword", Limit: 10, MaxChars: 10000})
+	result, err = r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
 	if err != nil || len(result.Results) != 0 {
 		t.Fatalf("stale entity mention recall=%+v, error=%v", result, err)
 	}
@@ -155,13 +155,22 @@ func TestEntityIndexRebuildFromAuthority(t *testing.T) {
 	if _, err := r.store.writer.Exec(`UPDATE entity_index_metadata SET state='degraded',source_entity_count=0,source_mention_count=99 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
-	identity := memoryIdentity("entity-rebuild", "/v1/indexes/entities/rebuild", struct{}{})
-	ref, _, err := r.CreateEntityIndexRebuildJob(context.Background(), identity)
+	tx, err := r.store.writer.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ids, err := r.newIDs(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = enqueueEntityIndexJob(context.Background(), tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, formatTime(r.runtime.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	claim, err := r.ClaimJob(context.Background(), ClaimJobParams{WorkerID: "worker", LeaseDuration: time.Hour})
-	if err != nil || claim.Job.JobID != ref.JobID {
+	if err != nil || claim.Job.JobID != ids[0] {
 		t.Fatalf("claim=%+v err=%v", claim, err)
 	}
 	if err = r.RebuildEntityIndexClaimed(context.Background(), claim); err != nil {

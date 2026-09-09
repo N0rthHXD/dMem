@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,7 +91,7 @@ func TestOpenAPIContract(t *testing.T) {
 	var agentMemory application.RememberResult
 	decodeResponse(t, response, &agentMemory)
 	c.replay(http.MethodPost, "/v1/remember", "agent-memory", agentMemoryBody)
-	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "agent contract", "space_ids": []string{space.SpaceID}, "mode": "keyword"}))
+	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "agent contract", "space_ids": []string{space.SpaceID}, "channels": []string{"keyword"}}))
 	agentFeedback := map[string]any{"space_id": space.SpaceID, "type": "useful", "reason_code": "relevant_context"}
 	c.close(c.do(http.MethodPost, "/v1/memories/"+agentMemory.Memory.MemoryID+"/feedback", "agent-feedback", agentFeedback))
 	c.close(c.do(http.MethodPost, "/v1/memories/"+agentMemory.Memory.MemoryID+"/forget", "agent-forget", map[string]any{"reason": "contract forget"}))
@@ -285,16 +286,16 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID, "", nil))
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID+"/provenance", "", nil))
 
-	response = c.do(http.MethodPost, "/v1/search", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}})
+	response = c.do(http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}, "channels": []string{"keyword"}})
 	var keyword domain.SearchResponse
 	decodeResponse(t, response, &keyword)
-	if keyword.RequestedMode != "keyword" || keyword.ExecutedMode != "keyword" || keyword.IndexState != "ready" {
+	if !reflect.DeepEqual(keyword.RequestedChannels, []string{"keyword"}) || !reflect.DeepEqual(keyword.ExecutedChannels, []string{"keyword"}) || keyword.GraphIndexState == "" {
 		t.Fatalf("keyword ready response = %+v", keyword)
 	}
-	response = c.do(http.MethodPost, "/v1/search", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}, "mode": "hybrid"})
+	response = c.do(http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}, "channels": []string{"keyword", "semantic"}})
 	var hybrid domain.SearchResponse
 	decodeResponse(t, response, &hybrid)
-	if hybrid.RequestedMode != "hybrid" || hybrid.ExecutedMode != "keyword" || !hybrid.Degraded || len(hybrid.DegradationReasons) == 0 {
+	if !reflect.DeepEqual(hybrid.RequestedChannels, []string{"keyword", "semantic"}) || !reflect.DeepEqual(hybrid.ExecutedChannels, []string{"keyword"}) || !hybrid.Degraded || len(hybrid.DegradationReasons) == 0 {
 		t.Fatalf("hybrid degraded response = %+v", hybrid)
 	}
 	response = c.do(http.MethodPost, "/v1/indexes/fts/rebuild", "rebuild", nil)
@@ -315,8 +316,6 @@ func TestOpenAPIContract(t *testing.T) {
 		}
 	}
 	for _, rebuildRoute := range []struct{ path, key string }{
-		{"/v1/indexes/entities/rebuild", "entity-index-rebuild"},
-		{"/v1/indexes/relations/rebuild", "relation-index-rebuild"},
 		{"/v1/indexes/graph/rebuild", "graph-index-rebuild"},
 		{"/v1/feedback/aggregates/rebuild", "feedback-rebuild"},
 	} {
@@ -326,7 +325,7 @@ func TestOpenAPIContract(t *testing.T) {
 	}
 
 	c.invalid(http.StatusUnprocessableEntity, http.MethodGet, "/v1/spaces/not-a-uuid", "", "")
-	c.invalid(http.StatusBadRequest, http.MethodPost, "/v1/search", "", "{")
+	c.invalid(http.StatusBadRequest, http.MethodPost, "/v1/recall", "", "{")
 
 	unknownID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	if _, err := db.Exec(`UPDATE jobs SET status='succeeded', result_code='contract', finished_at=CURRENT_TIMESTAMP WHERE job_id=?`, rebuild.JobID); err != nil {
@@ -356,7 +355,7 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodPost, "/v1/candidates/" + rejectID + "/reject", "reviewed-reject", http.StatusConflict, reviewBody},
 		{http.MethodPost, "/v1/candidates/" + unknownID + "/confirm", "missing-confirm", http.StatusNotFound, reviewBody},
 		{http.MethodPost, "/v1/candidates/" + unknownID + "/reject", "missing-reject", http.StatusNotFound, reviewBody},
-		{http.MethodPost, "/v1/search", "", http.StatusServiceUnavailable, map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "mode": "semantic"}},
+		{http.MethodPost, "/v1/recall", "", http.StatusServiceUnavailable, map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "channels": []string{"semantic"}}},
 		{http.MethodGet, "/v1/jobs/" + unknownID, "", http.StatusNotFound, nil},
 		{http.MethodPost, "/v1/jobs/" + unknownID + "/cancel", "missing-cancel", http.StatusNotFound, nil},
 		{http.MethodPost, "/v1/jobs/" + unknownID + "/retry", "missing-retry", http.StatusNotFound, nil},
@@ -434,8 +433,8 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodPost, "/v1/candidates/" + confirmID + "/confirm", "bad-confirm", `{"reason_code":""}`, http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/candidates/" + rejectID + "/reject", "bad-reject-json", "{", http.StatusBadRequest},
 		{http.MethodPost, "/v1/candidates/" + rejectID + "/reject", "bad-reject", `{"reason_code":""}`, http.StatusUnprocessableEntity},
-		{http.MethodPost, "/v1/search", "", `{"query":"","space_ids":["` + space.SpaceID + `"]}`, http.StatusUnprocessableEntity},
-		{http.MethodPost, "/v1/search", "", `{"query":"contract","space_ids":[],"unknown":true}`, http.StatusUnprocessableEntity},
+		{http.MethodPost, "/v1/recall", "", `{"query":"","space_ids":["` + space.SpaceID + `"]}`, http.StatusUnprocessableEntity},
+		{http.MethodPost, "/v1/recall", "", `{"query":"contract","space_ids":[],"unknown":true}`, http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/jobs/not-a-uuid", "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/jobs/not-a-uuid/cancel", "bad-cancel-id", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/jobs/not-a-uuid/retry", "bad-retry-id", "", http.StatusUnprocessableEntity},
@@ -452,7 +451,6 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodGet, "/v1/entities?space_id=bad", "", "", http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/entities/not-a-uuid?space_id=" + space.SpaceID, "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/entities/not-a-uuid/merge", "entity-merge-invalid", "", http.StatusUnprocessableEntity},
-		{http.MethodPost, "/v1/indexes/entities/rebuild", "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/relation-proposals", "relation-json", "{", http.StatusBadRequest},
 		{http.MethodPost, "/v1/relation-proposals", "relation-invalid", `{}`, http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/relation-proposals?space_id=bad", "", "", http.StatusUnprocessableEntity},
@@ -463,7 +461,6 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodPost, "/v1/relation-proposals/" + relationReject.ProposalID + "/reject", "relation-reject-invalid", `{}`, http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/relations?space_id=bad", "", "", http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/relations/not-a-uuid?space_id=" + space.SpaceID, "", "", http.StatusUnprocessableEntity},
-		{http.MethodPost, "/v1/indexes/relations/rebuild", "", "", http.StatusUnprocessableEntity},
 		{http.MethodPost, "/v1/fact-proposals", "fact-json", "{", http.StatusBadRequest},
 		{http.MethodPost, "/v1/fact-proposals", "fact-invalid", `{}`, http.StatusUnprocessableEntity},
 		{http.MethodGet, "/v1/fact-proposals?space_id=bad", "", "", http.StatusUnprocessableEntity},
@@ -510,10 +507,10 @@ func TestOpenAPIContract(t *testing.T) {
 	if _, err := db.Exec(`UPDATE index_metadata SET state='degraded' WHERE index_name='memory_fts'`); err != nil {
 		t.Fatal(err)
 	}
-	response = c.expect(http.StatusOK, http.MethodPost, "/v1/search", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}})
+	response = c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}})
 	var degraded domain.SearchResponse
 	decodeResponse(t, response, &degraded)
-	if degraded.IndexState != "degraded" || degraded.RequestedMode != "keyword" || degraded.ExecutedMode != "keyword" {
+	if !degraded.Degraded || !reflect.DeepEqual(degraded.ExecutedChannels, []string{"graph"}) || !containsString(degraded.DegradationReasons, "keyword_unavailable") {
 		t.Fatalf("keyword degraded response = %+v", degraded)
 	}
 	exerciseOverloadContract(t, router, c.seen)
@@ -567,8 +564,6 @@ func exerciseResourceExhaustedContract(t *testing.T, router routers.Router, seen
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/events", "pressure-event", body))
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/fts/rebuild", "pressure-fts", nil))
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/semantic/rebuild", "pressure-semantic", nil))
-	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/entities/rebuild", "pressure-entities", nil))
-	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/relations/rebuild", "pressure-relations", nil))
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/indexes/graph/rebuild", "pressure-graph", nil))
 	c.close(c.expect(http.StatusInsufficientStorage, http.MethodPost, "/v1/feedback/aggregates/rebuild", "pressure-feedback", nil))
 }
@@ -700,23 +695,17 @@ func assertOperationStatusMatrix(t *testing.T, doc *openapi3.T, seen map[string]
 func assertSearchResponseModes(t *testing.T, doc *openapi3.T) {
 	t.Helper()
 	schema := doc.Components.Schemas["SearchResponse"].Value
-	for property, expected := range map[string][]string{
-		"requested_mode": {"keyword", "semantic", "hybrid"},
-		"executed_mode":  {"keyword", "semantic", "hybrid"},
-		"index_state":    {"ready", "degraded", "rebuilding"},
-	} {
-		actual := schema.Properties[property].Value.Enum
-		for _, value := range expected {
-			found := false
-			for _, candidate := range actual {
-				found = found || candidate == value
-			}
-			if !found {
-				t.Errorf("SearchResponse.%s enum is missing %q", property, value)
-			}
+	channelsSchema := schema.Properties["requested_channels"].Value.Items.Value
+	for _, expected := range []string{"keyword", "semantic", "graph"} {
+		found := false
+		for _, candidate := range channelsSchema.Enum {
+			found = found || candidate == expected
+		}
+		if !found {
+			t.Errorf("SearchResponse.requested_channels enum is missing %q", expected)
 		}
 	}
-	for _, property := range []string{"requested_mode", "executed_mode", "degraded", "degradation_reasons", "fts_index_version", "semantic_index_version", "ranking_version"} {
+	for _, property := range []string{"requested_channels", "executed_channels", "degraded", "degradation_reasons", "fts_index_version", "semantic_index_version", "graph_index_version", "graph_index_state", "ranking_version"} {
 		if !slicesContains(schema.Required, property) {
 			t.Errorf("SearchResponse is missing required property %q", property)
 		}

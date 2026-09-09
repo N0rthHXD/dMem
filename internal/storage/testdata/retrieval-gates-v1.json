@@ -4,7 +4,7 @@
   "provider_version": "deterministic-concepts-v1",
   "provider_model": "concept-axis-10-v1",
   "vector_storage": "sqlite-vec-v0.1.6-f32",
-  "ranking_version": "rrf-v2",
+  "ranking_version": "rrf-v3",
   "quality": {
     "semantic_k": 2,
     "minimum_keyword_exact_recall": 1.0,

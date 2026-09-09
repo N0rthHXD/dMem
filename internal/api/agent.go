@@ -31,8 +31,9 @@ type recallRequest struct {
 	SpaceIDs               []string        `json:"space_ids"`
 	IncludeAncestors       json.RawMessage `json:"include_ancestors"`
 	MemoryTypes            json.RawMessage `json:"memory_types"`
+	States                 json.RawMessage `json:"states"`
 	ReferenceTime          json.RawMessage `json:"reference_time"`
-	Mode                   json.RawMessage `json:"mode"`
+	Channels               json.RawMessage `json:"channels"`
 	Limit                  json.RawMessage `json:"limit"`
 	MaxChars               json.RawMessage `json:"max_chars"`
 	IncludeEvidence        json.RawMessage `json:"include_evidence"`
@@ -118,6 +119,12 @@ func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.memoryService.Recall(r.Context(), query)
 	if err != nil {
+		// An unknown scope space is a request error, not a missing object:
+		// scope resolution fails before any ranking happens.
+		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrInvalidSearchQuery) {
+			h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "recall request is invalid", requestID, "", false, nil)
+			return
+		}
 		h.serviceError(w, err, requestID)
 		return
 	}
@@ -214,11 +221,16 @@ func appIdentity(caller, key, requestID, method, route string, request any) appl
 }
 
 func recallQuery(request recallRequest) (application.RecallQuery, error) {
-	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Mode: "hybrid", Limit: 10, MaxChars: 12000}
+	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Channels: []string{"keyword", "semantic", "graph"}, Limit: 10, MaxChars: 12000}
+	seenSpaces := map[string]bool{}
 	for _, id := range request.SpaceIDs {
 		if !validUUID(id) {
 			return application.RecallQuery{}, errors.New("space_ids must contain UUIDs")
 		}
+		if seenSpaces[id] {
+			return application.RecallQuery{}, errors.New("space_ids must be unique")
+		}
+		seenSpaces[id] = true
 	}
 	if request.IncludeAncestors != nil && (isNull(request.IncludeAncestors) || json.Unmarshal(request.IncludeAncestors, &query.IncludeAncestors) != nil) {
 		return application.RecallQuery{}, errors.New("include_ancestors must be a boolean")
@@ -227,6 +239,12 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 		query.MemoryTypesSet = true
 		if isNull(request.MemoryTypes) || json.Unmarshal(request.MemoryTypes, &query.MemoryTypes) != nil {
 			return application.RecallQuery{}, errors.New("memory_types must be an array")
+		}
+	}
+	validStates := map[string]bool{"active": true, "contested": true}
+	if request.States != nil {
+		if isNull(request.States) || json.Unmarshal(request.States, &query.States) != nil || !validValues(query.States, validStates) {
+			return application.RecallQuery{}, errors.New("states is invalid")
 		}
 	}
 	if request.ReferenceTime != nil {
@@ -240,8 +258,10 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 		}
 		query.ReferenceTime, query.ReferenceTimeSet = formatAPITime(parsed), true
 	}
-	if request.Mode != nil && (isNull(request.Mode) || json.Unmarshal(request.Mode, &query.Mode) != nil) {
-		return application.RecallQuery{}, errors.New("mode must be a string")
+	if request.Channels != nil {
+		if isNull(request.Channels) || json.Unmarshal(request.Channels, &query.Channels) != nil || !validValues(query.Channels, validChannels) {
+			return application.RecallQuery{}, errors.New("channels is invalid")
+		}
 	}
 	if err := decodeRange(request.Limit, &query.Limit, 1, 100, "limit"); err != nil {
 		return application.RecallQuery{}, err
@@ -258,5 +278,8 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 	if request.ExcludeStaleAggregates != nil && (isNull(request.ExcludeStaleAggregates) || json.Unmarshal(request.ExcludeStaleAggregates, &query.ExcludeStaleAggregates) != nil) {
 		return application.RecallQuery{}, errors.New("exclude_stale_aggregates must be a boolean")
 	}
+	query.States = sortedUnique(query.States)
+	query.MemoryTypes = sortedUnique(query.MemoryTypes)
+	query.Channels = sortedUnique(query.Channels)
 	return query, nil
 }

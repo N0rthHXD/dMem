@@ -443,29 +443,6 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '400': { $ref: '#/components/responses/InvalidJSON' }
         '422': { $ref: '#/components/responses/InvalidRequest' }
-  /search:
-    post:
-      operationId: searchMemories
-      parameters:
-        - $ref: '#/components/parameters/callerId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SearchRequest' }
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SearchResponse' }
-        '422': { $ref: '#/components/responses/InvalidRequest' }
-        '400': { $ref: '#/components/responses/InvalidJSON' }
-        '503':
-          description: Requested search index is unavailable
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
   /jobs/{job_id}:
     get:
       operationId: getJob
@@ -635,15 +612,6 @@ paths:
       responses:
         '501': { $ref: '#/components/responses/UnsupportedOperation' }
         '422': { $ref: '#/components/responses/InvalidRequest' }
-  /indexes/entities/rebuild:
-    post:
-      operationId: rebuildEntities
-      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
-      responses:
-        '202': { $ref: '#/components/responses/RebuildAccepted' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/InvalidRequest' }
-        '507': { $ref: '#/components/responses/ResourceExhausted' }
   /relation-proposals:
     post:
       operationId: createRelationProposal
@@ -723,15 +691,6 @@ paths:
         '200': { description: Relation, content: { application/json: { schema: { $ref: '#/components/schemas/Relation' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/InvalidRequest' }
-  /indexes/relations/rebuild:
-    post:
-      operationId: rebuildRelations
-      parameters: [{ $ref: '#/components/parameters/callerId' }, { $ref: '#/components/parameters/idempotencyKey' }]
-      responses:
-        '202': { $ref: '#/components/responses/RebuildAccepted' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/InvalidRequest' }
-        '507': { $ref: '#/components/responses/ResourceExhausted' }
   /entity-facts:
     get:
       operationId: listEntityFacts
@@ -1089,8 +1048,15 @@ components:
         space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
         include_ancestors: { type: boolean, default: true }
         memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }
+        states: { type: array, items: { $ref: '#/components/schemas/MemoryState' }, default: [active, contested] }
         reference_time: { type: string, format: date-time }
-        mode: { type: string, enum: [keyword, semantic, hybrid], default: hybrid }
+        channels:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [keyword, semantic, graph] }
+          default: [keyword, semantic, graph]
+          description: Top-level retrieval channels. Entity resolution is query understanding; entity facts and memory relations are internal graph signals, not channels.
         limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
         max_chars: { type: integer, minimum: 1, maximum: 100000, default: 12000 }
         include_evidence: { type: boolean, default: false }
@@ -1934,7 +1900,7 @@ components:
         query_hash: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
         result_rank: { type: integer, minimum: 1 }
         ranking_version: { type: string, minLength: 1 }
-        matched_channels: { type: array, minItems: 1, uniqueItems: true, items: { type: string, enum: [keyword, semantic, entity, relation] } }
+        matched_channels: { type: array, minItems: 1, uniqueItems: true, items: { type: string, enum: [keyword, semantic, graph] } }
     AppendFeedbackRequest:
       type: object
       additionalProperties: false
@@ -2081,37 +2047,19 @@ components:
         provenance: { type: array, items: { $ref: '#/components/schemas/AggregateProvenance' } }
         checked_at: { type: string, format: date-time }
     AggregatePage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Aggregate' } }, next_cursor: { type: [string, 'null'] } } }
-    SearchRequest:
-      type: object
-      additionalProperties: false
-      required: [query, space_ids]
-      properties:
-        query: { type: string, minLength: 1, description: Natural-language or keyword text. It is compiled internally; SQLite FTS5 syntax is not accepted. }
-        space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
-        include_ancestors: { type: boolean, default: true }
-        memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }
-        states: { type: array, items: { $ref: '#/components/schemas/MemoryState' }, default: [active, contested] }
-        reference_time: { type: string, format: date-time }
-        mode: { type: string, enum: [keyword, semantic, hybrid], default: keyword }
-        limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
-        max_chars: { type: integer, minimum: 1, maximum: 100000, default: 12000 }
-        include_evidence: { type: boolean, default: false }
-        cursor: { type: string }
-        exclude_stale_aggregates: { type: boolean, default: false }
     SearchResult:
       type: object
-      required: [memory, rank, keyword_score, matched_channels, selection_reason]
+      required: [memory, rank, matched_channels, selection_reason]
       properties:
         memory: { $ref: '#/components/schemas/Memory' }
         rank: { type: integer, minimum: 1 }
-        keyword_score: { type: number }
         keyword_relevance: { type: number }
         semantic_relevance: { type: number }
-        matched_channels: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, entity, relation, graph] } }
+        matched_channels: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, graph] } }
         graph_signals: { type: array, items: { $ref: '#/components/schemas/GraphSignal' } }
         graph_facts: { type: array, items: { $ref: '#/components/schemas/EntityFact' } }
         graph_paths: { type: array, items: { $ref: '#/components/schemas/GraphPath' } }
-        selection_reason: { type: string }
+        selection_reason: { type: string, enum: [keyword_match, semantic_match, graph_match, channel_fusion] }
         conflict_refs: { type: array, items: { $ref: '#/components/schemas/ConflictRef' } }
     ConflictRef:
       type: object
@@ -2124,24 +2072,30 @@ components:
         other_revision_id: { type: string, format: uuid }
     SearchResponse:
       type: object
-      required: [results, truncated, chars_used, index_state, next_cursor, requested_mode, executed_mode, degraded, degradation_reasons, fts_index_version, semantic_index_version, ranking_version, corpus_generation, feedback_aggregate_version, entity_index_version, relation_index_version]
+      required: [results, truncated, chars_used, next_cursor, requested_channels, executed_channels, degraded, degradation_reasons, fts_index_version, semantic_index_version, graph_index_version, graph_index_state, ranking_version, corpus_generation, feedback_aggregate_version]
       properties:
         results: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
         truncated: { type: boolean }
         chars_used: { type: integer, minimum: 0 }
-        index_state: { type: string, enum: [ready, degraded, rebuilding] }
         next_cursor: { type: [string, 'null'] }
-        requested_mode: { type: string, enum: [keyword, semantic, hybrid] }
-        executed_mode: { type: string, enum: [keyword, semantic, hybrid] }
+        requested_channels:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [keyword, semantic, graph] }
+        executed_channels:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [keyword, semantic, graph] }
+          description: Channels that actually executed; a subset of requested_channels when degradation occurred.
         degraded: { type: boolean }
-        degradation_reasons: { type: array, items: { type: string } }
+        degradation_reasons: { type: array, items: { type: string, enum: [keyword_unavailable, semantic_unavailable, semantic_stale, semantic_policy_denied, semantic_policy_changed] } }
         fts_index_version: { type: integer, minimum: 1 }
         semantic_index_version: { type: integer, minimum: 0 }
         ranking_version: { type: string }
         corpus_generation: { type: integer, minimum: 0 }
         feedback_aggregate_version: { type: integer, minimum: 0 }
-        entity_index_version: { type: integer, minimum: 0 }
-        relation_index_version: { type: integer, minimum: 0 }
         graph_index_version: { type: integer, minimum: 0 }
         graph_index_state: { type: string, enum: [ready, degraded, rebuilding, stale] }
         resolved_entities: { type: array, items: { $ref: '#/components/schemas/ResolvedEntity' } }
@@ -2161,12 +2115,26 @@ components:
         fact_confidence: { type: number }
     GraphPath:
       type: object
-      required: [subject_entity_id, steps, object_entity_id, hop]
+      required: [start_entity_id, edges, end_entity_id, hop]
       properties:
+        start_entity_id: { type: string, format: uuid }
+        edges:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/GraphPathEdge' }
+        end_entity_id: { type: string, format: uuid }
+        hop: { type: integer, minimum: 1 }
+    GraphPathEdge:
+      type: object
+      required: [fact_id, subject_entity_id, predicate, object_entity_id]
+      properties:
+        fact_id: { type: string, format: uuid }
         subject_entity_id: { type: string, format: uuid }
-        steps: { type: array, items: { type: string } }
+        predicate: { type: string }
         object_entity_id: { type: string, format: uuid }
-        hop: { type: integer, minimum: 0 }
+        confidence: { type: number }
+        source_memory_id: { type: string, format: uuid }
+        source_revision_id: { type: string, format: uuid }
     ResolvedEntity:
       type: object
       required: [entity_id, entity_type, alias, confidence, match_kind, start_rune, end_rune]
