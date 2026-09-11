@@ -36,13 +36,15 @@ from .progress import tqdm
 logger = logging.getLogger(__name__)
 
 DEFAULT_CUTOFFS = [1, 3, 5, 10, 25, 50]
-RETRIEVAL_MODES = {"keyword", "semantic", "hybrid"}
+RETRIEVAL_MODES = {"keyword", "semantic", "graph", "hybrid"}
 CONFIRMATION_POLICIES = {"confirm-all-new", "none"}
 RETRYABLE_OUTPUT_ERRORS = {
     "invalid_output",
     "malformed_processor_output",
     "invalid_candidate",
     "candidate_out_of_bounds",
+    "invalid_result_category",
+    "invalid_usage",
     "invalid_evidence_reference",
     "invalid_related_memory_reference",
 }
@@ -69,6 +71,7 @@ class RunConfig:
     fail_on_degraded: bool = False
     ingestion_workers: int = 1
     retrieval_workers: int = 1
+    corpus_dir: str | None = None
 
 
 def stable_key(*parts: str) -> str:
@@ -133,29 +136,109 @@ class Runner:
             "caller_id": self.config.caller_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        if self.config.corpus_dir:
+            corpus_manifest = Checkpoint(self.config.corpus_dir).read_manifest()
+            manifest["corpus_id"] = corpus_manifest.get("corpus_id", corpus_manifest.get("run_id")) if corpus_manifest else None
+            manifest["corpus_dir"] = self.config.corpus_dir
+            manifest["source_ingestion_run_id"] = corpus_manifest.get("run_id") if corpus_manifest else None
         self.cp.write_manifest(manifest)
         self.cp.write_validation(validate_dataset(conversations))
 
-        user_id, project_id = self._bootstrap_namespace()
+        if self.config.corpus_dir:
+            task_map, ingestion_records = self._load_corpus(conversations)
+        else:
+            user_id, project_id = self._bootstrap_namespace()
+            self._task_cache = {}
+            for s in self.client.list_spaces(
+                parent_space_id=project_id, space_type="task"
+            ):
+                ext = s.get("external_id", "")
+                if ext.startswith("c:"):
+                    self._task_cache[ext[2:]] = s["space_id"]
+            task_map = self._ingest_phase(conversations, project_id)
+            ingestion_records = self.cp.load_ingestion_records()
 
-        self._task_cache: dict[str, str] = {}
-        for s in self.client.list_spaces(
-            parent_space_id=project_id, space_type="task"
-        ):
+        if self.config.retrieval_mode in ("semantic", "hybrid"):
+            if self.config.corpus_dir:
+                self.client.wait_for_semantic_ready(
+                    poll_interval=self.config.job_poll_interval,
+                    timeout=self.config.job_timeout,
+                )
+            else:
+                self._semantic_barrier()
+
+        if self.config.corpus_dir:
+            self._recall_phase(conversations, task_map, ingestion_records)
+        else:
+            self._recall_phase(conversations, task_map)
+
+        summary = self._summarize(conversations, ingestion_records)
+        self.cp.write_summary(summary)
+        return summary
+
+    def ingest_corpus(self, conversations: list[Conversation]) -> dict[str, Any]:
+        user_id, project_id = self._bootstrap_namespace()
+        self._task_cache = {}
+        for s in self.client.list_spaces(parent_space_id=project_id, space_type="task"):
             ext = s.get("external_id", "")
             if ext.startswith("c:"):
                 self._task_cache[ext[2:]] = s["space_id"]
-
-        task_map = self._ingest_phase(conversations, project_id)
-
-        if self.config.retrieval_mode in ("semantic", "hybrid"):
-            self._semantic_barrier()
-
-        self._recall_phase(conversations, task_map)
-
-        summary = self._summarize(conversations)
+        manifest = {
+            "format_version": RESULT_VERSION,
+            "run_type": "corpus",
+            "corpus_id": self.config.run_id,
+            "run_id": self.config.run_id,
+            "dataset_sha": self.config.dataset_sha,
+            "confirmation_policy": self.config.confirmation_policy,
+            "invalid_evidence_reference_retries": self.config.invalid_evidence_reference_retries,
+            "ingestion_workers": self.config.ingestion_workers,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.cp.write_manifest(manifest)
+        self.cp.write_validation(validate_dataset(conversations))
+        self._ingest_phase(conversations, project_id)
+        summary = {"complete": not self._unresolved_failures(
+            {c.sample_id for c in conversations}, self.cp.load_ingested_sample_ids(), {}
+        )["ingestion"], "ingestion": self._summarize_ingestion(conversations, {"ingestion": set(), "retrieval": set()})}
         self.cp.write_summary(summary)
         return summary
+
+    def build_embeddings(self) -> dict[str, Any]:
+        previous = self.config.fail_on_degraded
+        self.config.fail_on_degraded = True
+        try:
+            self._semantic_barrier()
+        finally:
+            self.config.fail_on_degraded = previous
+        result = self.cp.read_manifest() or {}
+        result["embedding_state"] = "ready"
+        result["embedding_built_at"] = datetime.now(timezone.utc).isoformat()
+        self.cp.write_manifest(result)
+        return result
+
+    def _load_corpus(self, conversations: list[Conversation]) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
+        source = Checkpoint(self.config.corpus_dir or "")
+        manifest = source.read_manifest()
+        if not manifest or manifest.get("run_type") != "corpus":
+            raise ValueError("corpus manifest is missing or is not a corpus run")
+        if manifest.get("dataset_sha") != self.config.dataset_sha:
+            raise ValueError("corpus dataset SHA does not match evaluation dataset")
+        if self.config.retrieval_mode in ("semantic", "hybrid") and manifest.get("embedding_state") != "ready":
+            raise ValueError("semantic index is not ready; run the embeddings stage first")
+        records = source.load_ingestion_records()
+        completed = source.load_ingested_sample_ids()
+        expected = {c.sample_id for c in conversations}
+        if not expected.issubset(completed):
+            missing = sorted(expected - completed)
+            raise ValueError(f"corpus ingestion is incomplete; missing: {', '.join(missing)}")
+        task_map = {}
+        for sid in expected:
+            task_records = records.get(sid, [])
+            complete = next((r for r in task_records if r.get("record_type") == "conversation_complete"), None)
+            if not complete or not complete.get("task_space_id"):
+                raise ValueError(f"corpus has no task space for {sid}")
+            task_map[sid] = complete["task_space_id"]
+        return task_map, records
 
     # ------------------------------------------------------------------
     # namespace
@@ -568,10 +651,11 @@ class Runner:
     # ------------------------------------------------------------------
 
     def _recall_phase(
-        self, conversations: list[Conversation], task_map: dict[str, str]
+        self, conversations: list[Conversation], task_map: dict[str, str],
+        ingestion_records: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         done = self.cp.load_retrieval_qids()
-        ingestion_records = self.cp.load_ingestion_records()
+        ingestion_records = ingestion_records or self.cp.load_ingestion_records()
 
         qa_by_sample: dict[str, list[QA]] = {}
         for conv in conversations:
@@ -711,9 +795,17 @@ class Runner:
     # summarize
     # ------------------------------------------------------------------
 
-    def _summarize(self, conversations: list[Conversation]) -> dict[str, Any]:
+    def _summarize(
+        self,
+        conversations: list[Conversation],
+        ingestion_records: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
         retrieval_records = self.cp.load_retrieval_records()
-        ingested = self.cp.load_ingested_sample_ids()
+        ingestion_records = ingestion_records or self.cp.load_ingestion_records()
+        ingested = {
+            sid for sid, records in ingestion_records.items()
+            if any(rec.get("record_type") == "conversation_complete" for rec in records)
+        }
         sample_ids = {conv.sample_id for conv in conversations}
         failures = self._unresolved_failures(sample_ids, ingested, retrieval_records)
         failed_by_phase = {
@@ -829,7 +921,7 @@ class Runner:
         sample_ids = {conv.sample_id for conv in conversations}
         events = [
             rec
-            for records in self.cp.load_ingestion_records().values()
+            for records in ingestion_records.values()
             for rec in records
             if rec.get("record_type", "event") == "event"
         ]

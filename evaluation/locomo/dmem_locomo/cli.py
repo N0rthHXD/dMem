@@ -139,6 +139,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             args.retrieval_workers if args.retrieval_workers is not None
             else cfg.retrieval.workers
         ),
+        corpus_dir=args.corpus_output,
     )
 
     cp = Checkpoint(args.output)
@@ -169,7 +170,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         if not health.get("ready"):
             print("daemon not ready", file=sys.stderr)
             sys.exit(1)
-        if health.get("processor_state") == "not_configured":
+        if not args.corpus_output and health.get("processor_state") == "not_configured":
             print(
                 "LoCoMo evaluation requires an enabled processing provider; "
                 "use a daemon config with [processing.provider].enabled=true",
@@ -183,6 +184,79 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(json.dumps(summary, indent=2))
         if not summary.get("complete", False):
             raise SystemExit(1)
+    finally:
+        client.close()
+
+
+def _client_for_stage(cfg: EvalConfig, args: argparse.Namespace) -> DMemClient:
+    socket_path = resolve_socket(cfg, args.socket)
+    client = DMemClient(socket_path, caller_id=args.caller_id, timeout=args.request_timeout)
+    health = client.health()
+    if not health.get("ready"):
+        client.close()
+        raise RuntimeError("daemon not ready")
+    return client
+
+
+def cmd_corpus(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    conversations, sha = load_dataset(args.dataset)
+    client = _client_for_stage(cfg, args)
+    try:
+        if client.health().get("processor_state") == "not_configured":
+            raise RuntimeError(
+                "corpus ingestion requires an enabled processing provider"
+            )
+        config = RunConfig(
+            run_id=args.run_id,
+            dataset_sha=sha,
+            socket_path=resolve_socket(cfg, args.socket),
+            confirmation_policy=cfg.ingestion.confirmation_policy,
+            job_poll_interval=cfg.ingestion.job_poll_interval,
+            job_timeout=cfg.ingestion.job_timeout,
+            invalid_evidence_reference_retries=cfg.ingestion.invalid_evidence_reference_retries,
+            caller_id=args.caller_id,
+            output_dir=args.output,
+            ingestion_workers=cfg.ingestion.workers,
+        )
+        if args.resume:
+            existing = Checkpoint(args.output).read_manifest()
+            if existing:
+                for key, value in {
+                    "dataset_sha": sha,
+                    "run_id": args.run_id,
+                    "confirmation_policy": cfg.ingestion.confirmation_policy,
+                }.items():
+                    if existing.get(key) != value:
+                        raise ValueError(f"corpus resume mismatch on {key}")
+        result = Runner(client, config, Checkpoint(args.output)).ingest_corpus(conversations)
+        print(json.dumps(result, indent=2))
+    finally:
+        client.close()
+
+
+def cmd_embeddings(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    _, dataset_sha = load_dataset(args.dataset)
+    cp = Checkpoint(args.corpus_output)
+    manifest = cp.read_manifest()
+    if not manifest or manifest.get("run_type") != "corpus":
+        raise ValueError("corpus manifest is missing or is not a corpus run")
+    if manifest.get("dataset_sha") != dataset_sha:
+        raise ValueError("corpus dataset SHA does not match evaluation dataset")
+    client = _client_for_stage(cfg, args)
+    try:
+        config = RunConfig(
+            run_id=manifest["run_id"],
+            dataset_sha=manifest["dataset_sha"],
+            socket_path=resolve_socket(cfg, args.socket),
+            caller_id=args.caller_id,
+            output_dir=args.corpus_output,
+            job_poll_interval=cfg.ingestion.job_poll_interval,
+            job_timeout=cfg.ingestion.job_timeout,
+        )
+        result = Runner(client, config, cp).build_embeddings()
+        print(json.dumps(result, indent=2))
     finally:
         client.close()
 
@@ -439,7 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--retrieval-mode", default=None,
-        choices=["keyword", "semantic", "hybrid"],
+        choices=["keyword", "semantic", "graph", "hybrid"],
     )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--max-chars", type=int, default=None)
@@ -455,6 +529,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--caller-id", default="locomo")
     p.add_argument("--output", default="results/locomo")
+    p.add_argument(
+        "--corpus-output", default=None,
+        help="Use an existing corpus output and skip ingestion",
+    )
     p.add_argument("--request-timeout", type=float, default=120.0)
     p.add_argument("--ingestion-workers", type=positive_int, default=None)
     p.add_argument("--retrieval-workers", type=positive_int, default=None)
@@ -477,6 +555,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cot", action=argparse.BooleanOptionalAction, default=None)
     p.add_argument("--workers", type=positive_int, default=None)
     p.set_defaults(func=cmd_generate)
+
+    # -- corpus --
+    p = sub.add_parser("corpus", help="Ingest the shared evaluation corpus")
+    p.add_argument("--dataset", required=True)
+    p.add_argument("--socket", default=None)
+    p.add_argument("--run-id", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--caller-id", default="locomo")
+    p.add_argument("--request-timeout", type=float, default=120.0)
+    p.add_argument("--resume", action="store_true")
+    p.set_defaults(func=cmd_corpus)
+
+    # -- embeddings --
+    p = sub.add_parser("embeddings", help="Build embeddings for a shared corpus")
+    p.add_argument("--dataset", required=True)
+    p.add_argument("--corpus-output", required=True)
+    p.add_argument("--socket", default=None)
+    p.add_argument("--caller-id", default="locomo")
+    p.add_argument("--request-timeout", type=float, default=120.0)
+    p.set_defaults(func=cmd_embeddings)
 
     # -- judge --
     p = sub.add_parser("judge", help="Judge generated answers")

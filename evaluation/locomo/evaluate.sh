@@ -2,17 +2,20 @@
 # Run the LoCoMo retrieval stage, QA stage, or both.
 #
 # Usage:
+#   ./evaluate.sh --stage corpus --dataset DATASET --run-id RUN_ID [options]
+#   ./evaluate.sh --stage embeddings --dataset DATASET --corpus-output DIR [options]
 #   ./evaluate.sh --stage retrieval --dataset DATASET --run-id RUN_ID [options]
 #   ./evaluate.sh --stage retrieval --dataset DATASET --run-id RUN_ID --resume [options]
 #   ./evaluate.sh --stage qa --dataset DATASET --output OUTPUT [options]
 #   ./evaluate.sh --stage all --dataset DATASET --run-id RUN_ID [options]
 #
 # Options:
-#   --stage STAGE          retrieval|qa|all (default: all)
+#   --stage STAGE          corpus|embeddings|retrieval|qa|all (default: all)
 #   --dataset PATH        locomo10.json dataset (required)
 #   --run-id ID           Run identifier (required for retrieval/all)
 #   --output DIR          Result directory (default: <repo>/results/locomo/<run-id>)
-#   --retrieval-mode MODE keyword|semantic|hybrid (default: config/default)
+#   --corpus-output DIR   Existing shared corpus directory for embeddings/retrieval
+#   --retrieval-mode MODE keyword|semantic|graph|hybrid (default: config/default)
 #   --eval-config PATH    Evaluation TOML (required for QA)
 #   --daemon-config PATH  dmemd TOML (default: $DMEM_CONFIG or ~/.config/dmem/config.toml)
 #   --dmemd PATH          dmemd binary (default: $DMEMD or <repo>/dmemd)
@@ -30,6 +33,7 @@ DATASET=""
 RUN_ID=""
 OUTPUT=""
 RETRIEVAL_MODE=""
+CORPUS_OUTPUT=""
 EVAL_CONFIG="${DMEM_EVAL_CONFIG:-}"
 DAEMON_CONFIG="${DMEM_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml}"
 DMEMD_BIN="${DMEMD:-}"
@@ -65,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --dataset) DATASET="$2"; shift 2;;
     --run-id) RUN_ID="$2"; shift 2;;
     --output) OUTPUT="$2"; shift 2;;
+    --corpus-output) CORPUS_OUTPUT="$2"; shift 2;;
     --retrieval-mode) RETRIEVAL_MODE="$2"; shift 2;;
     --eval-config) EVAL_CONFIG="$2"; shift 2;;
     --daemon-config) DAEMON_CONFIG="$2"; shift 2;;
@@ -84,8 +89,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$STAGE" in
-  retrieval|qa|all) ;;
-  *) printf 'error: --stage must be retrieval, qa, or all\n' >&2; exit 1;;
+  corpus|embeddings|retrieval|qa|all) ;;
+  *) printf 'error: --stage must be corpus, embeddings, retrieval, qa, or all\n' >&2; exit 1;;
 esac
 
 [[ -n "$DATASET" ]] || { printf 'error: --dataset is required\n' >&2; exit 1; }
@@ -95,12 +100,27 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   [[ -n "$RUN_ID" ]] || { printf 'error: --run-id is required for retrieval\n' >&2; exit 1; }
 fi
 
+if [[ "$STAGE" == "corpus" ]]; then
+  [[ -n "$RUN_ID" ]] || { printf 'error: --run-id is required for corpus\n' >&2; exit 1; }
+fi
+if [[ "$STAGE" == "embeddings" ]]; then
+  [[ -n "$CORPUS_OUTPUT" ]] || { printf 'error: --corpus-output is required for embeddings\n' >&2; exit 1; }
+fi
+
+if [[ -z "$OUTPUT" && "$STAGE" == "embeddings" ]]; then
+  OUTPUT="$CORPUS_OUTPUT"
+fi
 if [[ -z "$OUTPUT" ]]; then
   [[ -n "$RUN_ID" ]] || {
     printf 'error: --output is required for a standalone QA stage\n' >&2
     exit 1
   }
   OUTPUT="$REPO_ROOT/results/locomo/$RUN_ID"
+fi
+
+if [[ "$STAGE" == "corpus" && -e "$OUTPUT" && "$RESUME" == false ]]; then
+  printf 'error: corpus output already exists: %s\n' "$OUTPUT" >&2
+  exit 1
 fi
 
 if [[ "$STAGE" == "qa" || "$STAGE" == "all" ]]; then
@@ -114,7 +134,7 @@ if [[ "$STAGE" == "qa" || "$STAGE" == "all" ]]; then
   }
 fi
 
-if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
+if [[ "$STAGE" == "corpus" || "$STAGE" == "embeddings" || "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   [[ -f "$DAEMON_CONFIG" ]] || {
     printf 'error: daemon config not found: %s\n' "$DAEMON_CONFIG" >&2
     exit 1
@@ -140,7 +160,11 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   }
 
   install -d "$OUTPUT"
-  TMP_ROOT="$OUTPUT/daemon-workspace"
+  if [[ -n "$CORPUS_OUTPUT" ]]; then
+    TMP_ROOT="$CORPUS_OUTPUT/daemon-workspace"
+  else
+    TMP_ROOT="$OUTPUT/daemon-workspace"
+  fi
   DATA_DIR="$TMP_ROOT/data"
   RUNTIME_DIR="$TMP_ROOT/runtime"
   SOCKET_PATH="$RUNTIME_DIR/dmem.sock"
@@ -148,7 +172,31 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   DAEMON_LOG="$TMP_ROOT/daemon.log"
   trap cleanup EXIT INT TERM
 
-  if [[ "$RESUME" == true ]]; then
+  if [[ -n "$CORPUS_OUTPUT" ]]; then
+    [[ -f "$DATA_DIR/dmem.db" ]] || {
+      printf 'error: corpus daemon workspace not found: %s\n' "$TMP_ROOT" >&2
+      exit 1
+    }
+    awk -v data_dir="$DATA_DIR" -v runtime_dir="$RUNTIME_DIR" '
+    /^\[instance\]$/ {
+      found_instance = 1
+      print
+      print "data_dir = \"" data_dir "\""
+      print "runtime_dir = \"" runtime_dir "\""
+      print "database_filename = \"dmem.db\""
+      print "socket_filename = \"dmem.sock\""
+      in_instance = 1
+      next
+    }
+    in_instance && /^\[/ { in_instance = 0 }
+    !in_instance { print }
+    END { if (!found_instance) exit 1 }
+    ' "$DAEMON_CONFIG" > "$DAEMON_CONFIG_PATH" || {
+      printf 'error: daemon config has no [instance] section: %s\n' "$DAEMON_CONFIG" >&2
+      exit 1
+    }
+    printf 'reusing corpus daemon workspace: %s\n' "$TMP_ROOT" >&2
+  elif [[ "$RESUME" == true ]]; then
     [[ -f "$DAEMON_CONFIG_PATH" && -f "$DATA_DIR/dmem.db" ]] || {
       printf 'error: resumable daemon workspace not found: %s\n' "$TMP_ROOT" >&2
       exit 1
@@ -182,7 +230,9 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
 
   printf 'validating daemon config\n' >&2
   "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" config validate >/dev/null
-  if [[ "$RESUME" == false ]]; then
+  if [[ -n "$CORPUS_OUTPUT" ]]; then
+    :
+  elif [[ "$RESUME" == false ]]; then
     printf 'initializing fresh database\n' >&2
     "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" init >/dev/null
   fi
@@ -218,9 +268,21 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   )
   [[ "$RESUME" == true ]] && RETRIEVAL_CMD+=(--resume)
   [[ -n "$RETRIEVAL_MODE" ]] && RETRIEVAL_CMD+=(--retrieval-mode "$RETRIEVAL_MODE")
+  [[ -n "$CORPUS_OUTPUT" ]] && RETRIEVAL_CMD+=(--corpus-output "$CORPUS_OUTPUT")
   [[ ${#RETRIEVAL_ARGS[@]} -gt 0 ]] && RETRIEVAL_CMD+=("${RETRIEVAL_ARGS[@]}")
 
-  if [[ "$STAGE" == "all" ]]; then
+  if [[ "$STAGE" == "corpus" ]]; then
+    printf 'running corpus ingestion stage\n' >&2
+    RETRIEVAL_CMD=("$PYTHON_BIN" -m dmem_locomo)
+    [[ -n "$EVAL_CONFIG" ]] && RETRIEVAL_CMD+=(--config "$EVAL_CONFIG")
+    RETRIEVAL_CMD+=(corpus --dataset "$DATASET" --socket "$SOCKET_PATH" --run-id "$RUN_ID" --output "$OUTPUT")
+    [[ "$RESUME" == true ]] && RETRIEVAL_CMD+=(--resume)
+  elif [[ "$STAGE" == "embeddings" ]]; then
+    printf 'running embedding build stage\n' >&2
+    RETRIEVAL_CMD=("$PYTHON_BIN" -m dmem_locomo)
+    [[ -n "$EVAL_CONFIG" ]] && RETRIEVAL_CMD+=(--config "$EVAL_CONFIG")
+    RETRIEVAL_CMD+=(embeddings --dataset "$DATASET" --corpus-output "$CORPUS_OUTPUT" --socket "$SOCKET_PATH")
+  elif [[ "$STAGE" == "all" ]]; then
     printf '[1/3] running retrieval stage\n' >&2
   else
     printf '[1/1] running retrieval stage\n' >&2

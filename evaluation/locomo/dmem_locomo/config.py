@@ -152,7 +152,7 @@ def _validate(cfg: EvalConfig) -> None:
         raise ValueError(
             "ingestion.invalid_evidence_reference_retries must be a non-negative integer"
         )
-    if cfg.retrieval.mode not in ("keyword", "semantic", "hybrid"):
+    if cfg.retrieval.mode not in ("keyword", "semantic", "graph", "hybrid"):
         raise ValueError(
             f"invalid retrieval.mode: {cfg.retrieval.mode!r}"
         )

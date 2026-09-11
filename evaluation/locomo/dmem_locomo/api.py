@@ -272,7 +272,12 @@ class DMemClient:
             "query": query,
             "space_ids": space_ids,
             "include_ancestors": include_ancestors,
-            "channels": {"keyword": ["keyword"], "semantic": ["semantic"], "hybrid": ["keyword", "semantic", "graph"]}[mode],
+            "channels": {
+                "keyword": ["keyword"],
+                "semantic": ["semantic"],
+                "graph": ["graph"],
+                "hybrid": ["keyword", "semantic", "graph"],
+            }[mode],
             "limit": limit,
             "max_chars": max_chars,
             "include_evidence": include_evidence,

@@ -26,7 +26,7 @@ invalid_evidence_reference_retries = 1
 workers = 2
 
 [retrieval]
-# Retrieval mode: keyword | semantic | hybrid.
+# Retrieval mode: keyword | semantic | graph | hybrid.
 # Semantic and hybrid require a configured embedding provider in dMem.
 mode = "keyword"
 limit = 100

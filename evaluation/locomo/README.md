@@ -77,7 +77,7 @@ export OPENAI_API_KEY=sk-...
 | `[ingestion]` | `job_poll_interval`, `job_timeout` | Extraction job polling |
 | `[ingestion]` | `invalid_evidence_reference_retries` | Bounded retry count for model-output contract violations; `0` disables it |
 | `[ingestion]` | `workers` | Conversations ingested concurrently |
-| `[retrieval]` | `mode` | `keyword`, `semantic`, or `hybrid` |
+| `[retrieval]` | `mode` | `keyword`, `semantic`, `graph`, or `hybrid` |
 | `[retrieval]` | `limit`, `max_chars`, `cutoffs` | Retrieval parameters |
 | `[retrieval]` | `workers` | Recall requests issued concurrently |
 | `[answer]` | `model` | OpenAI-compatible model for answer generation |
@@ -113,6 +113,49 @@ export OPENAI_API_KEY=sk-...
 
 Arguments after `--` are passed to the retrieval `run` command, for example
 `-- --confirmation-policy none --max-conversations 1`.
+
+### Shared Corpus
+
+Ingestion is a shared prerequisite for retrieval comparisons. Create it once,
+build embeddings from the ingested memories, and then run each retrieval mode
+against the same daemon database:
+
+```sh
+# 1. Ingest and confirm the common corpus.
+./evaluate.sh --stage corpus \
+  --dataset /path/to/locomo10.json \
+  --run-id locomo-corpus-001 \
+  --output /path/to/results/locomo-corpus-001 \
+  --eval-config eval_config.toml \
+  --daemon-config dmemd-embedding.toml
+
+# 2. Enable the embedding provider in dmemd-embedding.toml and build vectors.
+./evaluate.sh --stage embeddings \
+  --dataset /path/to/locomo10.json \
+  --corpus-output /path/to/results/locomo-corpus-001 \
+  --eval-config eval_config.toml \
+  --daemon-config dmemd-embedding.toml
+
+# 3. Evaluate any number of retrieval modes without re-ingestion.
+./evaluate.sh --stage retrieval \
+  --dataset /path/to/locomo10.json \
+  --run-id full-hybrid-001 \
+  --output /path/to/results/full-hybrid-001 \
+  --corpus-output /path/to/results/locomo-corpus-001 \
+  --retrieval-mode hybrid \
+  --eval-config eval_config.toml \
+  --daemon-config dmemd-embedding.toml
+```
+
+The corpus directory owns the daemon workspace and `ingestion.jsonl`; each
+retrieval directory owns its own manifest, `retrieval.jsonl`, and summary. The
+retrieval stage validates the dataset SHA, complete ingestion, and embedding
+readiness before querying. Do not run cleanup against the shared corpus while
+retrieval runs still depend on it.
+
+`graph` requests only the graph channel. `hybrid` requests keyword, semantic,
+and graph together. Only `semantic` and `hybrid` require the embedding build
+stage.
 
 ### Event Processing Retrieval
 
