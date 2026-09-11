@@ -199,7 +199,7 @@ class Runner:
         self._ingest_phase(conversations, project_id)
         summary = {"complete": not self._unresolved_failures(
             {c.sample_id for c in conversations}, self.cp.load_ingested_sample_ids(), {}
-        )["ingestion"], "ingestion": self._summarize_ingestion(conversations, {"ingestion": set(), "retrieval": set()})}
+        )["ingestion"], "ingestion": self._summarize_ingestion(conversations, None, {"ingestion": set(), "retrieval": set()})}
         self.cp.write_summary(summary)
         return summary
 
@@ -860,7 +860,9 @@ class Runner:
                 ),
                 "by_phase": failed_by_phase,
             },
-            "ingestion": self._summarize_ingestion(conversations, failures),
+            "ingestion": self._summarize_ingestion(
+                conversations, ingestion_records, failures
+            ),
             "retrieval": {
                 "turn_level": turn_summary,
                 "session_level": session_summary,
@@ -915,9 +917,18 @@ class Runner:
         return failures
 
     def _summarize_ingestion(
-        self, conversations: list[Conversation], failures: dict[str, set[str]]
+        self,
+        conversations: list[Conversation],
+        ingestion_records: dict[str, list[dict[str, Any]]] | None,
+        failures: dict[str, set[str]],
     ) -> dict[str, Any]:
-        ingested = self.cp.load_ingested_sample_ids()
+        if ingestion_records is None:
+            ingestion_records = self.cp.load_ingestion_records()
+        ingested = {
+            sid
+            for sid, records in ingestion_records.items()
+            if any(rec.get("record_type") == "conversation_complete" for rec in records)
+        }
         sample_ids = {conv.sample_id for conv in conversations}
         events = [
             rec

@@ -13,10 +13,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
-from openai import OpenAI
 
 from .checkpoint import Checkpoint
 from .dataset import load_dataset
+from .llm import chat_with_retry, make_client
 from .progress import tqdm
 
 PROMPT_ANSWERABLE = (
@@ -71,7 +71,7 @@ def judge_answers(
     generation_records = cp.load_generation_records()
     done = cp.load_judge_qids()
 
-    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=5)
+    client = make_client(api_key, base_url)
 
     qa_map = {qa.qa_id: (conv, qa) for conv in conversations for qa in conv.qa}
     eligible = [qa_map[qid] for qid in generation_records if qid not in done]
@@ -87,13 +87,7 @@ def judge_answers(
             prompt = PROMPT_TEMPORAL.format(qa.question, qa.answer_string, hypothesis)
         else:
             prompt = PROMPT_ANSWERABLE.format(qa.question, qa.answer_string, hypothesis)
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            n=1,
-            temperature=0,
-            max_tokens=10,
-        )
+        completion = chat_with_retry(client, model=model, prompt=prompt, max_tokens=10)
         eval_response = completion.choices[0].message.content.strip()
         label = "yes" in eval_response.lower()
         return (

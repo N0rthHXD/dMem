@@ -11,10 +11,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from openai import OpenAI
-
 from .checkpoint import Checkpoint
 from .dataset import load_dataset
+from .llm import chat_with_retry, make_client
 from .progress import tqdm
 
 PROMPT = (
@@ -70,7 +69,7 @@ def generate_answers(
     retrieval_records = cp.load_retrieval_records()
     done = cp.load_generation_qids()
 
-    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=5)
+    client = make_client(api_key, base_url)
     count = 0
 
     conv_map = {c.sample_id: c for c in conversations}
@@ -92,12 +91,8 @@ def generate_answers(
             history=history or "(no relevant history retrieved)",
             question=qa.question,
         )
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            n=1,
-            temperature=0,
-            max_tokens=gen_length,
+        completion = chat_with_retry(
+            client, model=model, prompt=prompt, max_tokens=gen_length
         )
         answer = completion.choices[0].message.content.strip()
         usage = completion.usage
