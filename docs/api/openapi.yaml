@@ -2172,7 +2172,7 @@ components:
     Health:
       type: object
       additionalProperties: false
-      required: [process_alive, mode, overall_status, ready, accepting_writes, query_available, storage_state, storage_healthy, storage_writable, schema_compatibility, queue_state, fts_state, fts_index_state, fts_freshness, processor_state, processor_identity, semantic_state, semantic_index_state, semantic_index_version, entity_index_state, entity_index_version, relation_index_state, relation_index_version, graph_index_state, graph_index_version, feedback_aggregate_state, feedback_aggregate_version, aggregate_state, aggregate_fresh_count, aggregate_stale_count, aggregate_pending_rebuilds, backup_state, job_queue_depth, oldest_job_age_seconds, disk_pressure]
+      required: [process_alive, mode, overall_status, ready, accepting_writes, query_available, storage_state, storage_healthy, storage_writable, storage_integrity_state, schema_compatibility, queue_state, fts_state, fts_index_state, fts_freshness, processor_state, processor_identity, semantic_state, semantic_index_state, semantic_index_version, entity_index_state, entity_index_version, relation_index_state, relation_index_version, graph_index_state, graph_index_version, feedback_aggregate_state, feedback_aggregate_version, aggregate_state, aggregate_fresh_count, aggregate_stale_count, aggregate_pending_rebuilds, backup_state, job_queue_depth, oldest_job_age_seconds, disk_pressure]
       properties:
         process_alive: { type: boolean }
         mode: { type: string, enum: [healthy, degraded, read_only, maintenance, unavailable] }
@@ -2183,6 +2183,7 @@ components:
         storage_state: { type: string, enum: [ready, degraded, unavailable] }
         storage_healthy: { type: boolean }
         storage_writable: { type: boolean }
+        storage_integrity_state: { type: string, enum: [unknown, off, pending, ready, failed] }
         schema_compatibility: { type: string, enum: [compatible, incompatible, unknown] }
         queue_state: { type: string, enum: [ready, degraded, unavailable] }
         fts_state: { type: string, enum: [ready, degraded, unavailable, rebuilding] }

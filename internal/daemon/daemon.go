@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -65,15 +66,23 @@ func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err 
 	if manager == nil {
 		return nil, errors.New("configuration manager is required")
 	}
+	activation := config.ActivationResult{Outcome: config.OutcomeActivated, Trigger: config.TriggerStartup}
 	if manager.Snapshot() == nil {
-		result := manager.Reload(ctx, config.TriggerStartup)
-		if result.Outcome != config.OutcomeActivated && result.Outcome != config.OutcomeNoChange {
-			return nil, fmt.Errorf("activate startup configuration: %s", result.ErrorCode)
+		activation = manager.Reload(ctx, config.TriggerStartup)
+		if activation.Outcome != config.OutcomeActivated && activation.Outcome != config.OutcomeNoChange {
+			return nil, fmt.Errorf("activate startup configuration: %s", activation.ErrorCode)
 		}
 	}
 	snapshot := manager.Snapshot()
 	if snapshot == nil {
 		return nil, errors.New("configuration manager has no active snapshot")
+	}
+	if activation.AttemptID == "" {
+		activation.AttemptID = snapshot.ActivationID
+		activation.SourceIdentity = snapshot.Config.SourceIdentity
+		activation.EffectiveIdentity = snapshot.Config.EffectiveIdentity
+		activation.StartedAt = snapshot.ActivatedAt
+		activation.FinishedAt = snapshot.ActivatedAt
 	}
 	base := snapshot.Config
 	base.ProcessingProvider = config.ProviderConfig{}
@@ -87,19 +96,15 @@ func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err 
 		_ = d.Close(context.Background())
 		return nil, err
 	}
-	if err := d.recordActivation(ctx, config.ActivationResult{
-		AttemptID:         snapshot.ActivationID,
-		Outcome:           config.OutcomeActivated,
-		Trigger:           config.TriggerStartup,
-		SourceIdentity:    snapshot.Config.SourceIdentity,
-		EffectiveIdentity: snapshot.Config.EffectiveIdentity,
-		StartedAt:         snapshot.ActivatedAt,
-		FinishedAt:        snapshot.ActivatedAt,
-	}, nil, snapshot); err != nil {
+	if err := d.recordActivation(ctx, activation, nil, snapshot); err != nil {
 		_ = d.Close(context.Background())
 		return nil, err
 	}
-	d.lastAttempt = config.ActivationResult{AttemptID: snapshot.ActivationID, Outcome: config.OutcomeActivated, Trigger: config.TriggerStartup, SourceIdentity: snapshot.Config.SourceIdentity, EffectiveIdentity: snapshot.Config.EffectiveIdentity, StartedAt: snapshot.ActivatedAt, FinishedAt: snapshot.ActivatedAt}
+	if err := d.repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
+		_ = d.Close(context.Background())
+		return nil, fmt.Errorf("prepare semantic recovery: %w", err)
+	}
+	d.lastAttempt = activation
 	if err := d.jobs.Start(ctx); err != nil {
 		_ = d.Close(context.Background())
 		return nil, err
@@ -137,10 +142,19 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		}
 	}()
 
-	d.store, err = storage.Open(ctx, cfg.DatabasePath, storage.Options{ReadConnections: cfg.WorkerCount})
+	d.store, err = storage.Open(ctx, cfg.DatabasePath, storage.Options{
+		ReadConnections:    cfg.WorkerCount,
+		IntegrityCheckMode: storage.IntegrityCheckBackground,
+	})
 	if err != nil {
 		return nil, err
 	}
+	store := d.store
+	go func() {
+		if err := store.WaitIntegrity(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("storage integrity check failed", "error", err)
+		}
+	}()
 	ftsState, err := d.store.IndexState(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read FTS state: %w", err)
@@ -235,10 +249,14 @@ func (d *Daemon) Reload(ctx context.Context, trigger config.ActivationTrigger) (
 		if previous != nil {
 			d.manager.Revert(previous)
 			_ = d.applySnapshot(ctx, previous, nil)
+			_ = d.repository.EnsureSemanticRecoveryJobs(ctx)
 		}
 		return result, err
 	}
 	if err := d.recordActivation(ctx, result, previous, snapshot); err != nil {
+		return result, err
+	}
+	if err := d.repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -510,9 +528,6 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		snapshot.ActivationGeneration,
 		embeddingPolicyGeneration,
 	)
-	if err := d.repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
-		return fmt.Errorf("prepare semantic recovery: %w", err)
-	}
 	return nil
 }
 

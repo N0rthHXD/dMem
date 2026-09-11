@@ -388,7 +388,7 @@ func (r *Repository) createPendingEntityProposal(ctx context.Context, tx *sql.Tx
 	if alias != "" {
 		normVersion = "v1"
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO entity_proposals(proposal_id, event_id, space_id, proposal_kind, entity_type, canonical_name, alias, normalization_version, sensitivity, processor_identity, provider_identity, model_identity, processing_version, specification_hash, created_at) VALUES (?,?,?,'entity',?,?,?,?,?,?,?,?,?,?,?)`, id, eventID, input.SpaceID, entity.EntityType, entity.CanonicalName, nullableString(alias), nullableString(normVersion), input.Sensitivity, input.ProcessorIdentity, stringPointer(input.ProcessorIdentity), stringPointer(""), input.ProcessingVersion, graphEntitySpecHash(entity), now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entity_proposals(proposal_id, event_id, space_id, proposal_kind, entity_type, canonical_name, alias, normalization_version, sensitivity, processor_identity, provider_identity, model_identity, processing_version, specification_hash, created_at) VALUES (?,?,?,'entity',?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, eventID, input.SpaceID, entity.EntityType, entity.CanonicalName, nullableString(alias), nullableString(normVersion), input.Sensitivity, input.ProcessorIdentity, stringPointer(input.ProcessorIdentity), stringPointer(""), input.ProcessingVersion, graphEntitySpecHash(entity), now)
 	return id, err
 }
 

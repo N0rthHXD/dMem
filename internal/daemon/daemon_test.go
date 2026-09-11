@@ -54,7 +54,7 @@ func TestDaemonLifecycleAndHealth(t *testing.T) {
 	if !health.ProcessAlive || !health.Ready || health.Mode != "healthy" || health.SchemaCompatibility != "compatible" || health.FTSState != "ready" {
 		t.Fatalf("unexpected health: %+v", health)
 	}
-	if health.OverallStatus != "healthy" || health.StorageState != "ready" || health.QueueState != "ready" || health.ProcessorState != "not_configured" || health.ProcessorIdentity != "none" || health.SemanticIndexState != "not_configured" || health.BackupState != "ready" {
+	if health.OverallStatus != "healthy" || health.StorageState != "ready" || health.StorageIntegrityState == "" || health.QueueState != "ready" || health.ProcessorState != "not_configured" || health.ProcessorIdentity != "none" || health.SemanticIndexState != "not_configured" || health.BackupState != "ready" {
 		t.Fatalf("unexpected dimension health: %+v", health)
 	}
 

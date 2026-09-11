@@ -408,6 +408,63 @@ func TestReconciliationResumesAfterDaemonRestart(t *testing.T) {
 	}
 }
 
+func TestStartupEmbeddingEnablementRecoversExistingMemories(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.toml")
+	disabled := reloadConfig{
+		dataDir:    filepath.Join(root, "data"),
+		runtimeDir: filepath.Join(root, "runtime"),
+	}
+	writeReloadConfig(t, path, disabled)
+	t.Setenv("DMEM_RELOAD_EMBEDDING_SECRET", "embedding-secret")
+
+	d1, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := unixClient(d1.endpoint)
+
+	userSpace := createSpace(t, client, "user-key", map[string]any{
+		"space_type": "user", "external_id": "owner", "display_name": "Owner",
+	})
+	project := createSpace(t, client, "project-key", map[string]any{
+		"parent_space_id": userSpace.SpaceID, "space_type": "project",
+		"external_id": "p1", "display_name": "Project",
+	})
+
+	event := ingestEvent(t, client, "startup-event", project.SpaceID, "startup content")
+	memory, _ := createMemory(t, client, "startup-memory", memoryCreateBody(project.SpaceID, event.EventID, "recovered at startup"))
+	if err := d1.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled := disabled
+	enabled.embedding = true
+	enabled.embeddingAllowSpaceType = "project"
+	writeReloadConfig(t, path, enabled)
+
+	d2, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close(context.Background())
+
+	deadline := time.Now().Add(10 * time.Second)
+	var eligible int
+	for time.Now().Before(deadline) {
+		db := openDaemonDB(t, d2)
+		_ = db.QueryRow(`SELECT count(*) FROM embedding_eligibility WHERE memory_id=? AND eligible=1`, memory.MemoryID).Scan(&eligible)
+		db.Close()
+		if eligible > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if eligible == 0 {
+		t.Fatal("memory was not marked eligible after embedding enablement at startup")
+	}
+}
+
 func TestPolicyExpansionRecoversEmbeddingEligibility(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "config.toml")

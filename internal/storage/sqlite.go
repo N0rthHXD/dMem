@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-sqlite3"
@@ -17,20 +18,44 @@ const driverName = "dmem_sqlite3"
 
 var ErrIncompatibleSchema = errors.New("incompatible schema version")
 
+const (
+	integrityOff     = "off"
+	integrityPending = "pending"
+	integrityReady   = "ready"
+	integrityFailed  = "failed"
+)
+
 func init() {
 	_ = requiredSQLiteBuildProfile
 	sql.Register(driverName, &sqlite3.SQLiteDriver{ConnectHook: configureConnection})
 }
 
+// IntegrityCheckMode selects whether the SQLite integrity check runs before
+// Open returns, in the background, or not at all.
+type IntegrityCheckMode int
+
+const (
+	IntegrityCheckSync IntegrityCheckMode = iota
+	IntegrityCheckBackground
+	IntegrityCheckOff
+)
+
 type Options struct {
-	ReadConnections int
-	IntegrityCheck  func(context.Context, *sql.DB) error
+	ReadConnections    int
+	IntegrityCheck     func(context.Context, *sql.DB) error
+	IntegrityCheckMode IntegrityCheckMode
 }
 
 type Store struct {
 	writer *sql.DB
 	reader *sql.DB
 	path   string
+
+	checkMu     sync.Mutex
+	checkState  string
+	checkErr    error
+	checkDone   chan struct{}
+	checkCancel context.CancelFunc
 }
 
 func Open(ctx context.Context, path string, options Options) (*Store, error) {
@@ -76,35 +101,114 @@ func Open(ctx context.Context, path string, options Options) (*Store, error) {
 		writer.Close()
 		return nil, err
 	}
+	store := &Store{writer: writer, path: path, checkState: integrityReady}
 	check := options.IntegrityCheck
 	if check == nil {
 		check = quickCheck
 	}
-	if err := check(ctx, writer); err != nil {
-		writer.Close()
-		return nil, fmt.Errorf("SQLite integrity check failed: %w", err)
+	switch options.IntegrityCheckMode {
+	case IntegrityCheckOff:
+		store.checkState = integrityOff
+	case IntegrityCheckBackground:
+		store.startIntegrityCheck(check)
+	default:
+		if err := check(ctx, writer); err != nil {
+			writer.Close()
+			return nil, fmt.Errorf("SQLite integrity check failed: %w", err)
+		}
 	}
 
 	reader, err := sql.Open(driverName, databaseReadDSN(path))
 	if err != nil {
+		store.cancelIntegrityCheck()
 		writer.Close()
 		return nil, fmt.Errorf("open SQLite reader: %w", err)
 	}
 	reader.SetMaxOpenConns(options.ReadConnections)
 	reader.SetMaxIdleConns(options.ReadConnections)
 	if err := reader.PingContext(ctx); err != nil {
+		store.cancelIntegrityCheck()
 		reader.Close()
 		writer.Close()
 		return nil, fmt.Errorf("connect SQLite reader: %w", err)
 	}
-	return &Store{writer: writer, reader: reader, path: path}, nil
+	store.reader = reader
+	return store, nil
+}
+
+// startIntegrityCheck runs the integrity check in the background on a
+// dedicated read-only connection so it never blocks the daemon writer or
+// starves the reader pool.
+func (s *Store) startIntegrityCheck(check func(context.Context, *sql.DB) error) {
+	dsn := "file:" + url.PathEscape(s.path) + "?mode=ro&_txlock=deferred"
+	checkDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		s.checkState = integrityFailed
+		s.checkErr = err
+		return
+	}
+	checkDB.SetMaxOpenConns(1)
+	checkDB.SetMaxIdleConns(1)
+	checkCtx, cancel := context.WithCancel(context.Background())
+	s.checkCancel = cancel
+	s.checkState = integrityPending
+	s.checkDone = make(chan struct{})
+	go func() {
+		defer close(s.checkDone)
+		defer checkDB.Close()
+		err := check(checkCtx, checkDB)
+		s.checkMu.Lock()
+		defer s.checkMu.Unlock()
+		if err != nil {
+			s.checkState = integrityFailed
+			s.checkErr = err
+			return
+		}
+		s.checkState = integrityReady
+	}()
+}
+
+func (s *Store) cancelIntegrityCheck() {
+	if s.checkCancel != nil {
+		s.checkCancel()
+	}
+	if s.checkDone != nil {
+		<-s.checkDone
+	}
+}
+
+// IntegrityStatus reports one of off, pending, ready, or failed. The error is
+// the integrity failure when the state is failed.
+func (s *Store) IntegrityStatus() (string, error) {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	if s.checkState == "" {
+		return integrityReady, nil
+	}
+	return s.checkState, s.checkErr
+}
+
+// WaitIntegrity blocks until the background integrity check completes or the
+// context is done.
+func (s *Store) WaitIntegrity(ctx context.Context) error {
+	if s.checkDone == nil {
+		_, err := s.IntegrityStatus()
+		return err
+	}
+	select {
+	case <-s.checkDone:
+		_, err := s.IntegrityStatus()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func configureConnection(conn *sqlite3.SQLiteConn) error {
 	for _, pragma := range []string{
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=FULL",
+		"PRAGMA synchronous=NORMAL",
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA trusted_schema=OFF",
 	} {
@@ -356,5 +460,6 @@ func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
+	s.cancelIntegrityCheck()
 	return errors.Join(s.reader.Close(), s.writer.Close())
 }

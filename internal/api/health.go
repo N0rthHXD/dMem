@@ -23,6 +23,7 @@ type Health struct {
 	StorageState             string `json:"storage_state"`
 	StorageHealthy           bool   `json:"storage_healthy"`
 	StorageWritable          bool   `json:"storage_writable"`
+	StorageIntegrityState    string `json:"storage_integrity_state"`
 	SchemaCompatibility      string `json:"schema_compatibility"`
 	QueueState               string `json:"queue_state"`
 	FTSState                 string `json:"fts_state"`
@@ -181,6 +182,7 @@ func (h *Handler) Routes() http.Handler {
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	ready := h.ready.Load()
 	storageState, schemaState := "unavailable", "unknown"
+	storageIntegrityState := "unknown"
 	queueState, queueDepth, oldestAge := "unavailable", 0, 0
 	ftsState := h.ftsState
 	diskPressure := "normal"
@@ -192,6 +194,9 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	aggregateState, aggregateFresh, aggregateStale, aggregateRebuilds := "unavailable", 0, 0, 0
 	if h.repository != nil {
 		storageState, schemaState = h.repository.StorageStatus(r.Context())
+		if state, _ := h.repository.IntegrityStatus(); state != "" {
+			storageIntegrityState = state
+		}
 		queueState, queueDepth, oldestAge, _ = h.repository.QueueStatus(r.Context())
 		if state, err := h.repository.IndexState(r.Context()); err == nil {
 			ftsState = state
@@ -252,6 +257,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		StorageState:             storageState,
 		StorageHealthy:           storageHealthy,
 		StorageWritable:          acceptingWrites,
+		StorageIntegrityState:    storageIntegrityState,
 		SchemaCompatibility:      schemaState,
 		QueueState:               queueState,
 		FTSState:                 ftsState,

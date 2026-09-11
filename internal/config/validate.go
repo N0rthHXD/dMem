@@ -168,7 +168,7 @@ func validateServer(t *serverTable) error {
 }
 
 func validateJobs(t *jobsTable) error {
-	if t.WorkerCount < 1 || t.WorkerCount > 32 {
+	if t.WorkerCount < 1 || t.WorkerCount > 128 {
 		return newValidationError("config_invalid_value", Diagnostic{Code: "config_out_of_bounds", Path: "jobs.worker_count"})
 	}
 	if t.QueueSoftLimit < 1 || t.QueueSoftLimit >= t.QueueHardLimit {

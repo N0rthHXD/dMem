@@ -215,7 +215,15 @@ func (r *Repository) StorageStatus(ctx context.Context) (string, string) {
 	if version != SchemaVersion {
 		return "unavailable", "incompatible"
 	}
+	if state, _ := r.store.IntegrityStatus(); state == integrityFailed {
+		return "unavailable", "compatible"
+	}
 	return "ready", "compatible"
+}
+
+// IntegrityStatus reports the background integrity check state.
+func (r *Repository) IntegrityStatus() (string, error) {
+	return r.store.IntegrityStatus()
 }
 
 func (r *Repository) CreateSpace(ctx context.Context, identity WriteIdentity, params CreateSpaceParams) (domain.Space, bool, error) {

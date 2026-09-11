@@ -58,6 +58,12 @@ Treat authority failures differently from derived-index failures:
 - At the disk hard threshold, expect writes to fail while read-only queries can
   remain available.
 
+The SQLite integrity check runs in the background after startup so a large
+database (or FTS5 index) does not block readiness. `storage_integrity_state`
+reports `off`, `pending`, `ready`, or `failed`; on `failed` the daemon logs an
+error and `storage_state` becomes `unavailable`. Restart or stop the daemon and
+preserve the data directory, then diagnose from a copy before resuming writes.
+
 Rebuild operations are `POST /v1/indexes/fts/rebuild`,
 `POST /v1/indexes/semantic/rebuild`, `POST /v1/indexes/graph/rebuild`, and
 `POST /v1/feedback/aggregates/rebuild`. They create durable jobs and require the

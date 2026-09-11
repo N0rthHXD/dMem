@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
 func TestOpenInitializesSchemaAndSQLiteCapabilities(t *testing.T) {
@@ -53,7 +56,7 @@ func TestOpenInitializesSchemaAndSQLiteCapabilities(t *testing.T) {
 	for pragma, want := range map[string]string{
 		"foreign_keys":   "1",
 		"journal_mode":   "wal",
-		"synchronous":    "2",
+		"synchronous":    "1",
 		"busy_timeout":   "5000",
 		"trusted_schema": "0",
 	} {
@@ -167,5 +170,114 @@ func TestOpenRejectsFailedIntegrityCheck(t *testing.T) {
 	}
 	if !errors.Is(err, want) {
 		t.Fatalf("Open() error = %v; want integrity error", err)
+	}
+}
+
+func TestOpenRunsIntegrityCheckInBackground(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dmem.db")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	store, err := Open(ctx, path, Options{
+		IntegrityCheckMode: IntegrityCheckBackground,
+		IntegrityCheck: func(context.Context, *sql.DB) error {
+			close(started)
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	<-started
+	if state, _ := store.IntegrityStatus(); state != integrityPending {
+		t.Fatalf("IntegrityStatus() = %q; want %q", state, integrityPending)
+	}
+	close(release)
+	if err := store.WaitIntegrity(ctx); err != nil {
+		t.Fatalf("WaitIntegrity() error = %v", err)
+	}
+	if state, err := store.IntegrityStatus(); state != integrityReady || err != nil {
+		t.Fatalf("IntegrityStatus() = %q, %v; want ready, nil", state, err)
+	}
+}
+
+func TestOpenBackgroundIntegrityCheckReportsFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dmem.db")
+	want := errors.New("corrupt")
+	store, err := Open(ctx, path, Options{
+		IntegrityCheckMode: IntegrityCheckBackground,
+		IntegrityCheck:     func(context.Context, *sql.DB) error { return want },
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	if err := store.WaitIntegrity(ctx); !errors.Is(err, want) {
+		t.Fatalf("WaitIntegrity() error = %v; want %v", err, want)
+	}
+	if state, err := store.IntegrityStatus(); state != integrityFailed || !errors.Is(err, want) {
+		t.Fatalf("IntegrityStatus() = %q, %v; want failed, %v", state, err, want)
+	}
+}
+
+func TestStorageStatusReportsFailedBackgroundIntegrityCheck(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	want := errors.New("corrupt")
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dmem.db"), Options{
+		IntegrityCheckMode: IntegrityCheckBackground,
+		IntegrityCheck:     func(context.Context, *sql.DB) error { return want },
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.WaitIntegrity(ctx); !errors.Is(err, want) {
+		t.Fatalf("WaitIntegrity() error = %v; want %v", err, want)
+	}
+	repository := NewRepository(store, domain.Runtime{Now: time.Now, ID: func() (string, error) { return "test-id", nil }}, 10, 20, 3, "v1")
+	state, schema := repository.StorageStatus(ctx)
+	if state != "unavailable" || schema != "compatible" {
+		t.Fatalf("StorageStatus() = %q, %q; want unavailable, compatible", state, schema)
+	}
+}
+
+func TestCloseCancelsBackgroundIntegrityCheck(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "dmem.db")
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	store, err := Open(context.Background(), path, Options{
+		IntegrityCheckMode: IntegrityCheckBackground,
+		IntegrityCheck: func(ctx context.Context, _ *sql.DB) error {
+			close(started)
+			<-ctx.Done()
+			close(stopped)
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	<-started
+	done := make(chan error, 1)
+	go func() { done <- store.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close() did not cancel the background integrity check")
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("background integrity check did not observe cancellation")
 	}
 }

@@ -627,7 +627,13 @@ func (s *Service) applyGraphOutcome(extractor GraphExtractor, claim storage.Clai
 			s.logPersistenceError(context.Background(), "complete_stale_graph_job", claim, s.repository.CompleteJob(context.Background(), claim, storage.JobResult{Code: "stale_revision"}))
 			return
 		}
-		s.logPersistenceError(context.Background(), "commit_graph_extraction", claim, err)
+		if errors.Is(err, storage.ErrLeaseLost) {
+			return
+		}
+		if err != nil {
+			s.failTransientJob(claim, "graph_commit_failed", "graph extraction commit failed")
+			return
+		}
 	case domain.GraphExtractionPolicyRejected:
 		reason := result.ReasonCode
 		if reason == "" {

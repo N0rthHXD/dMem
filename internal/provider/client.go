@@ -162,7 +162,7 @@ func ValidateConfig(cfg Config) error {
 	if cfg.Limits.MaxEgressInputChars < 1 || cfg.Limits.MaxEgressInputChars > 100000 || cfg.Limits.MaxContextItems < 0 || cfg.Limits.MaxContextItems > 100 || cfg.Limits.MaxResponseBytes < 1024 || cfg.Limits.MaxResponseBytes > 16*1024*1024 {
 		return errors.New("provider: invalid content or response bounds")
 	}
-	if cfg.Limits.RequestTimeout <= 0 || cfg.Limits.RequestTimeout > 5*time.Minute || cfg.Limits.MaxConcurrent < 1 || cfg.Limits.MaxConcurrent > 64 || cfg.Limits.RequestsPerMinute < 1 || cfg.Limits.RequestsPerMinute > 60000 {
+	if cfg.Limits.RequestTimeout <= 0 || cfg.Limits.RequestTimeout > 5*time.Minute || cfg.Limits.MaxConcurrent < 1 || cfg.Limits.MaxConcurrent > 128 || cfg.Limits.RequestsPerMinute < 1 || cfg.Limits.RequestsPerMinute > 60000 {
 		return errors.New("provider: invalid request limits")
 	}
 	if cfg.Options.Dimensions < 0 || cfg.Options.Dimensions > maxEmbeddingDimension || utf8.RuneCountInString(cfg.Options.QueryInstructions) > cfg.Limits.MaxEgressInputChars {
