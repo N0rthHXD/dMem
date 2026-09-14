@@ -34,14 +34,26 @@ except ImportError:  # pragma: no cover - optional dependency
 # retrieval metrics
 # --------------------------------------------------------------------------
 
+# Bumped whenever the retrieval metric definitions or reported keys change.
+METRIC_SCHEMA_VERSION = "locomo-retrieval-metrics-v2"
+
+
 def recall_any(ranked: Sequence[str], gold: set[str], k: int) -> float:
-    return float(any(d in gold for d in ranked[:k]))
+    """1.0 when at least one gold item appears in the top-``k`` ranking."""
+    if not gold:
+        return 0.0
+    return float(bool(set(ranked[:k]) & gold))
 
 
 def recall_all(ranked: Sequence[str], gold: set[str], k: int) -> float:
+    """1.0 only when the complete gold set is contained in the top-``k`` ranking.
+
+    This is ``gold <= set(ranked[:k])``, not a precision-style check that every
+    retrieved item is relevant.
+    """
     if not gold:
         return 0.0
-    return float(all(d in gold for d in ranked[:k]))
+    return float(gold.issubset(set(ranked[:k])))
 
 
 def coverage(ranked: Sequence[str], gold: set[str], k: int) -> float:
@@ -51,22 +63,44 @@ def coverage(ranked: Sequence[str], gold: set[str], k: int) -> float:
 
 
 def mrr(ranked: Sequence[str], gold: set[str]) -> float:
+    """Mean reciprocal rank over the full bounded list (not cutoff-specific)."""
     for i, d in enumerate(ranked, start=1):
         if d in gold:
             return 1.0 / i
     return 0.0
 
 
+def mrr_at_k(ranked: Sequence[str], gold: set[str], k: int) -> float:
+    """Reciprocal rank of the first gold item within the top-``k`` window."""
+    for i, d in enumerate(ranked[:k], start=1):
+        if d in gold:
+            return 1.0 / i
+    return 0.0
+
+
 def ndcg(ranked: Sequence[str], gold: set[str], k: int) -> float:
-    """Binary-relevance normalized DCG over the ranked evidence list."""
-    rel = [1 if d in gold else 0 for d in ranked[:k]]
-    if not rel:
+    """Binary-relevance nDCG with an ideal list of ``min(k, len(gold))`` items.
+
+    The ideal DCG depends only on the gold evidence count, never on how many
+    relevant items the system happened to retrieve, so omitting gold always
+    lowers the score. Duplicate ids do not contribute extra gain.
+    """
+    if not gold:
         return 0.0
-    ideal = sorted(rel, reverse=True)
-    idcg = ideal[0] + sum(ideal[i] / math.log2(i + 2) for i in range(1, len(ideal)))
+    seen: set[str] = set()
+    rel: list[int] = []
+    for d in ranked[:k]:
+        if d in seen:
+            continue
+        seen.add(d)
+        rel.append(1 if d in gold else 0)
+    n_ideal = min(k, len(gold))
+    if n_ideal == 0:
+        return 0.0
+    dcg = sum(rel[i] / math.log2(i + 2) for i in range(len(rel)))
+    idcg = sum(1.0 / math.log2(i + 2) for i in range(n_ideal))
     if idcg == 0:
         return 0.0
-    dcg = rel[0] + sum(rel[i] / math.log2(i + 2) for i in range(1, len(rel)))
     return float(dcg / idcg)
 
 
@@ -76,7 +110,7 @@ def evaluate_retrieval(ranked: Sequence[str], gold: set[str], k: int) -> dict[st
         "recall_all": recall_all(ranked, gold, k),
         "coverage": coverage(ranked, gold, k),
         "ndcg": ndcg(ranked, gold, k),
-        "mrr": mrr(ranked, gold),
+        "mrr_at_k": mrr_at_k(ranked, gold, k),
     }
 
 

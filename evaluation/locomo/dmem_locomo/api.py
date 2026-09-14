@@ -291,11 +291,11 @@ class DMemClient:
     # index rebuilds and jobs
     # ------------------------------------------------------------------
 
-    def rebuild_semantic(self, *, idempotency_key: str) -> dict[str, Any]:
+    def _rebuild_index(self, path: str, *, idempotency_key: str) -> dict[str, Any]:
         try:
             return self._request(
                 "POST",
-                "/v1/indexes/semantic/rebuild",
+                path,
                 json={},
                 idempotency_key=idempotency_key,
                 retries=0,
@@ -308,6 +308,16 @@ class DMemClient:
                     "already_active": True,
                 }
             raise
+
+    def rebuild_semantic(self, *, idempotency_key: str) -> dict[str, Any]:
+        return self._rebuild_index(
+            "/v1/indexes/semantic/rebuild", idempotency_key=idempotency_key
+        )
+
+    def rebuild_graph(self, *, idempotency_key: str) -> dict[str, Any]:
+        return self._rebuild_index(
+            "/v1/indexes/graph/rebuild", idempotency_key=idempotency_key
+        )
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/jobs/{job_id}")
@@ -472,6 +482,72 @@ class DMemClient:
                 on_status=on_job_status,
             )
         self.wait_for_semantic_ready(
+            poll_interval=poll_interval,
+            timeout=timeout,
+            on_status=on_status,
+        )
+        return result
+
+    def wait_for_graph_ready(
+        self,
+        *,
+        poll_interval: float = 3.0,
+        timeout: float = 600.0,
+        on_status: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Block until the graph index reports ready with an empty job queue.
+
+        Graph and graph-using retrieval modes must not execute against a
+        stale, rebuilding, or partially populated graph; this barrier is
+        fail-closed and raises when the graph never becomes ready.
+        """
+        first = self.health()
+        if first.get("graph_index_state") == "not_configured":
+            raise DMemError(
+                0,
+                "graph_not_configured",
+                "daemon has no graph index configured; graph retrieval requires one",
+            )
+        deadline = time.monotonic() + timeout
+        last = first
+        last_state: tuple[Any, Any] | None = None
+        while time.monotonic() < deadline:
+            state = (last.get("graph_index_state"), last.get("job_queue_depth"))
+            if on_status is not None and state != last_state:
+                on_status(last)
+                last_state = state
+            if (
+                last.get("graph_index_state") == "ready"
+                and last.get("job_queue_depth", 1) == 0
+            ):
+                return last
+            time.sleep(poll_interval)
+            last = self.health()
+        raise TimeoutError(
+            f"graph index not ready after {timeout}s; last state: "
+            f"graph={last.get('graph_index_state')} "
+            f"queue={last.get('job_queue_depth')}"
+        )
+
+    def trigger_and_wait_graph(
+        self,
+        *,
+        poll_interval: float = 3.0,
+        timeout: float = 600.0,
+        idempotency_key: str,
+        on_status: Callable[[dict[str, Any]], None] | None = None,
+        on_job_status: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        result = self.rebuild_graph(idempotency_key=idempotency_key)
+        job_id = result.get("job_id") or ""
+        if job_id:
+            self.wait_for_job(
+                job_id,
+                poll_interval=poll_interval,
+                timeout=timeout,
+                on_status=on_job_status,
+            )
+        self.wait_for_graph_ready(
             poll_interval=poll_interval,
             timeout=timeout,
             on_status=on_status,

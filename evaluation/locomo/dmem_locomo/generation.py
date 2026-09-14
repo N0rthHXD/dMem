@@ -38,6 +38,8 @@ PROMPT_ADVERSARIAL = (
     "Question: {question}\n\nShort answer:"
 )
 
+GENERATION_PROMPT_VERSION = "locomo-answer-v1"
+
 
 def _history_string(ranked_items: list[dict[str, Any]]) -> str:
     parts: list[str] = []
@@ -66,6 +68,10 @@ def generate_answers(
         raise ValueError("workers must be a positive integer")
     conversations, _ = load_dataset(dataset_path)
     cp = Checkpoint(output_dir)
+    cp.assert_phase_compatible({
+        "answer_model": model,
+        "generation_prompt": GENERATION_PROMPT_VERSION,
+    })
     retrieval_records = cp.load_retrieval_records()
     done = cp.load_generation_qids()
 
@@ -104,6 +110,7 @@ def generate_answers(
                 "sample_id": conv.sample_id,
                 "category": qa.category,
                 "model": model,
+                "prompt_version": GENERATION_PROMPT_VERSION,
                 "hypothesis": answer,
                 "prompt_tokens": pt,
                 "completion_tokens": ct,
@@ -137,5 +144,11 @@ def generate_answers(
 
     if first_error is not None:
         raise first_error
+
+    manifest = cp.read_manifest() or {}
+    manifest["answer_model"] = model
+    manifest["generation_prompt"] = GENERATION_PROMPT_VERSION
+    manifest["answer_base_url"] = base_url or ""
+    cp.write_manifest(manifest)
 
     return count

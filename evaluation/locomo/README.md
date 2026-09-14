@@ -216,20 +216,134 @@ evidence, and audit history are retained — this is a logical reset, not a
 physical one. For a fully clean run, use a fresh daemon instance with a new
 data directory.
 
+## Baselines
+
+Phase 0 records fresh current-algorithm baselines on one immutable shared
+corpus before any ranking change. A baseline is immutable: a changed dataset
+SHA, corpus, metric schema, or daemon algorithm identity requires a new file.
+The baseline schema is `evaluation-baseline-v1` under
+`evaluation/locomo/baselines/` and `internal/storage/testdata/`; the retrieval
+metric schema is `locomo-retrieval-metrics-v2`.
+
+Capture one shared corpus once, build embeddings, then run each retrieval mode
+against the identical database:
+
+```sh
+# 1. Fresh shared corpus (ingestion + candidate confirmation).
+./evaluate.sh --stage corpus \
+  --dataset /path/to/locomo10.json \
+  --run-id locomo-baseline-corpus-001 \
+  --output results/locomo/baseline-corpus-001 \
+  --daemon-config dmemd-embedding.toml
+
+# 2. Build embeddings for the shared corpus.
+./evaluate.sh --stage embeddings \
+  --dataset /path/to/locomo10.json \
+  --corpus-output results/locomo/baseline-corpus-001 \
+  --daemon-config dmemd-embedding.toml
+
+# 3. Keyword, semantic, graph, and hybrid on the same corpus.
+for mode in keyword semantic graph hybrid; do
+  ./evaluate.sh --stage retrieval \
+    --dataset /path/to/locomo10.json \
+    --run-id baseline-$mode-001 \
+    --output results/locomo/baseline-$mode-001 \
+    --corpus-output results/locomo/baseline-corpus-001 \
+    --retrieval-mode "$mode" \
+    --daemon-config dmemd-embedding.toml
+done
+```
+
+Each run records its `identities` (daemon build/commit, schema compatibility,
+processing, semantic/graph versions, FTS and ranking versions, metric schema)
+and `degradation_counts` in `manifest.json`, plus per-result report fields
+(`primary_score`, `raw_channel_scores`, `matched_fields`, `graph_score`,
+`signal_family`, `duplicate_cluster`, `selection_state`) in `retrieval.jsonl`.
+Use `summarize` (which recomputes metrics from raw records and refuses a metric
+schema mismatch) to produce the immutable baseline records.
+
+The accepted current-algorithm capture is
+`baselines/locomo-current-v1.json`. It was recorded on 2026-09-14 from all 10
+conversations and 1,986 questions with no retrieval failures or degraded
+responses. All modes use dataset SHA
+`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
+and shared corpus `ingestion.jsonl` SHA
+`a4225c775f1e6f2c91e332a17b4db1731b07065e3d052e587fcf81863d792165`.
+The daemon build identity is
+`9723af424262df7731b41298b6e7c6022e3769575894813b2ffe61cb940f3bec`,
+the ranking identity is `rrf-v3`, the FTS version is `1`, and the graph
+version is `4046`. Exact per-run semantic versions and checkpoint SHA-256
+values are retained in the capture file.
+
+The four run IDs are `phase0-current-keyword-v1`,
+`phase0-current-semantic-v1`, `phase0-current-graph-v1`, and
+`phase0-current-hybrid-v1`. Each command used `--fail-on-degraded`; the exact
+retrieval command was the following, with `$mode` replaced by each mode:
+
+```sh
+./evaluation/locomo/evaluate.sh --stage retrieval \
+  --dataset /home/ut005426@uos/data/locomo/locomo10.json \
+  --run-id "phase0-current-$mode-v1" \
+  --output "/home/ut005426@uos/data/locomo/results/phase0-current-$mode-v1" \
+  --corpus-output /home/ut005426@uos/data/locomo/results/full-keyword-001 \
+  --retrieval-mode "$mode" \
+  --eval-config /home/ut005426@uos/data/locomo/eval_config.locomo-full.toml \
+  --daemon-config /home/ut005426@uos/data/locomo/dmemd.locomo-full.toml \
+  --dmemd /tmp/opencode/dmemd-phase0 \
+  --python /home/ut005426@uos/miniforge3/envs/agent/bin/python \
+  -- --fail-on-degraded
+```
+
+The capture uses unique-evidence coverage@10 as `recall` and unique-evidence
+nDCG@10 as `ranking`. Per-request daemon allocation and provider pricing are
+not exposed, so the recorded `allocation` is the mean serialized response-byte
+proxy and `provider_cost` is the query-embedding request-count proxy. These
+definitions are embedded in the capture and must not be compared with a future
+capture that uses different measurement units.
+
 ## Metrics
 
 ### Retrieval
 
-Two granularities are reported over the annotated `evidence` references:
+Metrics are reported at three separate granularities over the annotated
+`evidence` references:
 
-- **Turn level** — `recall_any`, `recall_all`, `coverage`, `nDCG` (binary
-  relevance), and `MRR` over recalled `dia_id` evidence.
-- **Session level** — the same metrics after promoting turns to sessions.
+- **Memory level** — the ranked list of recalled memories. A memory is
+  relevant when it maps to at least one gold turn; the gold set is the set of
+  memories confirmed from gold turns.
+- **Turn level (unique evidence)** — recalled evidence promoted to unique
+  `dia_id` turns in stable chronological order.
+- **Session level** — unique evidence turns promoted to sessions.
 
-Macro-averages exclude adversarial (category 5) questions and questions with
-empty or unresolved evidence, whose gold relevance is not defined for recall.
-Default cutoffs: `1, 3, 5, 10, 25, 50`. `unmapped_count` records recalled
-results that could not be attributed to a LoCoMo turn.
+Each layer reports `recall_any`, `recall_all`, `coverage`, binary-relevance
+`nDCG`, and `MRR@k`. Definitions:
+
+- `recall_all@k` is `gold <= set(top_k)`: the complete gold set must appear in
+  the top-k ranking. It is not a precision check that every retrieved item is
+  relevant, and adding irrelevant results does not change it.
+- `nDCG@k` uses an ideal DCG built from `min(k, len(gold))` relevant items, so
+  omitting gold evidence always lowers the score. Duplicate ids add no gain.
+- `MRR@k` is the reciprocal rank of the first gold item inside the top-k
+  window. It is explicitly cutoff-specific; a full-list `mrr` is also defined
+  but is not reported per cutoff.
+
+The summary also reports macro-average `duplicate_rate` (mapped source turns
+seen more than once) and `unmapped_rate` (recalled results that could not be
+attributed to a LoCoMo turn). `unmapped_count` records the absolute unmapped
+count per question.
+
+The extraction layer distinguishes an indexed miss from a retrieval failure:
+`extraction.coverage` is the fraction of gold turns that appear in at least one
+confirmed memory, `missing_gold_cases` counts questions whose gold source never
+became an indexed memory, and `retrieval_failure_cases` counts questions where
+the gold source was indexed but never retrieved.
+
+Macro-averages exclude adversarial (category 5) questions and any question with
+empty, malformed, or partially unresolved evidence, whose gold relevance is not
+defined for recall. `excluded_unscorable` counts those cases. Default cutoffs:
+`1, 3, 5, 10, 25, 50`. The retrieval metric contract is versioned as
+`locomo-retrieval-metrics-v2` and recorded in every manifest and retrieval
+record.
 
 ### QA
 

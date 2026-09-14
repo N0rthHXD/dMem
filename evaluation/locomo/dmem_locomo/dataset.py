@@ -78,6 +78,7 @@ class QA:
     evidence: list[str]  # normalized "D<s>:<t>" references
     evidence_unresolved: list[str]
     category: int
+    evidence_malformed: list[str] = field(default_factory=list)
 
     @property
     def qa_id(self) -> str:
@@ -94,6 +95,15 @@ class QA:
     @property
     def has_evidence(self) -> bool:
         return len(self.evidence) > 0
+
+    @property
+    def has_unresolved_evidence(self) -> bool:
+        return len(self.evidence_unresolved) > 0
+
+    @property
+    def is_scorable(self) -> bool:
+        """True when gold relevance is well defined for retrieval metrics."""
+        return self.has_evidence and not self.has_unresolved_evidence and not self.is_adversarial
 
 
 @dataclass
@@ -139,23 +149,29 @@ def _answer_to_string(answer: object) -> str:
     return str(answer)
 
 
-def _normalize_evidence(raw_evidence: list[str], dia_id_set: set[str]) -> tuple[list[str], list[str]]:
-    """Return ``(resolved, unresolved)`` normalized evidence references.
+def _normalize_evidence(
+    raw_evidence: list[str], dia_id_set: set[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Return ``(resolved, unresolved, malformed)`` normalized evidence references.
 
     Splits composite strings (e.g. ``"D8:6; D9:17"`` or
     ``"D9:1 D4:4 D4:6"``), canonicalizes zero-padded ids (``D30:05`` ->
-    ``D30:5``), and separates references that do not resolve to a known turn.
+    ``D30:5``), and separates well-formed references that do not resolve to a
+    known turn from strings that contain no turn reference at all.
     """
     resolved: list[str] = []
     unresolved: list[str] = []
+    malformed: list[str] = []
     seen: set[str] = set()
     for raw in raw_evidence:
         if not isinstance(raw, str):
             unresolved.append(repr(raw))
+            malformed.append(repr(raw))
             continue
         matches = DIA_ID_RE.findall(raw)
         if not matches:
             unresolved.append(raw)
+            malformed.append(raw)
             continue
         for session_str, turn_str in matches:
             canonical = f"D{int(session_str)}:{int(turn_str)}"
@@ -166,7 +182,7 @@ def _normalize_evidence(raw_evidence: list[str], dia_id_set: set[str]) -> tuple[
             else:
                 if raw not in unresolved:
                     unresolved.append(raw)
-    return resolved, unresolved
+    return resolved, unresolved, malformed
 
 
 def _session_num_from_dia_id(dia_id: str) -> int:
@@ -176,11 +192,27 @@ def _session_num_from_dia_id(dia_id: str) -> int:
     return int(m.group(1))
 
 
-def load_dataset(path: str | Path) -> tuple[list[Conversation], str]:
+def dia_id_sort_key(dia_id: str) -> tuple[int, int]:
+    """Stable chronological ordering key for a ``D<session>:<turn>`` id."""
+    m = DIA_ID_RE.match(dia_id)
+    if not m:
+        return (1 << 31, 1 << 31)
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def load_dataset(
+    path: str | Path,
+    *,
+    strict: bool = False,
+    expected_counts: dict[str, Any] | None = None,
+) -> tuple[list[Conversation], str]:
     """Load and validate a LoCoMo JSON file.
 
     Returns ``(conversations, sha256_hex)`` where sha256_hex is the digest of
     the raw file bytes (used for run identity and resume checks).
+
+    With ``strict=True`` the expected corpus counts are enforced and any
+    malformed or partially unresolved evidence reference aborts the load.
     """
     raw = Path(path).read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
@@ -197,6 +229,8 @@ def load_dataset(path: str | Path) -> tuple[list[Conversation], str]:
             raise DatasetError(f"conversation {i}: expected object, got {type(entry)}")
         conv = _parse_conversation(entry, i, seen_ids)
         conversations.append(conv)
+    if strict:
+        validate_dataset(conversations, strict=True, expected_counts=expected_counts)
     return conversations, sha
 
 
@@ -324,7 +358,7 @@ def _parse_qa(sample_id: str, qa_raw: list, dia_id_set: set[str]) -> list[QA]:
         if not isinstance(evidence_raw, list):
             raise DatasetError(f"{sample_id}: qa {i} evidence must be a list")
         evidence_raw = [e for e in evidence_raw if isinstance(e, str)]
-        resolved, unresolved = _normalize_evidence(evidence_raw, dia_id_set)
+        resolved, unresolved, malformed = _normalize_evidence(evidence_raw, dia_id_set)
 
         qa_list.append(QA(
             sample_id=sample_id,
@@ -336,12 +370,22 @@ def _parse_qa(sample_id: str, qa_raw: list, dia_id_set: set[str]) -> list[QA]:
             evidence=resolved,
             evidence_unresolved=unresolved,
             category=category,
+            evidence_malformed=malformed,
         ))
     return qa_list
 
 
-def validate_dataset(conversations: list[Conversation]) -> dict[str, Any]:
-    """Compute aggregate validation statistics and flag anomalies."""
+def validate_dataset(
+    conversations: list[Conversation],
+    *,
+    strict: bool = False,
+    expected_counts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compute aggregate validation statistics and flag anomalies.
+
+    With ``strict=True`` the expected corpus counts are enforced and any QA with
+    malformed or partially unresolved evidence is rejected.
+    """
     sessions = 0
     turns = 0
     qa = 0
@@ -350,8 +394,10 @@ def validate_dataset(conversations: list[Conversation]) -> dict[str, Any]:
     caption_turns = 0
     empty_evidence = 0
     unresolved_evidence = 0
+    malformed_evidence = 0
     adversarial_only_answer = 0
     both_answers = 0
+    invalid_qa: list[tuple[str, str, list[str]]] = []
 
     for conv in conversations:
         sessions += len(conv.sessions)
@@ -369,12 +415,15 @@ def validate_dataset(conversations: list[Conversation]) -> dict[str, Any]:
                 empty_evidence += 1
             if q.evidence_unresolved:
                 unresolved_evidence += 1
+                invalid_qa.append((conv.sample_id, q.qa_id, q.evidence_unresolved))
+            if q.evidence_malformed:
+                malformed_evidence += 1
             if q.is_adversarial and q.answer is None and q.adversarial_answer is not None:
                 adversarial_only_answer += 1
             if q.answer is not None and q.adversarial_answer is not None:
                 both_answers += 1
 
-    return {
+    stats = {
         "conversations": len(conversations),
         "sessions": sessions,
         "turns": turns,
@@ -384,7 +433,37 @@ def validate_dataset(conversations: list[Conversation]) -> dict[str, Any]:
         "caption_turns": caption_turns,
         "empty_evidence": empty_evidence,
         "qa_with_unresolved_evidence": unresolved_evidence,
+        "qa_with_malformed_evidence": malformed_evidence,
         "adversarial_answer_only": adversarial_only_answer,
         "qa_with_both_answers": both_answers,
         "expected_counts": EXPECTED_COUNTS,
     }
+
+    if strict:
+        _enforce_expected_counts(stats, expected_counts or EXPECTED_COUNTS)
+        if invalid_qa:
+            detail = "; ".join(
+                f"{sid}:{qid} -> {refs}" for sid, qid, refs in invalid_qa[:5]
+            )
+            raise DatasetError(
+                f"{len(invalid_qa)} question(s) have malformed or unresolved "
+                f"evidence: {detail}"
+            )
+    return stats
+
+
+def _enforce_expected_counts(
+    stats: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    for key in ("conversations", "sessions", "turns", "qa"):
+        want = expected.get(key)
+        if want is not None and stats.get(key) != want:
+            raise DatasetError(
+                f"dataset {key} count {stats.get(key)} does not match expected {want}"
+            )
+    for category, want in expected.get("categories", {}).items():
+        got = stats["categories"].get(category, 0)
+        if got != want:
+            raise DatasetError(
+                f"dataset category {category} count {got} does not match expected {want}"
+            )

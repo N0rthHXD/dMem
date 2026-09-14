@@ -1,0 +1,32 @@
+{
+  "version": "evaluation-baseline-v1",
+  "metric_schema": "locomo-retrieval-metrics-v2",
+  "description": "Versioned schema for immutable retrieval baselines. A baseline record stores observations for every required metric together with the corpus and algorithm identities that produced them.",
+  "required_metrics": {
+    "extraction_count": {"unit": "count", "direction": "neutral"},
+    "duplicate_density": {"unit": "ratio", "direction": "lower"},
+    "recall": {"unit": "ratio", "direction": "higher"},
+    "ranking": {"unit": "ratio", "direction": "higher"},
+    "graph_promotion_harm": {"unit": "ratio", "direction": "lower"},
+    "context_utilization": {"unit": "ratio", "direction": "higher"},
+    "latency": {"unit": "milliseconds", "direction": "lower"},
+    "allocation": {"unit": "bytes", "direction": "lower"},
+    "storage": {"unit": "bytes", "direction": "lower"},
+    "provider_cost": {"unit": "provider_requests", "direction": "lower"}
+  },
+  "required_identities": [
+    "dataset_sha",
+    "dataset_subset",
+    "corpus_id",
+    "retrieval_mode",
+    "daemon_build_commit",
+    "schema_compatibility",
+    "processor_identity",
+    "configuration_identity",
+    "ranking_version",
+    "fts_index_version",
+    "semantic_index_version",
+    "graph_index_version",
+    "metric_schema"
+  ]
+}

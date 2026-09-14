@@ -96,71 +96,71 @@ changing algorithms. This phase does not change production ranking.
 
 ### Metric Unit Tests
 
-- [ ] T001 [P] [EVAL] Add failing LoCoMo tests for correct
+- [X] T001 [P] [EVAL] Add failing LoCoMo tests for correct
   `gold <= set(top_k)` recall-all semantics, empty rankings, multiple gold
   evidence, irrelevant additions, and monotonicity in
   `evaluation/locomo/tests/test_metrics.py`
-- [ ] T002 [P] [EVAL] Add failing LoCoMo nDCG tests proving missing gold evidence
+- [X] T002 [P] [EVAL] Add failing LoCoMo nDCG tests proving missing gold evidence
   lowers the score and ideal DCG uses `min(k, len(gold))` in
   `evaluation/locomo/tests/test_metrics.py`
-- [ ] T003 [P] [EVAL] Add failing MRR tests for one explicitly named full-list
+- [X] T003 [P] [EVAL] Add failing MRR tests for one explicitly named full-list
   metric or cutoff-specific `MRR@k`, and reject the current repeated ambiguous
   values in `evaluation/locomo/tests/test_metrics.py`
-- [ ] T004 [P] [EVAL] Add failing evidence-mapping tests for multiple evidence
+- [X] T004 [P] [EVAL] Add failing evidence-mapping tests for multiple evidence
   events, stable chronological ordering, unmapped results, duplicate source
   turns, and session promotion in `evaluation/locomo/tests/test_runner.py`
-- [ ] T005 [P] [EVAL] Add failing dataset-validation tests that enforce expected
+- [X] T005 [P] [EVAL] Add failing dataset-validation tests that enforce expected
   corpus counts and reject malformed or partially unresolved evidence in
   `evaluation/locomo/tests/test_dataset.py`
 
 ### Metric Implementation
 
-- [ ] T006 [EVAL] Correct recall-all, nDCG, and MRR semantics in
+- [X] T006 [EVAL] Correct recall-all, nDCG, and MRR semantics in
   `evaluation/locomo/dmem_locomo/metrics.py` and assign a new retrieval metric
   schema identity
-- [ ] T007 [EVAL] Replace first-evidence-only mapping with complete ordered
+- [X] T007 [EVAL] Replace first-evidence-only mapping with complete ordered
   evidence sets in `evaluation/locomo/dmem_locomo/runner.py` and checkpoint
   records
-- [ ] T008 [EVAL] Report memory-level, unique-evidence-level, and session-level
+- [X] T008 [EVAL] Report memory-level, unique-evidence-level, and session-level
   metrics separately, including duplicate and unmapped rates, in
   `evaluation/locomo/dmem_locomo/runner.py` and
   `evaluation/locomo/dmem_locomo/cli.py`
-- [ ] T009 [EVAL] Add extraction coverage metrics that distinguish “gold source
+- [X] T009 [EVAL] Add extraction coverage metrics that distinguish “gold source
   absent from every indexed memory” from retrieval failure in
   `evaluation/locomo/dmem_locomo/runner.py`
-- [ ] T010 [EVAL] Enforce dataset SHA, subset, metric schema, run configuration,
+- [X] T010 [EVAL] Enforce dataset SHA, subset, metric schema, run configuration,
   and model/prompt compatibility for retrieval, generation, judge, and summarize
   checkpoints under `evaluation/locomo/dmem_locomo/`
-- [ ] T011 [EVAL] Make a non-resume run reject non-empty result checkpoints and
+- [X] T011 [EVAL] Make a non-resume run reject non-empty result checkpoints and
   make summarize recompute retrieval metrics from sufficient raw records instead
   of trusting stored metric dictionaries
 
 ### Runtime Identity And Readiness
 
-- [ ] T012 [P] [EVAL] Add failing tests for graph-ready barriers, per-query
+- [X] T012 [P] [EVAL] Add failing tests for graph-ready barriers, per-query
   degraded responses, and fail-on-degraded behavior in
   `evaluation/locomo/tests/test_runner.py`
-- [ ] T013 [P] [EVAL] Add failing manifest tests for daemon build/commit, schema,
+- [X] T013 [P] [EVAL] Add failing manifest tests for daemon build/commit, schema,
   processing, embedding, graph, keyword, ranking, context, and metric identities
   in `evaluation/locomo/tests/test_checkpoint.py`
-- [ ] T014 [EVAL] Implement an explicit graph completion/readiness barrier for
+- [X] T014 [EVAL] Implement an explicit graph completion/readiness barrier for
   graph and graph-using evaluation modes in
   `evaluation/locomo/dmem_locomo/runner.py` and
   `evaluation/locomo/dmem_locomo/api.py`
-- [ ] T015 [EVAL] Persist all effective identities and degradation counts in
+- [X] T015 [EVAL] Persist all effective identities and degradation counts in
   evaluation manifests and records, and reject incompatible resume or summarize
   operations
 
 ### Baseline Capture
 
-- [ ] T016 [P] [EVAL] Extend fixed retrieval fixtures to report primary score,
+- [X] T016 [P] [EVAL] Extend fixed retrieval fixtures to report primary score,
   raw channel scores, matched fields, graph score, signal family, duplicate
   cluster, and selection state under `internal/storage/testdata/`
-- [ ] T017 [P] [EVAL] Define versioned baseline files for extraction count,
+- [X] T017 [P] [EVAL] Define versioned baseline files for extraction count,
   duplicate density, recall, ranking, graph promotion harm, context utilization,
   latency, allocation, storage, and provider-cost proxies under
   `internal/storage/testdata/` and `evaluation/`
-- [ ] T018 [EVAL] Run and record fresh keyword, semantic, graph, and current
+- [X] T018 [EVAL] Run and record fresh keyword, semantic, graph, and current
   hybrid baselines on one shared corpus; document exact commands and immutable
   identities in `evaluation/locomo/README.md`
 

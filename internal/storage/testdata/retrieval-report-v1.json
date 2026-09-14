@@ -1,0 +1,35 @@
+{
+  "version": "retrieval-report-v1",
+  "corpus_version": "retrieval-corpus-v1",
+  "description": "Fixed report contract for recalled results. Every result must expose each field in required_result_fields; fields that the daemon does not yet surface are present but null or empty so a baseline distinguishes 'not measured' from 'zero'.",
+  "required_result_fields": [
+    "primary_score",
+    "raw_channel_scores",
+    "matched_fields",
+    "graph_score",
+    "signal_family",
+    "duplicate_cluster",
+    "selection_state"
+  ],
+  "fields_pending_daemon_exposure": [
+    "primary_score",
+    "matched_fields"
+  ],
+  "queries": [
+    {
+      "id": "q-travel",
+      "mode": "hybrid",
+      "expected_signal_family_contains": ["keyword", "semantic"]
+    },
+    {
+      "id": "q-vehicle",
+      "mode": "hybrid",
+      "expected_signal_family_contains": ["keyword", "semantic"]
+    },
+    {
+      "id": "q-food",
+      "mode": "keyword",
+      "expected_signal_family_contains": ["keyword"]
+    }
+  ]
+}

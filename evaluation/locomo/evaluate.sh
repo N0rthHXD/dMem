@@ -158,6 +158,8 @@ if [[ "$STAGE" == "corpus" || "$STAGE" == "embeddings" || "$STAGE" == "retrieval
     printf 'error: dmemd not executable: %s\n' "$DMEMD_BIN" >&2
     exit 1
   }
+  export DMEM_DAEMON_BUILD_SHA256
+  DMEM_DAEMON_BUILD_SHA256="$(sha256sum "$DMEMD_BIN" | cut -d' ' -f1)"
 
   install -d "$OUTPUT"
   if [[ -n "$CORPUS_OUTPUT" ]]; then

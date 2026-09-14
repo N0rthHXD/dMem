@@ -22,6 +22,8 @@ import json
 import logging
 import sys
 
+import numpy as np
+
 from .api import DMemClient
 from .checkpoint import Checkpoint
 from .config import (
@@ -34,7 +36,7 @@ from .config import (
 from .dataset import load_dataset, validate_dataset
 from .generation import generate_answers
 from .judge import judge_answers
-from .metrics import score_all
+from .metrics import METRIC_SCHEMA_VERSION, evaluate_retrieval, promote_to_sessions, score_all
 from .runner import RunConfig, Runner
 
 logger = logging.getLogger(__name__)
@@ -140,6 +142,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             else cfg.retrieval.workers
         ),
         corpus_dir=args.corpus_output,
+        dataset_subset=[c.sample_id for c in conversations],
     )
 
     cp = Checkpoint(args.output)
@@ -155,12 +158,21 @@ def cmd_run(args: argparse.Namespace) -> None:
             "max_chars": max_chars,
             "cutoffs": cutoffs,
             "answer_cutoff": answer_cutoff,
+            "metric_schema": METRIC_SCHEMA_VERSION,
+            "dataset_subset": sorted(c.sample_id for c in conversations),
         }
         ok, msg = cp.is_compatible(compat)
         if not ok:
             print(f"resume incompatible: {msg}", file=sys.stderr)
             sys.exit(1)
         logger.info("resume compatible: %s", msg)
+    elif cp.has_results():
+        print(
+            "output already contains result records; pass --resume or use a "
+            "fresh output directory",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     client = DMemClient(
         socket_path, caller_id=args.caller_id, timeout=args.request_timeout
@@ -170,6 +182,16 @@ def cmd_run(args: argparse.Namespace) -> None:
         if not health.get("ready"):
             print("daemon not ready", file=sys.stderr)
             sys.exit(1)
+        if args.resume:
+            recorded = (cp.read_manifest() or {}).get("identities") or {}
+            recorded_schema = recorded.get("schema_compatibility")
+            if recorded_schema and recorded_schema != health.get("schema_compatibility"):
+                print(
+                    "resume incompatible: daemon schema identity changed "
+                    f"({recorded_schema!r} -> {health.get('schema_compatibility')!r})",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         if not args.corpus_output and health.get("processor_state") == "not_configured":
             print(
                 "LoCoMo evaluation requires an enabled processing provider; "
@@ -331,6 +353,11 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     cp = Checkpoint(args.output)
 
     manifest = cp.read_manifest()
+    if manifest and manifest.get("metric_schema") != METRIC_SCHEMA_VERSION:
+        raise SystemExit(
+            "summarize incompatible: checkpoint metric schema "
+            f"{manifest.get('metric_schema')!r} != {METRIC_SCHEMA_VERSION!r}"
+        )
     cutoffs = manifest.get("cutoffs", DEFAULT_CUTOFFS) if manifest else DEFAULT_CUTOFFS
 
     retrieval_records = cp.load_retrieval_records()
@@ -352,11 +379,19 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             failures[phase].add(key)
     failed_keys = set().union(*failures.values())
 
+    memory_cases: list[dict[str, float]] = []
     turn_cases: list[dict[str, float]] = []
     session_cases: list[dict[str, float]] = []
     per_category: dict[int, list[dict[str, float]]] = {}
-    excluded_no_evidence = 0
+    duplicate_rates: list[float] = []
+    unmapped_rates: list[float] = []
+    extraction_gold_total = 0
+    extraction_gold_indexed = 0
+    extraction_missing_cases = 0
+    retrieval_failure_cases = 0
+    excluded_unscorable = 0
     excluded_errors = 0
+    max_cutoff = max(cutoffs) if cutoffs else 1
 
     for conv in conversations:
         for qa in conv.qa:
@@ -364,13 +399,30 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             if rec is None:
                 excluded_errors += 1
                 continue
-            if qa.is_adversarial or not qa.has_evidence:
-                excluded_no_evidence += 1
+            if not qa.is_scorable:
+                excluded_unscorable += 1
                 continue
-            turn_cases.append(_flat(rec["turn_metrics"]))
-            session_cases.append(_flat(rec["session_metrics"]))
-            per_category.setdefault(qa.category, []).append(_flat(rec["turn_metrics"]))
+            turn_flat = _recompute_flat(rec, qa, cutoffs, layer="turn")
+            memory_flat = _recompute_flat(rec, qa, cutoffs, layer="memory")
+            session_flat = _recompute_flat(rec, qa, cutoffs, layer="session")
+            memory_cases.append(memory_flat)
+            turn_cases.append(turn_flat)
+            session_cases.append(session_flat)
+            per_category.setdefault(qa.category, []).append(turn_flat)
+            duplicate_rates.append(float(rec.get("duplicate_rate", 0.0)))
+            unmapped_rates.append(float(rec.get("unmapped_rate", 0.0)))
+            extraction = rec.get("extraction", {})
+            extraction_gold_total += int(extraction.get("gold_total", 0))
+            extraction_gold_indexed += int(extraction.get("gold_indexed", 0))
+            if extraction.get("missed"):
+                extraction_missing_cases += 1
+            if (
+                int(extraction.get("gold_indexed", 0)) > 0
+                and turn_flat.get(f"recall_any@{max_cutoff}", 0.0) == 0.0
+            ):
+                retrieval_failure_cases += 1
 
+    memory_summary = _aggregate(memory_cases, cutoffs)
     turn_summary = _aggregate(turn_cases, cutoffs)
     session_summary = _aggregate(session_cases, cutoffs)
     per_category_summary = {
@@ -381,10 +433,16 @@ def cmd_summarize(args: argparse.Namespace) -> None:
         1 for conv in conversations for qa in conv.qa if qa.qa_id in retrieval_records
     )
     total_qa = sum(len(c.qa) for c in conversations)
+    extraction_coverage = (
+        extraction_gold_indexed / extraction_gold_total
+        if extraction_gold_total
+        else 1.0
+    )
 
     result: dict = {
         "complete": not failed_keys and completed_retrieval == total_qa,
         "coverage": completed_retrieval / total_qa if total_qa else 1.0,
+        "metric_schema": METRIC_SCHEMA_VERSION,
         "failures": {
             "total_cases": len(failed_keys),
             "total_attempts": len(failure_records),
@@ -393,10 +451,24 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             },
         },
         "retrieval": {
+            "memory_level": memory_summary,
             "turn_level": turn_summary,
             "session_level": session_summary,
             "per_category": per_category_summary,
-            "excluded_no_evidence_or_adversarial": excluded_no_evidence,
+            "duplicate_rate": (
+                float(np.mean(duplicate_rates)) if duplicate_rates else 0.0
+            ),
+            "unmapped_rate": (
+                float(np.mean(unmapped_rates)) if unmapped_rates else 0.0
+            ),
+            "extraction": {
+                "coverage": extraction_coverage,
+                "gold_total": extraction_gold_total,
+                "gold_indexed": extraction_gold_indexed,
+                "missing_gold_cases": extraction_missing_cases,
+                "retrieval_failure_cases": retrieval_failure_cases,
+            },
+            "excluded_unscorable": excluded_unscorable,
             "excluded_errors": excluded_errors,
             "total_qa": total_qa,
             "completed_qa": completed_retrieval,
@@ -440,11 +512,50 @@ def _flat(metrics: dict[str, dict[str, float]]) -> dict[str, float]:
     return out
 
 
+_LAYER_KEYS = {
+    "memory": ("ranked_memory_ids", "gold_memory_ids", "memory_metrics"),
+    "turn": ("ranked_dia_ids", None, "turn_metrics"),
+    "session": ("ranked_dia_ids", None, "session_metrics"),
+}
+
+
+def _recompute_flat(
+    rec: dict, qa, cutoffs: list[int], *, layer: str
+) -> dict[str, float]:
+    """Recompute a metric layer from raw checkpoint records.
+
+    Retrieval metrics are never trusted from the stored metric dictionaries when
+    the raw ranked ids and gold sets are present, so summarize cannot silently
+    inherit an outdated metric schema.
+    """
+    ranked_key, gold_key, stored_key = _LAYER_KEYS[layer]
+    ranked = rec.get(ranked_key)
+    if layer == "turn":
+        gold = set(qa.evidence)
+    elif layer == "session":
+        ranked = promote_to_sessions(ranked or [])
+        gold = set(promote_to_sessions(qa.evidence))
+    else:
+        gold = set(rec.get(gold_key) or [])
+    if ranked is None:
+        stored = rec.get(stored_key)
+        if stored is None:
+            raise ValueError(
+                f"retrieval record {rec.get('qa_id')!r} lacks raw data for {layer} metrics"
+            )
+        return _flat(stored)
+    out: dict[str, float] = {}
+    for k in cutoffs:
+        for name, val in evaluate_retrieval(ranked, gold, k).items():
+            out[f"{name}@{k}"] = val
+    return out
+
+
 def _aggregate(cases: list[dict[str, float]], cutoffs: list[int]) -> dict[str, dict[str, float]]:
     if not cases:
         return {}
     import numpy as np
-    metric_names = ["recall_any", "recall_all", "coverage", "ndcg", "mrr"]
+    metric_names = ["recall_any", "recall_all", "coverage", "ndcg", "mrr_at_k"]
     result: dict[str, dict[str, float]] = {}
     for k in cutoffs:
         result[f"@{k}"] = {}

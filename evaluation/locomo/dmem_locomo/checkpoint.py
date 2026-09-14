@@ -40,20 +40,48 @@ class Checkpoint:
                 return None
             return json.loads(self.manifest_path.read_text(encoding="utf-8"))
 
-    def is_compatible(self, config: dict[str, Any]) -> tuple[bool, str]:
+    def is_compatible(self, expected: dict[str, Any]) -> tuple[bool, str]:
+        """Compare every expected key against the stored manifest.
+
+        A key that is missing from the manifest is a mismatch; there is no
+        legacy fallback for pre-identity checkpoints.
+        """
         manifest = self.read_manifest()
         if manifest is None:
             return True, "no existing manifest"
-        for key in (
-            "dataset_sha", "run_id", "confirmation_policy", "retrieval_mode",
-            "limit", "max_chars", "cutoffs", "answer_cutoff",
-            "invalid_evidence_reference_retries",
-        ):
-            if key == "invalid_evidence_reference_retries" and key not in manifest:
-                continue
-            if manifest.get(key) != config.get(key):
+        for key, value in expected.items():
+            if manifest.get(key) != value:
                 return False, f"config mismatch on {key}"
         return True, "compatible"
+
+    def assert_phase_compatible(self, expected: dict[str, Any]) -> None:
+        """Raise when an existing manifest records a conflicting identity.
+
+        Unset manifest values are allowed so a phase can populate its identity
+        the first time it runs, but an already-recorded identity must match.
+        """
+        manifest = self.read_manifest()
+        if manifest is None:
+            return
+        for key, value in expected.items():
+            recorded = manifest.get(key)
+            if recorded is not None and recorded != value:
+                raise ValueError(
+                    f"{key} mismatch: checkpoint has {recorded!r}, "
+                    f"current run uses {value!r}"
+                )
+
+    def has_results(self) -> bool:
+        """True when any result-producing phase already wrote records."""
+        for path in (
+            self.retrieval_path,
+            self.generation_path,
+            self.judge_path,
+        ):
+            with self._lock:
+                if path.exists() and path.stat().st_size > 0:
+                    return True
+        return False
 
     # -- append --
 

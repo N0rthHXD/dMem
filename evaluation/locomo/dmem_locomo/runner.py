@@ -16,7 +16,9 @@ The runner never imports or starts the daemon; it is a pure HTTP client.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -29,8 +31,8 @@ import numpy as np
 
 from .api import DMemClient, DMemError
 from .checkpoint import Checkpoint
-from .dataset import Conversation, QA, validate_dataset
-from .metrics import evaluate_retrieval, promote_to_sessions
+from .dataset import Conversation, QA, dia_id_sort_key, validate_dataset
+from .metrics import METRIC_SCHEMA_VERSION, evaluate_retrieval, promote_to_sessions
 from .progress import tqdm
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,7 @@ class RunConfig:
     ingestion_workers: int = 1
     retrieval_workers: int = 1
     corpus_dir: str | None = None
+    dataset_subset: list[str] = field(default_factory=list)
 
 
 def stable_key(*parts: str) -> str:
@@ -84,6 +87,67 @@ def to_rfc3339(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
+
+
+def capture_identities(
+    health: dict[str, Any] | None,
+    recall_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Capture the effective daemon and evaluation identities for a manifest."""
+    health = health or {}
+    recall_meta = recall_meta or {}
+    return {
+        "metric_schema": METRIC_SCHEMA_VERSION,
+        "runner_version": RESULT_VERSION,
+        "daemon_build_version": health.get("build_version") or os.environ.get(
+            "DMEM_DAEMON_BUILD_SHA256", "unknown"
+        ),
+        "daemon_build_commit": health.get("build_commit") or os.environ.get(
+            "DMEM_DAEMON_BUILD_SHA256", "unknown"
+        ),
+        "schema_compatibility": health.get("schema_compatibility", "unknown"),
+        "processor_identity": health.get("processor_identity", "unknown"),
+        "configuration_identity": health.get("configuration_identity", "unknown"),
+        "semantic_index_version": health.get("semantic_index_version", 0),
+        "graph_index_version": health.get("graph_index_version", 0),
+        "graph_index_state": health.get("graph_index_state", "unknown"),
+        "fts_index_version": recall_meta.get("fts_index_version", 0),
+        "ranking_version": recall_meta.get("ranking_version", "unknown"),
+        "context_selection": "none",
+    }
+
+
+def result_report(
+    result: dict[str, Any], mapped_dia_ids: list[str]
+) -> dict[str, Any]:
+    """Normalize the observable telemetry for one recalled result.
+
+    Field names are fixed by ``testdata/retrieval-report-v1.json``. Fields the
+    daemon does not yet expose are reported explicitly as null/empty rather than
+    being omitted, so a baseline can tell "not measured" from "zero".
+    """
+    signals = result.get("graph_signals") or []
+    graph_scores = [
+        float(signal["fact_confidence"]) * float(signal["entity_confidence"])
+        for signal in signals
+        if signal.get("fact_confidence") and signal.get("entity_confidence")
+    ]
+    families = set(result.get("matched_channels") or [])
+    for signal in signals:
+        if signal.get("kind"):
+            families.add(signal["kind"])
+    return {
+        "primary_score": result.get("primary_score"),
+        "raw_channel_scores": {
+            "keyword": result.get("keyword_relevance"),
+            "semantic": result.get("semantic_relevance"),
+        },
+        "matched_fields": result.get("matched_fields") or [],
+        "graph_score": max(graph_scores) if graph_scores else None,
+        "signal_family": sorted(families),
+        "duplicate_cluster": mapped_dia_ids[0] if mapped_dia_ids else None,
+        "selection_state": result.get("selection_reason", ""),
+    }
 
 
 class Runner:
@@ -117,10 +181,17 @@ class Runner:
     # ------------------------------------------------------------------
 
     def run(self, conversations: list[Conversation]) -> dict[str, Any]:
+        health: dict[str, Any] = {}
+        try:
+            health = self.client.health()
+        except Exception as exc:  # pragma: no cover - daemon transport failure
+            logger.warning("health unavailable while capturing identities: %s", exc)
         manifest: dict[str, Any] = {
             "format_version": RESULT_VERSION,
+            "metric_schema": METRIC_SCHEMA_VERSION,
             "run_id": self.config.run_id,
             "dataset_sha": self.config.dataset_sha,
+            "dataset_subset": sorted(self.config.dataset_subset),
             "confirmation_policy": self.config.confirmation_policy,
             "invalid_evidence_reference_retries": (
                 self.config.invalid_evidence_reference_retries
@@ -141,6 +212,7 @@ class Runner:
             manifest["corpus_id"] = corpus_manifest.get("corpus_id", corpus_manifest.get("run_id")) if corpus_manifest else None
             manifest["corpus_dir"] = self.config.corpus_dir
             manifest["source_ingestion_run_id"] = corpus_manifest.get("run_id") if corpus_manifest else None
+        manifest["identities"] = capture_identities(health)
         self.cp.write_manifest(manifest)
         self.cp.write_validation(validate_dataset(conversations))
 
@@ -167,14 +239,72 @@ class Runner:
             else:
                 self._semantic_barrier()
 
+        if self.config.retrieval_mode in ("graph", "hybrid"):
+            if self.config.corpus_dir:
+                self.client.wait_for_graph_ready(
+                    poll_interval=self.config.job_poll_interval,
+                    timeout=self.config.job_timeout,
+                )
+            else:
+                self._graph_barrier()
+
         if self.config.corpus_dir:
             self._recall_phase(conversations, task_map, ingestion_records)
         else:
             self._recall_phase(conversations, task_map)
 
+        self._finalize_manifest_identities()
         summary = self._summarize(conversations, ingestion_records)
         self.cp.write_summary(summary)
         return summary
+
+    def _finalize_manifest_identities(self) -> None:
+        """Persist observed ranking/index identities and degradation counts."""
+        manifest = self.cp.read_manifest() or {}
+        records = self.cp.load_retrieval_records()
+        identities = dict(manifest.get("identities") or {})
+
+        def distinct(key: str) -> list[Any]:
+            return sorted({
+                rec[key] for rec in records.values()
+                if rec.get(key) not in (None, "", 0)
+            })
+
+        ranking_versions = distinct("ranking_version")
+        if len(ranking_versions) == 1:
+            identities["ranking_version"] = ranking_versions[0]
+        elif ranking_versions:
+            identities["ranking_version"] = ranking_versions
+        fts_versions = distinct("fts_index_version")
+        if len(fts_versions) == 1:
+            identities["fts_index_version"] = fts_versions[0]
+        elif fts_versions:
+            identities["fts_index_version"] = fts_versions
+        semantic_versions = distinct("semantic_index_version")
+        if len(semantic_versions) == 1:
+            identities["semantic_index_version"] = semantic_versions[0]
+        elif semantic_versions:
+            identities["semantic_index_version"] = semantic_versions
+        graph_versions = distinct("graph_index_version")
+        if len(graph_versions) == 1:
+            identities["graph_index_version"] = graph_versions[0]
+        elif graph_versions:
+            identities["graph_index_version"] = graph_versions
+
+        degradation_counts: dict[str, int] = {}
+        degraded_cases = 0
+        for rec in records.values():
+            if rec.get("degraded"):
+                degraded_cases += 1
+            for reason in rec.get("degradation_reasons") or []:
+                degradation_counts[reason] = degradation_counts.get(reason, 0) + 1
+
+        manifest["identities"] = identities
+        manifest["degradation_counts"] = {
+            "degraded_cases": degraded_cases,
+            "by_reason": degradation_counts,
+        }
+        self.cp.write_manifest(manifest)
 
     def ingest_corpus(self, conversations: list[Conversation]) -> dict[str, Any]:
         user_id, project_id = self._bootstrap_namespace()
@@ -208,11 +338,14 @@ class Runner:
         self.config.fail_on_degraded = True
         try:
             self._semantic_barrier()
+            self._graph_barrier()
         finally:
             self.config.fail_on_degraded = previous
         result = self.cp.read_manifest() or {}
         result["embedding_state"] = "ready"
         result["embedding_built_at"] = datetime.now(timezone.utc).isoformat()
+        result["graph_state"] = "ready"
+        result["graph_built_at"] = datetime.now(timezone.utc).isoformat()
         self.cp.write_manifest(result)
         return result
 
@@ -646,6 +779,34 @@ class Runner:
             if self.config.fail_on_degraded:
                 raise
 
+    def _graph_barrier(self) -> None:
+        idem_key = stable_key(
+            "rebuild-graph", self.config.dataset_sha, self.config.run_id
+        )
+        started = time.monotonic()
+        logger.info("graph barrier started")
+        try:
+            self.client.trigger_and_wait_graph(
+                idempotency_key=idem_key,
+                poll_interval=self.config.job_poll_interval,
+                timeout=self.config.job_timeout,
+                on_job_status=lambda job: logger.info(
+                    "graph rebuild job: status=%s attempt=%s elapsed=%.1fs",
+                    job.get("status"), job.get("attempt_count"),
+                    time.monotonic() - started,
+                ),
+                on_status=lambda health: logger.info(
+                    "graph barrier: state=%s queue=%s elapsed=%.1fs",
+                    health.get("graph_index_state"), health.get("job_queue_depth"),
+                    time.monotonic() - started,
+                ),
+            )
+            logger.info("graph barrier complete in %.1fs", time.monotonic() - started)
+        except Exception as exc:
+            logger.warning("graph barrier failed: %s", exc)
+            if self.config.fail_on_degraded:
+                raise
+
     # ------------------------------------------------------------------
     # recall phase
     # ------------------------------------------------------------------
@@ -705,11 +866,19 @@ class Runner:
         ingestion_records: dict[str, list[dict[str, Any]]],
     ) -> None:
         event_labels: dict[str, dict[str, Any]] = {}
+        indexed_dia_ids: dict[str, set[str]] = {}
         for rec in ingestion_records.get(conv.sample_id, []):
+            dia_id = rec.get("dia_id")
+            memory_ids = [m for m in (rec.get("memory_ids") or []) if m]
+            if rec.get("memory_id"):
+                memory_ids.append(rec["memory_id"])
             if rec.get("event_id"):
                 event_labels[rec["event_id"]] = rec
+            if dia_id and memory_ids:
+                indexed_dia_ids.setdefault(dia_id, set()).update(memory_ids)
 
         reference_time = conv.last_session_date()
+        recall_started = time.perf_counter()
         response = self.client.recall(
             query=qa.question,
             space_ids=[task_space_id],
@@ -721,71 +890,127 @@ class Runner:
             include_evidence=True,
             exclude_stale_aggregates=True,
         )
+        recall_latency_ms = (time.perf_counter() - recall_started) * 1000
+        response_bytes = len(
+            json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()
+        )
 
+        if response.get("degraded") and self.config.fail_on_degraded:
+            reasons = response.get("degradation_reasons") or ["unknown"]
+            raise RuntimeError(
+                f"recall degraded for {qa.qa_id}: {', '.join(reasons)}"
+            )
+
+        gold_turn = set(qa.evidence)
+        gold_session = set(promote_to_sessions(qa.evidence))
+        gold_memory_ids = {
+            memory_id
+            for dia_id, memory_ids in indexed_dia_ids.items()
+            if dia_id in gold_turn
+            for memory_id in memory_ids
+        }
+
+        ranked_items: list[dict[str, Any]] = []
+        ranked_memory_ids: list[str] = []
         ranked_dia_ids: list[str] = []
+        seen_dias: set[str] = set()
+        duplicate_count = 0
         unmapped_count = 0
-        seen: set[str] = set()
 
         for res in response.get("results", []):
             memory = res.get("memory", {})
             revision = memory.get("current_revision", {})
-            evidence_list = revision.get("evidence", [])
+            memory_id = memory.get("memory_id", "")
 
-            mapped: str | None = None
-            for ev in evidence_list:
-                ev_id = ev.get("event_id", "")
-                if ev_id in event_labels:
-                    mapped = event_labels[ev_id]["dia_id"]
-                    break
+            mapped: list[str] = []
+            for ev in revision.get("evidence", []):
+                rec = event_labels.get(ev.get("event_id", ""))
+                dia_id = rec.get("dia_id") if rec else None
+                if dia_id and dia_id not in mapped:
+                    mapped.append(dia_id)
+            mapped.sort(key=dia_id_sort_key)
 
-            if mapped is None:
+            if not mapped:
                 unmapped_count += 1
-                continue
-            if mapped in seen:
-                continue
-            seen.add(mapped)
-            ranked_dia_ids.append(mapped)
+            for dia_id in mapped:
+                if dia_id in seen_dias:
+                    duplicate_count += 1
+                else:
+                    seen_dias.add(dia_id)
+                    ranked_dia_ids.append(dia_id)
 
-        gold_turn = set(qa.evidence)
-        gold_session = set(promote_to_sessions(qa.evidence))
+            ranked_memory_ids.append(memory_id)
+            ranked_items.append({
+                "content": revision.get("content", ""),
+                "memory_id": memory_id,
+                "revision_id": revision.get("revision_id", ""),
+                "dia_id": mapped[0] if mapped else None,
+                "dia_ids": mapped,
+                "matched_channels": res.get("matched_channels", []),
+                "report": result_report(res, mapped),
+            })
+
         ranked_sessions = promote_to_sessions(ranked_dia_ids)
+        num_results = len(response.get("results", []))
+        total_mapped = sum(len(item["dia_ids"]) for item in ranked_items)
 
+        memory_metrics: dict[str, dict[str, float]] = {}
         turn_metrics: dict[str, dict[str, float]] = {}
         session_metrics: dict[str, dict[str, float]] = {}
         for k in self.config.cutoffs:
+            memory_metrics[f"@{k}"] = evaluate_retrieval(
+                ranked_memory_ids, gold_memory_ids, k
+            )
             turn_metrics[f"@{k}"] = evaluate_retrieval(ranked_dia_ids, gold_turn, k)
             session_metrics[f"@{k}"] = evaluate_retrieval(
                 ranked_sessions, gold_session, k
             )
 
-        ranked_items: list[dict[str, Any]] = []
-        for res in response.get("results", []):
-            revision = res.get("memory", {}).get("current_revision", {})
-            content = revision.get("content", "")
-            ms: str | None = None
-            for ev in revision.get("evidence", []):
-                ev_id = ev.get("event_id", "")
-                if ev_id in event_labels:
-                    ms = event_labels[ev_id]["dia_id"]
-                    break
-            ranked_items.append({"content": content, "dia_id": ms})
+        gold_indexed = gold_turn & set(indexed_dia_ids)
+        extraction = {
+            "gold_total": len(gold_turn),
+            "gold_indexed": len(gold_indexed),
+            "coverage": (
+                len(gold_indexed) / len(gold_turn) if gold_turn else 1.0
+            ),
+            "missed": bool(gold_turn - gold_indexed),
+        }
 
         record: dict[str, Any] = {
+            "metric_schema": METRIC_SCHEMA_VERSION,
             "qa_id": qa.qa_id,
             "sample_id": conv.sample_id,
             "category": qa.category,
             "question": qa.question,
             "ranked_items": ranked_items[: self.config.answer_cutoff],
             "ranked_dia_ids": ranked_dia_ids,
+            "ranked_sessions": ranked_sessions,
+            "ranked_memory_ids": ranked_memory_ids,
             "gold_evidence": qa.evidence,
+            "gold_sessions": sorted(gold_session, key=lambda s: int(s[1:])),
+            "gold_memory_ids": sorted(gold_memory_ids),
             "requested_channels": response.get("requested_channels"),
             "executed_channels": response.get("executed_channels"),
             "degraded": response.get("degraded", False),
             "degradation_reasons": response.get("degradation_reasons", []),
-            "num_results": len(response.get("results", [])),
+            "ranking_version": response.get("ranking_version"),
+            "fts_index_version": response.get("fts_index_version"),
+            "semantic_index_version": response.get("semantic_index_version"),
+            "graph_index_version": response.get("graph_index_version"),
+            "graph_index_state": response.get("graph_index_state"),
+            "recall_latency_ms": recall_latency_ms,
+            "response_bytes": response_bytes,
+            "num_results": num_results,
             "unmapped_count": unmapped_count,
+            "unmapped_rate": unmapped_count / num_results if num_results else 0.0,
+            "duplicate_count": duplicate_count,
+            "duplicate_rate": (
+                duplicate_count / total_mapped if total_mapped else 0.0
+            ),
+            "memory_metrics": memory_metrics,
             "turn_metrics": turn_metrics,
             "session_metrics": session_metrics,
+            "extraction": extraction,
             "has_evidence": qa.has_evidence,
             "is_adversarial": qa.is_adversarial,
         }
@@ -813,13 +1038,22 @@ class Runner:
         }
         failed_qids = set().union(*failures.values()) if failures else set()
 
-        # turn/session-level retrieval, excluding adversarial and no-evidence QA.
+        # Layered retrieval metrics, excluding adversarial, no-evidence, and
+        # partially unresolved QA whose gold relevance is not well defined.
+        memory_cases: list[dict[str, float]] = []
         turn_cases: list[dict[str, float]] = []
         session_cases: list[dict[str, float]] = []
         per_category: dict[int, list[dict[str, float]]] = {}
+        duplicate_rates: list[float] = []
+        unmapped_rates: list[float] = []
+        extraction_gold_total = 0
+        extraction_gold_indexed = 0
+        extraction_missing_cases = 0
+        retrieval_failure_cases = 0
         degraded_cases: list[str] = []
-        excluded_no_evidence = 0
+        excluded_unscorable = 0
         excluded_errors = 0
+        max_cutoff = max(self.config.cutoffs)
 
         for conv in conversations:
             for qa in conv.qa:
@@ -829,15 +1063,30 @@ class Runner:
                     continue
                 if rec.get("degraded"):
                     degraded_cases.append(qa.qa_id)
-                if qa.is_adversarial or not qa.has_evidence:
-                    excluded_no_evidence += 1
+                if not qa.is_scorable:
+                    excluded_unscorable += 1
                     continue
+                memory_cases.append(self._flat_metrics(rec["memory_metrics"]))
                 turn_cases.append(self._flat_metrics(rec["turn_metrics"]))
                 session_cases.append(self._flat_metrics(rec["session_metrics"]))
                 per_category.setdefault(qa.category, []).append(
                     self._flat_metrics(rec["turn_metrics"])
                 )
+                duplicate_rates.append(float(rec.get("duplicate_rate", 0.0)))
+                unmapped_rates.append(float(rec.get("unmapped_rate", 0.0)))
+                extraction = rec.get("extraction", {})
+                extraction_gold_total += int(extraction.get("gold_total", 0))
+                extraction_gold_indexed += int(extraction.get("gold_indexed", 0))
+                if extraction.get("missed"):
+                    extraction_missing_cases += 1
+                if (
+                    int(extraction.get("gold_indexed", 0)) > 0
+                    and rec["turn_metrics"].get(f"@{max_cutoff}", {}).get("recall_any", 0.0)
+                    == 0.0
+                ):
+                    retrieval_failure_cases += 1
 
+        memory_summary = self._aggregate_cutoffs(memory_cases)
         turn_summary = self._aggregate_cutoffs(turn_cases)
         session_summary = self._aggregate_cutoffs(session_cases)
         per_category_summary = {
@@ -848,10 +1097,16 @@ class Runner:
             1 for conv in conversations for qa in conv.qa if qa.qa_id in retrieval_records
         )
         total_qa = sum(len(conv.qa) for conv in conversations)
+        extraction_coverage = (
+            extraction_gold_indexed / extraction_gold_total
+            if extraction_gold_total
+            else 1.0
+        )
 
         return {
             "complete": not failed_qids and completed_retrieval == total_qa,
             "coverage": completed_retrieval / total_qa if total_qa else 1.0,
+            "metric_schema": METRIC_SCHEMA_VERSION,
             "failures": {
                 "total_cases": len(failed_qids),
                 "total_attempts": sum(
@@ -864,10 +1119,24 @@ class Runner:
                 conversations, ingestion_records, failures
             ),
             "retrieval": {
+                "memory_level": memory_summary,
                 "turn_level": turn_summary,
                 "session_level": session_summary,
                 "per_category": per_category_summary,
-                "excluded_no_evidence_or_adversarial": excluded_no_evidence,
+                "duplicate_rate": (
+                    float(np.mean(duplicate_rates)) if duplicate_rates else 0.0
+                ),
+                "unmapped_rate": (
+                    float(np.mean(unmapped_rates)) if unmapped_rates else 0.0
+                ),
+                "extraction": {
+                    "coverage": extraction_coverage,
+                    "gold_total": extraction_gold_total,
+                    "gold_indexed": extraction_gold_indexed,
+                    "missing_gold_cases": extraction_missing_cases,
+                    "retrieval_failure_cases": retrieval_failure_cases,
+                },
+                "excluded_unscorable": excluded_unscorable,
                 "excluded_errors": excluded_errors,
                 "degraded_cases": len(degraded_cases),
                 "total_qa": total_qa,
@@ -889,7 +1158,7 @@ class Runner:
     def _aggregate_cutoffs(self, cases: list[dict[str, float]]) -> dict[str, dict[str, float]]:
         if not cases:
             return {}
-        metric_names = ["recall_any", "recall_all", "coverage", "ndcg", "mrr"]
+        metric_names = ["recall_any", "recall_all", "coverage", "ndcg", "mrr_at_k"]
         result: dict[str, dict[str, float]] = {}
         for k in self.config.cutoffs:
             result[f"@{k}"] = {}

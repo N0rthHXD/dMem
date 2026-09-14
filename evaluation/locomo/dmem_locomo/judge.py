@@ -53,6 +53,8 @@ PROMPT_ADVERSARIAL = (
     "Answer yes or no only."
 )
 
+JUDGE_PROMPT_VERSION = "locomo-judge-v1"
+
 
 def judge_answers(
     dataset_path: str,
@@ -68,6 +70,10 @@ def judge_answers(
         raise ValueError("workers must be a positive integer")
     conversations, _ = load_dataset(dataset_path)
     cp = Checkpoint(output_dir)
+    cp.assert_phase_compatible({
+        "judge_model": model,
+        "judge_prompt": JUDGE_PROMPT_VERSION,
+    })
     generation_records = cp.load_generation_records()
     done = cp.load_judge_qids()
 
@@ -96,6 +102,7 @@ def judge_answers(
                 "sample_id": conv.sample_id,
                 "category": qa.category,
                 "model": model,
+                "prompt_version": JUDGE_PROMPT_VERSION,
                 "label": label,
                 "raw_response": eval_response,
             },
@@ -142,5 +149,7 @@ def judge_answers(
 
     existing = cp.read_manifest() or {}
     existing["semantic_judge"] = summary
+    existing["judge_model"] = model
+    existing["judge_prompt"] = JUDGE_PROMPT_VERSION
     cp.write_manifest(existing)
     return summary
