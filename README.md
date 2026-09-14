@@ -67,6 +67,8 @@ removes it from recall. See [API usage](docs/api/usage.md) and the
 
 - [Documentation index](docs/README.md)
 - [Architecture and data model](docs/architecture/overview.md)
+- [Memory and retrieval optimization plan](docs/architecture/memory-retrieval-optimization-plan.md)
+- [Memory and retrieval implementation tasks](specs/002-memory-retrieval-optimization/tasks.md)
 - [Entities, relations, conflicts, and evolution](docs/architecture/evolution.md)
 - [Feedback, ranking, and aggregation](docs/architecture/feedback-and-aggregation.md)
 - [Logical portability](docs/storage/logical-portability.md)
