@@ -684,6 +684,9 @@ type SearchResult struct {
 	GraphPaths       []GraphPath   `json:"graph_paths,omitempty"`
 	SelectionReason  string        `json:"selection_reason"`
 	ConflictRefs     []ConflictRef `json:"conflict_refs,omitempty"`
+	// ProtectedPrimary marks a strong direct primary match that graph-only
+	// candidates and broad aggregates must not displace during selection.
+	ProtectedPrimary bool `json:"-"`
 	// Explain fields are populated only when explain mode is requested.
 	RankingFeatures             map[string]float64 `json:"ranking_features,omitempty"`
 	GraphScore                  *float64           `json:"graph_score,omitempty"`
@@ -735,6 +738,11 @@ type SearchResponse struct {
 	FeedbackAggregateVersion int64            `json:"feedback_aggregate_version"`
 	ResolvedEntities         []ResolvedEntity `json:"resolved_entities,omitempty"`
 	ReferenceTime            string           `json:"-"`
+	// Context is the structured, budgeted selection built after ranking. It is
+	// the default recall output; raw Results remain internal.
+	Context ContextPackage `json:"-"`
+	// ContextSelectionIdentity is the versioned selection-policy identity.
+	ContextSelectionIdentity string `json:"-"`
 }
 
 type RecallIntent string
@@ -809,31 +817,41 @@ type RecallExplanation struct {
 }
 
 type ContextItem struct {
-	Rank            int                `json:"rank"`
-	MemoryID        string             `json:"memory_id"`
-	RevisionID      string             `json:"revision_id"`
-	Kind            MemoryKind         `json:"kind"`
-	DisplayContent  string             `json:"display_content"`
-	EventTimeStart  *time.Time         `json:"event_time_start,omitempty"`
-	EventTimeEnd    *time.Time         `json:"event_time_end,omitempty"`
-	ValidFrom       *time.Time         `json:"valid_from,omitempty"`
-	ValidUntil      *time.Time         `json:"valid_until,omitempty"`
-	SourceSpeaker   string             `json:"source_speaker,omitempty"`
-	TimePrecision   TimePrecision      `json:"time_precision,omitempty"`
-	TimeSource      string             `json:"time_source,omitempty"`
-	Evidence        []RevisionEvidence `json:"evidence,omitempty"`
-	Confidence      float64            `json:"confidence"`
-	LifecycleState  string             `json:"lifecycle_state"`
-	EstimatedTokens int                `json:"estimated_tokens"`
-	Explanation     *RecallExplanation `json:"explanation,omitempty"`
+	Rank                   int                `json:"rank"`
+	MemoryID               string             `json:"memory_id"`
+	RevisionID             string             `json:"revision_id"`
+	ClusterID              string             `json:"cluster_id,omitempty"`
+	Kind                   MemoryKind         `json:"kind"`
+	DisplayContent         string             `json:"display_content"`
+	EventTimeStart         *time.Time         `json:"event_time_start,omitempty"`
+	EventTimeEnd           *time.Time         `json:"event_time_end,omitempty"`
+	ValidFrom              *time.Time         `json:"valid_from,omitempty"`
+	ValidUntil             *time.Time         `json:"valid_until,omitempty"`
+	SourceSpeaker          string             `json:"source_speaker,omitempty"`
+	TimePrecision          TimePrecision      `json:"time_precision,omitempty"`
+	TimeSource             string             `json:"time_source,omitempty"`
+	Evidence               []RevisionEvidence `json:"evidence,omitempty"`
+	Confidence             float64            `json:"confidence"`
+	LifecycleState         string             `json:"lifecycle_state"`
+	EstimatedTokens        int                `json:"estimated_tokens"`
+	CorroboratingMemoryIDs []string           `json:"corroborating_memory_ids,omitempty"`
+	SupplementaryMemoryIDs []string           `json:"supplementary_memory_ids,omitempty"`
+	ProvenanceMemoryIDs    []string           `json:"provenance_memory_ids,omitempty"`
+	Utility                float64            `json:"utility,omitempty"`
+	Stale                  bool               `json:"stale,omitempty"`
+	StaleReasons           []string           `json:"stale_reasons,omitempty"`
+	GraphExplanation       string             `json:"graph_explanation,omitempty"`
+	Explanation            *RecallExplanation `json:"explanation,omitempty"`
 }
 
 type ContextPackage struct {
-	Items      []ContextItem `json:"items"`
-	TokensUsed int           `json:"tokens_used"`
-	CharsUsed  int           `json:"chars_used"`
-	Truncated  bool          `json:"truncated"`
-	NextCursor *string       `json:"next_cursor"`
+	Items      []ContextItem              `json:"items"`
+	TokensUsed int                        `json:"tokens_used"`
+	CharsUsed  int                        `json:"chars_used"`
+	Truncated  bool                       `json:"truncated"`
+	NextCursor *string                    `json:"next_cursor"`
+	Accounting ContextBudgetAccounting    `json:"accounting,omitempty"`
+	Rejected   []RejectedContextCandidate `json:"rejected,omitempty"`
 }
 
 type RecallExecutionMetadata struct {
@@ -847,6 +865,11 @@ type RecallExecutionMetadata struct {
 	QueryPlanIdentity        string       `json:"query_plan_identity"`
 	RankingIdentity          string       `json:"ranking_identity"`
 	ContextSelectionIdentity string       `json:"context_selection_identity"`
+	RankingVersion           string       `json:"ranking_version"`
+	FTSIndexVersion          int          `json:"fts_index_version"`
+	SemanticIndexVersion     int          `json:"semantic_index_version"`
+	GraphIndexVersion        int64        `json:"graph_index_version"`
+	GraphIndexState          string       `json:"graph_index_state"`
 }
 
 type RecallResponse struct {

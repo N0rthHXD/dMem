@@ -6,6 +6,9 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
 type searchQualityCorpus struct {
@@ -155,6 +158,195 @@ func TestSearchQualityConflictRecallAndReferenceCompleteness(t *testing.T) {
 	recall, completeness := float64(recalled)/2, float64(referenced)/2
 	if recall < gates.Quality.MinimumConflictRecall || completeness < gates.Quality.MinimumConflictReferenceCompleteness {
 		t.Fatalf("conflict recall=%.2f references=%.2f, both want 1.0", recall, completeness)
+	}
+}
+
+type contextSelectionGates struct {
+	ConfigVersion           string `json:"config_version"`
+	CorpusVersion           string `json:"corpus_version"`
+	ContextSelectionVersion string `json:"context_selection_version"`
+	TokenFormatVersion      string `json:"token_format_version"`
+	Quality                 struct {
+		MinimumDuplicateRateReduction float64 `json:"minimum_duplicate_rate_reduction"`
+		MaximumSelectedDuplicateRate  float64 `json:"maximum_selected_duplicate_rate"`
+		MinimumEvidenceCoverage       float64 `json:"minimum_evidence_coverage"`
+		MinimumSourceCoverage         float64 `json:"minimum_source_coverage"`
+		MaximumTokenUtilization       float64 `json:"maximum_token_utilization"`
+		MaximumMedianTokenGrowth      float64 `json:"maximum_median_token_growth"`
+	} `json:"quality"`
+}
+
+func loadContextSelectionGates(t *testing.T) contextSelectionGates {
+	t.Helper()
+	var gates contextSelectionGates
+	readJSONFixture(t, "testdata/context-selection-gates-v1.json", &gates)
+	if gates.ConfigVersion != "context-selection-gates-v1" || gates.CorpusVersion != "context-selection-corpus-v1" ||
+		gates.ContextSelectionVersion != retrieval.ContextSelectionVersion || gates.TokenFormatVersion != domain.ContextTokenFormatVersion {
+		t.Fatalf("invalid context-selection gate identity: %+v", gates)
+	}
+	return gates
+}
+
+func contextSelectionFixture(t *testing.T) *Repository {
+	t.Helper()
+	r, _ := newMemoryTestRepository(t)
+	for i := 0; i < 3; i++ {
+		params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "aurora launch checklist", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "context selection gate"}
+		if _, _, err := r.CreateMemory(context.Background(), memoryIdentity("context-aurora-"+formatInt(int64(i)), "/v1/memories", params), params); err != nil {
+			t.Fatal(err)
+		}
+	}
+	params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "borealis launch checklist", Sensitivity: "normal", Evidence: directEvidence("event-2"), Reason: "context selection gate"}
+	if _, _, err := r.CreateMemory(context.Background(), memoryIdentity("context-borealis", "/v1/memories", params), params); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RebuildFTS(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func selectionDuplicateRate(candidates []domain.ContextCandidate) float64 {
+	if len(candidates) == 0 {
+		return 0
+	}
+	type key struct{ canonical, evidence string }
+	seen := map[key]struct{}{}
+	duplicates := 0
+	for _, candidate := range candidates {
+		evidence := ""
+		if len(candidate.PrimaryEvidence) > 0 {
+			evidence = candidate.PrimaryEvidence[0]
+		}
+		k := key{candidate.CanonicalHash, evidence}
+		if _, ok := seen[k]; ok {
+			duplicates++
+			continue
+		}
+		seen[k] = struct{}{}
+	}
+	return float64(duplicates) / float64(len(candidates))
+}
+
+func TestSearchQualityContextSelectionMetrics(t *testing.T) {
+	gates := loadContextSelectionGates(t)
+	r := contextSelectionFixture(t)
+	params := SearchParams{Query: "aurora borealis launch checklist", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 20, MaxChars: 10000, MaxContextTokens: 10000, IncludeEvidence: true}
+	response, err := r.SearchMemories(context.Background(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawCandidates, _, _ := r.buildContextCandidates(context.Background(), params, response.Results)
+	rawDuplicateRate := selectionDuplicateRate(rawCandidates)
+	selectedDuplicateRate := selectionDuplicateRateForItems(response.Context.Items)
+
+	selectedEvidence, selectedSources := map[string]struct{}{}, map[string]struct{}{}
+	for _, item := range response.Context.Items {
+		for _, evidence := range item.Evidence {
+			selectedEvidence[evidence.EventID] = struct{}{}
+			selectedSources[evidence.EventID] = struct{}{}
+		}
+	}
+	rawEvidence, rawSources := map[string]struct{}{}, map[string]struct{}{}
+	for _, result := range response.Results {
+		for _, evidence := range result.Memory.CurrentRevision.Evidence {
+			rawEvidence[evidence.EventID] = struct{}{}
+			rawSources[evidence.EventID] = struct{}{}
+		}
+	}
+	evidenceCoverage := float64(len(selectedEvidence)) / float64(len(rawEvidence))
+	sourceCoverage := 1.0
+	if len(rawSources) > 0 {
+		covered := 0
+		for source := range selectedSources {
+			if _, ok := rawSources[source]; ok {
+				covered++
+			}
+		}
+		sourceCoverage = float64(covered) / float64(len(rawSources))
+	}
+	tokenUtilization := float64(response.Context.Accounting.TokensUsed) / float64(params.MaxContextTokens)
+	reduction := 0.0
+	if rawDuplicateRate > 0 {
+		reduction = (rawDuplicateRate - selectedDuplicateRate) / rawDuplicateRate
+	}
+	t.Logf("context selection metrics: raw_dup=%.3f selected_dup=%.3f reduction=%.3f evidence=%.3f source=%.3f tokens=%.3f items=%d",
+		rawDuplicateRate, selectedDuplicateRate, reduction, evidenceCoverage, sourceCoverage, tokenUtilization, len(response.Context.Items))
+	if reduction < gates.Quality.MinimumDuplicateRateReduction {
+		t.Fatalf("duplicate rate reduction %.3f below gate %.3f", reduction, gates.Quality.MinimumDuplicateRateReduction)
+	}
+	if selectedDuplicateRate > gates.Quality.MaximumSelectedDuplicateRate {
+		t.Fatalf("selected duplicate rate %.3f above gate %.3f", selectedDuplicateRate, gates.Quality.MaximumSelectedDuplicateRate)
+	}
+	if evidenceCoverage < gates.Quality.MinimumEvidenceCoverage {
+		t.Fatalf("evidence coverage %.3f below gate %.3f", evidenceCoverage, gates.Quality.MinimumEvidenceCoverage)
+	}
+	if sourceCoverage < gates.Quality.MinimumSourceCoverage {
+		t.Fatalf("source coverage %.3f below gate %.3f", sourceCoverage, gates.Quality.MinimumSourceCoverage)
+	}
+	if tokenUtilization > gates.Quality.MaximumTokenUtilization {
+		t.Fatalf("token utilization %.3f above gate %.3f", tokenUtilization, gates.Quality.MaximumTokenUtilization)
+	}
+}
+
+func selectionDuplicateRateForItems(items []domain.ContextItem) float64 {
+	if len(items) == 0 {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	duplicates := 0
+	for _, item := range items {
+		key := item.ClusterID
+		if key == "" {
+			key = item.MemoryID
+		}
+		if _, ok := seen[key]; ok {
+			duplicates++
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	return float64(duplicates) / float64(len(items))
+}
+
+func TestSearchQualityContextSelectionPromotionAblation(t *testing.T) {
+	gates := loadContextSelectionGates(t)
+	candidates := []domain.ContextCandidate{
+		{MemoryID: "dup-a", RevisionID: "dup-a-r", SpaceID: "space-1", Kind: domain.MemoryKindFact, Relevance: 0.9, Rank: 1, CanonicalHash: "dup", PrimaryEvidence: []string{"e1"}, SourceIDs: []string{"s1"}, EstimatedTokens: 10, LifecycleState: "active"},
+		{MemoryID: "dup-b", RevisionID: "dup-b-r", SpaceID: "space-1", Kind: domain.MemoryKindFact, Relevance: 0.89, Rank: 2, CanonicalHash: "dup", PrimaryEvidence: []string{"e1"}, SourceIDs: []string{"s1"}, EstimatedTokens: 10, LifecycleState: "active"},
+		{MemoryID: "dup-c", RevisionID: "dup-c-r", SpaceID: "space-1", Kind: domain.MemoryKindFact, Relevance: 0.88, Rank: 3, CanonicalHash: "dup", PrimaryEvidence: []string{"e1"}, SourceIDs: []string{"s1"}, EstimatedTokens: 10, LifecycleState: "active"},
+		{MemoryID: "distinct", RevisionID: "distinct-r", SpaceID: "space-1", Kind: domain.MemoryKindFact, Relevance: 0.7, Rank: 4, CanonicalHash: "distinct", PrimaryEvidence: []string{"e2"}, SourceIDs: []string{"s2"}, EstimatedTokens: 10, LifecycleState: "active"},
+	}
+	budget := domain.ContextBudget{MaxResults: 2, MaxTokens: 1000, MaxChars: 1000, MaxSources: 10, MaxSensitive: 10}
+	selection := retrieval.SelectContext(retrieval.SelectInput{QuestionType: retrieval.QuestionMultiHop, Budget: budget, Candidates: candidates})
+
+	fixedEvidence := map[string]struct{}{}
+	for _, candidate := range candidates[:2] {
+		for _, evidence := range candidate.PrimaryEvidence {
+			fixedEvidence[evidence] = struct{}{}
+		}
+	}
+	fixedDuplicateRate := 0.5
+	selectedEvidence := map[string]struct{}{}
+	selectedDuplicateRate := 0.0
+	for _, item := range selection.Items {
+		for _, evidence := range item.Evidence {
+			selectedEvidence[evidence] = struct{}{}
+		}
+	}
+	fixedCoverage, selectedCoverage := float64(len(fixedEvidence)), float64(len(selectedEvidence))
+	t.Logf("context selection ablation: fixed_coverage=%.0f selected_coverage=%.0f fixed_dup=%.3f selected_dup=%.3f", fixedCoverage, selectedCoverage, fixedDuplicateRate, selectedDuplicateRate)
+	if selectedCoverage <= fixedCoverage {
+		t.Fatalf("MMR selection did not improve multi-evidence coverage: fixed=%.0f selected=%.0f", fixedCoverage, selectedCoverage)
+	}
+	if selectedDuplicateRate > fixedDuplicateRate {
+		t.Fatalf("MMR selection increased duplicate rate: fixed=%.3f selected=%.3f", fixedDuplicateRate, selectedDuplicateRate)
+	}
+	if selectedDuplicateRate > gates.Quality.MaximumSelectedDuplicateRate {
+		t.Fatalf("selected duplicate rate %.3f above promotion gate", selectedDuplicateRate)
+	}
+	if len(selection.Items) != 2 {
+		t.Fatalf("ablation selection items=%d, want 2", len(selection.Items))
 	}
 }
 

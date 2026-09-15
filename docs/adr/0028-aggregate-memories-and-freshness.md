@@ -1,7 +1,8 @@
 # ADR 0028：普通 Aggregate memory 与 freshness descriptor
 
-- 状态：accepted
+- 状态：superseded（stale aggregate 默认包含与 scene/topic-only 约束由 [0035](0035-memory-retrieval-v4.md) 取代；普通 aggregate memory、完整 provenance 与可重建 freshness descriptor 继续有效）
 - 日期：2026-08-25
+- 关联：被 [0035](0035-memory-retrieval-v4.md) 取代
 
 ## 决策
 
@@ -9,4 +10,4 @@
 
 Aggregate proposal 是独立 resource，保存有界且排序规范化的 input revision IDs、input fingerprint、内容和 provider identity。Create/list/get/review、aggregate get/list 和 drill-down 是 UDS HTTP 公共 API。Provider 在事务外运行；confirm 原子创建普通 memory/revision、descriptor、全部 provenance、review、audit 和 index jobs。Aggregate 不能覆盖、删除或替代输入 memory，且 frozen 输入不会被 aggregate review 修改。
 
-Freshness 是可重建 descriptor projection，固定为 `fresh` 或 `stale`。任一输入 memory 的 current revision、state、space 或 sensitivity 改变时标记 stale 并排入去重、generation-fenced rebuild；rebuild 产生新的 pending proposal，不自动替换已确认 revision。Search 和 get 默认继续返回 stale aggregate，必须设置 `aggregate_stale=true` 并返回输入变化原因和 provenance refs；调用方可显式排除 stale aggregate。历史 aggregate revision 和 `derived_from` authority 不因 stale、缓存删除或 rebuild 而删除。
+Freshness 是可重建 descriptor projection，固定为 `fresh` 或 `stale`。任一输入 memory 的 current revision、state、space 或 sensitivity 改变时标记 stale 并排入去重、generation-fenced rebuild；rebuild 产生新的 pending proposal，不自动替换已确认 revision。Search 默认排除 stale aggregate；只有明确的 debug 请求才能包含 stale aggregate，且必须返回 `aggregate_stale`、输入变化原因和 provenance refs。历史 aggregate revision 和 `derived_from` authority 不因 stale、缓存删除或 rebuild 而删除。

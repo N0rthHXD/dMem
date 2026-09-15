@@ -541,6 +541,22 @@ func TestAggregateUsesIndependentInputLimit(t *testing.T) {
 	assertProviderError(t, err, ErrorInvalidInput, "content_out_of_bounds")
 }
 
+func TestAggregateSupportsTimelineAndRejectsUnknownKind(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"content\":\"timeline summary\",\"sensitivity\":\"normal\"}"}}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
+	inputs := []domain.AggregateInput{{SpaceID: "space-a", Content: "first event", Sensitivity: "normal"}, {SpaceID: "space-a", Content: "second event", Sensitivity: "normal"}}
+	result, err := client.Build(context.Background(), domain.AggregateProviderInput{Kind: "timeline", SpaceID: "space-a", PolicyVersion: "policy", ProcessingVersion: "v1", Inputs: inputs})
+	if err != nil || result.Content != "timeline summary" {
+		t.Fatalf("timeline build = %+v err=%v", result, err)
+	}
+	_, err = client.Build(context.Background(), domain.AggregateProviderInput{Kind: "summary", SpaceID: "space-a", PolicyVersion: "policy", ProcessingVersion: "v1", Inputs: inputs})
+	assertProviderError(t, err, ErrorInvalidInput, "invalid_aggregate_request")
+}
+
 func newTestClient(t *testing.T, server *httptest.Server, override Config) *Client {
 	t.Helper()
 	cfg := Config{

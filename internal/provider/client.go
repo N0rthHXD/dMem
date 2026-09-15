@@ -520,7 +520,7 @@ func (c *Client) Build(ctx context.Context, request domain.AggregateProviderInpu
 	if !c.Enabled() {
 		return domain.AggregateProviderResult{}, failure(ErrorDisabled, "provider_disabled")
 	}
-	if request.Kind != "scene" && request.Kind != "topic" || request.PolicyVersion == "" || request.ProcessingVersion == "" || len(request.Inputs) == 0 || len(request.Inputs) > c.maxContext {
+	if !domain.ValidAggregateKind(request.Kind) || request.PolicyVersion == "" || request.ProcessingVersion == "" || len(request.Inputs) == 0 || len(request.Inputs) > c.maxContext {
 		return domain.AggregateProviderResult{}, failure(ErrorInvalidInput, "invalid_aggregate_request")
 	}
 	total := 0

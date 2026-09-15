@@ -33,6 +33,17 @@ func (k MemoryKind) Valid() bool {
 	}
 }
 
+// ValidAggregateKind reports whether a requested aggregate kind is a reviewed
+// synthesis kind. Aggregates are scene, topic, or timeline only.
+func ValidAggregateKind(kind string) bool {
+	switch MemoryKind(kind) {
+	case MemoryKindScene, MemoryKindTopic, MemoryKindTimeline:
+		return true
+	default:
+		return false
+	}
+}
+
 // EvidenceRole describes how a cited span supports a revision (ADR 0035).
 type EvidenceRole string
 

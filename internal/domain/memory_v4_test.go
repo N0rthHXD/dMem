@@ -66,6 +66,20 @@ func TestMemoryKindValidation(t *testing.T) {
 	}
 }
 
+func TestValidAggregateKind(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"scene", "topic", "timeline"} {
+		if !ValidAggregateKind(kind) {
+			t.Fatalf("aggregate kind %q should be valid", kind)
+		}
+	}
+	for _, kind := range []string{"", "fact", "event", "summary", "aggregate"} {
+		if ValidAggregateKind(kind) {
+			t.Fatalf("aggregate kind %q should be rejected", kind)
+		}
+	}
+}
+
 func TestMemoryRevisionSeparationOfEventAndValidTime(t *testing.T) {
 	t.Parallel()
 	eventStart := time.Date(2024, 3, 1, 9, 0, 0, 0, time.UTC)

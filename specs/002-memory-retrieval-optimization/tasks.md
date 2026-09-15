@@ -638,65 +638,65 @@ provide compact, diverse, source-grounded context.
 
 ### Selection Tests And Model
 
-- [ ] T121 [P] [CTX] Add failing tests for duplicate representatives, evidence
+- [X] T121 [P] [CTX] Add failing tests for duplicate representatives, evidence
   attachment, source/session/entity coverage, semantic redundancy, aggregate
   provenance, token/character/result budgets, and deterministic ties in
   `internal/retrieval/selector_test.go`
-- [ ] T122 [P] [CTX] Add failing query-type tests for lookup, verification,
+- [X] T122 [P] [CTX] Add failing query-type tests for lookup, verification,
   temporal, multi-hop, procedural, and exploratory selection policies
-- [ ] T123 [P] [CTX] Add failing score-discontinuity and low-quality stopping
+- [X] T123 [P] [CTX] Add failing score-discontinuity and low-quality stopping
   tests proving maximum result count does not force irrelevant context
-- [ ] T124 [CTX] Define versioned context candidate, selected context item,
+- [X] T124 [CTX] Define versioned context candidate, selected context item,
   rejected candidate, budget accounting, and selection explanation models in
   `internal/domain/`
-- [ ] T125 [CTX] Implement provenance-aware duplicate clustering integration and
+- [X] T125 [CTX] Implement provenance-aware duplicate clustering integration and
   representative/evidence collapse in `internal/retrieval/selector.go`
-- [ ] T126 [CTX] Implement deterministic MMR-style utility over relevance,
+- [X] T126 [CTX] Implement deterministic MMR-style utility over relevance,
   evidence coverage, source/entity/session coverage, redundancy, and context
   cost
-- [ ] T127 [CTX] Implement question-type policies, exact-match protection,
+- [X] T127 [CTX] Implement question-type policies, exact-match protection,
   score-discontinuity stopping, and hard token/character/result budgets
 
 ### Context Rendering And API
 
-- [ ] T128 [P] [CTX] Add failing rendering tests for kind, display content,
+- [X] T128 [P] [CTX] Add failing rendering tests for kind, display content,
   event/valid time, source speaker, complete evidence, graph explanation,
   confidence, lifecycle, and estimated tokens
-- [ ] T129 [CTX] Implement structured context packages and deterministic plain
+- [X] T129 [CTX] Implement structured context packages and deterministic plain
   text rendering without claiming unavailable dates, speakers, or conversation
   reconstruction
-- [ ] T130 [CTX] Integrate selection after ranking in recall; expose selected
+- [X] T130 [CTX] Integrate selection after ranking in recall; expose selected
   context by default and raw candidates/rejections only through policy-safe
   explain/debug output
-- [ ] T131 [CTX] Update token estimation and budget enforcement so retrieval and
+- [X] T131 [CTX] Update token estimation and budget enforcement so retrieval and
   downstream generation use the same context-format identity
-- [ ] T132 [CTX] Update LoCoMo and LongMemEval adapters to consume structured
+- [X] T132 [CTX] Update LoCoMo and LongMemEval adapters to consume structured
   selected context, preserve complete evidence, and remove benchmark-side
   duplicate top-k assembly
 
 ### Aggregate Behavior
 
-- [ ] T133 [P] [CTX] Add failing aggregate tests for scene, topic, and timeline
+- [X] T133 [P] [CTX] Add failing aggregate tests for scene, topic, and timeline
   kinds, bounded deduplicated inputs, complete provenance, source stabilization,
   stale transitions, and review-only rebuild publication
-- [ ] T134 [CTX] Add timeline aggregate provider/domain/storage support under
+- [X] T134 [CTX] Add timeline aggregate provider/domain/storage support under
   `internal/aggregate/`, `internal/domain/`, and storage schema contracts
-- [ ] T135 [CTX] Exclude stale aggregates from default recall and allow explicit
+- [X] T135 [CTX] Exclude stale aggregates from default recall and allow explicit
   debug inclusion with stale reason and provenance
-- [ ] T136 [CTX] Prevent broad aggregates from consuming a primary slot when a
+- [X] T136 [CTX] Prevent broad aggregates from consuming a primary slot when a
   more specific source memory answers the query; attach aggregate synthesis as
   supplementary context when useful
-- [ ] T137 [CTX] Mark current aggregate ADR behavior superseded where it conflicts
+- [X] T137 [CTX] Mark current aggregate ADR behavior superseded where it conflicts
   with default stale exclusion and timeline support
 
 ### Context Quality Gates
 
-- [ ] T138 [P] [CTX] Add selected-context duplicate rate, useful density,
+- [X] T138 [P] [CTX] Add selected-context duplicate rate, useful density,
   evidence/source/session coverage, token utilization, and answer-support metrics
   to fixed quality fixtures
-- [ ] T139 [CTX] Run fixed-cutoff versus MMR, query-type policy, duplicate
+- [X] T139 [CTX] Run fixed-cutoff versus MMR, query-type policy, duplicate
   collapse, aggregate, and structured-rendering ablations on fresh shared corpora
-- [ ] T140 [CTX] Promote context-selection defaults only when duplicate rate falls
+- [X] T140 [CTX] Promote context-selection defaults only when duplicate rate falls
   at least 50%, multi-evidence coverage improves, and median tokens do not grow
   more than the approved quality budget
 

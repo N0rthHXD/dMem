@@ -76,16 +76,21 @@ def make_runner(tmp_path, client, fail_on_degraded=False):
 
 def result(memory_id, evidence_ids, channels=None):
     return {
-        "memory": {
-            "memory_id": memory_id,
-            "current_revision": {
-                "revision_id": memory_id + "-r",
-                "content": "content " + memory_id,
-                "evidence": [{"event_id": ev} for ev in evidence_ids],
-            },
-        },
-        "matched_channels": channels or ["keyword"],
+        "rank": 1,
+        "memory_id": memory_id,
+        "revision_id": memory_id + "-r",
+        "display_content": "content " + memory_id,
+        "evidence": [{"event_id": ev} for ev in evidence_ids],
+        "cluster_id": "cluster-" + memory_id,
+        "utility": 1.0,
+        "explanation": {"matched_signals": channels or ["keyword"]},
     }
+
+
+def recall_response(items, **execution):
+    payload = {"degraded": False, "degradation_reasons": []}
+    payload.update(execution)
+    return {"context": {"items": items}, "execution": payload}
 
 
 def ingestion_records(*, unmapped_event=True):
@@ -127,11 +132,7 @@ def test_dia_id_sort_key_orders_session_then_turn():
 
 
 def test_recall_maps_all_evidence_events_in_chronological_order(tmp_path):
-    response = {
-        "results": [result("m1", ["e2", "e1"])],
-        "degraded": False,
-        "degradation_reasons": [],
-    }
+    response = recall_response([result("m1", ["e2", "e1"])])
     runner, cp = make_runner(tmp_path, FakeClient(response))
     conv = make_conversation()
     runner._recall_qa(conv, conv.qa[0], "task-1", ingestion_records())
@@ -142,14 +143,10 @@ def test_recall_maps_all_evidence_events_in_chronological_order(tmp_path):
 
 
 def test_recall_counts_unmapped_results(tmp_path):
-    response = {
-        "results": [
-            result("m1", ["unknown-event"]),
-            result("m2", ["e1"]),
-        ],
-        "degraded": False,
-        "degradation_reasons": [],
-    }
+    response = recall_response([
+        result("m1", ["unknown-event"]),
+        result("m2", ["e1"]),
+    ])
     runner, cp = make_runner(tmp_path, FakeClient(response))
     conv = make_conversation()
     runner._recall_qa(conv, conv.qa[0], "task-1", ingestion_records())
@@ -160,15 +157,11 @@ def test_recall_counts_unmapped_results(tmp_path):
 
 
 def test_recall_deduplicates_repeated_source_turns(tmp_path):
-    response = {
-        "results": [
-            result("m1", ["e1"]),
-            result("m2", ["e1"]),
-            result("m3", ["e2"]),
-        ],
-        "degraded": False,
-        "degradation_reasons": [],
-    }
+    response = recall_response([
+        result("m1", ["e1"]),
+        result("m2", ["e1"]),
+        result("m3", ["e2"]),
+    ])
     runner, cp = make_runner(tmp_path, FakeClient(response))
     conv = make_conversation()
     runner._recall_qa(conv, conv.qa[0], "task-1", ingestion_records())
@@ -179,11 +172,7 @@ def test_recall_deduplicates_repeated_source_turns(tmp_path):
 
 
 def test_recall_reports_memory_turn_and_session_layers(tmp_path):
-    response = {
-        "results": [result("m1", ["e1"]), result("m2", ["e2"])],
-        "degraded": False,
-        "degradation_reasons": [],
-    }
+    response = recall_response([result("m1", ["e1"]), result("m2", ["e2"])])
     runner, cp = make_runner(tmp_path, FakeClient(response))
     conv = make_conversation()
     runner._recall_qa(conv, conv.qa[0], "task-1", ingestion_records())
@@ -202,11 +191,7 @@ def test_recall_reports_memory_turn_and_session_layers(tmp_path):
 
 
 def test_recall_reports_extraction_coverage(tmp_path):
-    response = {
-        "results": [result("m1", ["e1"])],
-        "degraded": False,
-        "degradation_reasons": [],
-    }
+    response = recall_response([result("m1", ["e1"])])
     runner, cp = make_runner(tmp_path, FakeClient(response))
     conv = make_conversation()
     runner._recall_qa(conv, conv.qa[0], "task-1", ingestion_records())
@@ -220,11 +205,7 @@ def test_recall_reports_extraction_coverage(tmp_path):
 
 
 def test_recall_surfaces_gold_source_missing_from_index(tmp_path):
-    response = {
-        "results": [result("m1", ["e1"])],
-        "degraded": False,
-        "degradation_reasons": [],
-    }
+    response = recall_response([result("m1", ["e1"])])
     runner, cp = make_runner(tmp_path, FakeClient(response))
     conv = make_conversation()
     # D2:1 event produced no confirmed memory, so the gold source is absent.
@@ -303,7 +284,7 @@ def test_summarize_recomputes_memory_layer_from_raw_records():
 
 class BarrierClient(FakeClient):
     def __init__(self, response=None, error=None):
-        super().__init__(response or {"results": [], "degraded": False})
+        super().__init__(response or recall_response([]))
         self.error = error
         self.trigger_calls = 0
 
@@ -362,13 +343,13 @@ def test_graph_barrier_raises_failure_with_fail_on_degraded(tmp_path):
 
 
 def test_degraded_recall_is_recorded(tmp_path):
-    response = {
-        "results": [result("m1", ["e1"])],
-        "degraded": True,
-        "degradation_reasons": ["semantic_unavailable"],
-        "ranking_version": "ranking-weights-v1",
-        "fts_index_version": 2,
-    }
+    response = recall_response(
+        [result("m1", ["e1"])],
+        degraded=True,
+        degradation_reasons=["semantic_unavailable"],
+        ranking_version="ranking-weights-v1",
+        fts_index_version=2,
+    )
     runner, cp = make_runner(tmp_path, FakeClient(response))
     conv = make_conversation()
     runner._recall_qa(conv, conv.qa[0], "task-1", ingestion_records())
@@ -381,11 +362,11 @@ def test_degraded_recall_is_recorded(tmp_path):
 
 
 def test_degraded_recall_raises_when_fail_on_degraded(tmp_path):
-    response = {
-        "results": [result("m1", ["e1"])],
-        "degraded": True,
-        "degradation_reasons": ["graph_unavailable"],
-    }
+    response = recall_response(
+        [result("m1", ["e1"])],
+        degraded=True,
+        degradation_reasons=["graph_unavailable"],
+    )
     runner, _cp = make_runner(tmp_path, FakeClient(response), fail_on_degraded=True)
     conv = make_conversation()
     try:

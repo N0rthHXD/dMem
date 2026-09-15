@@ -301,9 +301,6 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			}
 			continue
 		}
-		if !params.IncludeEvidence {
-			memory.CurrentRevision.Evidence = nil
-		}
 		channels := make([]string, 0, 3)
 		reason := ""
 		var keyword, semanticScore *float64
@@ -334,7 +331,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keyword, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate)}
+		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keyword, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate), ProtectedPrimary: candidate.protected}
 		if params.Explain {
 			r.applyExplain(candidate, &searchResult, params)
 		}

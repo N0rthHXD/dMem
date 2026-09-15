@@ -279,23 +279,32 @@ class DMemClient:
         include_ancestors: bool = False,
         reference_time: str | None = None,
         mode: str = "keyword",
+        intent: str = "auto",
         limit: int = 100,
-        max_chars: int = 100000,
+        max_context_tokens: int = 100000,
         include_evidence: bool = True,
         exclude_stale_aggregates: bool = True,
     ) -> dict[str, Any]:
+        capabilities = {
+            "keyword": ["keyword"],
+            "semantic": ["semantic"],
+            "graph": ["graph"],
+            "hybrid": None,
+        }[mode]
         body: dict[str, Any] = {
             "query": query,
             "space_ids": space_ids,
             "include_ancestors": include_ancestors,
-            "channels": {"keyword": ["keyword"], "semantic": ["semantic"], "hybrid": ["keyword", "semantic", "graph"]}[mode],
-            "limit": limit,
-            "max_chars": max_chars,
+            "intent": intent,
+            "max_results": limit,
+            "max_context_tokens": max_context_tokens,
             "include_evidence": include_evidence,
             "exclude_stale_aggregates": exclude_stale_aggregates,
         }
         if reference_time is not None:
             body["reference_time"] = reference_time
+        if capabilities is not None:
+            body["debug"] = {"capabilities": capabilities}
         return self._request("POST", "/v1/recall", json=body)
 
     # ------------------------------------------------------------------

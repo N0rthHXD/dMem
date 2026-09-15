@@ -1058,7 +1058,7 @@ components:
         include_evidence: { type: boolean, default: false }
         explain: { type: boolean, default: false }
         cursor: { type: string }
-        exclude_stale_aggregates: { type: boolean, default: false }
+        exclude_stale_aggregates: { type: boolean, default: true, description: 'Stale aggregates are excluded by default. Setting false requires debug mode for explicit inclusion.' }
     RecallIntent:
       type: string
       enum: [auto, lookup, temporal, entity, relational, multi_hop, procedural, exploratory, verification]
@@ -1515,7 +1515,7 @@ components:
         next_cursor: { type: [string, 'null'] }
     EvolutionAction: { type: string, enum: [duplicate, supplement, replacement, conflict] }
     ConflictState: { type: string, enum: [open, resolved, dismissed] }
-    AggregateKind: { type: string, enum: [scene, topic] }
+    AggregateKind: { type: string, enum: [scene, topic, timeline] }
     ReviewProposalRequest:
       type: object
       additionalProperties: false
@@ -2151,6 +2151,7 @@ components:
         rank: { type: integer, minimum: 1 }
         memory_id: { type: string, format: uuid }
         revision_id: { type: string, format: uuid }
+        cluster_id: { type: string }
         kind: { type: string, enum: [fact, event, preference, plan, procedure, scene, topic, timeline] }
         display_content: { type: string }
         event_time_start: { type: string, format: date-time }
@@ -2164,17 +2165,55 @@ components:
         confidence: { type: number, minimum: 0, maximum: 1 }
         lifecycle_state: { $ref: '#/components/schemas/StoredMemoryState' }
         estimated_tokens: { type: integer, minimum: 0 }
+        corroborating_memory_ids: { type: array, items: { type: string, format: uuid } }
+        supplementary_memory_ids: { type: array, items: { type: string, format: uuid }, description: 'Collapsed aggregate provenance attached as supplementary context.' }
+        provenance_memory_ids: { type: array, items: { type: string, format: uuid }, description: 'Aggregate source memories; present only for included stale aggregates in debug mode.' }
+        utility: { type: number }
+        stale: { type: boolean, description: 'Present only for a stale aggregate explicitly included through debug mode.' }
+        stale_reasons: { type: array, items: { type: string }, description: 'Machine-readable stale reasons for a debug-included aggregate.' }
+        graph_explanation: { type: string, description: 'Compact graph-path explanation; present only when graph evidence contributed.' }
         explanation: { $ref: '#/components/schemas/RecallExplanation' }
     ContextPackage:
       type: object
       additionalProperties: false
-      required: [items, tokens_used, chars_used, truncated, next_cursor]
+      required: [items, tokens_used, chars_used, truncated, next_cursor, accounting]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/ContextItem' } }
         tokens_used: { type: integer, minimum: 0 }
         chars_used: { type: integer, minimum: 0 }
         truncated: { type: boolean }
         next_cursor: { type: [string, 'null'] }
+        accounting: { $ref: '#/components/schemas/ContextBudgetAccounting' }
+        rejected:
+          type: array
+          description: 'Policy-safe rejection reasons. Present only in explain/debug mode.'
+          items: { $ref: '#/components/schemas/RejectedContextCandidate' }
+    ContextBudgetAccounting:
+      type: object
+      additionalProperties: false
+      required: [tokens_used, chars_used, results_used, sources_used, sensitive_used, tokens_remaining, chars_remaining, results_remaining, sources_remaining, sensitive_remaining]
+      properties:
+        tokens_used: { type: integer, minimum: 0 }
+        chars_used: { type: integer, minimum: 0 }
+        results_used: { type: integer, minimum: 0 }
+        sources_used: { type: integer, minimum: 0 }
+        sensitive_used: { type: integer, minimum: 0 }
+        tokens_remaining: { type: integer }
+        chars_remaining: { type: integer }
+        results_remaining: { type: integer }
+        sources_remaining: { type: integer }
+        sensitive_remaining: { type: integer }
+    RejectedContextCandidate:
+      type: object
+      additionalProperties: false
+      required: [memory_id, revision_id, rank, score, reason]
+      properties:
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+        rank: { type: integer, minimum: 0 }
+        cluster_id: { type: string }
+        score: { type: number }
+        reason: { type: string, minLength: 1 }
     RecallExecutionMetadata:
       type: object
       additionalProperties: false
@@ -2199,6 +2238,11 @@ components:
         query_plan_identity: { type: string, minLength: 1 }
         ranking_identity: { type: string, minLength: 1 }
         context_selection_identity: { type: string, minLength: 1 }
+        ranking_version: { type: string }
+        fts_index_version: { type: integer }
+        semantic_index_version: { type: integer }
+        graph_index_version: { type: integer }
+        graph_index_state: { type: string }
     RecallResponse:
       type: object
       additionalProperties: false

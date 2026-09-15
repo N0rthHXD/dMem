@@ -742,10 +742,12 @@ class Runner:
             reference_time=to_rfc3339(case.question_date),
             mode=self.config.retrieval_mode,
             limit=self.config.limit,
-            max_chars=self.config.max_chars,
+            max_context_tokens=self.config.max_chars,
             include_evidence=True,
             exclude_stale_aggregates=True,
         )
+        execution = response.get("execution") or {}
+        items = (response.get("context") or {}).get("items") or []
 
         corpus_ids = case.haystack_session_ids
         correct_docs = set(case.answer_session_ids)
@@ -754,11 +756,8 @@ class Runner:
         seen_sessions: set[str] = set()
         unmapped_count = 0
 
-        for res in response.get("results", []):
-            memory = res.get("memory", {})
-            revision = memory.get("current_revision", {})
-            evidence_list = revision.get("evidence", [])
-
+        for item in items:
+            evidence_list = item.get("evidence") or []
             mapped_session: str | None = None
             for ev in evidence_list:
                 ev_id = ev.get("event_id", "")
@@ -790,9 +789,8 @@ class Runner:
             rec for rec in case_records if rec.get("has_answer")
         ]
         recalled_event_ids: set[str] = set()
-        for res in response.get("results", []):
-            revision = res.get("memory", {}).get("current_revision", {})
-            for ev in revision.get("evidence", []):
+        for item in items:
+            for ev in item.get("evidence") or []:
                 recalled_event_ids.add(ev.get("event_id", ""))
         evidence_coverage = 0.0
         if relevant_events:
@@ -802,11 +800,10 @@ class Runner:
             evidence_coverage = covered / len(relevant_events)
 
         ranked_items: list[dict[str, Any]] = []
-        for res in response.get("results", []):
-            revision = res.get("memory", {}).get("current_revision", {})
-            content = revision.get("content", "")
+        for item in items:
+            content = item.get("display_content", "")
             ms: str | None = None
-            for ev in revision.get("evidence", []):
+            for ev in item.get("evidence") or []:
                 ev_id = ev.get("event_id", "")
                 if ev_id in event_labels:
                     ms = event_labels[ev_id]["session_id"]
@@ -823,11 +820,11 @@ class Runner:
             "ranked_items": ranked_items[: self.config.answer_cutoff],
             "question_type": case.question_type,
             "is_abstention": case.is_abstention,
-            "requested_channels": response.get("requested_channels"),
-            "executed_channels": response.get("executed_channels"),
-            "degraded": response.get("degraded", False),
-            "degradation_reasons": response.get("degradation_reasons", []),
-            "num_results": len(response.get("results", [])),
+            "requested_channels": execution.get("requested_capabilities"),
+            "executed_channels": execution.get("executed_capabilities"),
+            "degraded": execution.get("degraded", False),
+            "degradation_reasons": execution.get("degradation_reasons", []),
+            "num_results": len(items),
             "unmapped_count": unmapped_count,
             "session_rank_indices": session_rank_indices,
             "metrics": metrics,

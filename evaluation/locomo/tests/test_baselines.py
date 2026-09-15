@@ -186,27 +186,30 @@ def test_result_report_emits_every_required_field():
     fixture = json.loads(
         (STORAGE_TESTDATA / "retrieval-report-v1.json").read_text(encoding="utf-8")
     )
-    result = {
-        "matched_channels": ["keyword", "semantic"],
-        "keyword_relevance": 1.5,
-        "semantic_relevance": 0.8,
-        "selection_reason": "primary",
-        "graph_signals": [
-            {"kind": "entity_fact", "fact_confidence": 0.9, "entity_confidence": 0.8}
-        ],
+    item = {
+        "cluster_id": "",
+        "utility": 1.5,
+        "explanation": {
+            "matched_signals": ["keyword", "semantic"],
+            "keyword_raw_bm25": 1.5,
+            "semantic_raw_score": 0.8,
+            "graph_signals": [
+                {"kind": "entity_fact", "fact_confidence": 0.9, "entity_confidence": 0.8}
+            ],
+        },
     }
-    report = result_report(result, ["D1:1", "D1:2"])
+    report = result_report(item, ["D1:1", "D1:2"])
     for field in fixture["required_result_fields"]:
         assert field in report, field
     assert report["signal_family"] == ["entity_fact", "keyword", "semantic"]
     assert report["raw_channel_scores"] == {"keyword": 1.5, "semantic": 0.8}
     assert report["duplicate_cluster"] == "D1:1"
-    assert report["selection_state"] == "primary"
+    assert report["selection_state"] == "selected"
     assert report["graph_score"] == pytest.approx(0.72)
 
 
 def test_result_report_marks_unmetered_fields_explicitly():
-    report = result_report({"matched_channels": []}, [])
+    report = result_report({}, [])
     assert report["primary_score"] is None
     assert report["matched_fields"] == []
     assert report["graph_score"] is None

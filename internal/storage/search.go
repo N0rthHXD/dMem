@@ -89,6 +89,9 @@ type SearchParams struct {
 	SemanticVersion        int
 	Limit                  int
 	MaxChars               int
+	MaxContextTokens       int
+	MaxSources             int
+	MaxSensitive           int
 	IncludeEvidence        bool
 	ExcludeStaleAggregates bool
 	Explain                bool
@@ -115,7 +118,7 @@ type searchIdentities struct {
 
 const (
 	searchQueryPlanIdentity = retrieval.QueryPlanVersion
-	searchContextIdentity   = "context-selection-v1"
+	searchContextIdentity   = domain.ContextSelectionVersion + ":tokens=" + domain.ContextTokenFormatVersion
 )
 
 // rankingVersion is the versioned deterministic feature-rank identity.
@@ -237,6 +240,9 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		response, err = r.searchKeywordGraph(ctx, params)
 	}
 	response.ReferenceTime = params.ReferenceTime
+	if err == nil {
+		err = r.applyContextSelection(ctx, params, &response)
+	}
 	if err == nil && params.OperationID != "" {
 		err = r.recordQueryTelemetry(ctx, params, response)
 	}
@@ -400,9 +406,6 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 			continue
 		}
 		lastInspected = candidate
-		if !params.IncludeEvidence {
-			memory.CurrentRevision.Evidence = nil
-		}
 		channels := make([]string, 0, 2)
 		var relevance *float64
 		reason := ""
@@ -424,7 +427,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: relevance, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate)}
+		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: relevance, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate), ProtectedPrimary: candidate.protected}
 		if params.Explain {
 			r.applyExplain(candidate, &searchResult, params)
 		}

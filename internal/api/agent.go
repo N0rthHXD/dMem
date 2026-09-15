@@ -234,7 +234,7 @@ func appIdentity(caller, key, requestID, method, route string, request any) appl
 }
 
 func recallQuery(request recallRequest) (application.RecallQuery, error) {
-	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Channels: []string{"keyword", "semantic", "graph"}, Limit: 20, MaxContextTokens: 4000, MaxChars: 16000}
+	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Channels: []string{"keyword", "semantic", "graph"}, Limit: 20, MaxContextTokens: 4000, MaxChars: 16000, ExcludeStaleAggregates: true}
 	seenSpaces := map[string]bool{}
 	for _, id := range request.SpaceIDs {
 		if !validUUID(id) {
@@ -297,8 +297,15 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 	if request.Cursor != nil && (isNull(request.Cursor) || json.Unmarshal(request.Cursor, &query.Cursor) != nil) {
 		return application.RecallQuery{}, errors.New("cursor must be a string")
 	}
-	if request.ExcludeStaleAggregates != nil && (isNull(request.ExcludeStaleAggregates) || json.Unmarshal(request.ExcludeStaleAggregates, &query.ExcludeStaleAggregates) != nil) {
-		return application.RecallQuery{}, errors.New("exclude_stale_aggregates must be a boolean")
+	if request.ExcludeStaleAggregates != nil {
+		var exclude bool
+		if isNull(request.ExcludeStaleAggregates) || json.Unmarshal(request.ExcludeStaleAggregates, &exclude) != nil {
+			return application.RecallQuery{}, errors.New("exclude_stale_aggregates must be a boolean")
+		}
+		if !exclude && request.Debug == nil {
+			return application.RecallQuery{}, errors.New("including stale aggregates requires debug")
+		}
+		query.ExcludeStaleAggregates = exclude
 	}
 	query.States = sortedUnique(query.States)
 	query.MemoryTypes = sortedUnique(query.MemoryTypes)

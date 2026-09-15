@@ -152,6 +152,29 @@ func TestAggregateSiblingSpaceInputRejected(t *testing.T) {
 	}
 }
 
+func TestAggregateTimelineKindBuildsAndStabilizes(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	a, b := createTestMemory(t, r, "timeline-a"), createTestMemory(t, r, "timeline-b")
+	if _, err := r.PrepareAggregateBuild(context.Background(), "space-1", "summary", []string{a.CurrentRevision.RevisionID}, 10); !errors.Is(err, ErrInvalidAggregateProposal) {
+		t.Fatalf("unsupported aggregate kind error=%v", err)
+	}
+	params := aggregateProposalParams(aggregateInput(a), aggregateInput(b))
+	params.AggregateKind = "timeline"
+	confirmed := confirmAggregateTest(t, r, "timeline-confirm", createAggregateProposalTest(t, r, "timeline-proposal", params))
+	aggregate, err := r.GetAggregate(context.Background(), *confirmed.ResultMemoryID)
+	if err != nil || aggregate.AggregateKind != "timeline" || len(aggregate.Provenance) != 2 || aggregate.AggregateStale {
+		t.Fatalf("timeline aggregate=%+v err=%v", aggregate, err)
+	}
+	revise := ReviseMemoryParams{ExpectedRevisionID: a.CurrentRevision.RevisionID, Content: "timeline changed input", Evidence: directEvidence("event-2"), Reason: "changed"}
+	if _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("timeline-revise", "/v1/memories/{memory_id}", revise), a.MemoryID, revise); err != nil {
+		t.Fatal(err)
+	}
+	aggregate, err = r.GetAggregate(context.Background(), *confirmed.ResultMemoryID)
+	if err != nil || !aggregate.AggregateStale || !contains(aggregate.StaleReasons, "input_revision_changed") {
+		t.Fatalf("timeline stale aggregate=%+v err=%v", aggregate, err)
+	}
+}
+
 func TestAggregateAuthorityCannotBeBypassedByGenericMemoryWrites(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	params := CreateMemoryParams{SpaceID: "space-1", Kind: "aggregate", Content: "unreviewed", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "bypass"}

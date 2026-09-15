@@ -141,7 +141,8 @@ func (s *Service) Recall(ctx context.Context, query RecallQuery) (domain.SearchR
 		OperationID: query.OperationID, Query: query.Query, SpaceIDs: query.SpaceIDs, IncludeAncestors: query.IncludeAncestors,
 		MemoryTypes: query.MemoryTypes, MemoryTypesSet: query.MemoryTypesSet, States: query.States,
 		ReferenceTime: query.ReferenceTime, ReferenceTimeSet: query.ReferenceTimeSet, Channels: query.Channels,
-		Limit: query.Limit, MaxChars: query.MaxChars, IncludeEvidence: query.IncludeEvidence,
+		Limit: query.Limit, MaxChars: query.MaxChars, MaxContextTokens: query.MaxContextTokens,
+		IncludeEvidence:        query.IncludeEvidence,
 		ExcludeStaleAggregates: query.ExcludeStaleAggregates, Explain: query.Explain, Cursor: query.Cursor,
 		Intent: string(query.Intent),
 	})

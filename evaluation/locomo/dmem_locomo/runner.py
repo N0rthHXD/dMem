@@ -118,35 +118,36 @@ def capture_identities(
 
 
 def result_report(
-    result: dict[str, Any], mapped_dia_ids: list[str]
+    item: dict[str, Any], mapped_dia_ids: list[str]
 ) -> dict[str, Any]:
-    """Normalize the observable telemetry for one recalled result.
+    """Normalize the observable telemetry for one selected context item.
 
     Field names are fixed by ``testdata/retrieval-report-v1.json``. Fields the
-    daemon does not yet expose are reported explicitly as null/empty rather than
-    being omitted, so a baseline can tell "not measured" from "zero".
+    daemon exposes only in explain mode are reported explicitly as null/empty
+    rather than being omitted, so a baseline can tell "not measured" from "zero".
     """
-    signals = result.get("graph_signals") or []
+    explanation = item.get("explanation") or {}
+    signals = explanation.get("graph_signals") or []
     graph_scores = [
         float(signal["fact_confidence"]) * float(signal["entity_confidence"])
         for signal in signals
         if signal.get("fact_confidence") and signal.get("entity_confidence")
     ]
-    families = set(result.get("matched_channels") or [])
+    families = set(explanation.get("matched_signals") or [])
     for signal in signals:
         if signal.get("kind"):
             families.add(signal["kind"])
     return {
-        "primary_score": result.get("primary_score"),
+        "primary_score": item.get("utility"),
         "raw_channel_scores": {
-            "keyword": result.get("keyword_relevance"),
-            "semantic": result.get("semantic_relevance"),
+            "keyword": explanation.get("keyword_raw_bm25"),
+            "semantic": explanation.get("semantic_raw_score"),
         },
-        "matched_fields": result.get("matched_fields") or [],
-        "graph_score": max(graph_scores) if graph_scores else None,
+        "matched_fields": explanation.get("keyword_matched_fields") or [],
+        "graph_score": max(graph_scores) if graph_scores else explanation.get("graph_score"),
         "signal_family": sorted(families),
-        "duplicate_cluster": mapped_dia_ids[0] if mapped_dia_ids else None,
-        "selection_state": result.get("selection_reason", ""),
+        "duplicate_cluster": item.get("cluster_id") or (mapped_dia_ids[0] if mapped_dia_ids else None),
+        "selection_state": "selected",
     }
 
 
@@ -886,7 +887,7 @@ class Runner:
             reference_time=to_rfc3339(reference_time) if reference_time else None,
             mode=self.config.retrieval_mode,
             limit=self.config.limit,
-            max_chars=self.config.max_chars,
+            max_context_tokens=self.config.max_chars,
             include_evidence=True,
             exclude_stale_aggregates=True,
         )
@@ -894,9 +895,10 @@ class Runner:
         response_bytes = len(
             json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode()
         )
+        execution = response.get("execution") or {}
 
-        if response.get("degraded") and self.config.fail_on_degraded:
-            reasons = response.get("degradation_reasons") or ["unknown"]
+        if execution.get("degraded") and self.config.fail_on_degraded:
+            reasons = execution.get("degradation_reasons") or ["unknown"]
             raise RuntimeError(
                 f"recall degraded for {qa.qa_id}: {', '.join(reasons)}"
             )
@@ -917,13 +919,14 @@ class Runner:
         duplicate_count = 0
         unmapped_count = 0
 
-        for res in response.get("results", []):
-            memory = res.get("memory", {})
-            revision = memory.get("current_revision", {})
-            memory_id = memory.get("memory_id", "")
+        context = response.get("context") or {}
+        items = context.get("items") or []
+        for item in items:
+            memory_id = item.get("memory_id", "")
+            revision_id = item.get("revision_id", "")
 
             mapped: list[str] = []
-            for ev in revision.get("evidence", []):
+            for ev in item.get("evidence") or []:
                 rec = event_labels.get(ev.get("event_id", ""))
                 dia_id = rec.get("dia_id") if rec else None
                 if dia_id and dia_id not in mapped:
@@ -941,17 +944,17 @@ class Runner:
 
             ranked_memory_ids.append(memory_id)
             ranked_items.append({
-                "content": revision.get("content", ""),
+                "content": item.get("display_content", ""),
                 "memory_id": memory_id,
-                "revision_id": revision.get("revision_id", ""),
+                "revision_id": revision_id,
                 "dia_id": mapped[0] if mapped else None,
                 "dia_ids": mapped,
-                "matched_channels": res.get("matched_channels", []),
-                "report": result_report(res, mapped),
+                "matched_channels": (item.get("explanation") or {}).get("matched_signals") or [],
+                "report": result_report(item, mapped),
             })
 
         ranked_sessions = promote_to_sessions(ranked_dia_ids)
-        num_results = len(response.get("results", []))
+        num_results = len(items)
         total_mapped = sum(len(item["dia_ids"]) for item in ranked_items)
 
         memory_metrics: dict[str, dict[str, float]] = {}
@@ -989,15 +992,17 @@ class Runner:
             "gold_evidence": qa.evidence,
             "gold_sessions": sorted(gold_session, key=lambda s: int(s[1:])),
             "gold_memory_ids": sorted(gold_memory_ids),
-            "requested_channels": response.get("requested_channels"),
-            "executed_channels": response.get("executed_channels"),
-            "degraded": response.get("degraded", False),
-            "degradation_reasons": response.get("degradation_reasons", []),
-            "ranking_version": response.get("ranking_version"),
-            "fts_index_version": response.get("fts_index_version"),
-            "semantic_index_version": response.get("semantic_index_version"),
-            "graph_index_version": response.get("graph_index_version"),
-            "graph_index_state": response.get("graph_index_state"),
+            "requested_channels": execution.get("requested_capabilities"),
+            "executed_channels": execution.get("executed_capabilities"),
+            "degraded": execution.get("degraded", False),
+            "degradation_reasons": execution.get("degradation_reasons", []),
+            "ranking_version": execution.get("ranking_version"),
+            "query_plan_identity": execution.get("query_plan_identity"),
+            "context_selection_identity": execution.get("context_selection_identity"),
+            "fts_index_version": execution.get("fts_index_version"),
+            "semantic_index_version": execution.get("semantic_index_version"),
+            "graph_index_version": execution.get("graph_index_version"),
+            "graph_index_state": execution.get("graph_index_state"),
             "recall_latency_ms": recall_latency_ms,
             "response_bytes": response_bytes,
             "num_results": num_results,

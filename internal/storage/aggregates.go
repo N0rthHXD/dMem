@@ -45,7 +45,7 @@ type ReviewAggregateProposalParams struct {
 }
 
 func (r *Repository) PrepareAggregateBuild(ctx context.Context, space, kind string, revisionIDs []string, maxInputs int) ([]domain.AggregateInput, error) {
-	if (kind != "scene" && kind != "topic") || len(revisionIDs) == 0 || len(revisionIDs) > maxInputs {
+	if !domain.ValidAggregateKind(kind) || len(revisionIDs) == 0 || len(revisionIDs) > maxInputs {
 		return nil, ErrInvalidAggregateProposal
 	}
 	if err := r.RequireEffectivePolicy(ctx, "processing", space); err != nil {
@@ -106,7 +106,7 @@ func aggregateSpecificationHash(p CommitAggregateProposalParams, fingerprint str
 }
 
 func validateAggregateOutput(p CommitAggregateProposalParams) error {
-	if p.SpaceID == "" || (p.AggregateKind != "scene" && p.AggregateKind != "topic") || p.Content == "" || p.PolicyVersion == "" || p.ProcessorIdentity == "" || p.ProviderIdentity == "" || p.ModelIdentity == "" || p.ProcessingVersion == "" || (p.Sensitivity != "normal" && p.Sensitivity != "sensitive") {
+	if p.SpaceID == "" || !domain.ValidAggregateKind(p.AggregateKind) || p.Content == "" || p.PolicyVersion == "" || p.ProcessorIdentity == "" || p.ProviderIdentity == "" || p.ModelIdentity == "" || p.ProcessingVersion == "" || (p.Sensitivity != "normal" && p.Sensitivity != "sensitive") {
 		return ErrInvalidAggregateProposal
 	}
 	parseTime := func(value *string) (*time.Time, error) {

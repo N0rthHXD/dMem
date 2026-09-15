@@ -1,0 +1,14 @@
+{
+  "config_version": "context-selection-gates-v1",
+  "corpus_version": "context-selection-corpus-v1",
+  "context_selection_version": "context-selection-v2",
+  "token_format_version": "context-tokens-v1",
+  "quality": {
+    "minimum_duplicate_rate_reduction": 0.5,
+    "maximum_selected_duplicate_rate": 0.0,
+    "minimum_evidence_coverage": 1.0,
+    "minimum_source_coverage": 1.0,
+    "maximum_token_utilization": 1.0,
+    "maximum_median_token_growth": 0.0
+  }
+}

@@ -29,7 +29,7 @@
 | [0025](0025-conflict-cases-and-contested-state.md) | Conflict case 与 contested projection 分工 |
 | [0026](0026-distinct-evolution-proposals.md) | 独立 Evolution proposal resource |
 | [0027](0027-feedback-and-ranking-v2.md) | Feedback aggregate v1 与 ranking v2 |
-| [0028](0028-aggregate-memories-and-freshness.md) | 普通 Aggregate memory 与 freshness descriptor |
+| [0028](0028-aggregate-memories-and-freshness.md) | 普通 Aggregate memory 与 freshness descriptor（部分被 0035 取代） |
 | [0029](0029-logical-format-v1.md) | 确定性 Logical format v1 |
 | [0030](0030-dynamic-provider-configuration.md) | 动态 provider 配置与在线恢复 |
 | [0031](0031-sqlite-vec-vector-storage.md) | sqlite-vec 精确向量存储与检索 |

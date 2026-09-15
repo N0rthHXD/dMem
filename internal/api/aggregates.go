@@ -38,7 +38,7 @@ func (h *Handler) aggregateProposals(w http.ResponseWriter, r *http.Request) {
 		if !h.decode(w, r, requestID, &req) {
 			return
 		}
-		if !validUUID(req.SpaceID) || !containsAPI([]string{"scene", "topic"}, req.AggregateKind) || len(req.InputRevisionIDs) == 0 {
+		if !validUUID(req.SpaceID) || !domain.ValidAggregateKind(req.AggregateKind) || len(req.InputRevisionIDs) == 0 {
 			h.writeError(w, 422, "invalid_request", "invalid aggregate build", requestID, "", false, nil)
 			return
 		}
@@ -76,7 +76,7 @@ func (h *Handler) aggregateProposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, kind := r.URL.Query().Get("review_state"), r.URL.Query().Get("aggregate_kind")
-	if state != "" && !containsAPI([]string{"pending", "confirmed", "rejected"}, state) || kind != "" && !containsAPI([]string{"scene", "topic"}, kind) {
+	if state != "" && !containsAPI([]string{"pending", "confirmed", "rejected"}, state) || kind != "" && !domain.ValidAggregateKind(kind) {
 		h.writeError(w, 422, "invalid_request", "invalid aggregate proposal filter", requestID, "", false, nil)
 		return
 	}
@@ -161,7 +161,7 @@ func (h *Handler) aggregatesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind, freshness := r.URL.Query().Get("aggregate_kind"), r.URL.Query().Get("freshness")
-	if kind != "" && !containsAPI([]string{"scene", "topic"}, kind) || freshness != "" && !containsAPI([]string{"fresh", "stale"}, freshness) {
+	if kind != "" && !domain.ValidAggregateKind(kind) || freshness != "" && !containsAPI([]string{"fresh", "stale"}, freshness) {
 		h.writeError(w, 422, "invalid_request", "invalid aggregate filter", requestID, "", false, nil)
 		return
 	}
