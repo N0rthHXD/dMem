@@ -256,7 +256,7 @@ func (e *Exporter) plan(ctx context.Context, request Request) (Plan, error) {
 			objects["evidence.jsonl"] = append(objects["evidence.jsonl"], makeRecord("memory_evidence", text(row["evidence_id"]), row))
 		}
 	}
-	rawRows, err := queryMaps(ctx, tx, `SELECT e.event_id,e.operation_id,e.space_id,e.source_type,e.source_name,e.source_event_id,e.caller_id,e.occurred_at,e.received_at,e.processing_status,e.metadata_json,e.created_at,c.content_id,c.content_kind,c.content_text,c.reference_uri,c.media_type,c.content_hash,c.size_bytes,c.declared_size,c.declared_hash,c.created_at AS content_created_at FROM raw_events e JOIN raw_contents c ON c.content_id=e.content_id ORDER BY e.event_id`)
+	rawRows, err := queryMaps(ctx, tx, `SELECT e.event_id,e.operation_id,e.space_id,e.source_type,e.source_name,e.source_event_id,e.caller_id,e.occurred_at,e.received_at,e.processing_status,e.metadata_json,e.created_at,s.source_stream_key,e.sequence,c.content_id,c.content_kind,c.content_text,c.reference_uri,c.media_type,c.content_hash,c.size_bytes,c.declared_size,c.declared_hash,c.created_at AS content_created_at FROM raw_events e JOIN raw_contents c ON c.content_id=e.content_id LEFT JOIN source_streams s ON s.source_stream_id=e.source_stream_id ORDER BY e.event_id`)
 	if err != nil {
 		return Plan{}, err
 	}

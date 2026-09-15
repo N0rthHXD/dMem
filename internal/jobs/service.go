@@ -722,6 +722,26 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 			} else {
 				err = s.graphIndexes.RebuildGraphIndexClaimed(operationCtx, claim)
 			}
+		case "rebuild_quality":
+			if claim.Job.TargetType != "index" || claim.Job.TargetID != "memory_quality" {
+				err = errors.New("invalid quality projection target")
+			} else if projector, ok := s.repository.(interface {
+				RebuildQualityClaimed(context.Context, storage.ClaimedJob) error
+			}); !ok {
+				err = errors.New("quality projection rebuild is unavailable")
+			} else {
+				err = projector.RebuildQualityClaimed(operationCtx, claim)
+			}
+		case "rebuild_duplicates":
+			if claim.Job.TargetType != "index" || claim.Job.TargetID != "duplicate_clusters" {
+				err = errors.New("invalid duplicate projection target")
+			} else if projector, ok := s.repository.(interface {
+				RebuildDuplicatesClaimed(context.Context, storage.ClaimedJob) error
+			}); !ok {
+				err = errors.New("duplicate projection rebuild is unavailable")
+			} else {
+				err = projector.RebuildDuplicatesClaimed(operationCtx, claim)
+			}
 		case "embed_memory":
 			if claim.Job.TargetType != "memory_revision" {
 				err = errors.New("invalid embedding target")

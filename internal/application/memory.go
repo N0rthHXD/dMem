@@ -28,17 +28,19 @@ type RequestIdentity struct {
 }
 
 type RememberCommand struct {
-	SpaceID       string
-	Content       string
-	Kind          string
-	Sensitivity   string
-	ValidFrom     *string
-	ValidUntil    *string
-	SourceName    string
-	SourceEventID *string
-	OccurredAt    string
-	Metadata      map[string]any
-	Reason        string
+	SpaceID         string
+	Content         string
+	Kind            string
+	Sensitivity     string
+	ValidFrom       *string
+	ValidUntil      *string
+	SourceName      string
+	SourceEventID   *string
+	SourceStreamKey string
+	Sequence        *int64
+	OccurredAt      string
+	Metadata        map[string]any
+	Reason          string
 }
 
 type RememberResult struct {
@@ -124,7 +126,8 @@ func (s *Service) Remember(ctx context.Context, identity RequestIdentity, comman
 	result, replay, err := s.repository.Remember(ctx, storageIdentity(identity), storage.RememberParams{
 		SpaceID: command.SpaceID, Content: command.Content, Kind: command.Kind,
 		Sensitivity: command.Sensitivity, ValidFrom: command.ValidFrom, ValidUntil: command.ValidUntil,
-		SourceName: command.SourceName, SourceEventID: command.SourceEventID, OccurredAt: command.OccurredAt,
+		SourceName: command.SourceName, SourceEventID: command.SourceEventID, SourceStreamKey: command.SourceStreamKey,
+		Sequence: command.Sequence, OccurredAt: command.OccurredAt,
 		Metadata: command.Metadata, Reason: command.Reason,
 	})
 	return RememberResult{Memory: result.Memory, EventID: result.EventID, Replay: replay}, err
@@ -190,6 +193,12 @@ func validateRemember(command RememberCommand) error {
 	}
 	if _, err := time.Parse(time.RFC3339, command.OccurredAt); err != nil {
 		return errors.New("occurred_at must be RFC3339")
+	}
+	if command.Sequence != nil && *command.Sequence < 0 {
+		return errors.New("sequence must be a non-negative integer")
+	}
+	if utf8.RuneCountInString(command.SourceStreamKey) > 256 {
+		return errors.New("source_stream_key is too long")
 	}
 	return validateTimeRange(command.ValidFrom, command.ValidUntil)
 }

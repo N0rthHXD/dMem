@@ -10,6 +10,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
 	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
@@ -19,34 +20,24 @@ const semanticIndexName = "memory_semantic"
 // Versioned embedding document and query formats. A change to either format
 // changes the semantic compatibility identity and requires a fresh rebuild.
 const (
-	embeddingDocumentFormatVersion = "embedding-document-v1"
+	embeddingDocumentFormatVersion = "embedding-document-v2"
 	embeddingQueryFormatVersion    = "embedding-query-v1"
 )
 
 func EmbeddingCompatibilityIdentity(base string) string {
-	hash := sha256.Sum256([]byte(base + "\x00" + embeddingDocumentFormatVersion + "\x00" + embeddingQueryFormatVersion))
+	hash := sha256.Sum256([]byte(base + "\x00" + embeddingDocumentFormatVersion + "\x00" + embeddingQueryFormatVersion + "\x00" + canonicalDocumentFormatVersion))
 	return "sha256:" + hex.EncodeToString(hash[:])
 }
 
 // embeddingDocument builds a canonical, kind-prefixed embedding input from the
-// revision's canonical content plus compact structured fields. Indexing and
-// query formatting share one versioned contract.
-func embeddingDocument(kind, canonicalContent, eventType, language, speaker, precision string) string {
+// revision's canonical structured document so indexing and query formatting
+// share one versioned contract.
+func embeddingDocument(revision domain.MemoryRevision) string {
 	var builder strings.Builder
 	builder.WriteString("kind:")
-	builder.WriteString(kind)
+	builder.WriteString(string(revision.Kind))
 	builder.WriteString("\n")
-	builder.WriteString(canonicalContent)
-	for _, field := range []struct{ name, value string }{
-		{"event_type", eventType}, {"language", language}, {"speaker", speaker}, {"time_precision", precision},
-	} {
-		if field.value != "" {
-			builder.WriteString("\n")
-			builder.WriteString(field.name)
-			builder.WriteString(":")
-			builder.WriteString(field.value)
-		}
-	}
+	builder.WriteString(canonicalStructuredDocument(revision))
 	return builder.String()
 }
 
@@ -164,15 +155,18 @@ func (r *Repository) embedMemory(ctx context.Context, claim *ClaimedJob, revisio
 		return errors.New("embedding provider is unavailable")
 	}
 	var memoryID, spaceID, hash, sensitivity string
-	var kind, canonicalContent, eventType, language, speaker, precision string
-	err := r.store.reader.QueryRowContext(ctx, `SELECT p.memory_id, p.space_id, p.content_hash, m.sensitivity, rv.kind, rv.canonical_content, coalesce(rv.event_type,''), coalesce(rv.language,''), coalesce(rv.source_speaker,''), coalesce(rv.time_precision,'') FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id JOIN memory_revisions rv ON rv.memory_id=p.memory_id AND rv.revision_id=p.revision_id WHERE p.revision_id=? AND p.searchable=1`, revisionID).Scan(&memoryID, &spaceID, &hash, &sensitivity, &kind, &canonicalContent, &eventType, &language, &speaker, &precision)
+	var revision domain.MemoryRevision
+	err := r.store.reader.QueryRowContext(ctx, `SELECT p.memory_id, p.space_id, p.content_hash, m.sensitivity, rv.revision_id, rv.kind, rv.canonical_content, coalesce(rv.event_type,''), coalesce(rv.language,''), coalesce(rv.source_speaker,''), coalesce(rv.time_precision,'') FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id JOIN memory_revisions rv ON rv.memory_id=p.memory_id AND rv.revision_id=p.revision_id WHERE p.revision_id=? AND p.searchable=1`, revisionID).Scan(&memoryID, &spaceID, &hash, &sensitivity, &revision.RevisionID, &revision.Kind, &revision.CanonicalContent, &revision.EventType, &revision.Language, &revision.SourceSpeaker, &revision.TimePrecision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	content := embeddingDocument(kind, canonicalContent, eventType, language, speaker, precision)
+	if err := loadRevisionDetails(ctx, r.store.reader, &revision); err != nil {
+		return err
+	}
+	content := embeddingDocument(revision)
 	if err := r.RequireEffectivePolicy(ctx, "embedding", spaceID); err != nil {
 		return err
 	}

@@ -446,8 +446,13 @@ func searchCandidateCurrent(memory domain.Memory, candidate searchCandidate, spa
 	if memory.CurrentRevision.RevisionID != candidate.revisionID {
 		return false
 	}
-	if candidate.ftsContent != "" && (memory.CurrentRevision.DisplayContent != candidate.ftsContent || memory.CurrentRevision.DisplayContent != candidate.projectionContent) {
-		return false
+	if candidate.ftsContent != "" {
+		if memory.CurrentRevision.DisplayContent != candidate.projectionContent {
+			return false
+		}
+		if canonicalStructuredDocument(memory.CurrentRevision) != candidate.ftsContent {
+			return false
+		}
 	}
 	return searchMemoryCurrent(memory, spaces, params)
 }

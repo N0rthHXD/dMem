@@ -239,14 +239,20 @@ func (r *Repository) rebuildFTS(ctx context.Context, claim *ClaimedJob) error {
 		r.markFTSDegraded()
 		return err
 	}
-	rows, err := readTx.QueryContext(ctx, `SELECT p.memory_id, p.revision_id, p.display_content FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 ORDER BY p.memory_id`)
+	rows, err := readTx.QueryContext(ctx, `SELECT p.memory_id, p.revision_id FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 ORDER BY p.memory_id`)
 	var projections []projection
 	if err == nil {
 		for rows.Next() {
 			var item projection
-			if err = rows.Scan(&item.memoryID, &item.revisionID, &item.content); err != nil {
+			if err = rows.Scan(&item.memoryID, &item.revisionID); err != nil {
 				break
 			}
+			revision, revisionErr := getRevision(ctx, readTx, item.memoryID, item.revisionID)
+			if revisionErr != nil {
+				err = revisionErr
+				break
+			}
+			item.content = canonicalStructuredDocument(revision)
 			projections = append(projections, item)
 		}
 		if closeErr := rows.Close(); err == nil {
@@ -277,7 +283,7 @@ func (r *Repository) rebuildFTS(ctx context.Context, claim *ClaimedJob) error {
 	if err == nil {
 		for _, item := range projections {
 			var exists int
-			err = tx.QueryRowContext(ctx, `SELECT 1 FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 AND p.memory_id=? AND p.revision_id=? AND p.display_content=?`, item.memoryID, item.revisionID, item.content).Scan(&exists)
+			err = tx.QueryRowContext(ctx, `SELECT 1 FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 AND p.memory_id=? AND p.revision_id=?`, item.memoryID, item.revisionID).Scan(&exists)
 			if errors.Is(err, sql.ErrNoRows) {
 				err = errors.New("FTS rebuild source changed")
 			}

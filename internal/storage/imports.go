@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"time"
 )
 
@@ -232,6 +234,8 @@ func (r *Repository) FinishImport(ctx context.Context, operationID string, gener
 		{"rebuild_entity_index", entityIndexName, r.processingVersion, "pending"},
 		{"rebuild_relation_index", relationIndexName, r.processingVersion, "pending"},
 		{"rebuild_feedback_aggregates", "feedback_aggregates", "v1", "pending"},
+		{"rebuild_quality", "memory_quality", r.processingVersion, "pending"},
+		{"rebuild_duplicates", "duplicate_clusters", r.processingVersion, "pending"},
 	} {
 		id := stableImportID("job", operationID, job.typ)
 		_, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,created_at) VALUES (?,?,?,'index',?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, operationID, job.typ, job.target, job.version, job.state, r.maxAttempts, now, now)
@@ -302,7 +306,19 @@ func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targ
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,source_event_id,caller_id,occurred_at,received_at,processing_status,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, operationID, targetSpace, contentID, s("source_type"), s("source_name"), s("source_event_id"), "import:"+fmt.Sprint(s("caller_id")), s("occurred_at"), s("received_at"), s("processing_status"), s("metadata_json"), s("created_at"))
+		streamID, err := resolveSourceStream(ctx, tx, now, targetSpace, fmt.Sprint(s("source_type")), fmt.Sprint(s("source_name")), importText(s("source_stream_key")))
+		if err != nil {
+			return err
+		}
+		sequence, err := importedSequence(d["sequence"])
+		if err != nil {
+			return err
+		}
+		effectiveSequence, err := eventSequence(ctx, tx, streamID, sequence)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,source_event_id,source_stream_id,sequence,caller_id,occurred_at,received_at,processing_status,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, operationID, targetSpace, contentID, s("source_type"), s("source_name"), s("source_event_id"), streamID, effectiveSequence, "import:"+fmt.Sprint(s("caller_id")), s("occurred_at"), s("received_at"), s("processing_status"), s("metadata_json"), s("created_at"))
 		return err
 	case "memory":
 		_, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`, o.LocalID, targetSpace, local("current_revision_id"), s("current_state"), s("frozen"), s("sensitivity"), s("created_at"), s("updated_at"))
@@ -391,10 +407,45 @@ func importConflictProposal(ctx context.Context, tx *sql.Tx, o ImportObject, tar
 	return err
 }
 
+func importText(value any) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
+func importedSequence(value any) (*int64, error) {
+	if value == nil {
+		return nil, nil
+	}
+	switch v := value.(type) {
+	case int64:
+		if v < 0 {
+			return nil, errors.New("invalid source stream sequence")
+		}
+		return &v, nil
+	case float64:
+		if v < 0 || v != math.Trunc(v) {
+			return nil, errors.New("invalid source stream sequence")
+		}
+		sequence := int64(v)
+		return &sequence, nil
+	case string:
+		sequence, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || sequence < 0 {
+			return nil, errors.New("invalid source stream sequence")
+		}
+		return &sequence, nil
+	default:
+		return nil, errors.New("invalid source stream sequence")
+	}
+}
+
 func stableImportID(parts ...string) string {
 	h := sha256Bytes(parts...)
 	return fmt.Sprintf("%s-%s-4%s-a%s-%s", h[:8], h[8:12], h[13:16], h[17:20], h[20:32])
 }
+
 func sha256Bytes(parts ...string) string {
 	h := sha256.New()
 	for _, p := range parts {

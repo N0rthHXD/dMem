@@ -51,13 +51,15 @@ type CreateSpaceParams struct {
 }
 
 type IngestParams struct {
-	SpaceID       string
-	SourceType    string
-	SourceName    string
-	SourceEventID *string
-	OccurredAt    string
-	Content       domain.Content
-	Metadata      map[string]any
+	SpaceID         string
+	SourceType      string
+	SourceName      string
+	SourceEventID   *string
+	SourceStreamKey string
+	Sequence        *int64
+	OccurredAt      string
+	Content         domain.Content
+	Metadata        map[string]any
 }
 
 type EventFilter struct {
@@ -70,31 +72,38 @@ type EventFilter struct {
 }
 
 type Repository struct {
-	store                           *Store
-	runtime                         domain.Runtime
-	queueSoftLimit                  int
-	queueHardLimit                  int
-	maxAttempts                     int
-	processingVersion               string
-	processingGeneration            atomic.Int64
-	processingPolicyGeneration      atomic.Int64
-	processingCompatibilityIdentity atomic.Value
-	graphExtractionEnabled          atomic.Bool
-	diskSoftFree                    uint64
-	diskHardFree                    uint64
-	embedding                       atomic.Pointer[embeddingRuntime]
-	semanticBuildHook               func()
-	semanticActivateHook            func()
-	semanticSearchErr               error
-	rankingWeights                  retrieval.Weights
-	semanticCalibration             retrieval.Calibration
-	graphPolicy                     retrieval.GraphPolicy
-	minEntityConfidence             float64
-	minFactConfidence               float64
-	graphBoostCap                   float64
-	semanticWindowRecall            SemanticWindowRecall
-	queryEnricher                   retrieval.QueryEnricher
-	queryEnrichmentAllowed          bool
+	store                              *Store
+	runtime                            domain.Runtime
+	queueSoftLimit                     int
+	queueHardLimit                     int
+	maxAttempts                        int
+	processingVersion                  string
+	processingGeneration               atomic.Int64
+	processingPolicyGeneration         atomic.Int64
+	processingCompatibilityIdentity    atomic.Value
+	graphExtractionEnabled             atomic.Bool
+	diskSoftFree                       uint64
+	diskHardFree                       uint64
+	embedding                          atomic.Pointer[embeddingRuntime]
+	semanticBuildHook                  func()
+	semanticActivateHook               func()
+	semanticSearchErr                  error
+	rankingWeights                     retrieval.Weights
+	semanticCalibration                retrieval.Calibration
+	graphPolicy                        retrieval.GraphPolicy
+	minEntityConfidence                float64
+	minFactConfidence                  float64
+	graphBoostCap                      float64
+	semanticWindowRecall               SemanticWindowRecall
+	queryEnricher                      retrieval.QueryEnricher
+	queryEnrichmentAllowed             bool
+	consolidationVersion               string
+	consolidationIdentity              string
+	consolidationMaxCandidates         int
+	consolidationExactHashEnabled      bool
+	consolidationSameSourceCosine      float64
+	consolidationSameSubjectKindCosine float64
+	consolidationClassifier            ConsolidationClassifier
 }
 
 // SetQueryEnricher installs an optional, policy-gated query plan enrichment
@@ -186,12 +195,14 @@ func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, m
 	r := &Repository{
 		store: store, runtime: runtime, queueSoftLimit: softLimit, queueHardLimit: hardLimit,
 		maxAttempts: maxAttempts, processingVersion: processingVersion,
-		rankingWeights:      retrieval.DefaultWeights(),
-		semanticCalibration: retrieval.DefaultCalibration(),
-		graphPolicy:         retrieval.GraphFeaturesOnly,
-		minEntityConfidence: 0.60,
-		minFactConfidence:   0.70,
-		graphBoostCap:       0.08,
+		rankingWeights:       retrieval.DefaultWeights(),
+		semanticCalibration:  retrieval.DefaultCalibration(),
+		graphPolicy:          retrieval.GraphFeaturesOnly,
+		minEntityConfidence:  0.60,
+		minFactConfidence:    0.70,
+		graphBoostCap:        0.08,
+		consolidationVersion: "consolidation-v1", consolidationMaxCandidates: 32,
+		consolidationExactHashEnabled: true, consolidationSameSourceCosine: 0.90, consolidationSameSubjectKindCosine: 0.94,
 	}
 	r.embedding.Store(&embeddingRuntime{})
 	return r
@@ -218,6 +229,38 @@ func (r *Repository) SetRetrievalCalibration(weights retrieval.Weights, calibrat
 	if graphBoostCap > 0 {
 		r.graphBoostCap = graphBoostCap
 		r.rankingWeights.GraphBoostGraphCap = graphBoostCap
+	}
+}
+
+// SetConsolidation configures bounded candidate consolidation. The versioned
+// identity binds the thresholds and candidate bound into consolidation records.
+func (r *Repository) SetConsolidation(version, identity string, maxCandidates int, exactHashEnabled bool, sameSourceEventCosine, sameSubjectKindCosine float64) {
+	if version != "" {
+		r.consolidationVersion = version
+	}
+	r.consolidationIdentity = identity
+	if maxCandidates > 0 {
+		r.consolidationMaxCandidates = maxCandidates
+	}
+	r.consolidationExactHashEnabled = exactHashEnabled
+	if sameSourceEventCosine >= 0 && sameSourceEventCosine <= 1 {
+		r.consolidationSameSourceCosine = sameSourceEventCosine
+	}
+	if sameSubjectKindCosine >= 0 && sameSubjectKindCosine <= 1 {
+		r.consolidationSameSubjectKindCosine = sameSubjectKindCosine
+	}
+}
+
+func (r *Repository) consolidationRules() consolidationRules {
+	version := r.consolidationVersion
+	if version == "" {
+		version = "consolidation-v1"
+	}
+	return consolidationRules{
+		Version:               version,
+		ExactHashEnabled:      r.consolidationExactHashEnabled,
+		SameSourceEventCosine: r.consolidationSameSourceCosine,
+		SameSubjectKindCosine: r.consolidationSameSubjectKindCosine,
 	}
 }
 
@@ -482,10 +525,22 @@ func (r *Repository) IngestEvent(ctx context.Context, identity WriteIdentity, pa
 	if err != nil {
 		return domain.IngestResponse{}, false, err
 	}
+	streamID, err := resolveSourceStream(ctx, tx, now, params.SpaceID, params.SourceType, params.SourceName, params.SourceStreamKey)
+	if err != nil {
+		return domain.IngestResponse{}, false, err
+	}
+	sequence, err := eventSequence(ctx, tx, streamID, params.Sequence)
+	if err != nil {
+		return domain.IngestResponse{}, false, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO raw_contents(content_id, content_kind, content_text, reference_uri, media_type, content_hash, size_bytes, declared_size, declared_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, contentID, params.Content.Kind, contentText, referenceURI, params.Content.MediaType, contentHash, sizeBytes, params.Content.DeclaredSize, nullableString(params.Content.DeclaredHash), now); err != nil {
 		return domain.IngestResponse{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO raw_events(event_id, operation_id, space_id, content_id, source_type, source_name, source_event_id, caller_id, occurred_at, received_at, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, eventID, operationID, params.SpaceID, contentID, params.SourceType, params.SourceName, params.SourceEventID, identity.CallerID, params.OccurredAt, now, string(metadata), now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO raw_events(event_id, operation_id, space_id, content_id, source_type, source_name, source_event_id, source_stream_id, sequence, caller_id, occurred_at, received_at, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, eventID, operationID, params.SpaceID, contentID, params.SourceType, params.SourceName, params.SourceEventID, streamID, sequence, identity.CallerID, params.OccurredAt, now, string(metadata), now); err != nil {
+		var sqliteErr sqlite3.Error
+		if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint {
+			return domain.IngestResponse{}, false, fmt.Errorf("%w: duplicate source stream sequence", ErrConflict)
+		}
 		return domain.IngestResponse{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'extract_memory', 'raw_event', ?, ?, ?, ?, ?, ?)`, jobID, operationID, eventID, r.processingVersion, jobStatus, r.maxAttempts, now, now); err != nil {
@@ -538,7 +593,7 @@ func (r *Repository) GetEvent(ctx context.Context, id string) (domain.RawEvent, 
 	return scanEvent(r.store.reader.QueryRowContext(ctx, eventSelect+" WHERE e.event_id = ?", id))
 }
 
-const eventSelect = `SELECT e.event_id, e.operation_id, e.caller_id, e.space_id, e.source_type, e.source_name, e.source_event_id, e.occurred_at, e.received_at, e.processing_status, c.content_kind, c.media_type, c.content_text, c.reference_uri, c.declared_size, c.declared_hash, e.metadata_json FROM raw_events e JOIN raw_contents c ON c.content_id = e.content_id`
+const eventSelect = `SELECT e.event_id, e.operation_id, e.caller_id, e.space_id, e.source_type, e.source_name, e.source_event_id, e.source_stream_id, e.sequence, e.occurred_at, e.received_at, e.processing_status, c.content_kind, c.media_type, c.content_text, c.reference_uri, c.declared_size, c.declared_hash, e.metadata_json FROM raw_events e JOIN raw_contents c ON c.content_id = e.content_id`
 
 type rowScanner interface{ Scan(...any) error }
 
@@ -546,13 +601,21 @@ func scanEvent(row rowScanner) (domain.RawEvent, error) {
 	var event domain.RawEvent
 	var text, reference, declaredHash sql.NullString
 	var declaredSize sql.NullInt64
+	var sourceStreamID sql.NullString
+	var sequence sql.NullInt64
 	var metadata string
-	err := row.Scan(&event.EventID, &event.OperationID, &event.CallerID, &event.SpaceID, &event.SourceType, &event.SourceName, &event.SourceEventID, &event.OccurredAt, &event.ReceivedAt, &event.ProcessingStatus, &event.Content.Kind, &event.Content.MediaType, &text, &reference, &declaredSize, &declaredHash, &metadata)
+	err := row.Scan(&event.EventID, &event.OperationID, &event.CallerID, &event.SpaceID, &event.SourceType, &event.SourceName, &event.SourceEventID, &sourceStreamID, &sequence, &event.OccurredAt, &event.ReceivedAt, &event.ProcessingStatus, &event.Content.Kind, &event.Content.MediaType, &text, &reference, &declaredSize, &declaredHash, &metadata)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.RawEvent{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.RawEvent{}, err
+	}
+	if sourceStreamID.Valid {
+		event.SourceStreamID = &sourceStreamID.String
+	}
+	if sequence.Valid {
+		event.Sequence = &sequence.Int64
 	}
 	event.Content.Text, event.Content.ReferenceURI, event.Content.DeclaredHash = text.String, reference.String, declaredHash.String
 	if declaredSize.Valid {

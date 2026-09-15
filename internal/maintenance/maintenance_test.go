@@ -93,7 +93,7 @@ func TestBackupRestoreDrill(t *testing.T) {
 		t.Fatalf("attempt outcome = %q, %v", outcome, err)
 	}
 	var indexed int
-	if err := restored.QueryRow(`SELECT count(*) FROM memory_fts WHERE memory_id='memory-1' AND content='restorable content'`).Scan(&indexed); err != nil || indexed != 1 {
+	if err := restored.QueryRow(`SELECT count(*) FROM memory_fts WHERE memory_id='memory-1' AND content LIKE '%restorable content%'`).Scan(&indexed); err != nil || indexed != 1 {
 		t.Fatalf("FTS count = %d, %v", indexed, err)
 	}
 	var ftsVersion int

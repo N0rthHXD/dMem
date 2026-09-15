@@ -301,6 +301,19 @@ CREATE TABLE duplicate_cluster_members (
     FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
 ) WITHOUT ROWID, STRICT;
 
+CREATE TABLE projection_metadata (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    quality_generation INTEGER NOT NULL DEFAULT 1 CHECK (quality_generation > 0),
+    duplicate_generation INTEGER NOT NULL DEFAULT 1 CHECK (duplicate_generation > 0),
+    quality_algorithm_version TEXT NOT NULL,
+    duplicate_algorithm_version TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'rebuilding', 'degraded')),
+    updated_at TEXT NOT NULL
+) STRICT;
+
+INSERT INTO projection_metadata(singleton, quality_generation, duplicate_generation, quality_algorithm_version, duplicate_algorithm_version, state, updated_at)
+VALUES (1, 1, 1, 'memory-quality-v1', 'duplicate-cluster-v1', 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
 CREATE TABLE candidates (
     candidate_id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
@@ -308,6 +321,7 @@ CREATE TABLE candidates (
     memory_type TEXT NOT NULL CHECK (memory_type IN ('fact', 'event', 'preference', 'plan', 'procedure', 'scene', 'topic', 'timeline')),
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
+    structured_revision_json TEXT NOT NULL DEFAULT '{}',
     valid_from TEXT,
     valid_until TEXT,
     confidence REAL CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
@@ -347,6 +361,7 @@ WHEN OLD.event_id IS NOT NEW.event_id
   OR OLD.memory_type IS NOT NEW.memory_type
   OR OLD.content IS NOT NEW.content
   OR OLD.content_hash IS NOT NEW.content_hash
+  OR OLD.structured_revision_json IS NOT NEW.structured_revision_json
   OR OLD.valid_from IS NOT NEW.valid_from
   OR OLD.valid_until IS NOT NEW.valid_until
   OR OLD.confidence IS NOT NEW.confidence
@@ -452,6 +467,38 @@ CREATE TRIGGER candidate_reviews_no_delete
 BEFORE DELETE ON candidate_reviews
 BEGIN
     SELECT RAISE(ABORT, 'candidate reviews are append-only');
+END;
+
+CREATE TABLE consolidation_decisions (
+    decision_id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE REFERENCES candidates(candidate_id) ON DELETE RESTRICT,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    action TEXT NOT NULL CHECK (action IN ('attach_evidence', 'refine', 'supersede', 'contest', 'create', 'reject')),
+    reason_code TEXT NOT NULL,
+    target_memory_id TEXT,
+    target_revision_id TEXT,
+    similarity REAL CHECK (similarity IS NULL OR (similarity >= 0.0 AND similarity <= 1.0)),
+    classification_source TEXT NOT NULL CHECK (classification_source IN ('deterministic', 'provider', 'none')),
+    algorithm_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK ((target_memory_id IS NULL AND target_revision_id IS NULL) OR (target_memory_id IS NOT NULL AND target_revision_id IS NOT NULL)),
+    FOREIGN KEY (target_memory_id, target_revision_id)
+        REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX consolidation_decisions_space_idx
+ON consolidation_decisions(space_id, action, created_at DESC, decision_id DESC);
+
+CREATE TRIGGER consolidation_decisions_no_update
+BEFORE UPDATE ON consolidation_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'consolidation decisions are immutable');
+END;
+
+CREATE TRIGGER consolidation_decisions_no_delete
+BEFORE DELETE ON consolidation_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'consolidation decisions cannot be deleted');
 END;
 
 CREATE TABLE corpus_metadata (
@@ -1307,7 +1354,7 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 CREATE TABLE jobs (
     job_id TEXT PRIMARY KEY,
     operation_id TEXT NOT NULL,
-    job_type TEXT NOT NULL CHECK (job_type IN ('extract_memory', 'extract_entity', 'extract_relation', 'extract_graph', 'embed_memory', 'rebuild_fts', 'rebuild_semantic', 'rebuild_entity_index', 'rebuild_relation_index', 'rebuild_graph_index', 'aggregate_feedback', 'rebuild_feedback_aggregates', 'build_aggregate', 'rebuild_aggregate', 'logical_export', 'logical_import')),
+    job_type TEXT NOT NULL CHECK (job_type IN ('extract_memory', 'extract_entity', 'extract_relation', 'extract_graph', 'embed_memory', 'rebuild_fts', 'rebuild_semantic', 'rebuild_entity_index', 'rebuild_relation_index', 'rebuild_graph_index', 'rebuild_quality', 'rebuild_duplicates', 'aggregate_feedback', 'rebuild_feedback_aggregates', 'build_aggregate', 'rebuild_aggregate', 'logical_export', 'logical_import')),
     target_type TEXT NOT NULL CHECK (target_type IN ('raw_event', 'memory_revision', 'feedback_revision', 'aggregate', 'index', 'export_operation', 'import_operation')),
     target_id TEXT NOT NULL,
     processing_version TEXT NOT NULL,

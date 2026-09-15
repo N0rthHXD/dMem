@@ -717,7 +717,7 @@ func mapImportError(err error) error {
 
 var objectDataFields = map[string]string{
 	"space":                   "space_id parent_space_id space_type external_id display_name created_at",
-	"raw_event":               "event_id operation_id space_id source_type source_name source_event_id caller_id occurred_at received_at processing_status metadata_json created_at content_id content_kind content_text reference_uri media_type content_hash size_bytes declared_size declared_hash content_created_at",
+	"raw_event":               "event_id operation_id space_id source_type source_name source_event_id caller_id occurred_at received_at processing_status metadata_json created_at source_stream_key sequence content_id content_kind content_text reference_uri media_type content_hash size_bytes declared_size declared_hash content_created_at",
 	"memory":                  "memory_id space_id current_revision_id current_state frozen sensitivity created_at updated_at",
 	"memory_state_event":      "state_event_id memory_id revision_id operation_id from_state to_state from_frozen to_frozen reason created_by created_at",
 	"revision":                "revision_id memory_id parent_revision_id restored_from_revision_id valid_from valid_until confidence kind display_content canonical_content canonical_hash event_type event_time_start event_time_end time_precision time_source source_speaker language sensitivity specificity created_by processing_version processor_identity created_at",

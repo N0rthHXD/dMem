@@ -43,17 +43,19 @@ type CreateMemoryParams struct {
 }
 
 type RememberParams struct {
-	SpaceID       string
-	Content       string
-	Kind          string
-	Sensitivity   string
-	ValidFrom     *string
-	ValidUntil    *string
-	SourceName    string
-	SourceEventID *string
-	OccurredAt    string
-	Metadata      map[string]any
-	Reason        string
+	SpaceID         string
+	Content         string
+	Kind            string
+	Sensitivity     string
+	ValidFrom       *string
+	ValidUntil      *string
+	SourceName      string
+	SourceEventID   *string
+	SourceStreamKey string
+	Sequence        *int64
+	OccurredAt      string
+	Metadata        map[string]any
+	Reason          string
 }
 
 type RememberResult struct {
@@ -177,10 +179,22 @@ func (r *Repository) Remember(ctx context.Context, identity WriteIdentity, param
 	if err != nil {
 		return RememberResult{}, false, err
 	}
+	streamID, err := resolveSourceStream(ctx, tx, now, params.SpaceID, "manual", params.SourceName, params.SourceStreamKey)
+	if err != nil {
+		return RememberResult{}, false, err
+	}
+	sequence, err := eventSequence(ctx, tx, streamID, params.Sequence)
+	if err != nil {
+		return RememberResult{}, false, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO raw_contents(content_id,content_kind,content_text,media_type,content_hash,size_bytes,created_at) VALUES (?, 'text', ?, 'text/plain', ?, ?, ?)`, contentID, params.Content, hex.EncodeToString(hash[:]), len([]byte(params.Content)), now); err != nil {
 		return RememberResult{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,source_event_id,caller_id,occurred_at,received_at,processing_status,metadata_json,created_at) VALUES (?,?,?,?,'manual',?,?,?,?,?,'processed',?,?)`, eventID, operationID, params.SpaceID, contentID, params.SourceName, params.SourceEventID, identity.CallerID, params.OccurredAt, now, string(metadata), now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,source_event_id,source_stream_id,sequence,caller_id,occurred_at,received_at,processing_status,metadata_json,created_at) VALUES (?,?,?,?,'manual',?,?,?,?,?,?,?,'processed',?,?)`, eventID, operationID, params.SpaceID, contentID, params.SourceName, params.SourceEventID, streamID, sequence, identity.CallerID, params.OccurredAt, now, string(metadata), now); err != nil {
+		var sqliteErr sqlite3.Error
+		if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint {
+			return RememberResult{}, false, fmt.Errorf("%w: duplicate source stream sequence", ErrConflict)
+		}
 		return RememberResult{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,'active',0,?,?,?)`, memoryID, params.SpaceID, revisionID, params.Sensitivity, now, now); err != nil {
@@ -1028,7 +1042,11 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 	if err != nil {
 		return err
 	}
+	if err := loadRevisionDetails(ctx, tx, &revision); err != nil {
+		return err
+	}
 	memoryType, content, contentHash := string(revision.Kind), revision.DisplayContent, revision.CanonicalHash
+	ftsContent := canonicalStructuredDocument(revision)
 	validFrom, validUntil := formatTimePointer(revision.ValidFrom), formatTimePointer(revision.ValidUntil)
 	searchable := state == "active" || state == "contested"
 	embeddingChanged, corpusChanged := true, true
@@ -1055,11 +1073,14 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 		return err
 	}
 	if searchable {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, ?)`, memoryID, revisionID, content); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, ?)`, memoryID, revisionID, ftsContent); err != nil {
 			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE index_metadata SET source_revision_count=(SELECT count(*) FROM memory_projections WHERE searchable=1), updated_at=? WHERE index_name='memory_fts'`, now); err != nil {
+		return err
+	}
+	if err := advanceProjectionGeneration(ctx, tx, now); err != nil {
 		return err
 	}
 	if err := advanceCorpusGeneration(ctx, tx, now); err != nil {

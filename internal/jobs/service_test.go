@@ -865,3 +865,40 @@ func TestPersistenceErrorLoggingSuppressesExpectedErrors(t *testing.T) {
 		t.Fatalf("unexpected logs = %#v", records)
 	}
 }
+
+func TestServiceAcceptsFullyStructuredCandidateFields(t *testing.T) {
+	eventStart := time.Date(2024, 3, 1, 9, 0, 0, 0, time.UTC)
+	eventEnd := time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC)
+	validFrom := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	validUntil := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
+	start, end := int64(0), int64(5)
+	input := domain.ProcessingInput{
+		Target: domain.ProcessingEvent{EventID: "event-1", SpaceID: "space-1", Content: domain.ProcessingContent{Kind: "text", MediaType: "text/plain", Text: "alice prefers tea"}},
+		Policy: domain.ProcessingPolicy{AllowedMemoryTypes: []string{"fact", "event"}, MaxCandidates: 2, MaxContentChars: 200},
+	}
+	processor := processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		return domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Proposals: []domain.MemoryCandidateProposal{{
+			Action: domain.ConsolidationCreate,
+			Revision: domain.MemoryRevision{
+				Kind: domain.MemoryKindEvent, DisplayContent: "Alice prefers tea", CanonicalContent: "alice prefers tea",
+				SubjectEntityIDs: []string{"alice"}, ObjectEntityIDs: []string{"tea"}, EventType: "preference",
+				Attributes:     map[string]string{"preference": "tea"},
+				EventTimeStart: &eventStart, EventTimeEnd: &eventEnd, TimePrecision: domain.TimePrecisionExact, TimeSource: "relative_anchor",
+				ValidFrom: &validFrom, ValidUntil: &validUntil, SourceSpeaker: "alice", Language: "en",
+				Sensitivity: "normal", Specificity: 0.7, Confidence: 0.9,
+				Evidence: []domain.RevisionEvidence{{EvidenceID: "ev-1", EventID: "event-1", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}},
+			},
+		}}}
+	})
+	item := pendingJob("structured", 1)
+	repository := &fakeRepository{jobs: []*fakeJob{item}, processing: &input}
+	startService(t, repository, processor)
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "succeeded"
+	})
+	if item.job.ResultCode == nil || *item.job.ResultCode != string(domain.ProcessingCandidatesExtracted) {
+		t.Fatalf("structured candidate was not published: %v", item.job.ResultCode)
+	}
+}

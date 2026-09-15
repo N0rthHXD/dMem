@@ -40,13 +40,15 @@ type createSpaceRequest struct {
 }
 
 type ingestEventRequest struct {
-	SpaceID       string          `json:"space_id"`
-	SourceType    string          `json:"source_type"`
-	SourceName    string          `json:"source_name"`
-	SourceEventID json.RawMessage `json:"source_event_id"`
-	OccurredAt    string          `json:"occurred_at"`
-	Content       contentRequest  `json:"content"`
-	Metadata      json.RawMessage `json:"metadata"`
+	SpaceID         string          `json:"space_id"`
+	SourceType      string          `json:"source_type"`
+	SourceName      string          `json:"source_name"`
+	SourceEventID   json.RawMessage `json:"source_event_id"`
+	SourceStreamKey string          `json:"source_stream_key,omitempty"`
+	Sequence        json.RawMessage `json:"sequence"`
+	OccurredAt      string          `json:"occurred_at"`
+	Content         contentRequest  `json:"content"`
+	Metadata        json.RawMessage `json:"metadata"`
 }
 
 type contentRequest struct {
@@ -307,6 +309,17 @@ func validateIngest(request ingestEventRequest) (storage.IngestParams, error) {
 		}
 		sourceEventID = &value
 	}
+	if utf8.RuneCountInString(request.SourceStreamKey) > 256 {
+		return storage.IngestParams{}, errors.New("source_stream_key is too long")
+	}
+	var sequence *int64
+	if request.Sequence != nil {
+		var value int64
+		if string(request.Sequence) == "null" || json.Unmarshal(request.Sequence, &value) != nil || value < 0 {
+			return storage.IngestParams{}, errors.New("sequence must be a non-negative integer")
+		}
+		sequence = &value
+	}
 	occurred, err := time.Parse(time.RFC3339, request.OccurredAt)
 	if err != nil {
 		return storage.IngestParams{}, errors.New("occurred_at must be RFC3339")
@@ -353,7 +366,7 @@ func validateIngest(request ingestEventRequest) (storage.IngestParams, error) {
 			return storage.IngestParams{}, errors.New("metadata must be an object")
 		}
 	}
-	return storage.IngestParams{SpaceID: request.SpaceID, SourceType: request.SourceType, SourceName: request.SourceName, SourceEventID: sourceEventID, OccurredAt: formatAPITime(occurred), Content: content, Metadata: metadata}, nil
+	return storage.IngestParams{SpaceID: request.SpaceID, SourceType: request.SourceType, SourceName: request.SourceName, SourceEventID: sourceEventID, SourceStreamKey: request.SourceStreamKey, Sequence: sequence, OccurredAt: formatAPITime(occurred), Content: content, Metadata: metadata}, nil
 }
 
 func (h *Handler) decode(w http.ResponseWriter, r *http.Request, requestID string, target any) bool {

@@ -1196,11 +1196,15 @@ func assertChannels(t *testing.T, got []string, want ...string) {
 }
 
 func TestEmbeddingDocumentAndQueryFormatsAreVersioned(t *testing.T) {
-	if embeddingDocumentFormatVersion != "embedding-document-v1" || embeddingQueryFormatVersion != "embedding-query-v1" {
+	if embeddingDocumentFormatVersion != "embedding-document-v2" || embeddingQueryFormatVersion != "embedding-query-v1" {
 		t.Fatalf("embedding format versions = %q/%q", embeddingDocumentFormatVersion, embeddingQueryFormatVersion)
 	}
-	document := embeddingDocument("event", "canonical body", "meeting", "en", "Alice", "day")
-	for _, want := range []string{"kind:event", "canonical body", "event_type:meeting", "language:en", "speaker:Alice", "time_precision:day"} {
+	document := embeddingDocument(domain.MemoryRevision{
+		Kind: domain.MemoryKindEvent, CanonicalContent: "canonical body", EventType: "meeting",
+		Language: "en", SourceSpeaker: "Alice", TimePrecision: domain.TimePrecisionDay,
+		SubjectEntityIDs: []string{"alice"}, Attributes: map[string]string{"location": "hq"},
+	})
+	for _, want := range []string{"kind:event", "canonical body", "event_type:meeting", "language:en", "speaker:Alice", "time_precision:day", "subject:alice", "attribute:location:hq"} {
 		if !strings.Contains(document, want) {
 			t.Fatalf("embedding document missing %q: %q", want, document)
 		}

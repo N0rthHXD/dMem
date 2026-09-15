@@ -13,17 +13,19 @@ import (
 )
 
 type rememberRequest struct {
-	SpaceID       string         `json:"space_id"`
-	Content       string         `json:"content"`
-	Kind          string         `json:"kind,omitempty"`
-	Sensitivity   string         `json:"sensitivity,omitempty"`
-	ValidFrom     *string        `json:"valid_from,omitempty"`
-	ValidUntil    *string        `json:"valid_until,omitempty"`
-	SourceName    string         `json:"source_name,omitempty"`
-	SourceEventID *string        `json:"source_event_id,omitempty"`
-	OccurredAt    string         `json:"occurred_at,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
-	Reason        string         `json:"reason,omitempty"`
+	SpaceID         string         `json:"space_id"`
+	Content         string         `json:"content"`
+	Kind            string         `json:"kind,omitempty"`
+	Sensitivity     string         `json:"sensitivity,omitempty"`
+	ValidFrom       *string        `json:"valid_from,omitempty"`
+	ValidUntil      *string        `json:"valid_until,omitempty"`
+	SourceName      string         `json:"source_name,omitempty"`
+	SourceEventID   *string        `json:"source_event_id,omitempty"`
+	SourceStreamKey string         `json:"source_stream_key,omitempty"`
+	Sequence        *int64         `json:"sequence,omitempty"`
+	OccurredAt      string         `json:"occurred_at,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	Reason          string         `json:"reason,omitempty"`
 }
 
 type recallRequest struct {
@@ -101,7 +103,8 @@ func (h *Handler) remember(w http.ResponseWriter, r *http.Request) {
 	command := application.RememberCommand{
 		SpaceID: request.SpaceID, Content: request.Content, Kind: request.Kind, Sensitivity: request.Sensitivity,
 		ValidFrom: request.ValidFrom, ValidUntil: request.ValidUntil, SourceName: request.SourceName,
-		SourceEventID: request.SourceEventID, OccurredAt: request.OccurredAt, Metadata: request.Metadata, Reason: request.Reason,
+		SourceEventID: request.SourceEventID, SourceStreamKey: request.SourceStreamKey, Sequence: request.Sequence,
+		OccurredAt: request.OccurredAt, Metadata: request.Metadata, Reason: request.Reason,
 	}
 	result, err := h.memoryService.Remember(r.Context(), appIdentity(caller, key, requestID, r.Method, "/v1/remember", originalRequest), command)
 	if err != nil {

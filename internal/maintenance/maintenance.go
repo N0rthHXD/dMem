@@ -447,8 +447,32 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_fts`); err != nil {
 		return 0, 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) SELECT p.memory_id, p.revision_id, p.display_content FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 ORDER BY p.memory_id`); err != nil {
+	projectionRows, err := tx.QueryContext(ctx, `SELECT p.memory_id, p.revision_id FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 ORDER BY p.memory_id`)
+	if err != nil {
 		return 0, 0, err
+	}
+	type ftsProjection struct{ memoryID, revisionID, content string }
+	var ftsProjections []ftsProjection
+	for projectionRows.Next() {
+		var item ftsProjection
+		if err := projectionRows.Scan(&item.memoryID, &item.revisionID); err != nil {
+			projectionRows.Close()
+			return 0, 0, err
+		}
+		item.content, err = storage.CanonicalDocumentForRevision(ctx, tx, item.memoryID, item.revisionID)
+		if err != nil {
+			projectionRows.Close()
+			return 0, 0, err
+		}
+		ftsProjections = append(ftsProjections, item)
+	}
+	if err := projectionRows.Close(); err != nil {
+		return 0, 0, err
+	}
+	for _, item := range ftsProjections {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, ?)`, item.memoryID, item.revisionID, item.content); err != nil {
+			return 0, 0, err
+		}
 	}
 	var sourceCount, indexCount int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_projections WHERE searchable=1`).Scan(&sourceCount); err != nil {
@@ -457,12 +481,11 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_fts`).Scan(&indexCount); err != nil || sourceCount != indexCount {
 		return 0, 0, errors.New("FTS validation failed")
 	}
-	var mismatch int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT memory_id, revision_id, display_content AS content FROM memory_projections WHERE searchable=1 EXCEPT SELECT memory_id, revision_id, content FROM memory_fts)`).Scan(&mismatch); err != nil || mismatch != 0 {
-		return 0, 0, errors.New("FTS validation failed")
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT memory_id, revision_id, content FROM memory_fts EXCEPT SELECT memory_id, revision_id, display_content AS content FROM memory_projections WHERE searchable=1)`).Scan(&mismatch); err != nil || mismatch != 0 {
-		return 0, 0, errors.New("FTS validation failed")
+	for _, item := range ftsProjections {
+		var content string
+		if err := tx.QueryRowContext(ctx, `SELECT content FROM memory_fts WHERE memory_id=? AND revision_id=?`, item.memoryID, item.revisionID).Scan(&content); err != nil || content != item.content {
+			return 0, 0, errors.New("FTS validation failed")
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE index_metadata SET index_version=index_version+1, state='ready', source_revision_count=?, updated_at=? WHERE index_name='memory_fts'`, sourceCount, nowText); err != nil {
 		return 0, 0, err
@@ -626,7 +649,8 @@ func addProbeCanaries(ctx context.Context, databasePath string) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES (?,?,?,'fact','active',1,?,'restore-probe','2000-01-01T00:00:00Z')`, values[0], revisionID, values[1], values[2]); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id,revision_id,content) VALUES (?,?,?)`, values[0], revisionID, values[2]); err != nil {
+		ftsContent := storage.CanonicalStructuredDocument(domain.MemoryRevision{Kind: domain.MemoryKindFact, CanonicalContent: values[2]})
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id,revision_id,content) VALUES (?,?,?)`, values[0], revisionID, ftsContent); err != nil {
 			return err
 		}
 	}

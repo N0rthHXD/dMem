@@ -113,3 +113,125 @@ func TestValidateProcessingResultReturnsSpecificContractErrors(t *testing.T) {
 		})
 	}
 }
+
+func structuredProcessingInput() domain.ProcessingInput {
+	input := validProcessingInput()
+	input.Target.Content.Text = "alice prefers tea"
+	input.Policy.MaxContentChars = 200
+	input.Policy.MaxCandidateChars = 200
+	input.Policy.MaxTotalCandidateChars = 200
+	return input
+}
+
+func structuredProcessingResult() domain.ProcessingResult {
+	eventStart := time.Date(2024, 3, 1, 9, 0, 0, 0, time.UTC)
+	eventEnd := time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC)
+	validFrom := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	validUntil := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
+	start, end := int64(0), int64(5)
+	return domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Proposals: []domain.MemoryCandidateProposal{{
+		Action: domain.ConsolidationCreate,
+		Revision: domain.MemoryRevision{
+			Kind: domain.MemoryKindFact, DisplayContent: "Alice prefers tea", CanonicalContent: "alice prefers tea",
+			SubjectEntityIDs: []string{"alice"}, ObjectEntityIDs: []string{"tea"}, EventType: "preference",
+			Attributes:     map[string]string{"preference": "tea"},
+			EventTimeStart: &eventStart, EventTimeEnd: &eventEnd, TimePrecision: domain.TimePrecisionExact, TimeSource: "relative_anchor",
+			ValidFrom: &validFrom, ValidUntil: &validUntil, SourceSpeaker: "alice", Language: "en",
+			Sensitivity: "normal", Specificity: 0.7, Confidence: 0.9,
+			Evidence: []domain.RevisionEvidence{{EvidenceID: "ev-1", EventID: "event-1", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}},
+		},
+	}}}
+}
+
+func TestValidateProcessingResultAcceptsStructuredCandidateFields(t *testing.T) {
+	if err := validateProcessingResult(structuredProcessingInput(), structuredProcessingResult()); err != nil {
+		t.Fatalf("structured candidate rejected: %v", err)
+	}
+}
+
+func TestValidateProcessingResultRejectsStructuredViolations(t *testing.T) {
+	overlapStart, overlapEnd := int64(3), int64(8)
+	tests := map[string]struct {
+		input  func() domain.ProcessingInput
+		mutate func(*domain.ProcessingResult)
+		want   string
+	}{
+		"impossible event interval": {
+			mutate: func(result *domain.ProcessingResult) {
+				revision := &result.Proposals[0].Revision
+				start := time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC)
+				end := time.Date(2024, 3, 1, 9, 0, 0, 0, time.UTC)
+				revision.EventTimeStart, revision.EventTimeEnd = &start, &end
+			},
+			want: "invalid_output",
+		},
+		"impossible valid interval": {
+			mutate: func(result *domain.ProcessingResult) {
+				revision := &result.Proposals[0].Revision
+				start := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
+				end := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+				revision.ValidFrom, revision.ValidUntil = &start, &end
+			},
+			want: "invalid_output",
+		},
+		"context-only evidence": {
+			mutate: func(result *domain.ProcessingResult) {
+				result.Proposals[0].Revision.Evidence[0].Role = domain.EvidenceRoleContext
+			},
+			want: "invalid_output",
+		},
+		"invalid entity reference": {
+			mutate: func(result *domain.ProcessingResult) {
+				result.Proposals[0].Revision.SubjectEntityIDs = []string{"alice", "alice"}
+			},
+			want: "invalid_entity_reference",
+		},
+		"empty entity reference": {
+			mutate: func(result *domain.ProcessingResult) {
+				result.Proposals[0].Revision.SubjectEntityIDs = []string{"  "}
+			},
+			want: "invalid_entity_reference",
+		},
+		"overlapping evidence ranges": {
+			mutate: func(result *domain.ProcessingResult) {
+				evidence := result.Proposals[0].Revision.Evidence[0]
+				evidence.EvidenceID = "ev-2"
+				evidence.StartOffset, evidence.EndOffset = &overlapStart, &overlapEnd
+				result.Proposals[0].Revision.Evidence = append(result.Proposals[0].Revision.Evidence, evidence)
+			},
+			want: "overlapping_evidence_range",
+		},
+		"output bounds": {
+			mutate: func(result *domain.ProcessingResult) {
+				result.Proposals[0].Revision.DisplayContent = "this candidate exceeds the configured character budget"
+			},
+			want: "invalid_output",
+		},
+		"source-scope violation": {
+			input: func() domain.ProcessingInput {
+				input := structuredProcessingInput()
+				input.ContextEvents = append(input.ContextEvents, domain.ProcessingEvent{EventID: "event-x", SpaceID: "space-2", Content: domain.ProcessingContent{Kind: "text", Text: "other scope"}})
+				return input
+			},
+			mutate: func(result *domain.ProcessingResult) {
+				evidence := result.Proposals[0].Revision.Evidence[0]
+				evidence.EvidenceID = "ev-2"
+				result.Proposals[0].Revision.Evidence = append(result.Proposals[0].Revision.Evidence, evidence)
+			},
+			want: "invalid_output",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			input := structuredProcessingInput()
+			if test.input != nil {
+				input = test.input()
+			}
+			result := structuredProcessingResult()
+			test.mutate(&result)
+			if got := processingValidationCode(validateProcessingResult(input, result)); got != test.want {
+				t.Fatalf("validation code = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

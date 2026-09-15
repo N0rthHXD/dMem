@@ -432,83 +432,83 @@ schema and provider contract.
 
 ### Ordered Event Streams
 
-- [ ] T074 [P] [MEM] Add failing storage/API tests for caller-supplied sequence,
+- [X] T074 [P] [MEM] Add failing storage/API tests for caller-supplied sequence,
   transactionally assigned sequence, idempotency, concurrent ingestion, and
   deterministic stream order in `internal/storage/` and `internal/daemon/`
-- [ ] T075 [MEM] Implement source stream identity and stable event sequence in
+- [X] T075 [MEM] Implement source stream identity and stable event sequence in
   raw event ingestion, direct remember, explicit memory creation, import/export,
   and API contracts
-- [ ] T076 [MEM] Replace processing context order with stream, sequence,
+- [X] T076 [MEM] Replace processing context order with stream, sequence,
   timestamp, and stable-ID order in `internal/storage/jobs.go`
 
 ### Structured Extraction
 
-- [ ] T077 [P] [MEM] Add failing processing tests for memory kind, canonical
+- [X] T077 [P] [MEM] Add failing processing tests for memory kind, canonical
   content, subjects/objects, attributes, event time, valid time, time precision,
   temporal anchor, speaker, language, specificity, confidence, and evidence
   roles in `internal/jobs/service_test.go`
-- [ ] T078 [P] [MEM] Add failing validation tests for unsupported fields,
+- [X] T078 [P] [MEM] Add failing validation tests for unsupported fields,
   impossible intervals, invalid entity references, context-only evidence,
   overlapping ranges, output bounds, and source-scope violations
-- [ ] T079 [MEM] Replace the extraction prompt and provider mapping with the
+- [X] T079 [MEM] Replace the extraction prompt and provider mapping with the
   structured candidate contract in `internal/provider/client.go` and
   `internal/jobs/provider.go`
-- [ ] T080 [MEM] Implement deterministic normalization for canonical content,
+- [X] T080 [MEM] Implement deterministic normalization for canonical content,
   attributes, language, speaker, absolute/relative time, precision, anchor, and
   evidence roles in `internal/jobs/validation.go`
-- [ ] T081 [MEM] Publish structured candidate proposals and complete ordered
+- [X] T081 [MEM] Publish structured candidate proposals and complete ordered
   evidence without bypassing confirmation, generation fencing, policy, audit, or
   idempotency
 
 ### Candidate Matching And Consolidation
 
-- [ ] T082 [P] [MEM] Add failing exact consolidation tests for canonical hash,
+- [X] T082 [P] [MEM] Add failing exact consolidation tests for canonical hash,
   same source event, subject/kind tuple, attributes, time compatibility, and
   evidence deduplication in `internal/storage/consolidation_test.go`
-- [ ] T083 [P] [MEM] Add failing semantic consolidation tests for conservative
+- [X] T083 [P] [MEM] Add failing semantic consolidation tests for conservative
   thresholds, unresolved provider classification, false-merge protection, and
   the rule that cosine alone cannot supersede, contest, or delete
-- [ ] T084 [P] [MEM] Add failing action tests for `attach_evidence`, `refine`,
+- [X] T084 [P] [MEM] Add failing action tests for `attach_evidence`, `refine`,
   `supersede`, `contest`, `create`, and `reject`, including frozen memories,
   ancestors, siblings, sensitivity, and concurrent current-revision changes
-- [ ] T085 [MEM] Implement bounded consolidation candidate recall using canonical
+- [X] T085 [MEM] Implement bounded consolidation candidate recall using canonical
   tuple indexes, evidence proximity, valid-time overlap, and semantic similarity
   in `internal/storage/consolidation.go`
-- [ ] T086 [MEM] Implement deterministic consolidation classification first and
+- [X] T086 [MEM] Implement deterministic consolidation classification first and
   policy-controlled provider classification only for unresolved candidates
-- [ ] T087 [MEM] Implement atomic evidence attachment with immutable evidence
+- [X] T087 [MEM] Implement atomic evidence attachment with immutable evidence
   history and no duplicate source ranges
-- [ ] T088 [MEM] Implement `refine`, `supersede`, and `contest` as explicit
+- [X] T088 [MEM] Implement `refine`, `supersede`, and `contest` as explicit
   evolution proposals with expected-revision and review boundaries
-- [ ] T089 [MEM] Integrate consolidation before new candidate confirmation so
+- [X] T089 [MEM] Integrate consolidation before new candidate confirmation so
   only genuinely novel information creates a new logical memory
-- [ ] T090 [MEM] Add consolidation identities, decisions, reasons, and source
+- [X] T090 [MEM] Add consolidation identities, decisions, reasons, and source
   candidate references to audit and observability records
 
 ### Quality And Duplicate Projections
 
-- [ ] T091 [P] [MEM] Add failing tests for memory quality components, bounds,
+- [X] T091 [P] [MEM] Add failing tests for memory quality components, bounds,
   rebuild determinism, lifecycle effects, contradiction penalties, evidence
   strength, source diversity, and duplicate density
-- [ ] T092 [P] [MEM] Add failing duplicate-cluster tests for same memory, shared
+- [X] T092 [P] [MEM] Add failing duplicate-cluster tests for same memory, shared
   primary evidence, equivalent canonical tuples, high semantic similarity with
   compatible time, and aggregate provenance
-- [ ] T093 [MEM] Implement rebuildable memory quality projections in
+- [X] T093 [MEM] Implement rebuildable memory quality projections in
   `internal/storage/quality.go` without changing eligibility
-- [ ] T094 [MEM] Implement rebuildable duplicate clusters and deterministic
+- [X] T094 [MEM] Implement rebuildable duplicate clusters and deterministic
   representative selection in `internal/storage/duplicates.go`
-- [ ] T095 [MEM] Schedule and generation-fence quality and duplicate projection
+- [X] T095 [MEM] Schedule and generation-fence quality and duplicate projection
   updates from memory, evidence, lifecycle, conflict, and aggregate changes
 
 ### Reindexing
 
-- [ ] T096 [P] [MEM] Add failing tests for canonical FTS documents and canonical
+- [X] T096 [P] [MEM] Add failing tests for canonical FTS documents and canonical
   semantic embedding documents across every memory kind
-- [ ] T097 [MEM] Rebuild FTS projections from canonical content and field-aware
+- [X] T097 [MEM] Rebuild FTS projections from canonical content and field-aware
   structured text in `internal/storage/memories.go` and index code
-- [ ] T098 [MEM] Rebuild semantic embeddings from the versioned canonical
+- [X] T098 [MEM] Rebuild semantic embeddings from the versioned canonical
   document format and advance compatibility identity
-- [ ] T099 [MEM] Update import/export and portability fixtures to preserve new
+- [X] T099 [MEM] Update import/export and portability fixtures to preserve new
   structured authority while rebuilding quality, duplicate, FTS, semantic, and
   graph projections after import
 

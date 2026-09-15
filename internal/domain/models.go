@@ -66,6 +66,8 @@ type RawEvent struct {
 	SourceType       string         `json:"source_type"`
 	SourceName       string         `json:"source_name"`
 	SourceEventID    *string        `json:"source_event_id,omitempty"`
+	SourceStreamID   *string        `json:"source_stream_id,omitempty"`
+	Sequence         *int64         `json:"sequence,omitempty"`
 	OccurredAt       string         `json:"occurred_at"`
 	ReceivedAt       string         `json:"received_at"`
 	Content          Content        `json:"content"`
@@ -135,13 +137,15 @@ type ProcessingContent struct {
 }
 
 type ProcessingEvent struct {
-	EventID     string
-	SpaceID     string
-	SourceType  string
-	SourceName  string
-	Sensitivity string
-	OccurredAt  time.Time
-	Content     ProcessingContent
+	EventID        string
+	SpaceID        string
+	SourceType     string
+	SourceName     string
+	SourceStreamID string
+	Sequence       *int64
+	Sensitivity    string
+	OccurredAt     time.Time
+	Content        ProcessingContent
 }
 
 type ProcessingMemory struct {

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
@@ -89,6 +90,59 @@ func TestCandidateRejectsCrossSpaceAndOutOfRangeEvidence(t *testing.T) {
 		if _, _, err := repository.CreateCandidate(context.Background(), params); !errors.Is(err, ErrInvalidEvidence) {
 			t.Fatalf("CreateCandidate(%s) error = %v; want ErrInvalidEvidence", test.name, err)
 		}
+	}
+}
+
+func TestCandidatePersistsStructuredRevisionThroughConfirmation(t *testing.T) {
+	t.Parallel()
+	repository, _ := newMemoryTestRepository(t)
+	eventStart := time.Date(2024, 3, 1, 9, 0, 0, 0, time.UTC)
+	eventEnd := time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC)
+	validFrom := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	validUntil := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
+	confidence := 0.9
+	structured := domain.MemoryRevision{
+		Kind: domain.MemoryKindFact, DisplayContent: "Alice prefers tea", CanonicalContent: "alice prefers tea",
+		SubjectEntityIDs: []string{"alice"}, ObjectEntityIDs: []string{"tea"}, EventType: "preference",
+		Attributes:     map[string]string{"preference": "tea"},
+		EventTimeStart: &eventStart, EventTimeEnd: &eventEnd, TimePrecision: domain.TimePrecisionExact, TimeSource: "relative_anchor",
+		ValidFrom: &validFrom, ValidUntil: &validUntil, SourceSpeaker: "alice", Language: "en",
+		Sensitivity: "normal", Specificity: 0.7, Confidence: 0.9,
+		Evidence: []domain.RevisionEvidence{{EvidenceID: "ev-1", EventID: "event-1", Role: domain.EvidenceRoleDirect}},
+	}
+	params := candidateParams()
+	params.Content = "Alice prefers tea"
+	params.Confidence = &confidence
+	params.StructuredRevision = &structured
+	candidate, duplicate, err := repository.CreateCandidate(context.Background(), params)
+	if err != nil || duplicate {
+		t.Fatalf("CreateCandidate() = %+v, duplicate=%t, error=%v", candidate, duplicate, err)
+	}
+	var stored string
+	if err := repository.store.reader.QueryRow(`SELECT structured_revision_json FROM candidates WHERE candidate_id=?`, candidate.CandidateID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored == "" || stored == "{}" {
+		t.Fatalf("structured revision was not persisted: %q", stored)
+	}
+	review := ReviewCandidateParams{ReasonCode: "accepted"}
+	identity := candidateIdentity("structured-confirm", "confirm", candidate.CandidateID, review)
+	memory, _, err := repository.ConfirmCandidate(context.Background(), identity, candidate.CandidateID, review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := memory.CurrentRevision
+	if revision.CanonicalContent != "alice prefers tea" || len(revision.SubjectEntityIDs) != 1 || revision.SubjectEntityIDs[0] != "alice" || len(revision.ObjectEntityIDs) != 1 || revision.ObjectEntityIDs[0] != "tea" {
+		t.Fatalf("canonical structured fields lost: %+v", revision)
+	}
+	if revision.EventTimeStart == nil || revision.EventTimeEnd == nil || revision.TimePrecision != domain.TimePrecisionExact || revision.TimeSource != "relative_anchor" {
+		t.Fatalf("event time lost: %+v", revision)
+	}
+	if revision.SourceSpeaker != "alice" || revision.Language != "en" || revision.Attributes["preference"] != "tea" {
+		t.Fatalf("speaker/language/attributes lost: %+v", revision)
+	}
+	if len(revision.Evidence) != 1 || revision.Evidence[0].Role != domain.EvidenceRoleDirect {
+		t.Fatalf("evidence role lost: %+v", revision.Evidence)
 	}
 }
 

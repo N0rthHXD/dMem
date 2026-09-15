@@ -156,7 +156,7 @@ func (r *Repository) PrepareProcessing(ctx context.Context, claim ClaimedJob, pa
 		Policy: domain.ProcessingPolicy{AllowedMemoryTypes: append([]string(nil), params.AllowedMemoryTypes...), MaxCandidates: params.MaxCandidates, MaxContentChars: params.MaxContentChars, MaxCandidateChars: max(params.MaxCandidateChars, params.MaxContentChars), MaxTotalCandidateChars: max(params.MaxTotalCandidateChars, params.MaxContentChars)},
 	}
 	if params.MaxContextEvents > 0 {
-		rows, err := r.store.reader.QueryContext(ctx, eventSelect+` WHERE e.space_id=? AND e.event_id<>? AND e.occurred_at<=? ORDER BY e.occurred_at DESC, e.event_id DESC LIMIT ?`, target.SpaceID, target.EventID, target.OccurredAt.UTC().Format(time.RFC3339Nano), params.MaxContextEvents)
+		rows, err := r.store.reader.QueryContext(ctx, eventSelect+` WHERE e.space_id=? AND e.event_id<>? AND e.occurred_at<=? ORDER BY e.occurred_at DESC, e.source_stream_id IS NULL, e.source_stream_id, e.sequence IS NULL, e.sequence DESC, e.event_id DESC LIMIT ?`, target.SpaceID, target.EventID, target.OccurredAt.UTC().Format(time.RFC3339Nano), params.MaxContextEvents)
 		if err != nil {
 			return domain.ProcessingInput{}, err
 		}
@@ -171,6 +171,7 @@ func (r *Repository) PrepareProcessing(ctx context.Context, claim ClaimedJob, pa
 		if err := rows.Close(); err != nil {
 			return domain.ProcessingInput{}, err
 		}
+		orderContextEvents(input.ContextEvents)
 	}
 	if params.MaxContextMemories > 0 {
 		scope, err := memoryScope(ctx, r.store.reader, target.SpaceID, true)
@@ -252,9 +253,16 @@ func processingEvent(row rowScanner) (domain.ProcessingEvent, error) {
 		declaredSize = *event.Content.DeclaredSize
 	}
 	return domain.ProcessingEvent{
-		EventID: event.EventID, SpaceID: event.SpaceID, SourceType: event.SourceType, SourceName: event.SourceName, Sensitivity: "normal", OccurredAt: occurredAt,
+		EventID: event.EventID, SpaceID: event.SpaceID, SourceType: event.SourceType, SourceName: event.SourceName, SourceStreamID: stringValue(event.SourceStreamID), Sequence: event.Sequence, Sensitivity: "normal", OccurredAt: occurredAt,
 		Content: domain.ProcessingContent{Kind: event.Content.Kind, MediaType: event.Content.MediaType, Text: content, DeclaredSize: declaredSize, DeclaredHash: event.Content.DeclaredHash},
 	}, nil
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func appendStrings(values []string, last any) []any {
@@ -543,7 +551,11 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 		candidateID := ids[idIndex]
 		idIndex++
 		contentHash := sha256.Sum256([]byte(params.Content))
-		if _, err := tx.ExecContext(ctx, `INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,content,content_hash,valid_from,valid_until,confidence,sensitivity,suggestion_kind,processor_identity,provider_identity,model_identity,processing_version,specification_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, candidateID, params.EventID, params.SpaceID, params.MemoryType, params.Content, hex.EncodeToString(contentHash[:]), params.ValidFrom, params.ValidUntil, params.Confidence, params.Sensitivity, params.SuggestionKind, params.ProcessorIdentity, params.ProviderIdentity, params.ModelIdentity, params.ProcessingVersion, hash, now); err != nil {
+		structured, err := encodeStructuredRevision(params.StructuredRevision)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,content,content_hash,structured_revision_json,valid_from,valid_until,confidence,sensitivity,suggestion_kind,processor_identity,provider_identity,model_identity,processing_version,specification_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, candidateID, params.EventID, params.SpaceID, params.MemoryType, params.Content, hex.EncodeToString(contentHash[:]), structured, params.ValidFrom, params.ValidUntil, params.Confidence, params.Sensitivity, params.SuggestionKind, params.ProcessorIdentity, params.ProviderIdentity, params.ModelIdentity, params.ProcessingVersion, hash, now); err != nil {
 			return err
 		}
 		for _, evidence := range params.Evidence {
@@ -670,11 +682,14 @@ func processingCandidateParams(input domain.ProcessingInput, result domain.Proce
 	if result.ModelIdentity == "" {
 		modelIdentity = nil
 	}
-	evidence := make([]EvidenceParams, len(revision.Evidence))
-	for i, item := range revision.Evidence {
+	ordered := append([]domain.RevisionEvidence(nil), revision.Evidence...)
+	domain.OrderRevisionEvidence(ordered)
+	evidence := make([]EvidenceParams, len(ordered))
+	for i, item := range ordered {
 		evidence[i] = EvidenceParams{EventID: item.EventID, EvidenceType: "manual_reference", Role: item.Role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
 	}
-	return CreateCandidateParams{EventID: input.Target.EventID, SpaceID: input.Target.SpaceID, MemoryType: string(revision.Kind), Content: revision.DisplayContent, ValidFrom: validFrom, ValidUntil: validUntil, Confidence: &confidence, Sensitivity: revision.Sensitivity, SuggestionKind: "new", ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Evidence: evidence}
+	structured := revision
+	return CreateCandidateParams{EventID: input.Target.EventID, SpaceID: input.Target.SpaceID, MemoryType: string(revision.Kind), Content: revision.DisplayContent, ValidFrom: validFrom, ValidUntil: validUntil, Confidence: &confidence, Sensitivity: revision.Sensitivity, SuggestionKind: "new", ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Evidence: evidence, StructuredRevision: &structured}
 }
 
 func timePointerText(value *time.Time) *string {

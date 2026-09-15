@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"errors"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
@@ -87,27 +88,58 @@ func validateProcessingResult(input domain.ProcessingInput, result domain.Proces
 		if err := domain.ValidateMemoryRevision(revision); err != nil {
 			return errInvalidProcessingResult
 		}
+		if err := validateCandidateEntities(revision); err != nil {
+			return err
+		}
 		chars := utf8.RuneCountInString(revision.DisplayContent)
 		totalChars += chars
 		if revision.DisplayContent == "" || chars > input.Policy.MaxCandidateChars || totalChars > input.Policy.MaxTotalCandidateChars {
 			return errInvalidProcessingResult
 		}
 		seenEvidence := make(map[string]struct{}, len(revision.Evidence))
+		type span struct {
+			eventID    string
+			start, end int64
+		}
+		spans := make([]span, 0, len(revision.Evidence))
 		for _, evidence := range revision.Evidence {
 			event, ok := events[evidence.EventID]
 			if !ok {
 				return invalidProcessingResult("invalid_evidence_reference")
 			}
+			if _, duplicate := seenEvidence[evidence.EvidenceID]; duplicate {
+				return invalidProcessingResult("invalid_evidence_reference")
+			}
+			seenEvidence[evidence.EvidenceID] = struct{}{}
 			if evidence.StartOffset != nil {
 				length := int64(utf8.RuneCountInString(event.Content.Text))
 				if event.Content.Kind == "reference" || *evidence.StartOffset < 0 || *evidence.EndOffset <= *evidence.StartOffset || *evidence.EndOffset > length {
 					return invalidProcessingResult("invalid_evidence_reference")
 				}
+				for _, prior := range spans {
+					if prior.eventID == evidence.EventID && *evidence.StartOffset < prior.end && prior.start < *evidence.EndOffset {
+						return invalidProcessingResult("overlapping_evidence_range")
+					}
+				}
+				spans = append(spans, span{eventID: evidence.EventID, start: *evidence.StartOffset, end: *evidence.EndOffset})
 			}
-			if _, duplicate := seenEvidence[evidence.EvidenceID]; duplicate {
-				return invalidProcessingResult("invalid_evidence_reference")
+		}
+	}
+	return nil
+}
+
+func validateCandidateEntities(revision domain.MemoryRevision) error {
+	for _, values := range [][]string{revision.SubjectEntityIDs, revision.ObjectEntityIDs} {
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" || !utf8.ValidString(trimmed) || utf8.RuneCountInString(trimmed) > 512 {
+				return invalidProcessingResult("invalid_entity_reference")
 			}
-			seenEvidence[evidence.EvidenceID] = struct{}{}
+			if _, duplicate := seen[trimmed]; duplicate {
+				return invalidProcessingResult("invalid_entity_reference")
+			}
+			seen[trimmed] = struct{}{}
 		}
 	}
 	return nil

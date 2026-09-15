@@ -1029,6 +1029,8 @@ components:
         valid_until: { type: [string, 'null'], format: date-time }
         source_name: { type: string, minLength: 1, maxLength: 128 }
         source_event_id: { type: [string, 'null'], maxLength: 256 }
+        source_stream_key: { type: string, maxLength: 256, description: Stable source stream identity for the remembered event. }
+        sequence: { type: integer, minimum: 0, description: Caller-supplied stream sequence. Assigned transactionally when omitted. }
         occurred_at: { type: string, format: date-time }
         metadata: { type: object, additionalProperties: true }
         reason: { type: string, minLength: 1, maxLength: 1024 }
@@ -1180,6 +1182,8 @@ components:
         source_type: { type: string, enum: [message, conversation, tool_call, tool_result, file_reference, collector_event, manual] }
         source_name: { type: string, minLength: 1, maxLength: 128 }
         source_event_id: { type: string, maxLength: 256 }
+        source_stream_key: { type: string, maxLength: 256, description: Stable source stream identity. Defaults to source_type and source_name. }
+        sequence: { type: integer, minimum: 0, description: Caller-supplied stream sequence. Assigned transactionally when omitted. }
         occurred_at: { type: string, format: date-time }
         content: { $ref: '#/components/schemas/Content' }
         metadata: { type: object }
@@ -1204,6 +1208,8 @@ components:
         source_type: { type: string, enum: [message, conversation, tool_call, tool_result, file_reference, collector_event, manual] }
         source_name: { type: string }
         source_event_id: { type: [string, 'null'] }
+        source_stream_id: { type: [string, 'null'], description: Stable source stream identity for ordered processing. }
+        sequence: { type: [integer, 'null'], minimum: 0, description: Stable sequence within the source stream. }
         occurred_at: { type: string, format: date-time }
         received_at: { type: string, format: date-time }
         content: { $ref: '#/components/schemas/Content' }
