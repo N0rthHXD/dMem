@@ -478,10 +478,10 @@ func TestEmbeddingReconciliationSupersedesBlockedPolicyEmbedJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO memories(memory_id, space_id, memory_type, current_revision_id, current_state, created_at, updated_at) VALUES ('mem-blocked', 'proj-1', 'fact', 'rev-blocked', 'active', ?, ?)`, nowText, nowText); err != nil {
+	if _, err := tx.Exec(`INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, created_at, updated_at) VALUES ('mem-blocked', 'proj-1', 'rev-blocked', 'active', ?, ?)`, nowText, nowText); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO memory_revisions(revision_id, memory_id, content, content_hash, created_by, processing_version, created_at) VALUES ('rev-blocked', 'mem-blocked', 'blocked content', 'hash-blocked', 'test', 'v1', ?)`, nowText); err != nil {
+	if _, err := tx.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('rev-blocked','mem-blocked','fact','blocked content','blocked content','hash-blocked','normal',0,0,'test','v1',?)`, nowText); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(`INSERT INTO memory_projections(memory_id, revision_id, space_id, memory_type, current_state, searchable, display_content, content_hash, embedding_state, updated_at) VALUES ('mem-blocked', 'rev-blocked', 'proj-1', 'fact', 'active', 1, 'blocked content', 'hash-blocked', 'stale', ?)`, nowText); err != nil {

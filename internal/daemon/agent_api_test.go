@@ -22,7 +22,7 @@ func TestAgentMemoryAPI(t *testing.T) {
 	})
 
 	rememberBody := map[string]any{
-		"space_id": space.SpaceID, "content": "The user prefers concise Go examples", "memory_type": "preference",
+		"space_id": space.SpaceID, "content": "The user prefers concise Go examples", "kind": "preference",
 	}
 	response := requestJSON(t, client, http.MethodPost, "/v1/remember", "agent-remember", rememberBody)
 	if response.StatusCode != http.StatusCreated || response.Header.Get("Idempotent-Replay") != "false" {
@@ -30,7 +30,7 @@ func TestAgentMemoryAPI(t *testing.T) {
 	}
 	var remembered application.RememberResult
 	decodeResponse(t, response, &remembered)
-	if remembered.Memory.CurrentRevision.Content != rememberBody["content"] || remembered.EventID == "" || len(remembered.Memory.CurrentRevision.Evidence) != 1 || remembered.Memory.CurrentRevision.Evidence[0].EventID != remembered.EventID {
+	if remembered.Memory.CurrentRevision.DisplayContent != rememberBody["content"] || remembered.EventID == "" || len(remembered.Memory.CurrentRevision.Evidence) != 1 || remembered.Memory.CurrentRevision.Evidence[0].EventID != remembered.EventID {
 		t.Fatalf("remember result = %+v", remembered)
 	}
 	response = requestJSON(t, client, http.MethodPost, "/v1/remember", "agent-remember", rememberBody)
@@ -44,14 +44,14 @@ func TestAgentMemoryAPI(t *testing.T) {
 	}
 
 	response = requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
-		"query": "concise Go examples", "space_ids": []string{space.SpaceID}, "channels": []string{"keyword"},
+		"query": "concise Go examples", "space_ids": []string{space.SpaceID},
 	})
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("recall status = %d", response.StatusCode)
 	}
-	var recalled domain.SearchResponse
+	var recalled domain.RecallResponse
 	decodeResponse(t, response, &recalled)
-	if len(recalled.Results) != 1 || recalled.Results[0].Memory.MemoryID != remembered.Memory.MemoryID {
+	if len(recalled.Context.Items) != 1 || recalled.Context.Items[0].MemoryID != remembered.Memory.MemoryID {
 		t.Fatalf("recall result = %+v", recalled)
 	}
 

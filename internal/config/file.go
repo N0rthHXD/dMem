@@ -11,13 +11,56 @@ import (
 const maxConfigFileSize = 1 << 20
 
 type fileDocument struct {
-	ConfigVersion int             `toml:"config_version"`
-	Instance      instanceTable   `toml:"instance"`
-	Server        serverTable     `toml:"server"`
-	Jobs          jobsTable       `toml:"jobs"`
-	Storage       storageTable    `toml:"storage"`
-	Processing    processingTable `toml:"processing"`
-	Embedding     embeddingTable  `toml:"embedding"`
+	ConfigVersion int                `toml:"config_version"`
+	Instance      instanceTable      `toml:"instance"`
+	Server        serverTable        `toml:"server"`
+	Jobs          jobsTable          `toml:"jobs"`
+	Storage       storageTable       `toml:"storage"`
+	Processing    processingTable    `toml:"processing"`
+	Embedding     embeddingTable     `toml:"embedding"`
+	Consolidation consolidationTable `toml:"consolidation"`
+	Semantic      semanticTable      `toml:"semantic"`
+	Graph         graphTable         `toml:"graph"`
+	Ranking       rankingTable       `toml:"ranking"`
+	Context       contextTable       `toml:"context"`
+}
+
+type consolidationTable struct {
+	Version               *string  `toml:"version"`
+	MaxCandidates         *int     `toml:"max_candidates"`
+	ExactHashEnabled      *bool    `toml:"exact_hash_enabled"`
+	SameSourceEventCosine *float64 `toml:"same_source_event_cosine"`
+	SameSubjectKindCosine *float64 `toml:"same_subject_kind_cosine"`
+}
+
+type semanticTable struct {
+	CalibrationVersion *string  `toml:"calibration_version"`
+	AbsoluteFloor      *float64 `toml:"absolute_floor"`
+	TopMargin          *float64 `toml:"top_margin"`
+}
+
+type graphTable struct {
+	Policy              *string  `toml:"policy"`
+	MinEntityConfidence *float64 `toml:"min_entity_confidence"`
+	MinFactConfidence   *float64 `toml:"min_fact_confidence"`
+	BoostCap            *float64 `toml:"boost_cap"`
+}
+
+type rankingTable struct {
+	Version         *string  `toml:"version"`
+	SemanticWeight  *float64 `toml:"semantic_weight"`
+	KeywordWeight   *float64 `toml:"keyword_weight"`
+	ExactWeight     *float64 `toml:"exact_weight"`
+	TemporalWeight  *float64 `toml:"temporal_weight"`
+	QualityWeight   *float64 `toml:"quality_weight"`
+	AgreementWeight *float64 `toml:"agreement_weight"`
+}
+
+type contextTable struct {
+	Version          *string `toml:"version"`
+	MaxContextTokens *int    `toml:"max_context_tokens"`
+	MaxContextChars  *int    `toml:"max_context_chars"`
+	MaxResults       *int    `toml:"max_results"`
 }
 
 type instanceTable struct {

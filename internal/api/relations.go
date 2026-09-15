@@ -219,5 +219,5 @@ func validateRelationProposalRequest(p storage.CreateRelationProposalParams) err
 	return nil
 }
 func validRelationTypeAPI(v string) bool {
-	return containsAPI([]string{"supports", "contradicts", "supersedes", "derived_from", "related_to"}, v)
+	return containsAPI([]string{"supports", "contradicts", "supersedes", "derived_from"}, v)
 }

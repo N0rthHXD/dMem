@@ -147,7 +147,7 @@ func newRetrievalFixture(t *testing.T, config retrievalGateConfig, documents []r
 		if document.Space == "sibling" {
 			spaceID = "space-sibling"
 		}
-		params := CreateMemoryParams{SpaceID: spaceID, MemoryType: "fact", Content: document.Content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "retrieval evaluation"}
+		params := CreateMemoryParams{SpaceID: spaceID, Kind: "fact", Content: document.Content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "retrieval evaluation"}
 		memory, _, err := repository.CreateMemory(context.Background(), memoryIdentity("retrieval-"+document.ID, "/v1/memories", params), params)
 		if err != nil {
 			t.Fatalf("create corpus document %s (%d): %v", document.ID, n, err)

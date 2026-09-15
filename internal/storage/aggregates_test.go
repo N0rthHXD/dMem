@@ -13,7 +13,7 @@ func aggregateProposalParams(inputs ...domain.AggregateInput) CommitAggregatePro
 }
 
 func aggregateInput(memory domain.Memory) domain.AggregateInput {
-	return domain.AggregateInput{MemoryID: memory.MemoryID, RevisionID: memory.CurrentRevision.RevisionID, SpaceID: memory.SpaceID, Content: memory.CurrentRevision.Content, CurrentState: memory.CurrentState, Sensitivity: memory.Sensitivity}
+	return domain.AggregateInput{MemoryID: memory.MemoryID, RevisionID: memory.CurrentRevision.RevisionID, SpaceID: memory.SpaceID, Content: memory.CurrentRevision.DisplayContent, CurrentState: memory.CurrentState, Sensitivity: memory.Sensitivity}
 }
 
 func createAggregateProposalTest(t *testing.T, r *Repository, key string, params CommitAggregateProposalParams) domain.AggregateProposal {
@@ -47,7 +47,7 @@ func TestConfirmAggregateAtomicProvenance(t *testing.T) {
 		t.Fatalf("aggregate=%+v err=%v", aggregate, err)
 	}
 	var memories, revisions, descriptors, relations, evidence, reviews, audits, jobs int
-	err = r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memories WHERE memory_type='aggregate'),(SELECT count(*) FROM memory_revisions WHERE memory_id=?),(SELECT count(*) FROM aggregate_descriptors),(SELECT count(*) FROM memory_relations WHERE relation_type='derived_from'),(SELECT count(*) FROM relation_evidence),(SELECT count(*) FROM aggregate_proposal_reviews),(SELECT count(*) FROM audit_events WHERE action='confirm_aggregate_proposal'),(SELECT count(*) FROM jobs WHERE job_type='rebuild_relation_index')`, *confirmed.ResultMemoryID).Scan(&memories, &revisions, &descriptors, &relations, &evidence, &reviews, &audits, &jobs)
+	err = r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM aggregate_descriptors),(SELECT count(*) FROM memory_revisions WHERE memory_id=?),(SELECT count(*) FROM aggregate_descriptors),(SELECT count(*) FROM memory_relations WHERE relation_type='derived_from'),(SELECT count(*) FROM relation_evidence),(SELECT count(*) FROM aggregate_proposal_reviews),(SELECT count(*) FROM audit_events WHERE action='confirm_aggregate_proposal'),(SELECT count(*) FROM jobs WHERE job_type='rebuild_relation_index')`, *confirmed.ResultMemoryID).Scan(&memories, &revisions, &descriptors, &relations, &evidence, &reviews, &audits, &jobs)
 	if err != nil || memories != 1 || revisions != 1 || descriptors != 1 || relations != 2 || evidence != 2 || reviews != 1 || audits != 1 || jobs != 1 {
 		t.Fatalf("rows=%d/%d/%d/%d/%d/%d/%d/%d err=%v", memories, revisions, descriptors, relations, evidence, reviews, audits, jobs, err)
 	}
@@ -154,7 +154,7 @@ func TestAggregateSiblingSpaceInputRejected(t *testing.T) {
 
 func TestAggregateAuthorityCannotBeBypassedByGenericMemoryWrites(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
-	params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "aggregate", Content: "unreviewed", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "bypass"}
+	params := CreateMemoryParams{SpaceID: "space-1", Kind: "aggregate", Content: "unreviewed", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "bypass"}
 	if _, _, err := r.CreateMemory(context.Background(), memoryIdentity("agg-generic-create", "/v1/memories", params), params); !errors.Is(err, ErrInvalidAggregateProposal) {
 		t.Fatalf("create error=%v", err)
 	}

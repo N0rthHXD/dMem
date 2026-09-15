@@ -16,7 +16,7 @@ func TestConflictResolutionDestructivePayloadPreserved(t *testing.T) {
 		ExpectedTargets: []domain.EvolutionTarget{selected},
 		SelectedTarget:  &selected,
 		ProposedContent: &content,
-		Evidence:        []domain.MemoryEvidence{{EventID: "33333333-3333-4333-8333-333333333333", EvidenceType: "manual_reference", StartOffset: &start, EndOffset: &end}},
+		Evidence:        []domain.RevisionEvidence{{EvidenceID: "evidence-1", EventID: "33333333-3333-4333-8333-333333333333", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}},
 		ReplacementMode: &mode,
 		ResultStates:    map[string]string{selected.MemoryID: "superseded"},
 		Reason:          "reviewed",

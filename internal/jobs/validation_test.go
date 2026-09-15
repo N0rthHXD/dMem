@@ -20,9 +20,13 @@ func validProcessingInput() domain.ProcessingInput {
 
 func validProcessingResult() domain.ProcessingResult {
 	start, end := int64(0), int64(6)
-	return domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Candidates: []domain.ProcessingCandidate{{
-		Content: "remember", MemoryType: "fact", SpaceID: "space-1", Confidence: 0.8, Sensitivity: "normal", SuggestionKind: "new",
-		Evidence: []domain.ProcessingEvidence{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}}, RelatedMemoryIDs: []string{"memory-1"},
+	return domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Proposals: []domain.MemoryCandidateProposal{{
+		Action: domain.ConsolidationCreate,
+		Revision: domain.MemoryRevision{
+			Kind: domain.MemoryKindFact, DisplayContent: "remember", CanonicalContent: "remember",
+			Confidence: 0.8, Specificity: 0.5, Sensitivity: "normal",
+			Evidence: []domain.RevisionEvidence{{EvidenceID: "ev-1", EventID: "event-1", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}},
+		},
 	}}}
 }
 
@@ -33,20 +37,24 @@ func TestValidateProcessingResultRejectsEveryUntrustedBoundary(t *testing.T) {
 	}
 	tests := map[string]func(*domain.ProcessingResult){
 		"unknown outcome": func(r *domain.ProcessingResult) { r.Code = "unknown" },
-		"wrong type":      func(r *domain.ProcessingResult) { r.Candidates[0].MemoryType = "unknown" },
-		"wrong space":     func(r *domain.ProcessingResult) { r.Candidates[0].SpaceID = "space-2" },
-		"non-finite":      func(r *domain.ProcessingResult) { r.Candidates[0].Confidence = math.NaN() },
+		"bad action":      func(r *domain.ProcessingResult) { r.Proposals[0].Action = "explode" },
+		"wrong kind":      func(r *domain.ProcessingResult) { r.Proposals[0].Revision.Kind = "constraint" },
+		"non-finite":      func(r *domain.ProcessingResult) { r.Proposals[0].Revision.Confidence = math.NaN() },
 		"bad validity": func(r *domain.ProcessingResult) {
 			now := time.Now()
-			r.Candidates[0].ValidFrom, r.Candidates[0].ValidUntil = &now, &now
+			r.Proposals[0].Revision.ValidFrom, r.Proposals[0].Revision.ValidUntil = &now, &now
 		},
-		"cross-input evidence": func(r *domain.ProcessingResult) { r.Candidates[0].Evidence[0].EventID = "event-3" },
-		"offset overflow":      func(r *domain.ProcessingResult) { end := int64(99); r.Candidates[0].Evidence[0].EndOffset = &end },
-		"half offset":          func(r *domain.ProcessingResult) { r.Candidates[0].Evidence[0].EndOffset = nil },
-		"unrelated memory":     func(r *domain.ProcessingResult) { r.Candidates[0].RelatedMemoryIDs = []string{"memory-2"} },
-		"character budget":     func(r *domain.ProcessingResult) { r.Candidates[0].Content = "this candidate is too long" },
-		"candidate budget": func(r *domain.ProcessingResult) {
-			r.Candidates = append(r.Candidates, r.Candidates[0], r.Candidates[0])
+		"cross-input evidence": func(r *domain.ProcessingResult) { r.Proposals[0].Revision.Evidence[0].EventID = "event-3" },
+		"offset overflow": func(r *domain.ProcessingResult) {
+			end := int64(99)
+			r.Proposals[0].Revision.Evidence[0].EndOffset = &end
+		},
+		"half offset": func(r *domain.ProcessingResult) { r.Proposals[0].Revision.Evidence[0].EndOffset = nil },
+		"character budget": func(r *domain.ProcessingResult) {
+			r.Proposals[0].Revision.DisplayContent = "this candidate is too long"
+		},
+		"proposal budget": func(r *domain.ProcessingResult) {
+			r.Proposals = append(r.Proposals, r.Proposals[0], r.Proposals[0])
 		},
 	}
 	for name, mutate := range tests {
@@ -70,42 +78,30 @@ func TestValidateProcessingOutcomeCombinations(t *testing.T) {
 	result := validProcessingResult()
 	result.Code = domain.ProcessingNoMemory
 	if err := validateProcessingResult(input, result); err == nil {
-		t.Fatal("no_memory with candidates accepted")
+		t.Fatal("no_memory with proposals accepted")
 	}
 }
 
 func TestValidateProcessingResultReturnsSpecificContractErrors(t *testing.T) {
-	start, end := int64(0), int64(6)
 	for _, test := range []struct {
 		name   string
 		mutate func(*domain.ProcessingResult)
 		want   string
 	}{
 		{
-			name: "non-new whole-event evidence",
+			name: "unknown evidence event",
 			mutate: func(result *domain.ProcessingResult) {
-				result.Candidates[0].SuggestionKind = "supplement"
-				result.Candidates[0].Evidence[0].StartOffset = nil
-				result.Candidates[0].Evidence[0].EndOffset = nil
+				result.Proposals[0].Revision.Evidence[0].EventID = "event-3"
 			},
 			want: "invalid_evidence_reference",
 		},
 		{
-			name: "duplicate evidence",
+			name: "duplicate evidence id",
 			mutate: func(result *domain.ProcessingResult) {
-				result.Candidates[0].Evidence = append(result.Candidates[0].Evidence, result.Candidates[0].Evidence[0])
+				evidence := result.Proposals[0].Revision.Evidence[0]
+				result.Proposals[0].Revision.Evidence = append(result.Proposals[0].Revision.Evidence, evidence)
 			},
 			want: "invalid_evidence_reference",
-		},
-		{
-			name: "missing supplement target",
-			mutate: func(result *domain.ProcessingResult) {
-				result.Candidates[0].SuggestionKind = "supplement"
-				result.Candidates[0].RelatedMemoryIDs = nil
-				result.Candidates[0].Evidence[0].StartOffset = &start
-				result.Candidates[0].Evidence[0].EndOffset = &end
-			},
-			want: "invalid_related_memory_reference",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

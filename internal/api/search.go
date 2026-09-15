@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"unicode/utf8"
 
+	"github.com/N0rthHXD/dMem/internal/application"
+	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -96,3 +99,39 @@ func decodeRange(raw json.RawMessage, target *int, minimum, maximum int, field s
 }
 
 func isNull(raw json.RawMessage) bool { return bytes.Equal(bytes.TrimSpace(raw), []byte("null")) }
+
+func recallResponse(operationID string, query application.RecallQuery, result domain.SearchResponse) domain.RecallResponse {
+	items := make([]domain.ContextItem, 0, len(result.Results))
+	degradationReasons := append([]string{}, result.DegradationReasons...)
+	tokensUsed := 0
+	for _, candidate := range result.Results {
+		revision := candidate.Memory.CurrentRevision
+		tokens := estimatedContextTokens(revision.DisplayContent)
+		item := domain.ContextItem{
+			Rank: candidate.Rank, MemoryID: candidate.Memory.MemoryID, RevisionID: revision.RevisionID,
+			Kind: revision.Kind, DisplayContent: revision.DisplayContent,
+			EventTimeStart: revision.EventTimeStart, EventTimeEnd: revision.EventTimeEnd,
+			ValidFrom: revision.ValidFrom, ValidUntil: revision.ValidUntil, SourceSpeaker: revision.SourceSpeaker,
+			Evidence: revision.Evidence, Confidence: revision.Confidence,
+			LifecycleState: candidate.Memory.CurrentState, EstimatedTokens: tokens,
+		}
+		if query.Explain {
+			item.Explanation = &domain.RecallExplanation{MatchedSignals: append([]string(nil), candidate.MatchedChannels...), SelectionReason: candidate.SelectionReason}
+		}
+		items = append(items, item)
+		tokensUsed += tokens
+	}
+	return domain.RecallResponse{
+		Context: domain.ContextPackage{Items: items, TokensUsed: tokensUsed, CharsUsed: result.CharsUsed, Truncated: result.Truncated, NextCursor: result.NextCursor},
+		Execution: domain.RecallExecutionMetadata{
+			OperationID: operationID, Intent: query.Intent, ReferenceTime: result.ReferenceTime,
+			RequestedCapabilities: append([]string(nil), result.RequestedChannels...), ExecutedCapabilities: append([]string(nil), result.ExecutedChannels...),
+			Degraded: result.Degraded, DegradationReasons: degradationReasons,
+			QueryPlanIdentity: "query-plan-v1", RankingIdentity: result.RankingVersion, ContextSelectionIdentity: "context-selection-v1",
+		},
+	}
+}
+
+func estimatedContextTokens(content string) int {
+	return utf8.RuneCountInString(content)
+}

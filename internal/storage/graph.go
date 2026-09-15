@@ -64,7 +64,7 @@ func (r *Repository) PrepareGraphExtraction(ctx context.Context, claim ClaimedJo
 	var memoryID, spaceID, content, sensitivity string
 	var currentRevision string
 	var validFrom, validUntil sql.NullString
-	err = r.store.reader.QueryRowContext(ctx, `SELECT r.memory_id, m.space_id, r.content, m.sensitivity, m.current_revision_id, r.valid_from, r.valid_until FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.revision_id=?`, revisionID).Scan(&memoryID, &spaceID, &content, &sensitivity, &currentRevision, &validFrom, &validUntil)
+	err = r.store.reader.QueryRowContext(ctx, `SELECT r.memory_id, m.space_id, r.display_content, m.sensitivity, m.current_revision_id, r.valid_from, r.valid_until FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.revision_id=?`, revisionID).Scan(&memoryID, &spaceID, &content, &sensitivity, &currentRevision, &validFrom, &validUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.GraphExtractionInput{}, ErrNotFound
 	}
@@ -102,7 +102,7 @@ func (r *Repository) PrepareGraphExtraction(ctx context.Context, claim ClaimedJo
 		if err != nil {
 			return domain.GraphExtractionInput{}, err
 		}
-		rows, err := r.store.reader.QueryContext(ctx, `SELECT m.memory_id, r.revision_id, m.space_id, r.content, m.current_state, m.sensitivity, r.valid_from, r.valid_until FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.space_id IN (`+placeholders(len(scope))+`) AND m.current_state<>'deleted' AND m.memory_id<>? ORDER BY m.updated_at DESC, m.memory_id DESC LIMIT ?`, appendStrings(append(scope, memoryID), params.MaxContextMemories)...)
+		rows, err := r.store.reader.QueryContext(ctx, `SELECT m.memory_id, r.revision_id, m.space_id, r.display_content, m.current_state, m.sensitivity, r.valid_from, r.valid_until FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.space_id IN (`+placeholders(len(scope))+`) AND m.current_state<>'deleted' AND m.memory_id<>? ORDER BY m.updated_at DESC, m.memory_id DESC LIMIT ?`, appendStrings(append(scope, memoryID), params.MaxContextMemories)...)
 		if err != nil {
 			return domain.GraphExtractionInput{}, err
 		}
@@ -516,7 +516,6 @@ func (r *Repository) commitGraphRelations(ctx context.Context, tx *sql.Tx, input
 			Confidence: &confidence, Evidence: evidence, ProcessorIdentity: input.ProcessorIdentity, ProcessingVersion: input.ProcessingVersion,
 			ProviderIdentity: stringPointer(input.ProcessorIdentity), ModelIdentity: stringPointer(""),
 		}
-		params = canonicalizeRelation(params)
 		if err := validateRelationContext(ctx, tx, params, true); err != nil {
 			return err
 		}

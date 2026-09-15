@@ -274,9 +274,9 @@ func openConflictTest(t *testing.T, r *Repository, key string) (domain.Memory, d
 	return a, b, p, confirmed.Reviews[0].Results[1].ResultID
 }
 
-func conflictResolutionEvidence() []domain.MemoryEvidence {
+func conflictResolutionEvidence() []domain.RevisionEvidence {
 	start, end := int64(0), int64(6)
-	return []domain.MemoryEvidence{{EventID: "event-1", EvidenceType: "manual_reference", StartOffset: &start, EndOffset: &end}}
+	return []domain.RevisionEvidence{{EventID: "event-1", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}}
 }
 
 func TestConflictResolutionTypesMaterializeResults(t *testing.T) {
@@ -347,7 +347,7 @@ func TestConflictResolutionTypesMaterializeResults(t *testing.T) {
 			}
 			if tt.name == "supersede_same_memory" {
 				var parent, validFrom, validUntil string
-				if err = r.store.reader.QueryRow(`SELECT parent_revision_id,valid_from,valid_until FROM memory_revisions WHERE content='authoritative child replacement'`).Scan(&parent, &validFrom, &validUntil); err != nil || parent != a.CurrentRevision.RevisionID || validFrom != "2026-08-22T00:00:00Z" || validUntil != "2026-09-22T00:00:00Z" {
+				if err = r.store.reader.QueryRow(`SELECT parent_revision_id,valid_from,valid_until FROM memory_revisions WHERE display_content='authoritative child replacement'`).Scan(&parent, &validFrom, &validUntil); err != nil || parent != a.CurrentRevision.RevisionID || validFrom != "2026-08-22T00:00:00Z" || validUntil != "2026-09-22T00:00:00Z" {
 					t.Fatalf("replacement parent/time=%q %q %q err=%v", parent, validFrom, validUntil, err)
 				}
 			}
@@ -373,7 +373,7 @@ func TestConflictResolutionStaleParticipantNoPartial(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 	var events, written int
-	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM conflict_resolution_events WHERE case_id=?),(SELECT count(*) FROM memory_revisions WHERE content='must not be written')`, caseID).Scan(&events, &written)
+	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM conflict_resolution_events WHERE case_id=?),(SELECT count(*) FROM memory_revisions WHERE display_content='must not be written')`, caseID).Scan(&events, &written)
 	caseValue, err := r.GetConflictCase(context.Background(), caseID)
 	if err != nil || caseValue.State != "open" || events != 0 || written != 0 {
 		t.Fatalf("case=%+v events=%d written=%d err=%v", caseValue, events, written, err)
@@ -392,7 +392,7 @@ func TestConflictResolutionInjectedFailureNoPartial(t *testing.T) {
 		t.Fatal("expected injected failure")
 	}
 	var memories, revisions, events int
-	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memories),(SELECT count(*) FROM memory_revisions WHERE content='rolled back reconciliation'),(SELECT count(*) FROM conflict_resolution_events WHERE case_id=?)`, caseID).Scan(&memories, &revisions, &events)
+	r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memories),(SELECT count(*) FROM memory_revisions WHERE display_content='rolled back reconciliation'),(SELECT count(*) FROM conflict_resolution_events WHERE case_id=?)`, caseID).Scan(&memories, &revisions, &events)
 	caseValue, err := r.GetConflictCase(context.Background(), caseID)
 	if err != nil || caseValue.State != "open" || memories != 2 || revisions != 0 || events != 0 {
 		t.Fatalf("case=%+v memories=%d revisions=%d events=%d err=%v", caseValue, memories, revisions, events, err)

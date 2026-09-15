@@ -8,19 +8,20 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
 type evidenceRequest struct {
-	EventID      string          `json:"event_id"`
-	EvidenceType string          `json:"evidence_type"`
-	StartOffset  json.RawMessage `json:"start_offset"`
-	EndOffset    json.RawMessage `json:"end_offset"`
+	EventID     string          `json:"event_id"`
+	Role        string          `json:"role"`
+	StartOffset json.RawMessage `json:"start_offset"`
+	EndOffset   json.RawMessage `json:"end_offset"`
 }
 
 type createMemoryRequest struct {
 	SpaceID     string            `json:"space_id"`
-	MemoryType  string            `json:"memory_type"`
+	Kind        string            `json:"kind"`
 	Content     string            `json:"content"`
 	ValidFrom   *string           `json:"valid_from"`
 	ValidUntil  *string           `json:"valid_until"`
@@ -231,8 +232,8 @@ func validateCreateMemory(request createMemoryRequest) (storage.CreateMemoryPara
 	if !validUUID(request.SpaceID) {
 		return storage.CreateMemoryParams{}, errors.New("space_id must be a UUID")
 	}
-	if !validMemoryType(request.MemoryType) {
-		return storage.CreateMemoryParams{}, errors.New("invalid memory_type")
+	if !validMemoryKind(request.Kind) {
+		return storage.CreateMemoryParams{}, errors.New("invalid kind")
 	}
 	sensitivity := "normal"
 	if request.Sensitivity != nil {
@@ -251,7 +252,7 @@ func validateCreateMemory(request createMemoryRequest) (storage.CreateMemoryPara
 	if err != nil {
 		return storage.CreateMemoryParams{}, err
 	}
-	return storage.CreateMemoryParams{SpaceID: request.SpaceID, MemoryType: request.MemoryType, Content: request.Content, ValidFrom: validFrom, ValidUntil: validUntil, Sensitivity: sensitivity, Evidence: evidence, Reason: request.Reason}, nil
+	return storage.CreateMemoryParams{SpaceID: request.SpaceID, Kind: request.Kind, Content: request.Content, ValidFrom: validFrom, ValidUntil: validUntil, Sensitivity: sensitivity, Evidence: evidence, Reason: request.Reason}, nil
 }
 
 func validateReviseMemory(request reviseMemoryRequest) (storage.ReviseMemoryParams, error) {
@@ -295,8 +296,12 @@ func validateEvidence(items []evidenceRequest) ([]storage.EvidenceParams, error)
 		if !validUUID(item.EventID) {
 			return nil, errors.New("evidence event_id must be a UUID")
 		}
-		if item.EvidenceType != "direct_statement" && item.EvidenceType != "tool_result" && item.EvidenceType != "manual_reference" {
-			return nil, errors.New("invalid evidence_type")
+		role := domain.EvidenceRole(item.Role)
+		if item.Role == "" {
+			role = domain.EvidenceRoleDirect
+		}
+		if !role.Valid() {
+			return nil, errors.New("invalid evidence role")
 		}
 		start, err := evidenceOffset(item.StartOffset)
 		if err != nil {
@@ -309,7 +314,7 @@ func validateEvidence(items []evidenceRequest) ([]storage.EvidenceParams, error)
 		if (start == nil) != (end == nil) || start != nil && (*start < 0 || *end <= *start) {
 			return nil, errors.New("evidence offsets must satisfy 0 <= start_offset < end_offset")
 		}
-		result[i] = storage.EvidenceParams{EventID: item.EventID, EvidenceType: item.EvidenceType, StartOffset: start, EndOffset: end}
+		result[i] = storage.EvidenceParams{EventID: item.EventID, Role: role, StartOffset: start, EndOffset: end}
 	}
 	return result, nil
 }
@@ -357,8 +362,8 @@ func validateMemoryContent(content string, validFrom, validUntil *string, reason
 	return from, until, nil
 }
 
-func validMemoryType(value string) bool {
-	return map[string]bool{"fact": true, "preference": true, "constraint": true, "decision": true, "task": true, "event": true, "project_context": true, "agent_experience": true}[value]
+func validMemoryKind(value string) bool {
+	return domain.MemoryKind(value).Valid()
 }
 
 func validMemoryState(value string) bool {

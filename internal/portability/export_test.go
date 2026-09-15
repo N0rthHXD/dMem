@@ -57,15 +57,15 @@ func seedAuthority(t *testing.T, db *sql.DB) {
 		`INSERT INTO memory_spaces VALUES ('` + otherSpace + `','` + rootSpace + `','project','other','Other','2026-08-25T10:00:00Z')`,
 		`INSERT INTO raw_contents(content_id,content_kind,content_text,media_type,content_hash,size_bytes,created_at) VALUES ('content-a','text','source','text/plain','hash',6,'2026-08-25T10:00:00Z')`,
 		`INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,caller_id,occurred_at,received_at,created_at) VALUES ('event-a','op-a','` + taskSpace + `','content-a','manual','test','caller','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-a','` + taskSpace + `','fact','revision-a','active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('revision-a','memory-a','alpha','hash-a','test','v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-a','` + taskSpace + `','revision-a','active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-a','memory-a','fact','alpha','alpha','hash-a',0.9,0.5,'test','v1','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memory_state_events VALUES ('state-a','memory-a','revision-a','op-a',NULL,'active',NULL,0,'created','test','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_evidence(evidence_id,revision_id,event_id,evidence_type,created_at) VALUES ('evidence-a','revision-a','event-a','direct_statement','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-sensitive','` + taskSpace + `','fact','revision-sensitive','active','sensitive','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('revision-sensitive','memory-sensitive','secret','hash-s','test','v1','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-external','` + otherSpace + `','fact','revision-external','active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('revision-external','memory-external','outside','hash-o','test','v1','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES ('relation-a','` + taskSpace + `','related_to','memory-a','revision-a','memory-external','revision-external','human_confirmation','spec','test','v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_evidence(evidence_id,revision_id,event_id,role,created_at) VALUES ('evidence-a','revision-a','event-a','direct','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-sensitive','` + taskSpace + `','revision-sensitive','active','sensitive','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-sensitive','memory-sensitive','fact','secret','secret','hash-s',0.9,0.5,'test','v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-external','` + otherSpace + `','revision-external','active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-external','memory-external','fact','outside','outside','hash-o',0.9,0.5,'test','v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES ('relation-a','` + taskSpace + `','supports','memory-a','revision-a','memory-external','revision-external','human_confirmation','spec','test','v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -194,7 +194,7 @@ func TestExportConcurrentWritesUseOneSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES ('revision-b','memory-a','revision-a','beta','hash-b','test','v1','2026-08-25T12:00:00Z')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-b','memory-a','revision-a','fact','beta','beta','hash-b',0.9,0.5,'test','v1','2026-08-25T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(`UPDATE memories SET current_revision_id='revision-b',updated_at='2026-08-25T12:00:00Z' WHERE memory_id='memory-a'`); err != nil {

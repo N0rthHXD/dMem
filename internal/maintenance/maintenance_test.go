@@ -183,7 +183,7 @@ func validateSemanticRestore(ctx context.Context, staging, databaseFilename stri
 	}
 	for _, channels := range [][]string{{"semantic"}, {"keyword", "semantic"}} {
 		result, err := repository.SearchMemories(ctx, storage.SearchParams{Query: "restored concept", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: channels, Limit: 10, MaxChars: 1000})
-		if err != nil || !reflect.DeepEqual(result.ExecutedChannels, channels) || result.Degraded || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != "memory-1" || result.Results[0].Memory.CurrentRevision.Content != "restorable content" {
+		if err != nil || !reflect.DeepEqual(result.ExecutedChannels, channels) || result.Degraded || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != "memory-1" || result.Results[0].Memory.CurrentRevision.DisplayContent != "restorable content" {
 			return errors.New("semantic restore retrieval validation failed")
 		}
 	}
@@ -473,11 +473,11 @@ func seedRecoveryAuthorityData(t *testing.T, path string) {
 		`INSERT INTO memory_spaces(space_id,space_type,external_id,display_name,created_at) VALUES ('recovery-space','user','recovery','Recovery','2026-08-25T10:00:00Z')`,
 		`INSERT INTO raw_contents(content_id,content_kind,content_text,media_type,content_hash,size_bytes,created_at) VALUES ('recovery-content','text','Alice source','text/plain','recovery-content-hash',12,'2026-08-25T10:00:00Z')`,
 		`INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,caller_id,occurred_at,received_at,created_at) VALUES ('recovery-event','recovery-op','recovery-space','recovery-content','manual','test','caller','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES ('recovery-memory-a','recovery-space','fact','recovery-revision-a','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('recovery-revision-a','recovery-memory-a','Alice owns project','recovery-a','test','recovery-v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,created_at,updated_at) VALUES ('recovery-memory-a','recovery-space','recovery-revision-a','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('recovery-revision-a','recovery-memory-a','fact','Alice owns project','Alice owns project','recovery-a',0.9,0.5,'test','recovery-v1','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES ('recovery-memory-a','recovery-revision-a','recovery-space','fact','active',1,'Alice owns project','recovery-a','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES ('recovery-memory-b','recovery-space','fact','recovery-revision-b','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('recovery-revision-b','recovery-memory-b','Project deadline Friday','recovery-b','test','recovery-v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,created_at,updated_at) VALUES ('recovery-memory-b','recovery-space','recovery-revision-b','active','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('recovery-revision-b','recovery-memory-b','fact','Project deadline Friday','Project deadline Friday','recovery-b',0.9,0.5,'test','recovery-v1','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES ('recovery-memory-b','recovery-revision-b','recovery-space','fact','active',1,'Project deadline Friday','recovery-b','2026-08-25T10:00:00Z')`,
 		`INSERT INTO entities(entity_id,space_id,entity_type,canonical_name,normalized_name,normalization_version,state,created_by,processing_version,created_at,updated_at) VALUES ('recovery-entity','recovery-space','person','Alice','alice','v1','active','test','recovery-v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
 		`INSERT INTO entity_aliases(alias_id,entity_id,alias,normalized_alias,normalization_version,source,state,created_by,created_at,updated_at) VALUES ('recovery-alias','recovery-entity','Alice','alice','v1','human_confirmation','active','test','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
@@ -513,8 +513,8 @@ func seedDrillData(t *testing.T, path string) {
 	defer tx.Rollback()
 	statements := []string{
 		`INSERT INTO memory_spaces(space_id, space_type, external_id, display_name, created_at) VALUES ('space-1','user','root','Root','2026-01-01T00:00:00Z')`,
-		`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES ('memory-1','space-1','fact','revision-1','active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES ('revision-1','memory-1','restorable content','hash','test','process-v1','2026-01-01T00:00:00Z')`,
+		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,created_at,updated_at) VALUES ('memory-1','space-1','revision-1','active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-1','memory-1','fact','restorable content','restorable content','hash',0.9,0.5,'test','process-v1','2026-01-01T00:00:00Z')`,
 		`INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES ('memory-1','revision-1','space-1','fact','active',1,'restorable content','hash','2026-01-01T00:00:00Z')`,
 		`UPDATE memory_projections SET embedding_state='current', embedding_provider='provider', embedding_model='model', embedding_dimension=2, embedding_content_hash='hash' WHERE memory_id='memory-1'`,
 		`UPDATE semantic_index_metadata SET active_version=7, state='ready', provider_identity='provider', model_identity='model', dimension=2, source_revision_count=1 WHERE singleton=1`,

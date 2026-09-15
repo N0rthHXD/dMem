@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"time"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
 type EmbeddingProvider interface {
@@ -106,36 +108,36 @@ func (e Event) OccurredAt() time.Time { return e.occurredAt }
 func (e Event) Content() Content      { return e.content }
 
 type ProcessRequest struct {
-	processorIdentity  string
-	processingVersion  string
-	jobID              string
-	attempt            int
-	target             Event
-	context            []Event
-	contextMemories    []Memory
-	allowedMemoryTypes []string
-	maxCandidates      int
-	maxCandidateChars  int
-	maxTotalChars      int
+	processorIdentity string
+	processingVersion string
+	jobID             string
+	attempt           int
+	target            Event
+	context           []Event
+	contextMemories   []Memory
+	allowedKinds      []domain.MemoryKind
+	maxCandidates     int
+	maxCandidateChars int
+	maxTotalChars     int
 }
 
-func NewProcessRequest(processorIdentity, processingVersion, jobID string, attempt int, target Event, contextEvents []Event, contextMemories []Memory, allowedMemoryTypes []string, maxCandidates, maxCandidateChars int, maxTotalChars ...int) ProcessRequest {
+func NewProcessRequest(processorIdentity, processingVersion, jobID string, attempt int, target Event, contextEvents []Event, contextMemories []Memory, allowedKinds []domain.MemoryKind, maxCandidates, maxCandidateChars int, maxTotalChars ...int) ProcessRequest {
 	totalChars := maxCandidateChars
 	if len(maxTotalChars) > 0 {
 		totalChars = maxTotalChars[0]
 	}
 	return ProcessRequest{
-		processorIdentity:  processorIdentity,
-		processingVersion:  processingVersion,
-		jobID:              jobID,
-		attempt:            attempt,
-		target:             target,
-		context:            append([]Event(nil), contextEvents...),
-		contextMemories:    append([]Memory(nil), contextMemories...),
-		allowedMemoryTypes: append([]string(nil), allowedMemoryTypes...),
-		maxCandidates:      maxCandidates,
-		maxCandidateChars:  maxCandidateChars,
-		maxTotalChars:      totalChars,
+		processorIdentity: processorIdentity,
+		processingVersion: processingVersion,
+		jobID:             jobID,
+		attempt:           attempt,
+		target:            target,
+		context:           append([]Event(nil), contextEvents...),
+		contextMemories:   append([]Memory(nil), contextMemories...),
+		allowedKinds:      append([]domain.MemoryKind(nil), allowedKinds...),
+		maxCandidates:     maxCandidates,
+		maxCandidateChars: maxCandidateChars,
+		maxTotalChars:     totalChars,
 	}
 }
 
@@ -162,40 +164,6 @@ func (m Memory) ProposalCapable() bool  { return m.proposalCapable }
 func (m Memory) ValidFrom() *time.Time  { return cloneTime(m.validFrom) }
 func (m Memory) ValidUntil() *time.Time { return cloneTime(m.validUntil) }
 
-type Evidence struct {
-	eventID, evidenceType  string
-	startOffset, endOffset *int64
-}
-
-func (e Evidence) EventID() string      { return e.eventID }
-func (e Evidence) EvidenceType() string { return e.evidenceType }
-func (e Evidence) StartOffset() *int64  { return cloneInt64(e.startOffset) }
-func (e Evidence) EndOffset() *int64    { return cloneInt64(e.endOffset) }
-
-type Candidate struct {
-	content     string
-	memoryType  string
-	spaceID     string
-	validFrom   *time.Time
-	validUntil  *time.Time
-	confidence  float64
-	sensitivity string
-	evidence    []Evidence
-	suggestion  string
-	relatedIDs  []string
-}
-
-func (c Candidate) Content() string            { return c.content }
-func (c Candidate) MemoryType() string         { return c.memoryType }
-func (c Candidate) SpaceID() string            { return c.spaceID }
-func (c Candidate) ValidFrom() *time.Time      { return cloneTime(c.validFrom) }
-func (c Candidate) ValidUntil() *time.Time     { return cloneTime(c.validUntil) }
-func (c Candidate) Confidence() float64        { return c.confidence }
-func (c Candidate) Sensitivity() string        { return c.sensitivity }
-func (c Candidate) Evidence() []Evidence       { return append([]Evidence(nil), c.evidence...) }
-func (c Candidate) SuggestionKind() string     { return c.suggestion }
-func (c Candidate) RelatedMemoryIDs() []string { return append([]string(nil), c.relatedIDs...) }
-
 type Usage struct {
 	inputTokens  int
 	outputTokens int
@@ -206,7 +174,7 @@ func (u Usage) OutputTokens() int { return u.outputTokens }
 
 type ProcessResult struct {
 	category        ProcessCategory
-	candidates      []Candidate
+	revisions       []domain.MemoryRevision
 	usage           Usage
 	requestID       string
 	omittedCount    int
@@ -214,7 +182,9 @@ type ProcessResult struct {
 }
 
 func (r ProcessResult) Category() ProcessCategory { return r.category }
-func (r ProcessResult) Candidates() []Candidate   { return append([]Candidate(nil), r.candidates...) }
+func (r ProcessResult) Revisions() []domain.MemoryRevision {
+	return append([]domain.MemoryRevision(nil), r.revisions...)
+}
 func (r ProcessResult) Usage() Usage              { return r.usage }
 func (r ProcessResult) ProviderRequestID() string { return r.requestID }
 func (r ProcessResult) OmittedContextCount() int  { return r.omittedCount }
@@ -269,96 +239,26 @@ func (r GraphExtractRequest) MaxFacts() int        { return r.maxFacts }
 func (r GraphExtractRequest) MaxRelations() int    { return r.maxRelations }
 func (r GraphExtractRequest) MaxContentChars() int { return r.maxContentChars }
 
-type GraphEntity struct {
-	localID       string
-	canonicalName string
-	entityType    string
-	aliases       []string
-	confidence    float64
-}
-
-func (e GraphEntity) LocalID() string       { return e.localID }
-func (e GraphEntity) CanonicalName() string { return e.canonicalName }
-func (e GraphEntity) EntityType() string    { return e.entityType }
-func (e GraphEntity) Aliases() []string     { return append([]string(nil), e.aliases...) }
-func (e GraphEntity) Confidence() float64   { return e.confidence }
-
-type GraphMention struct {
-	entityLocalID string
-	text          string
-	startRune     int
-	endRune       int
-	confidence    float64
-}
-
-func (m GraphMention) EntityLocalID() string { return m.entityLocalID }
-func (m GraphMention) Text() string          { return m.text }
-func (m GraphMention) StartRune() int        { return m.startRune }
-func (m GraphMention) EndRune() int          { return m.endRune }
-func (m GraphMention) Confidence() float64   { return m.confidence }
-
-type GraphFact struct {
-	subjectLocalID    string
-	predicate         string
-	objectLocalID     string
-	objectLiteral     string
-	objectLiteralType string
-	confidence        float64
-	validFrom         *time.Time
-	validUntil        *time.Time
-}
-
-func (f GraphFact) SubjectLocalID() string    { return f.subjectLocalID }
-func (f GraphFact) Predicate() string         { return f.predicate }
-func (f GraphFact) ObjectLocalID() string     { return f.objectLocalID }
-func (f GraphFact) ObjectLiteral() string     { return f.objectLiteral }
-func (f GraphFact) ObjectLiteralType() string { return f.objectLiteralType }
-func (f GraphFact) Confidence() float64       { return f.confidence }
-func (f GraphFact) ValidFrom() *time.Time     { return cloneTime(f.validFrom) }
-func (f GraphFact) ValidUntil() *time.Time    { return cloneTime(f.validUntil) }
-
-type GraphMemoryRelation struct {
-	relationType     string
-	targetMemoryID   string
-	targetRevisionID string
-	confidence       float64
-	evidence         []GraphRelationEvidence
-}
-
-func (r GraphMemoryRelation) RelationType() string     { return r.relationType }
-func (r GraphMemoryRelation) TargetMemoryID() string   { return r.targetMemoryID }
-func (r GraphMemoryRelation) TargetRevisionID() string { return r.targetRevisionID }
-func (r GraphMemoryRelation) Confidence() float64      { return r.confidence }
-func (r GraphMemoryRelation) Evidence() []GraphRelationEvidence {
-	return append([]GraphRelationEvidence(nil), r.evidence...)
-}
-
-type GraphRelationEvidence struct {
-	startRune int
-	endRune   int
-}
-
-func (e GraphRelationEvidence) StartRune() int { return e.startRune }
-func (e GraphRelationEvidence) EndRune() int   { return e.endRune }
-
 type GraphExtractResult struct {
-	entities  []GraphEntity
-	mentions  []GraphMention
-	facts     []GraphFact
-	relations []GraphMemoryRelation
+	result    TypedGraphResult
 	usage     Usage
 	requestID string
 }
 
-func (r GraphExtractResult) Entities() []GraphEntity {
-	return append([]GraphEntity(nil), r.entities...)
+func (r GraphExtractResult) Entities() []TypedGraphEntity {
+	return append([]TypedGraphEntity(nil), r.result.Entities...)
 }
-func (r GraphExtractResult) Mentions() []GraphMention {
-	return append([]GraphMention(nil), r.mentions...)
+func (r GraphExtractResult) Mentions() []TypedGraphMention {
+	return append([]TypedGraphMention(nil), r.result.Mentions...)
 }
-func (r GraphExtractResult) Facts() []GraphFact { return append([]GraphFact(nil), r.facts...) }
-func (r GraphExtractResult) Relations() []GraphMemoryRelation {
-	return append([]GraphMemoryRelation(nil), r.relations...)
+func (r GraphExtractResult) Events() []TypedGraphEvent {
+	return append([]TypedGraphEvent(nil), r.result.Events...)
+}
+func (r GraphExtractResult) Facts() []TypedGraphFact {
+	return append([]TypedGraphFact(nil), r.result.Facts...)
+}
+func (r GraphExtractResult) Relations() []TypedGraphRelation {
+	return append([]TypedGraphRelation(nil), r.result.Relations...)
 }
 func (r GraphExtractResult) Usage() Usage              { return r.usage }
 func (r GraphExtractResult) ProviderRequestID() string { return r.requestID }

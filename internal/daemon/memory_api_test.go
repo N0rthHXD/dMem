@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/api"
 	"github.com/N0rthHXD/dMem/internal/config"
@@ -26,24 +27,24 @@ func TestMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 	})
 	event := ingestManualEvent(t, client, "memory-basic-event", space.SpaceID, "Original evidence")
 	createBody := memoryCreateBody(space.SpaceID, event.EventID, "The launch is Friday")
-	createBody["memory_type"] = "decision"
+	createBody["kind"] = "plan"
 	createBody["sensitivity"] = "sensitive"
 	createBody["valid_from"] = "2026-08-21T10:00:00+02:00"
 	createBody["valid_until"] = "2026-08-22T10:00:00+02:00"
 	createBody["evidence"] = []map[string]any{{
-		"event_id": event.EventID, "evidence_type": "manual_reference", "start_offset": 0, "end_offset": 8,
+		"event_id": event.EventID, "role": "direct", "start_offset": 0, "end_offset": 8,
 	}}
 
 	created, response := createMemory(t, client, "memory-create", createBody)
 	if response.Header.Get("Idempotent-Replay") != "false" {
 		t.Fatalf("create replay header = %q", response.Header.Get("Idempotent-Replay"))
 	}
-	assertMemoryFields(t, created, space.SpaceID, "decision", "active", false, "sensitive", "The launch is Friday")
-	if created.CurrentRevision.ValidFrom == nil || *created.CurrentRevision.ValidFrom != "2026-08-21T08:00:00Z" ||
-		created.CurrentRevision.ValidUntil == nil || *created.CurrentRevision.ValidUntil != "2026-08-22T08:00:00Z" {
+	assertMemoryFields(t, created, space.SpaceID, "plan", "active", false, "sensitive", "The launch is Friday")
+	if created.CurrentRevision.ValidFrom == nil || created.CurrentRevision.ValidFrom.Format(time.RFC3339) != "2026-08-21T08:00:00Z" ||
+		created.CurrentRevision.ValidUntil == nil || created.CurrentRevision.ValidUntil.Format(time.RFC3339) != "2026-08-22T08:00:00Z" {
 		t.Fatalf("validity fields = %v/%v", created.CurrentRevision.ValidFrom, created.CurrentRevision.ValidUntil)
 	}
-	assertEvidence(t, created.CurrentRevision.Evidence, event.EventID, "manual_reference", 0, 8)
+	assertEvidence(t, created.CurrentRevision.Evidence, event.EventID, 0, 8)
 
 	response = requestJSON(t, client, http.MethodGet, "/v1/events/"+event.EventID, "", nil)
 	var raw domain.RawEvent
@@ -53,7 +54,7 @@ func TestMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 	}
 
 	got := getMemory(t, client, created.MemoryID)
-	assertMemoryFields(t, got, space.SpaceID, "decision", "active", false, "sensitive", "The launch is Friday")
+	assertMemoryFields(t, got, space.SpaceID, "plan", "active", false, "sensitive", "The launch is Friday")
 	response = requestJSON(t, client, http.MethodGet, "/v1/memories?space_id="+space.SpaceID, "", nil)
 	var page domain.MemoryPage
 	decodeResponse(t, response, &page)
@@ -66,7 +67,7 @@ func TestMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 		"content":              "The launch is Saturday",
 		"valid_from":           "2026-08-23T00:00:00Z",
 		"evidence": []map[string]any{{
-			"event_id": event.EventID, "evidence_type": "direct_statement",
+			"event_id": event.EventID, "role": "direct",
 		}},
 		"reason": "Schedule changed",
 	}
@@ -77,7 +78,7 @@ func TestMemoryHTTPCreateGetListReviseAndHistory(t *testing.T) {
 	if revised.CurrentRevision.ParentRevisionID == nil || *revised.CurrentRevision.ParentRevisionID != created.CurrentRevision.RevisionID || revised.CurrentRevision.CreatedBy != "test-agent" {
 		t.Fatalf("revised fields = %+v", revised.CurrentRevision)
 	}
-	assertMemoryFields(t, revised, space.SpaceID, "decision", "active", false, "sensitive", "The launch is Saturday")
+	assertMemoryFields(t, revised, space.SpaceID, "plan", "active", false, "sensitive", "The launch is Saturday")
 
 	response = requestJSON(t, client, http.MethodGet, "/v1/memories/"+created.MemoryID+"/revisions", "", nil)
 	var revisions []domain.MemoryRevision
@@ -104,10 +105,10 @@ func TestMemoryValidationIsAtomicAndErrorsAreSafe(t *testing.T) {
 
 	for name, body := range map[string]map[string]any{
 		"empty": {
-			"space_id": space.SpaceID, "memory_type": "fact", "content": "No evidence", "evidence": []any{}, "reason": "Invalid",
+			"space_id": space.SpaceID, "kind": "fact", "content": "No evidence", "evidence": []any{}, "reason": "Invalid",
 		},
 		"missing": {
-			"space_id": space.SpaceID, "memory_type": "fact", "content": "Missing evidence", "reason": "Invalid",
+			"space_id": space.SpaceID, "kind": "fact", "content": "Missing evidence", "reason": "Invalid",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -124,7 +125,7 @@ func TestMemoryValidationIsAtomicAndErrorsAreSafe(t *testing.T) {
 	response = requestJSON(t, client, http.MethodPost, "/v1/memories", "invalid-null-sensitivity", body)
 	assertSafeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
 	body = memoryCreateBody(space.SpaceID, event.EventID, "Null offset")
-	body["evidence"] = []map[string]any{{"event_id": event.EventID, "evidence_type": "manual_reference", "start_offset": nil, "end_offset": nil}}
+	body["evidence"] = []map[string]any{{"event_id": event.EventID, "role": "direct", "start_offset": nil, "end_offset": nil}}
 	response = requestJSON(t, client, http.MethodPost, "/v1/memories", "invalid-null-offset", body)
 	assertSafeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
 
@@ -146,7 +147,7 @@ func TestMemoryValidationIsAtomicAndErrorsAreSafe(t *testing.T) {
 	created, _ := createMemory(t, client, "valid-after-invalid", memoryCreateBody(space.SpaceID, event.EventID, "Valid memory"))
 	badRevise := map[string]any{
 		"expected_revision_id": created.CurrentRevision.RevisionID, "content": "Bad revision",
-		"evidence": []map[string]any{{"event_id": missingID, "evidence_type": "manual_reference"}}, "reason": "Invalid",
+		"evidence": []map[string]any{{"event_id": missingID, "role": "direct"}}, "reason": "Invalid",
 	}
 	response = requestJSON(t, client, http.MethodPatch, "/v1/memories/"+created.MemoryID, "bad-revise-evidence", badRevise)
 	assertSafeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
@@ -238,7 +239,7 @@ func TestMemoryLifecycleFrozenAndVisibility(t *testing.T) {
 		t.Fatalf("archive state = %q", memory.CurrentState)
 	}
 	memory, _ = changeMemoryState(t, client, memory, "lifecycle-restore", "restore", &originalRevision)
-	if memory.CurrentState != "active" || memory.CurrentRevision.Content != "Original" || memory.CurrentRevision.RevisionID == originalRevision {
+	if memory.CurrentState != "active" || memory.CurrentRevision.DisplayContent != "Original" || memory.CurrentRevision.RevisionID == originalRevision {
 		t.Fatalf("restore result = %+v", memory)
 	}
 	memory, _ = changeMemoryState(t, client, memory, "lifecycle-retract", "retract", nil)
@@ -400,8 +401,8 @@ func ingestManualEvent(t *testing.T, client *http.Client, key, spaceID, text str
 
 func memoryCreateBody(spaceID, eventID, content string) map[string]any {
 	return map[string]any{
-		"space_id": spaceID, "memory_type": "fact", "content": content,
-		"evidence": []map[string]any{{"event_id": eventID, "evidence_type": "manual_reference"}},
+		"space_id": spaceID, "kind": "fact", "content": content,
+		"evidence": []map[string]any{{"event_id": eventID, "role": "direct"}},
 		"reason":   "Initial memory",
 	}
 }
@@ -409,7 +410,7 @@ func memoryCreateBody(spaceID, eventID, content string) map[string]any {
 func memoryReviseBody(revisionID, eventID, content string) map[string]any {
 	return map[string]any{
 		"expected_revision_id": revisionID, "content": content,
-		"evidence": []map[string]any{{"event_id": eventID, "evidence_type": "manual_reference"}},
+		"evidence": []map[string]any{{"event_id": eventID, "role": "direct"}},
 		"reason":   "Manual revision",
 	}
 }
@@ -455,14 +456,14 @@ func getMemory(t *testing.T, client *http.Client, memoryID string) domain.Memory
 
 func assertMemoryFields(t *testing.T, memory domain.Memory, spaceID, memoryType, state string, frozen bool, sensitivity, content string) {
 	t.Helper()
-	if memory.MemoryID == "" || memory.SpaceID != spaceID || memory.MemoryType != memoryType || memory.CurrentState != state || memory.Frozen != frozen || memory.Sensitivity != sensitivity || memory.CurrentRevision.MemoryID != memory.MemoryID || memory.CurrentRevision.RevisionID == "" || memory.CurrentRevision.Content != content || memory.CurrentRevision.CreatedBy != "test-agent" || memory.CurrentRevision.CreatedAt == "" || memory.CreatedAt == "" || memory.UpdatedAt == "" {
+	if memory.MemoryID == "" || memory.SpaceID != spaceID || string(memory.Kind) != memoryType || memory.CurrentState != state || memory.Frozen != frozen || memory.Sensitivity != sensitivity || memory.CurrentRevision.MemoryID != memory.MemoryID || memory.CurrentRevision.RevisionID == "" || memory.CurrentRevision.DisplayContent != content || memory.CurrentRevision.CreatedBy != "test-agent" || memory.CurrentRevision.CreatedAt == "" || memory.CreatedAt == "" || memory.UpdatedAt == "" {
 		t.Fatalf("memory fields = %+v", memory)
 	}
 }
 
-func assertEvidence(t *testing.T, evidence []domain.MemoryEvidence, eventID, evidenceType string, start, end int64) {
+func assertEvidence(t *testing.T, evidence []domain.RevisionEvidence, eventID string, start, end int64) {
 	t.Helper()
-	if len(evidence) != 1 || evidence[0].EventID != eventID || evidence[0].EvidenceType != evidenceType || evidence[0].StartOffset == nil || *evidence[0].StartOffset != start || evidence[0].EndOffset == nil || *evidence[0].EndOffset != end {
+	if len(evidence) != 1 || evidence[0].EventID != eventID || evidence[0].Role != domain.EvidenceRoleDirect || evidence[0].StartOffset == nil || *evidence[0].StartOffset != start || evidence[0].EndOffset == nil || *evidence[0].EndOffset != end {
 		t.Fatalf("evidence = %+v", evidence)
 	}
 }

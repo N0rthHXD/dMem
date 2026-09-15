@@ -36,5 +36,6 @@
 | [0032](0032-knowledge-graph-construction-and-retrieval.md) | 知识图谱构建与检索 |
 | [0033](0033-three-channel-retrieval-fusion.md) | 三通道检索融合（rrf-v3） |
 | [0034](0034-background-integrity-check.md) | 启动时后台执行 SQLite 完整性检查 |
+| [0035](0035-memory-retrieval-v4.md) | 结构化记忆与 v4 检索契约 |
 
 ADR 状态使用：`proposed`、`accepted`、`superseded` 或 `rejected`。

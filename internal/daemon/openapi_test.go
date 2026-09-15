@@ -44,7 +44,7 @@ func (f *fakeAggregateProvider) Build(_ context.Context, input domain.AggregateP
 func TestOpenAPIContract(t *testing.T) {
 	doc := loadOpenAPI(t)
 	assertIdempotentResponseHeaders(t, doc)
-	assertSearchResponseModes(t, doc)
+	assertRecallResponseContract(t, doc)
 	cfg := testConfig(t)
 	cfg.ProcessingVersion = "contract-v3"
 	cfg.ProcessingProvider = config.ProviderConfig{
@@ -86,12 +86,12 @@ func TestOpenAPIContract(t *testing.T) {
 	c.replay(http.MethodPost, "/v1/spaces", "space", spaceBody)
 	c.close(c.do(http.MethodGet, "/v1/spaces?limit=1", "", nil))
 	c.close(c.do(http.MethodGet, "/v1/spaces/"+space.SpaceID, "", nil))
-	agentMemoryBody := map[string]any{"space_id": space.SpaceID, "content": "agent contract memory", "memory_type": "fact"}
+	agentMemoryBody := map[string]any{"space_id": space.SpaceID, "content": "agent contract memory", "kind": "fact"}
 	response = c.do(http.MethodPost, "/v1/remember", "agent-memory", agentMemoryBody)
 	var agentMemory application.RememberResult
 	decodeResponse(t, response, &agentMemory)
 	c.replay(http.MethodPost, "/v1/remember", "agent-memory", agentMemoryBody)
-	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "agent contract", "space_ids": []string{space.SpaceID}, "channels": []string{"keyword"}}))
+	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "agent contract", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{"keyword"}}}))
 	agentFeedback := map[string]any{"space_id": space.SpaceID, "type": "useful", "reason_code": "relevant_context"}
 	c.close(c.do(http.MethodPost, "/v1/memories/"+agentMemory.Memory.MemoryID+"/feedback", "agent-feedback", agentFeedback))
 	c.close(c.do(http.MethodPost, "/v1/memories/"+agentMemory.Memory.MemoryID+"/forget", "agent-forget", map[string]any{"reason": "contract forget"}))
@@ -196,7 +196,7 @@ func TestOpenAPIContract(t *testing.T) {
 	response = c.do(http.MethodPost, "/v1/relation-proposals/"+relationProposal.ProposalID+"/confirm", "relation-confirm", entityReview)
 	decodeResponse(t, response, &relationProposal)
 	c.replay(http.MethodPost, "/v1/relation-proposals/"+relationProposal.ProposalID+"/confirm", "relation-confirm", entityReview)
-	relationRejectBody := withField(relationBody, "relation_type", "related_to")
+	relationRejectBody := withField(relationBody, "processing_version", "contract-v3-reject")
 	response = c.do(http.MethodPost, "/v1/relation-proposals", "relation-reject-create", relationRejectBody)
 	var relationReject domain.RelationProposal
 	decodeResponse(t, response, &relationReject)
@@ -205,7 +205,7 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodGet, "/v1/relations?space_id="+space.SpaceID+"&memory_id="+memory.MemoryID+"&direction=outgoing", "", nil))
 	c.close(c.do(http.MethodGet, "/v1/relations/"+*relationProposal.ResultRelationID+"?space_id="+space.SpaceID, "", nil))
 
-	factBody := map[string]any{"event_id": event.EventID, "space_id": space.SpaceID, "subject_entity_id": *entityProposal.ResultEntityID, "predicate": "uses_database", "object_literal": "PostgreSQL", "object_literal_type": "string", "source_memory_id": memory.MemoryID, "source_revision_id": memory.CurrentRevision.RevisionID, "confidence": 0.9, "evidence": []map[string]any{{"evidence_type": "human_confirmation"}}, "processor_identity": "contract/processor", "processing_version": "contract-v3"}
+	factBody := map[string]any{"event_id": event.EventID, "space_id": space.SpaceID, "subject_entity_id": *entityProposal.ResultEntityID, "predicate": "has_status", "object_literal": "active", "object_literal_type": "string", "source_memory_id": memory.MemoryID, "source_revision_id": memory.CurrentRevision.RevisionID, "confidence": 0.9, "evidence": []map[string]any{{"evidence_type": "human_confirmation"}}, "processor_identity": "contract/processor", "processing_version": "contract-v3"}
 	response = c.do(http.MethodPost, "/v1/fact-proposals", "fact-create", factBody)
 	var factProposal domain.FactProposal
 	decodeResponse(t, response, &factProposal)
@@ -215,13 +215,13 @@ func TestOpenAPIContract(t *testing.T) {
 	response = c.do(http.MethodPost, "/v1/fact-proposals/"+factProposal.ProposalID+"/confirm", "fact-confirm", entityReview)
 	decodeResponse(t, response, &factProposal)
 	c.replay(http.MethodPost, "/v1/fact-proposals/"+factProposal.ProposalID+"/confirm", "fact-confirm", entityReview)
-	factRejectBody := withField(factBody, "object_literal", "MySQL")
+	factRejectBody := withField(factBody, "object_literal", "paused")
 	response = c.do(http.MethodPost, "/v1/fact-proposals", "fact-reject-create", factRejectBody)
 	var factReject domain.FactProposal
 	decodeResponse(t, response, &factReject)
 	c.close(c.do(http.MethodPost, "/v1/fact-proposals/"+factReject.ProposalID+"/reject", "fact-reject", entityReview))
 	c.replay(http.MethodPost, "/v1/fact-proposals/"+factReject.ProposalID+"/reject", "fact-reject", entityReview)
-	c.close(c.do(http.MethodGet, "/v1/entity-facts?space_id="+space.SpaceID+"&predicate=uses_database", "", nil))
+	c.close(c.do(http.MethodGet, "/v1/entity-facts?space_id="+space.SpaceID+"&predicate=has_status", "", nil))
 	c.close(c.do(http.MethodGet, "/v1/entity-facts/"+*factProposal.ResultFactID+"?space_id="+space.SpaceID, "", nil))
 
 	targets := []map[string]any{{"memory_id": memory.MemoryID, "expected_revision_id": memory.CurrentRevision.RevisionID}, {"memory_id": targetMemory.MemoryID, "expected_revision_id": targetMemory.CurrentRevision.RevisionID}}
@@ -286,16 +286,16 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID, "", nil))
 	c.close(c.do(http.MethodGet, "/v1/aggregates/"+aggregateID+"/provenance", "", nil))
 
-	response = c.do(http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}, "channels": []string{"keyword"}})
-	var keyword domain.SearchResponse
+	response = c.do(http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}, "debug": map[string]any{"capabilities": []string{"keyword"}}})
+	var keyword domain.RecallResponse
 	decodeResponse(t, response, &keyword)
-	if !reflect.DeepEqual(keyword.RequestedChannels, []string{"keyword"}) || !reflect.DeepEqual(keyword.ExecutedChannels, []string{"keyword"}) || keyword.GraphIndexState == "" {
+	if !reflect.DeepEqual(keyword.Execution.RequestedCapabilities, []string{"keyword"}) || !reflect.DeepEqual(keyword.Execution.ExecutedCapabilities, []string{"keyword"}) || keyword.Execution.QueryPlanIdentity == "" {
 		t.Fatalf("keyword ready response = %+v", keyword)
 	}
-	response = c.do(http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}, "channels": []string{"keyword", "semantic"}})
-	var hybrid domain.SearchResponse
+	response = c.do(http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}, "debug": map[string]any{"capabilities": []string{"keyword", "semantic"}}})
+	var hybrid domain.RecallResponse
 	decodeResponse(t, response, &hybrid)
-	if !reflect.DeepEqual(hybrid.RequestedChannels, []string{"keyword", "semantic"}) || !reflect.DeepEqual(hybrid.ExecutedChannels, []string{"keyword"}) || !hybrid.Degraded || len(hybrid.DegradationReasons) == 0 {
+	if !reflect.DeepEqual(hybrid.Execution.RequestedCapabilities, []string{"keyword", "semantic"}) || !reflect.DeepEqual(hybrid.Execution.ExecutedCapabilities, []string{"keyword"}) || !hybrid.Execution.Degraded || len(hybrid.Execution.DegradationReasons) == 0 {
 		t.Fatalf("hybrid degraded response = %+v", hybrid)
 	}
 	response = c.do(http.MethodPost, "/v1/indexes/fts/rebuild", "rebuild", nil)
@@ -355,7 +355,7 @@ func TestOpenAPIContract(t *testing.T) {
 		{http.MethodPost, "/v1/candidates/" + rejectID + "/reject", "reviewed-reject", http.StatusConflict, reviewBody},
 		{http.MethodPost, "/v1/candidates/" + unknownID + "/confirm", "missing-confirm", http.StatusNotFound, reviewBody},
 		{http.MethodPost, "/v1/candidates/" + unknownID + "/reject", "missing-reject", http.StatusNotFound, reviewBody},
-		{http.MethodPost, "/v1/recall", "", http.StatusServiceUnavailable, map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "channels": []string{"semantic"}}},
+		{http.MethodPost, "/v1/recall", "", http.StatusServiceUnavailable, map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{"semantic"}}}},
 		{http.MethodGet, "/v1/jobs/" + unknownID, "", http.StatusNotFound, nil},
 		{http.MethodPost, "/v1/jobs/" + unknownID + "/cancel", "missing-cancel", http.StatusNotFound, nil},
 		{http.MethodPost, "/v1/jobs/" + unknownID + "/retry", "missing-retry", http.StatusNotFound, nil},
@@ -508,15 +508,134 @@ func TestOpenAPIContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	response = c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}})
-	var degraded domain.SearchResponse
+	var degraded domain.RecallResponse
 	decodeResponse(t, response, &degraded)
-	if !degraded.Degraded || !reflect.DeepEqual(degraded.ExecutedChannels, []string{"graph"}) || !containsString(degraded.DegradationReasons, "keyword_unavailable") {
+	if !degraded.Execution.Degraded || !reflect.DeepEqual(degraded.Execution.ExecutedCapabilities, []string{"graph"}) || !containsString(degraded.Execution.DegradationReasons, "keyword_unavailable") {
 		t.Fatalf("keyword degraded response = %+v", degraded)
 	}
 	exerciseOverloadContract(t, router, c.seen)
 	exerciseResourceExhaustedContract(t, router, c.seen)
 
 	assertOperationStatusMatrix(t, doc, c.seen)
+}
+
+func TestRecallOpenAPIReplacementContract(t *testing.T) {
+	doc := loadOpenAPI(t)
+	assertRecallResponseContract(t, doc)
+	request := doc.Components.Schemas["RecallRequest"].Value
+	for _, property := range []string{"intent", "reference_time", "max_results", "max_context_tokens", "include_evidence", "explain"} {
+		if request.Properties[property] == nil {
+			t.Errorf("RecallRequest is missing property %q", property)
+		}
+	}
+	for _, obsolete := range []string{"limit", "max_chars", "channels"} {
+		if request.Properties[obsolete] != nil {
+			t.Errorf("RecallRequest retains obsolete property %q", obsolete)
+		}
+	}
+	debug := request.Properties["debug"]
+	if debug == nil || debug.Value == nil || debug.Value.Properties["capabilities"] == nil || debug.Value.Properties["capabilities"].Value.Items == nil {
+		t.Fatalf("RecallRequest is missing the evaluation/debug capability override contract")
+	}
+	debugCapabilities := debug.Value.Properties["capabilities"].Value.Items.Value
+	for _, expected := range []string{"keyword", "semantic", "graph"} {
+		found := false
+		for _, candidate := range debugCapabilities.Enum {
+			found = found || candidate == expected
+		}
+		if !found {
+			t.Errorf("debug.capabilities enum is missing %q", expected)
+		}
+	}
+}
+
+func TestOpenAPIReplacementMemoryKindContract(t *testing.T) {
+	doc := loadOpenAPI(t)
+	if doc.Components.Schemas["MemoryType"] != nil {
+		t.Error("OpenAPI still exposes the obsolete MemoryType enum")
+	}
+	kind := doc.Components.Schemas["MemoryKind"]
+	if kind == nil || kind.Value == nil {
+		t.Fatal("OpenAPI is missing the MemoryKind schema")
+	}
+	replacement := []string{"fact", "event", "preference", "plan", "procedure", "scene", "topic", "timeline"}
+	seen := map[string]bool{}
+	for _, value := range kind.Value.Enum {
+		name, ok := value.(string)
+		if !ok {
+			t.Errorf("MemoryKind enum contains non-string value %v", value)
+			continue
+		}
+		seen[name] = true
+	}
+	for _, want := range replacement {
+		if !seen[want] {
+			t.Errorf("MemoryKind enum is missing %q", want)
+		}
+	}
+	if len(seen) != len(replacement) {
+		t.Errorf("MemoryKind enum = %v, want exactly %v", kind.Value.Enum, replacement)
+	}
+	candidate := doc.Components.Schemas["Candidate"].Value
+	memoryType := candidate.Properties["memory_type"]
+	if memoryType == nil || !strings.HasSuffix(memoryType.Ref, "/MemoryKind") {
+		t.Errorf("Candidate.memory_type does not reference MemoryKind: %+v", memoryType)
+	}
+	parameters := doc.Paths.Map()["/candidates"].Get.Parameters
+	found := false
+	for _, parameter := range parameters {
+		if parameter.Value != nil && parameter.Value.Name == "memory_type" {
+			found = true
+			if parameter.Value.Schema == nil || !strings.HasSuffix(parameter.Value.Schema.Ref, "/MemoryKind") {
+				t.Errorf("candidate memory_type query parameter does not reference MemoryKind")
+			}
+		}
+	}
+	if !found {
+		t.Error("candidate memory_type query parameter is missing")
+	}
+	for _, schema := range []string{"CreateEvolutionProposalRequest", "EvolutionProposal"} {
+		property := doc.Components.Schemas[schema].Value.Properties["memory_type"]
+		if property == nil || property.Value == nil {
+			t.Fatalf("%s.memory_type is missing", schema)
+		}
+		allowed := map[string]bool{}
+		for _, value := range property.Value.Enum {
+			if name, ok := value.(string); ok {
+				allowed[name] = true
+			}
+		}
+		for _, obsolete := range []string{"constraint", "decision", "project_context", "agent_experience", "aggregate"} {
+			if allowed[obsolete] {
+				t.Errorf("%s.memory_type retains obsolete enum value %q", schema, obsolete)
+			}
+		}
+		for _, want := range replacement {
+			if !allowed[want] {
+				t.Errorf("%s.memory_type is missing replacement kind %q", schema, want)
+			}
+		}
+	}
+}
+
+func TestOpenAPICurrentPredicateSnapshot(t *testing.T) {
+	doc := loadOpenAPI(t)
+	predicate := doc.Components.Schemas["Predicate"]
+	if predicate == nil || predicate.Value == nil {
+		t.Fatal("OpenAPI is missing the Predicate schema")
+	}
+	got := make([]string, 0, len(predicate.Value.Enum))
+	for _, value := range predicate.Value.Enum {
+		name, ok := value.(string)
+		if !ok {
+			t.Fatalf("Predicate enum contains non-string value %v", value)
+		}
+		got = append(got, name)
+	}
+	want := []string{"created_by", "depends_on", "has_participant_count", "has_status", "is_active", "located_at", "member_of", "owned_by", "participates_in"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("OpenAPI predicates = %v, want %v", got, want)
+	}
 }
 
 func exerciseConfigurationContract(t *testing.T, router routers.Router, seen map[string]map[int]bool) {
@@ -692,22 +811,26 @@ func assertOperationStatusMatrix(t *testing.T, doc *openapi3.T, seen map[string]
 	}
 }
 
-func assertSearchResponseModes(t *testing.T, doc *openapi3.T) {
+func assertRecallResponseContract(t *testing.T, doc *openapi3.T) {
 	t.Helper()
-	schema := doc.Components.Schemas["SearchResponse"].Value
-	channelsSchema := schema.Properties["requested_channels"].Value.Items.Value
+	schema := doc.Components.Schemas["RecallResponse"].Value
+	if !slicesContains(schema.Required, "context") || !slicesContains(schema.Required, "execution") {
+		t.Error("RecallResponse must require context and execution")
+	}
+	execution := doc.Components.Schemas["RecallExecutionMetadata"].Value
+	capabilities := execution.Properties["requested_capabilities"].Value.Items.Value
 	for _, expected := range []string{"keyword", "semantic", "graph"} {
 		found := false
-		for _, candidate := range channelsSchema.Enum {
+		for _, candidate := range capabilities.Enum {
 			found = found || candidate == expected
 		}
 		if !found {
-			t.Errorf("SearchResponse.requested_channels enum is missing %q", expected)
+			t.Errorf("RecallExecutionMetadata.requested_capabilities enum is missing %q", expected)
 		}
 	}
-	for _, property := range []string{"requested_channels", "executed_channels", "degraded", "degradation_reasons", "fts_index_version", "semantic_index_version", "graph_index_version", "graph_index_state", "ranking_version"} {
-		if !slicesContains(schema.Required, property) {
-			t.Errorf("SearchResponse is missing required property %q", property)
+	for _, property := range []string{"operation_id", "intent", "reference_time", "requested_capabilities", "executed_capabilities", "degraded", "degradation_reasons", "query_plan_identity", "ranking_identity", "context_selection_identity"} {
+		if !slicesContains(execution.Required, property) {
+			t.Errorf("RecallExecutionMetadata is missing required property %q", property)
 		}
 	}
 }

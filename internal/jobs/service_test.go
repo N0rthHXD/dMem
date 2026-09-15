@@ -529,10 +529,7 @@ func TestInvalidProcessorResultPreservesValidationCode(t *testing.T) {
 	}
 	input := validProcessingInput()
 	result := validProcessingResult()
-	result.Candidates[0].SuggestionKind = "supplement"
-	result.Candidates[0].Evidence[0].StartOffset = nil
-	result.Candidates[0].Evidence[0].EndOffset = nil
-	result.Candidates[0].RelatedMemoryIDs = []string{"memory-1"}
+	result.Proposals[0].Revision.Evidence[0].EventID = "event-3"
 	service.applyOutcome(storage.ClaimedJob{Job: item.job}, input, result)
 	if item.failure.Code != "invalid_evidence_reference" || item.failure.Message != "processor returned invalid output" || item.failure.Transient {
 		t.Fatalf("failure = %+v", item.failure)

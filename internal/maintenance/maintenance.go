@@ -393,12 +393,12 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 		`SELECT count(*) FROM candidate_reviews r JOIN memory_revisions v ON v.revision_id=r.revision_id WHERE r.memory_id IS NOT NULL AND v.memory_id<>r.memory_id`,
 		`SELECT count(*) FROM candidates c WHERE (c.review_state='pending' AND EXISTS (SELECT 1 FROM candidate_reviews r WHERE r.candidate_id=c.candidate_id)) OR (c.review_state<>'pending' AND NOT EXISTS (SELECT 1 FROM candidate_reviews r WHERE r.candidate_id=c.candidate_id AND r.to_state=c.review_state AND r.memory_id IS c.confirmed_memory_id AND r.revision_id IS c.confirmed_revision_id))`,
 		`SELECT count(*) FROM idempotency_records WHERE NOT json_valid(response_body)`,
-		`SELECT count(*) FROM entity_mentions em JOIN entities e ON e.entity_id=em.entity_id LEFT JOIN memories m ON m.memory_id=em.memory_id LEFT JOIN memory_revisions v ON v.revision_id=em.revision_id LEFT JOIN raw_events re ON re.event_id=em.event_id WHERE (em.revision_id IS NOT NULL AND (v.memory_id<>em.memory_id OR m.space_id<>e.space_id OR em.end_offset>length(v.content))) OR (em.event_id IS NOT NULL AND (re.space_id<>e.space_id OR em.end_offset>(SELECT length(coalesce(content_text,'')) FROM raw_contents WHERE content_id=re.content_id)))`,
+		`SELECT count(*) FROM entity_mentions em JOIN entities e ON e.entity_id=em.entity_id LEFT JOIN memories m ON m.memory_id=em.memory_id LEFT JOIN memory_revisions v ON v.revision_id=em.revision_id LEFT JOIN raw_events re ON re.event_id=em.event_id WHERE (em.revision_id IS NOT NULL AND (v.memory_id<>em.memory_id OR m.space_id<>e.space_id OR em.end_offset>length(v.display_content))) OR (em.event_id IS NOT NULL AND (re.space_id<>e.space_id OR em.end_offset>(SELECT length(coalesce(content_text,'')) FROM raw_contents WHERE content_id=re.content_id)))`,
 		`SELECT count(*) FROM memory_relations r JOIN memories sm ON sm.memory_id=r.source_memory_id JOIN memories tm ON tm.memory_id=r.target_memory_id JOIN memory_revisions sv ON sv.revision_id=r.source_revision_id JOIN memory_revisions tv ON tv.revision_id=r.target_revision_id WHERE sv.memory_id<>r.source_memory_id OR tv.memory_id<>r.target_memory_id OR sm.space_id<>r.space_id OR tm.space_id<>r.space_id`,
 		`SELECT count(*) FROM conflict_case_relations cr JOIN conflict_cases c ON c.case_id=cr.case_id JOIN memory_relations r ON r.relation_id=cr.relation_id WHERE r.relation_type<>'contradicts' OR r.space_id<>c.space_id`,
 		`SELECT count(*) FROM conflict_cases c WHERE (c.state='open')<>(NOT EXISTS (SELECT 1 FROM conflict_resolution_events e WHERE e.case_id=c.case_id))`,
 		`SELECT count(*) FROM feedback_events f JOIN memory_revisions v ON v.revision_id=f.revision_id WHERE v.memory_id<>f.memory_id`,
-		`SELECT count(*) FROM aggregate_descriptors d JOIN memories a ON a.memory_id=d.memory_id WHERE a.memory_type<>'aggregate' OR a.sensitivity<>d.sensitivity`,
+		`SELECT count(*) FROM aggregate_descriptors d JOIN memories a ON a.memory_id=d.memory_id JOIN memory_revisions v ON v.revision_id=a.current_revision_id WHERE v.kind<>d.aggregate_kind OR a.sensitivity<>d.sensitivity`,
 		`SELECT count(*) FROM aggregate_descriptors d JOIN memories a ON a.memory_id=d.memory_id WHERE NOT EXISTS (SELECT 1 FROM memory_relations r WHERE r.source_memory_id=d.memory_id AND r.source_revision_id=a.current_revision_id AND r.relation_type='derived_from') OR EXISTS (SELECT 1 FROM memory_relations r JOIN memories i ON i.memory_id=r.target_memory_id WHERE r.source_memory_id=d.memory_id AND r.source_revision_id=a.current_revision_id AND r.relation_type='derived_from' AND (r.space_id<>a.space_id OR (d.sensitivity='normal' AND i.sensitivity='sensitive')))`,
 		`SELECT count(*) FROM aggregate_descriptors d JOIN memories a ON a.memory_id=d.memory_id JOIN aggregate_proposals p ON p.result_memory_id=d.memory_id AND p.result_revision_id=a.current_revision_id AND p.review_state='confirmed' WHERE (p.sensitivity='normal' AND EXISTS (SELECT 1 FROM aggregate_proposal_inputs i WHERE i.proposal_id=p.proposal_id AND i.input_sensitivity='sensitive')) OR EXISTS (SELECT memory_id,revision_id FROM aggregate_proposal_inputs WHERE proposal_id=p.proposal_id EXCEPT SELECT target_memory_id,target_revision_id FROM memory_relations WHERE source_memory_id=d.memory_id AND source_revision_id=a.current_revision_id AND relation_type='derived_from') OR EXISTS (SELECT target_memory_id,target_revision_id FROM memory_relations WHERE source_memory_id=d.memory_id AND source_revision_id=a.current_revision_id AND relation_type='derived_from' EXCEPT SELECT memory_id,revision_id FROM aggregate_proposal_inputs WHERE proposal_id=p.proposal_id)`,
 		`SELECT count(*) FROM aggregate_freshness f JOIN aggregate_descriptors d ON d.aggregate_id=f.aggregate_id JOIN memories m ON m.memory_id=d.memory_id WHERE f.revision_id<>m.current_revision_id`,
@@ -617,10 +617,10 @@ func addProbeCanaries(ctx context.Context, databasePath string) error {
 	}
 	for _, values := range [][3]string{{firstMemory, firstSpace, "restoreprobe common firstonly"}, {secondMemory, secondSpace, "restoreprobe common secondonly"}} {
 		revisionID := values[0] + "-revision"
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES (?,?, 'fact',?,'active','2000-01-01T00:00:00Z','2000-01-01T00:00:00Z')`, values[0], values[1], revisionID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,created_at,updated_at) VALUES (?,?,?,'active','2000-01-01T00:00:00Z','2000-01-01T00:00:00Z')`, values[0], values[1], revisionID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,?,'restore-probe','restore-probe','restore-probe','2000-01-01T00:00:00Z')`, revisionID, values[0], values[2]); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES (?,?,'fact',?,?,'restore-probe',0.9,0.5,'restore-probe','restore-probe','2000-01-01T00:00:00Z')`, revisionID, values[0], values[2], values[2]); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,updated_at) VALUES (?,?,?,'fact','active',1,?,'restore-probe','2000-01-01T00:00:00Z')`, values[0], revisionID, values[1], values[2]); err != nil {
@@ -666,17 +666,17 @@ func probeStagingHTTP(ctx context.Context, endpoint string) error {
 		return errors.New("staging daemon is not ready")
 	}
 	for _, probe := range []struct {
-		query    string
-		channels []string
-		executed []string
-		degraded bool
-		reasons  []string
-		wantID   string
+		query        string
+		capabilities []string
+		executed     []string
+		degraded     bool
+		reasons      []string
+		wantID       string
 	}{
 		{"firstonly", []string{"keyword"}, []string{"keyword"}, false, []string{}, "00000000-0000-4000-8000-000000000064"},
 		{"common", []string{"keyword", "semantic"}, []string{"keyword"}, true, []string{"semantic_unavailable"}, "00000000-0000-4000-8000-000000000064"},
 	} {
-		body, _ := json.Marshal(map[string]any{"query": probe.query, "space_ids": []string{"00000000-0000-4000-8000-000000000062"}, "channels": probe.channels, "limit": 10})
+		body, _ := json.Marshal(map[string]any{"query": probe.query, "space_ids": []string{"00000000-0000-4000-8000-000000000062"}, "debug": map[string]any{"capabilities": probe.capabilities}, "max_results": 10})
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/v1/recall", bytes.NewReader(body))
 		if err != nil {
 			return err
@@ -687,10 +687,10 @@ func probeStagingHTTP(ctx context.Context, endpoint string) error {
 		if err != nil {
 			return err
 		}
-		var result domain.SearchResponse
+		var result domain.RecallResponse
 		err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result)
 		closeErr = response.Body.Close()
-		if err != nil || closeErr != nil || response.StatusCode != http.StatusOK || !reflect.DeepEqual(result.RequestedChannels, probe.channels) || !reflect.DeepEqual(result.ExecutedChannels, probe.executed) || result.Degraded != probe.degraded || !reflect.DeepEqual(result.DegradationReasons, probe.reasons) || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != probe.wantID {
+		if err != nil || closeErr != nil || response.StatusCode != http.StatusOK || !reflect.DeepEqual(result.Execution.RequestedCapabilities, probe.capabilities) || !reflect.DeepEqual(result.Execution.ExecutedCapabilities, probe.executed) || result.Execution.Degraded != probe.degraded || !reflect.DeepEqual(result.Execution.DegradationReasons, probe.reasons) || len(result.Context.Items) != 1 || result.Context.Items[0].MemoryID != probe.wantID {
 			return errors.New("staging retrieval probe failed")
 		}
 	}

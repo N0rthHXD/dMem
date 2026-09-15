@@ -26,15 +26,22 @@ func claimProcessingJob(t *testing.T, repository *Repository, maxAttempts int) (
 	return claim, input
 }
 
-func processingCandidate(content string) domain.ProcessingCandidate {
+func processingCandidate(content string) domain.MemoryCandidateProposal {
 	start, end := int64(0), int64(6)
-	return domain.ProcessingCandidate{Content: content, MemoryType: "fact", SpaceID: "space-1", Confidence: 0.8, Sensitivity: "normal", SuggestionKind: "new", Evidence: []domain.ProcessingEvidence{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}}}
+	return domain.MemoryCandidateProposal{
+		Action: domain.ConsolidationCreate,
+		Revision: domain.MemoryRevision{
+			Kind: domain.MemoryKindFact, DisplayContent: content, CanonicalContent: content,
+			Confidence: 0.8, Specificity: 0.5, Sensitivity: "normal",
+			Evidence: []domain.RevisionEvidence{{EventID: "event-1", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}},
+		},
+	}
 }
 
 func TestProcessingCommitAtomicallyStoresCandidatesEvidenceAuditAttemptAndStatus(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	claim, input := claimProcessingJob(t, repository, 3)
-	result := domain.ProcessingResult{Code: "candidates_extracted", Candidates: []domain.ProcessingCandidate{processingCandidate("remember this")}, ProviderIdentity: "provider/test", ModelIdentity: "model-test", ProviderRequestID: "request-1", PolicyVersion: "policy-1", Usage: domain.ProcessingUsage{InputTokens: 2, OutputTokens: 3}}
+	result := domain.ProcessingResult{Code: "candidates_extracted", Proposals: []domain.MemoryCandidateProposal{processingCandidate("remember this")}, ProviderIdentity: "provider/test", ModelIdentity: "model-test", ProviderRequestID: "request-1", PolicyVersion: "policy-1", Usage: domain.ProcessingUsage{InputTokens: 2, OutputTokens: 3}}
 	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); err != nil {
 		t.Fatal(err)
 	}
@@ -46,25 +53,19 @@ func TestProcessingCommitAtomicallyStoresCandidatesEvidenceAuditAttemptAndStatus
 	}
 }
 
-func TestProcessingCommitStoresEvolutionProposal(t *testing.T) {
+func TestProcessingCommitRejectsNonCreateProposal(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
-	params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: "existing memory", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "context"}
-	memory, _, err := repository.CreateMemory(context.Background(), memoryIdentity("evolution-context", "/v1/memories", params), params)
-	if err != nil {
-		t.Fatal(err)
-	}
 	claim, input := claimProcessingJob(t, repository, 3)
-	candidate := processingCandidate("supplemented memory")
-	candidate.SuggestionKind = "supplement"
-	candidate.RelatedMemoryIDs = []string{memory.MemoryID}
-	result := domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Candidates: []domain.ProcessingCandidate{candidate}}
-	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); err != nil {
-		t.Fatal(err)
+	proposal := processingCandidate("supplemented memory")
+	proposal.Action = domain.ConsolidationRefine
+	result := domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Proposals: []domain.MemoryCandidateProposal{proposal}}
+	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); !errors.Is(err, ErrInvalidEvolutionProposal) {
+		t.Fatalf("CommitProcessing() error = %v, want ErrInvalidEvolutionProposal", err)
 	}
-	var action, proposedContent, relationSpecs, mentionSpecs, targetMemoryID, targetRevisionID, jobStatus string
-	err = repository.store.reader.QueryRow(`SELECT p.action,p.proposed_content,p.relation_specs_json,p.mention_specs_json,t.memory_id,t.expected_revision_id,(SELECT status FROM jobs WHERE job_id='process-job') FROM evolution_proposals p JOIN evolution_proposal_targets t ON t.proposal_id=p.proposal_id`).Scan(&action, &proposedContent, &relationSpecs, &mentionSpecs, &targetMemoryID, &targetRevisionID, &jobStatus)
-	if err != nil || action != "supplement" || proposedContent != candidate.Content || relationSpecs != "[]" || mentionSpecs != "[]" || targetMemoryID != memory.MemoryID || targetRevisionID != memory.CurrentRevision.RevisionID || jobStatus != "succeeded" {
-		t.Fatalf("proposal = %s/%s specs=%s/%s target=%s/%s status=%s err=%v", action, proposedContent, relationSpecs, mentionSpecs, targetMemoryID, targetRevisionID, jobStatus, err)
+	var candidates int
+	var jobStatus string
+	if err := repository.store.reader.QueryRow(`SELECT (SELECT count(*) FROM candidates),(SELECT status FROM jobs WHERE job_id='process-job')`).Scan(&candidates, &jobStatus); err != nil || candidates != 0 || jobStatus != "running" {
+		t.Fatalf("rejected proposal state = candidates=%d status=%s err=%v", candidates, jobStatus, err)
 	}
 }
 
@@ -88,7 +89,7 @@ func TestProcessingCommitPersistsSafeOmissionSummary(t *testing.T) {
 func TestPrepareProcessingIncludesBoundedCurrentMemoryContract(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	validFrom, validUntil := "2026-08-20T00:00:00Z", "2026-09-20T00:00:00Z"
-	params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: "context contract", ValidFrom: &validFrom, ValidUntil: &validUntil, Sensitivity: "sensitive", Evidence: directEvidence("event-1"), Reason: "context"}
+	params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "context contract", ValidFrom: &validFrom, ValidUntil: &validUntil, Sensitivity: "sensitive", Evidence: directEvidence("event-1"), Reason: "context"}
 	memory, _, err := repository.CreateMemory(context.Background(), memoryIdentity("context-memory", "/v1/memories", params), params)
 	if err != nil {
 		t.Fatal(err)
@@ -111,14 +112,14 @@ func TestProcessingCommitLeaseLossAndTransactionFailureLeaveNoPartialResult(t *t
 		{name: "lease loss", mutate: func(_ *Repository, claim *ClaimedJob, _ *domain.ProcessingResult) { claim.LeaseGeneration++ }},
 		{name: "transaction failure", mutate: func(_ *Repository, _ *ClaimedJob, result *domain.ProcessingResult) {
 			bad := processingCandidate("bad")
-			bad.RelatedMemoryIDs = []string{"missing"}
-			result.Candidates = append(result.Candidates, bad)
+			bad.Revision.Evidence[0].EventID = "missing-event"
+			result.Proposals = append(result.Proposals, bad)
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, _ := newMemoryTestRepository(t)
 			claim, input := claimProcessingJob(t, repository, 3)
-			result := domain.ProcessingResult{Code: "candidates_extracted", Candidates: []domain.ProcessingCandidate{processingCandidate("first")}}
+			result := domain.ProcessingResult{Code: "candidates_extracted", Proposals: []domain.MemoryCandidateProposal{processingCandidate("first")}}
 			test.mutate(repository, &claim, &result)
 			err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result})
 			if err == nil {

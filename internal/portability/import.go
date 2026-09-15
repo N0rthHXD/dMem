@@ -160,7 +160,7 @@ func (i *Importer) DryRun(ctx context.Context, directory string, request ImportR
 			currentSource := text(items[n].record.Data["current_revision_id"])
 			revision := findRecord(pkg.records["revisions.jsonl"], "revision", currentSource)
 			if revision.ObjectID != "" {
-				if memoryID, revisionID, e := i.repository.FindMemoryByContentHash(ctx, request.TargetSpaceID, text(revision.Data["content_hash"])); e != nil {
+				if memoryID, revisionID, e := i.repository.FindMemoryByContentHash(ctx, request.TargetSpaceID, text(revision.Data["canonical_hash"])); e != nil {
 					return ImportPlan{}, e
 				} else if memoryID != "" {
 					items[n].LocalID = memoryID
@@ -178,7 +178,7 @@ func (i *Importer) DryRun(ctx context.Context, directory string, request ImportR
 				if expected == "" {
 					return ImportPlan{}, fmt.Errorf("%w: mapped memory does not exist", ErrImportInvalidRequest)
 				}
-				if revision.ObjectID != "" && hash != text(revision.Data["content_hash"]) {
+				if revision.ObjectID != "" && hash != text(revision.Data["canonical_hash"]) {
 					items[n].Action = "proposal"
 					proposalMemories[items[n].SourceID] = true
 					items[n].ExpectedRevisionID = expected
@@ -201,17 +201,8 @@ func (i *Importer) DryRun(ctx context.Context, directory string, request ImportR
 		if items[n].Action == "import" && referencesProposal(items[n].record.Data, proposalMemories, proposalRevisions) {
 			items[n].Action = "duplicate"
 		}
-		if items[n].ObjectType == "relation" && text(items[n].record.Data["relation_type"]) == "related_to" {
-			sourceMemory, targetMemory := text(items[n].record.Data["local_source_memory_id"]), text(items[n].record.Data["local_target_memory_id"])
-			sourceRevision, targetRevision := text(items[n].record.Data["local_source_revision_id"]), text(items[n].record.Data["local_target_revision_id"])
-			if sourceMemory == "" || targetMemory == "" || sourceRevision == "" || targetRevision == "" {
-				items[n].Action = "duplicate"
-				continue
-			}
-			if targetMemory != "" && (sourceMemory > targetMemory || sourceMemory == targetMemory && sourceRevision > targetRevision) {
-				items[n].record.Data["local_source_memory_id"], items[n].record.Data["local_target_memory_id"] = targetMemory, sourceMemory
-				items[n].record.Data["local_source_revision_id"], items[n].record.Data["local_target_revision_id"] = targetRevision, sourceRevision
-			}
+		if items[n].ObjectType == "relation" && (text(items[n].record.Data["local_source_revision_id"]) == "" || text(items[n].record.Data["local_target_revision_id"]) == "") {
+			items[n].Action = "duplicate"
 		}
 	}
 	items = orderImportItems(items)
@@ -263,7 +254,7 @@ func (i *Importer) Import(ctx context.Context, directory string, request ImportR
 				data["target_memory_id"] = request.ObjectMappings["memory\x00"+item.SourceID]
 				data["expected_revision_id"] = item.ExpectedRevisionID
 				data["local_proposal_id"] = deterministicLocalID(plan.SourceIdentity, plan.ExportID, "proposal", item.SourceID)
-				data["memory_type"] = item.record.Data["memory_type"]
+				data["memory_type"] = rev.record.Data["kind"]
 				data["sensitivity"] = item.record.Data["sensitivity"]
 				data["local_event_id"] = firstLocal(plan.Items, "raw_event")
 			}
@@ -727,15 +718,15 @@ func mapImportError(err error) error {
 var objectDataFields = map[string]string{
 	"space":                   "space_id parent_space_id space_type external_id display_name created_at",
 	"raw_event":               "event_id operation_id space_id source_type source_name source_event_id caller_id occurred_at received_at processing_status metadata_json created_at content_id content_kind content_text reference_uri media_type content_hash size_bytes declared_size declared_hash content_created_at",
-	"memory":                  "memory_id space_id memory_type current_revision_id current_state frozen sensitivity created_at updated_at",
+	"memory":                  "memory_id space_id current_revision_id current_state frozen sensitivity created_at updated_at",
 	"memory_state_event":      "state_event_id memory_id revision_id operation_id from_state to_state from_frozen to_frozen reason created_by created_at",
-	"revision":                "revision_id memory_id parent_revision_id restored_from_revision_id content content_hash valid_from valid_until confidence created_by processing_version processor_identity created_at",
-	"memory_evidence":         "evidence_id revision_id event_id evidence_type start_offset end_offset created_at",
+	"revision":                "revision_id memory_id parent_revision_id restored_from_revision_id valid_from valid_until confidence kind display_content canonical_content canonical_hash event_type event_time_start event_time_end time_precision time_source source_speaker language sensitivity specificity created_by processing_version processor_identity created_at",
+	"memory_evidence":         "evidence_id revision_id event_id role start_offset end_offset created_at",
 	"entity":                  "entity_id space_id entity_type canonical_name normalized_name normalization_version state sensitivity created_by processing_version created_at updated_at",
 	"entity_event":            "entity_event_id entity_id operation_id event_type from_canonical_name to_canonical_name from_state to_state normalization_version reason created_by created_at",
 	"entity_alias":            "alias_id entity_id alias normalized_alias normalization_version source state created_by created_at updated_at",
 	"entity_alias_event":      "alias_event_id alias_id operation_id from_state to_state reason created_by created_at",
-	"entity_mention":          "mention_id entity_id memory_id revision_id event_id start_offset end_offset mention_type source surface_text created_by processing_version created_at",
+	"entity_mention":          "mention_id entity_id memory_id revision_id event_id start_offset end_offset mention_type source surface_text confidence created_by processing_version created_at",
 	"relation":                "relation_id space_id relation_type source_memory_id source_revision_id target_memory_id target_revision_id state source confidence specification_hash created_by processing_version created_at updated_at",
 	"relation_evidence":       "evidence_id relation_id evidence_type event_id memory_id revision_id start_offset end_offset note created_by created_at",
 	"relation_state_event":    "state_event_id relation_id operation_id from_state to_state reason created_by created_at",

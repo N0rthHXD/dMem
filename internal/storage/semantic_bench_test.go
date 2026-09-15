@@ -76,12 +76,12 @@ func newBenchCorpus(b *testing.B, count, dimension int, eligibleRatio float64) *
 	}
 	defer tx.Rollback()
 
-	insertMemory, err := tx.Prepare(`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,created_at,updated_at) VALUES (?,?, 'fact',?,'active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
+	insertMemory, err := tx.Prepare(`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,created_at,updated_at) VALUES (?,?,?,'active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer insertMemory.Close()
-	insertRevision, err := tx.Prepare(`INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,?,'hash', 'bench','bench-v1','2026-01-01T00:00:00Z')`)
+	insertRevision, err := tx.Prepare(`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES (?,?,'fact',?,?,'hash','normal',0,0,'bench','bench-v1','2026-01-01T00:00:00Z')`)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func newBenchCorpus(b *testing.B, count, dimension int, eligibleRatio float64) *
 		if _, err := insertMemory.Exec(memoryID, "bench-space", revisionID); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := insertRevision.Exec(revisionID, memoryID, content); err != nil {
+		if _, err := insertRevision.Exec(revisionID, memoryID, content, content); err != nil {
 			b.Fatal(err)
 		}
 		if _, err := insertProjection.Exec(memoryID, revisionID, content, dimension); err != nil {

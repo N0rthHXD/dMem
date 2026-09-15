@@ -38,10 +38,10 @@ paths:
             schema: { $ref: '#/components/schemas/RecallRequest' }
       responses:
         '200':
-          description: Agent-ready memory search results
+          description: Agent-ready structured memory context and execution metadata
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SearchResponse' }
+              schema: { $ref: '#/components/schemas/RecallResponse' }
   /memories/{memory_id}/feedback:
     post:
       operationId: feedbackMemory
@@ -367,7 +367,7 @@ paths:
         - $ref: '#/components/parameters/callerId'
         - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: review_state, in: query, schema: { $ref: '#/components/schemas/CandidateReviewState' } }
-        - { name: memory_type, in: query, schema: { $ref: '#/components/schemas/MemoryType' } }
+        - { name: memory_type, in: query, schema: { $ref: '#/components/schemas/MemoryKind' } }
         - { name: processor_identity, in: query, schema: { type: string } }
         - { name: processing_version, in: query, schema: { type: string } }
         - { name: created_from, in: query, schema: { type: string, format: date-time } }
@@ -1023,7 +1023,7 @@ components:
       properties:
         space_id: { type: string, format: uuid }
         content: { type: string, minLength: 1 }
-        memory_type: { $ref: '#/components/schemas/MemoryType' }
+        kind: { $ref: '#/components/schemas/MemoryKind' }
         sensitivity: { type: string, enum: [normal, sensitive], default: normal }
         valid_from: { type: [string, 'null'], format: date-time }
         valid_until: { type: [string, 'null'], format: date-time }
@@ -1047,21 +1047,31 @@ components:
         query: { type: string, minLength: 1, description: Natural-language or keyword text. It is compiled internally; SQLite FTS5 syntax is not accepted. }
         space_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string, format: uuid } }
         include_ancestors: { type: boolean, default: true }
-        memory_types: { type: array, items: { $ref: '#/components/schemas/StoredMemoryType' } }
         states: { type: array, items: { $ref: '#/components/schemas/MemoryState' }, default: [active, contested] }
         reference_time: { type: string, format: date-time }
-        channels:
+        intent: { $ref: '#/components/schemas/RecallIntent' }
+        debug: { $ref: '#/components/schemas/RecallDebugOverrides' }
+        max_results: { type: integer, minimum: 1, maximum: 1000, default: 20 }
+        max_context_tokens: { type: integer, minimum: 1, maximum: 1000000, default: 4000 }
+        include_evidence: { type: boolean, default: false }
+        explain: { type: boolean, default: false }
+        cursor: { type: string }
+        exclude_stale_aggregates: { type: boolean, default: false }
+    RecallIntent:
+      type: string
+      enum: [auto, lookup, temporal, entity, relational, multi_hop, procedural, exploratory, verification]
+      default: auto
+    RecallDebugOverrides:
+      type: object
+      additionalProperties: false
+      description: Evaluation/debug-only overrides. Production callers express intent and budget; production capabilities come from query planning and must not be selected here.
+      properties:
+        capabilities:
           type: array
           minItems: 1
           uniqueItems: true
           items: { type: string, enum: [keyword, semantic, graph] }
-          default: [keyword, semantic, graph]
-          description: Top-level retrieval channels. Entity resolution is query understanding; entity facts and memory relations are internal graph signals, not channels.
-        limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
-        max_chars: { type: integer, minimum: 1, maximum: 100000, default: 12000 }
-        include_evidence: { type: boolean, default: false }
-        cursor: { type: string }
-        exclude_stale_aggregates: { type: boolean, default: false }
+          description: Explicit retrieval capability override for evaluation and debugging only.
     MemoryFeedbackRequest:
       type: object
       additionalProperties: false
@@ -1098,12 +1108,12 @@ components:
       type: string
       description: Stored memory lifecycle state. Superseded is assigned only by supersede or reconcile conflict resolution and is not searchable.
       enum: [active, contested, superseded, archived, expired, retracted, deleted]
-    MemoryType:
+    MemoryKind:
       type: string
-      enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience]
-    StoredMemoryType:
+      enum: [fact, event, preference, plan, procedure, scene, topic, timeline]
+    EvidenceRole:
       type: string
-      enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience, aggregate]
+      enum: [direct, derived, temporal_anchor, context]
     CandidateReviewState:
       type: string
       enum: [pending, confirmed, rejected]
@@ -1208,19 +1218,19 @@ components:
     EvidenceInput:
       type: object
       additionalProperties: false
-      required: [event_id, evidence_type]
+      required: [event_id, role]
       properties:
         event_id: { type: string, format: uuid }
-        evidence_type: { type: string, enum: [direct_statement, tool_result, manual_reference] }
+        role: { $ref: '#/components/schemas/EvidenceRole' }
         start_offset: { type: integer, minimum: 0 }
         end_offset: { type: integer, minimum: 1 }
     CreateMemoryRequest:
       type: object
       additionalProperties: false
-      required: [space_id, memory_type, content, evidence, reason]
+      required: [space_id, kind, content, evidence, reason]
       properties:
         space_id: { type: string, format: uuid }
-        memory_type: { $ref: '#/components/schemas/MemoryType' }
+        kind: { $ref: '#/components/schemas/MemoryKind' }
         content: { type: string, minLength: 1 }
         valid_from: { type: [string, 'null'], format: date-time }
         valid_until: { type: [string, 'null'], format: date-time }
@@ -1273,25 +1283,45 @@ components:
         created_at: { type: string, format: date-time }
     MemoryRevision:
       type: object
-      required: [revision_id, memory_id, content, created_by, created_at]
+      additionalProperties: false
+      required: [revision_id, memory_id, kind, display_content, canonical_content, specificity, confidence, evidence, created_by, processing_version, created_at]
       properties:
         revision_id: { type: string, format: uuid }
         memory_id: { type: string, format: uuid }
         parent_revision_id: { type: [string, 'null'], format: uuid }
-        content: { type: string }
+        restored_from_revision_id: { type: [string, 'null'], format: uuid }
+        kind: { type: string, enum: [fact, event, preference, plan, procedure, scene, topic, timeline] }
+        display_content: { type: string }
+        canonical_content: { type: string }
+        canonical_hash: { type: string }
+        subject_entity_ids: { type: array, items: { type: string, format: uuid } }
+        object_entity_ids: { type: array, items: { type: string, format: uuid } }
+        event_type: { type: string }
+        attributes: { type: object, additionalProperties: { type: string } }
+        event_time_start: { type: string, format: date-time }
+        event_time_end: { type: string, format: date-time }
+        time_precision: { type: string, enum: [exact, day, month, year, approximate, unknown] }
+        time_source: { type: string }
         valid_from: { type: [string, 'null'], format: date-time }
         valid_until: { type: [string, 'null'], format: date-time }
-        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        source_speaker: { type: string }
+        language: { type: string }
+        sensitivity: { type: string, enum: [normal, sensitive] }
+        specificity: { type: number, minimum: 0, maximum: 1 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RecallEvidence' } }
         created_by: { type: string }
+        processing_version: { type: string }
+        processor_identity: { type: string }
         created_at: { type: string, format: date-time }
-        evidence: { type: array, items: { $ref: '#/components/schemas/EvidenceInput' } }
     Memory:
       type: object
-      required: [memory_id, space_id, memory_type, current_state, frozen, current_revision, created_at, updated_at]
+      additionalProperties: false
+      required: [memory_id, space_id, kind, current_state, frozen, current_revision, created_at, updated_at]
       properties:
         memory_id: { type: string, format: uuid }
         space_id: { type: string, format: uuid }
-        memory_type: { $ref: '#/components/schemas/StoredMemoryType' }
+        kind: { type: string, enum: [fact, event, preference, plan, procedure, scene, topic, timeline] }
         current_state: { $ref: '#/components/schemas/StoredMemoryState' }
         frozen: { type: boolean }
         sensitivity: { type: string, enum: [normal, sensitive] }
@@ -1337,7 +1367,7 @@ components:
         candidate_id: { type: string, format: uuid }
         event_id: { type: string, format: uuid }
         space_id: { type: string, format: uuid }
-        memory_type: { $ref: '#/components/schemas/MemoryType' }
+        memory_type: { $ref: '#/components/schemas/MemoryKind' }
         content: { type: string }
         valid_from: { type: [string, 'null'], format: date-time }
         valid_until: { type: [string, 'null'], format: date-time }
@@ -1352,7 +1382,7 @@ components:
         review_state: { $ref: '#/components/schemas/CandidateReviewState' }
         confirmed_memory_id: { type: [string, 'null'], format: uuid }
         confirmed_revision_id: { type: [string, 'null'], format: uuid }
-        evidence: { type: array, items: { $ref: '#/components/schemas/EvidenceInput' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RecallEvidence' } }
         related_memory_ids: { type: array, items: { type: string, format: uuid } }
         reviews: { type: array, items: { $ref: '#/components/schemas/CandidateReview' } }
         created_at: { type: string, format: date-time }
@@ -1366,8 +1396,8 @@ components:
     ReviewState: { type: string, enum: [pending, confirmed, rejected] }
     Sensitivity: { type: string, enum: [normal, sensitive] }
     EntityProposalKind: { type: string, enum: [entity, alias, mention] }
-    RelationType: { type: string, enum: [supports, contradicts, supersedes, derived_from, related_to] }
-    Predicate: { type: string, enum: [participates_in, uses_database, owned_by, located_in, depends_on] }
+    RelationType: { type: string, enum: [supports, contradicts, supersedes, derived_from] }
+    Predicate: { type: string, enum: [created_by, depends_on, has_participant_count, has_status, is_active, located_at, member_of, owned_by, participates_in] }
     EntityFact:
       type: object
       additionalProperties: false
@@ -1769,7 +1799,7 @@ components:
         proposed_content: { type: [string, 'null'] }
         valid_from: { type: [string, 'null'], format: date-time }
         valid_until: { type: [string, 'null'], format: date-time }
-        memory_type: { type: [string, 'null'], enum: [fact, preference, constraint, decision, task, event, project_context, agent_experience, null] }
+        memory_type: { type: [string, 'null'], enum: [fact, event, preference, plan, procedure, scene, topic, timeline, null] }
         sensitivity: { $ref: '#/components/schemas/Sensitivity' }
         relation_specs: {}
         mention_specs: {}
@@ -1822,7 +1852,7 @@ components:
         proposed_content: { type: [string, 'null'] }
         valid_from: { type: [string, 'null'], format: date-time }
         valid_until: { type: [string, 'null'], format: date-time }
-        memory_type: { type: [string, 'null'] }
+        memory_type: { type: [string, 'null'], enum: [fact, event, preference, plan, procedure, scene, topic, timeline, null] }
         sensitivity: { $ref: '#/components/schemas/Sensitivity' }
         relation_specs: {}
         mention_specs: {}
@@ -2047,20 +2077,6 @@ components:
         provenance: { type: array, items: { $ref: '#/components/schemas/AggregateProvenance' } }
         checked_at: { type: string, format: date-time }
     AggregatePage: { type: object, additionalProperties: false, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Aggregate' } }, next_cursor: { type: [string, 'null'] } } }
-    SearchResult:
-      type: object
-      required: [memory, rank, matched_channels, selection_reason]
-      properties:
-        memory: { $ref: '#/components/schemas/Memory' }
-        rank: { type: integer, minimum: 1 }
-        keyword_relevance: { type: number }
-        semantic_relevance: { type: number }
-        matched_channels: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, graph] } }
-        graph_signals: { type: array, items: { $ref: '#/components/schemas/GraphSignal' } }
-        graph_facts: { type: array, items: { $ref: '#/components/schemas/EntityFact' } }
-        graph_paths: { type: array, items: { $ref: '#/components/schemas/GraphPath' } }
-        selection_reason: { type: string, enum: [keyword_match, semantic_match, graph_match, channel_fusion] }
-        conflict_refs: { type: array, items: { $ref: '#/components/schemas/ConflictRef' } }
     ConflictRef:
       type: object
       additionalProperties: false
@@ -2070,35 +2086,86 @@ components:
         relation_id: { type: string, format: uuid }
         other_memory_id: { type: string, format: uuid }
         other_revision_id: { type: string, format: uuid }
-    SearchResponse:
+    RecallEvidence:
       type: object
-      required: [results, truncated, chars_used, next_cursor, requested_channels, executed_channels, degraded, degradation_reasons, fts_index_version, semantic_index_version, graph_index_version, graph_index_state, ranking_version, corpus_generation, feedback_aggregate_version]
+      additionalProperties: false
+      required: [evidence_id, event_id, role]
       properties:
-        results: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
-        truncated: { type: boolean }
+        evidence_id: { type: string }
+        event_id: { type: string, format: uuid }
+        event_time: { type: string, format: date-time }
+        event_sequence: { type: integer, minimum: 0 }
+        role: { type: string, enum: [direct, derived, temporal_anchor, context] }
+        start_offset: { type: integer, minimum: 0 }
+        end_offset: { type: integer, minimum: 1 }
+    RecallExplanation:
+      type: object
+      additionalProperties: false
+      required: [matched_signals, selection_reason]
+      properties:
+        matched_signals: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, graph] } }
+        selection_reason: { type: string }
+    ContextItem:
+      type: object
+      additionalProperties: false
+      required: [rank, memory_id, revision_id, kind, display_content, confidence, lifecycle_state, estimated_tokens]
+      properties:
+        rank: { type: integer, minimum: 1 }
+        memory_id: { type: string, format: uuid }
+        revision_id: { type: string, format: uuid }
+        kind: { type: string, enum: [fact, event, preference, plan, procedure, scene, topic, timeline] }
+        display_content: { type: string }
+        event_time_start: { type: string, format: date-time }
+        event_time_end: { type: string, format: date-time }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        source_speaker: { type: string }
+        evidence: { type: array, items: { $ref: '#/components/schemas/RecallEvidence' } }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        lifecycle_state: { $ref: '#/components/schemas/StoredMemoryState' }
+        estimated_tokens: { type: integer, minimum: 0 }
+        explanation: { $ref: '#/components/schemas/RecallExplanation' }
+    ContextPackage:
+      type: object
+      additionalProperties: false
+      required: [items, tokens_used, chars_used, truncated, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ContextItem' } }
+        tokens_used: { type: integer, minimum: 0 }
         chars_used: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
         next_cursor: { type: [string, 'null'] }
-        requested_channels:
+    RecallExecutionMetadata:
+      type: object
+      additionalProperties: false
+      required: [operation_id, intent, reference_time, requested_capabilities, executed_capabilities, degraded, degradation_reasons, query_plan_identity, ranking_identity, context_selection_identity]
+      properties:
+        operation_id: { type: string, format: uuid }
+        intent: { $ref: '#/components/schemas/RecallIntent' }
+        reference_time: { type: string, format: date-time }
+        requested_capabilities:
           type: array
           minItems: 1
           uniqueItems: true
           items: { type: string, enum: [keyword, semantic, graph] }
-        executed_channels:
+        executed_capabilities:
           type: array
           minItems: 1
           uniqueItems: true
           items: { type: string, enum: [keyword, semantic, graph] }
-          description: Channels that actually executed; a subset of requested_channels when degradation occurred.
+          description: Capabilities that actually executed; a subset of requested_capabilities when degradation occurred.
         degraded: { type: boolean }
         degradation_reasons: { type: array, items: { type: string, enum: [keyword_unavailable, semantic_unavailable, semantic_stale, semantic_policy_denied, semantic_policy_changed] } }
-        fts_index_version: { type: integer, minimum: 1 }
-        semantic_index_version: { type: integer, minimum: 0 }
-        ranking_version: { type: string }
-        corpus_generation: { type: integer, minimum: 0 }
-        feedback_aggregate_version: { type: integer, minimum: 0 }
-        graph_index_version: { type: integer, minimum: 0 }
-        graph_index_state: { type: string, enum: [ready, degraded, rebuilding, stale] }
-        resolved_entities: { type: array, items: { $ref: '#/components/schemas/ResolvedEntity' } }
+        query_plan_identity: { type: string, minLength: 1 }
+        ranking_identity: { type: string, minLength: 1 }
+        context_selection_identity: { type: string, minLength: 1 }
+    RecallResponse:
+      type: object
+      additionalProperties: false
+      required: [context, execution]
+      properties:
+        context: { $ref: '#/components/schemas/ContextPackage' }
+        execution: { $ref: '#/components/schemas/RecallExecutionMetadata' }
     GraphSignal:
       type: object
       required: [kind]

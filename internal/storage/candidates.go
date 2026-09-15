@@ -239,14 +239,14 @@ func getCandidate(ctx context.Context, db candidateQueryer, candidateID string) 
 	if err != nil {
 		return domain.Candidate{}, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT event_id, evidence_type, start_offset, end_offset FROM candidate_evidence WHERE candidate_id=? ORDER BY evidence_id`, candidateID)
+	rows, err := db.QueryContext(ctx, `SELECT evidence_id, event_id, role, start_offset, end_offset FROM candidate_evidence WHERE candidate_id=? ORDER BY evidence_id`, candidateID)
 	if err != nil {
 		return domain.Candidate{}, err
 	}
-	result.Evidence = []domain.MemoryEvidence{}
+	result.Evidence = []domain.RevisionEvidence{}
 	for rows.Next() {
-		var item domain.MemoryEvidence
-		if err := rows.Scan(&item.EventID, &item.EvidenceType, &item.StartOffset, &item.EndOffset); err != nil {
+		var item domain.RevisionEvidence
+		if err := rows.Scan(&item.EvidenceID, &item.EventID, &item.Role, &item.StartOffset, &item.EndOffset); err != nil {
 			rows.Close()
 			return domain.Candidate{}, err
 		}
@@ -316,10 +316,14 @@ func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentit
 	}
 	memoryID, revisionID, stateEventID, operationID, auditID, reviewID := ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]
 	now := formatTime(r.runtime.Now())
-	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id, space_id, memory_type, current_revision_id, current_state, frozen, sensitivity, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', 0, ?, ?, ?)`, memoryID, candidate.SpaceID, candidate.MemoryType, revisionID, candidate.Sensitivity, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, frozen, sensitivity, created_at, updated_at) VALUES (?, ?, ?, 'active', 0, ?, ?, ?)`, memoryID, candidate.SpaceID, revisionID, candidate.Sensitivity, now, now); err != nil {
 		return domain.Memory{}, false, err
 	}
-	if err := insertRevision(ctx, tx, revisionID, memoryID, nil, nil, candidate.Content, candidate.ValidFrom, candidate.ValidUntil, candidate.Confidence, identity.CallerID, candidate.ProcessingVersion, &candidate.ProcessorIdentity, now); err != nil {
+	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, candidate.MemoryType, candidate.Content, candidate.ValidFrom, candidate.ValidUntil, candidate.Confidence, candidate.Sensitivity, identity.CallerID, candidate.ProcessingVersion, &candidate.ProcessorIdentity, now)
+	if err != nil {
+		return domain.Memory{}, false, err
+	}
+	if err := insertRevision(ctx, tx, revision); err != nil {
 		return domain.Memory{}, false, err
 	}
 	if err := insertEvidence(ctx, tx, revisionID, evidence, ids[6:], now); err != nil {
@@ -328,7 +332,7 @@ func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentit
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id, memory_id, revision_id, operation_id, from_state, to_state, from_frozen, to_frozen, reason, created_by, created_at) VALUES (?, ?, ?, ?, NULL, 'active', NULL, 0, ?, ?, ?)`, stateEventID, memoryID, revisionID, operationID, params.ReasonCode, identity.CallerID, now); err != nil {
 		return domain.Memory{}, false, err
 	}
-	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, candidate.SpaceID, candidate.MemoryType, "active", candidate.Content, candidate.ValidFrom, candidate.ValidUntil, now); err != nil {
+	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, candidate.SpaceID, "active", now); err != nil {
 		return domain.Memory{}, false, err
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE candidates SET review_state='confirmed', confirmed_memory_id=?, confirmed_revision_id=?, reviewed_at=? WHERE candidate_id=? AND review_state='pending'`, memoryID, revisionID, now, candidateID)

@@ -46,7 +46,7 @@ func aggregateTestRepository(t *testing.T) (*storage.Repository, string) {
 	for i := 0; i < 2; i++ {
 		key := uuid(200 + i)
 		identity = storage.WriteIdentity{CallerID: "test", IdempotencyKey: key, RequestID: uuid(300 + i), Method: "POST", Route: "/v1/memories", RequestHash: storage.HashRequest(key)}
-		_, _, err = repository.CreateMemory(context.Background(), identity, storage.CreateMemoryParams{SpaceID: space.SpaceID, MemoryType: "fact", Content: key, Sensitivity: "normal", Evidence: []storage.EvidenceParams{{EventID: event.EventID, EvidenceType: "direct_statement"}}, Reason: "test"})
+		_, _, err = repository.CreateMemory(context.Background(), identity, storage.CreateMemoryParams{SpaceID: space.SpaceID, Kind: "fact", Content: key, Sensitivity: "normal", Evidence: []storage.EvidenceParams{{EventID: event.EventID, EvidenceType: "direct_statement"}}, Reason: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}

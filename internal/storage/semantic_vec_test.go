@@ -237,9 +237,6 @@ func TestSemanticRecallAppliesStateTypeFiltersBeforeLimit(t *testing.T) {
 	configureSemanticTest(t, repository, &semanticTestProvider{})
 	eligible := createMemoryWithContent(t, repository, "recall-filters-eligible", "automobile filters eligible")
 	excluded := createMemoryWithContent(t, repository, "recall-filters-excluded", "automobile filters excluded")
-	if _, err := repository.store.writer.Exec(`UPDATE memories SET memory_type='decision' WHERE memory_id=?`, excluded.MemoryID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := repository.store.writer.Exec(`UPDATE memory_projections SET memory_type='decision' WHERE memory_id=?`, excluded.MemoryID); err != nil {
 		t.Fatal(err)
 	}

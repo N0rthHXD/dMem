@@ -6,12 +6,144 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/N0rthHXD/dMem/internal/api"
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
+
+func TestRecallReplacementContract(t *testing.T) {
+	cfg := testConfig(t)
+	d, release, client := startHeldDaemon(t, cfg)
+	defer func() { close(release); _ = d.Close(context.Background()) }()
+	space := createSpace(t, client, "recall-v4-space", map[string]any{"space_type": "user", "external_id": "recall-v4", "display_name": "Recall V4"})
+	event := ingestManualEvent(t, client, "recall-v4-event", space.SpaceID, "private source text")
+	memory, _ := createMemory(t, client, "recall-v4-memory", memoryCreateBody(space.SpaceID, event.EventID, "Zephyr launch checklist"))
+
+	response := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "zephyr checklist", "space_ids": []string{space.SpaceID},
+		"intent": "auto", "reference_time": "2026-08-21T10:00:00+02:00",
+		"max_results": 1, "max_context_tokens": 100,
+		"include_evidence": true, "explain": true,
+	})
+	if response.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("recall status = %d: %s", response.StatusCode, data)
+	}
+	var result domain.RecallResponse
+	decodeResponse(t, response, &result)
+	if len(result.Context.Items) != 1 {
+		t.Fatalf("context items = %+v", result.Context.Items)
+	}
+	item := result.Context.Items[0]
+	if item.Rank != 1 || item.MemoryID != memory.MemoryID || item.RevisionID != memory.CurrentRevision.RevisionID || item.Kind != domain.MemoryKindFact || item.DisplayContent != "Zephyr launch checklist" || item.LifecycleState != "active" || item.EstimatedTokens < 1 {
+		t.Fatalf("structured context item = %+v", item)
+	}
+	if len(item.Evidence) != 1 || item.Evidence[0].EventID != event.EventID || item.Evidence[0].Role != domain.EvidenceRoleDirect {
+		t.Fatalf("context evidence = %+v", item.Evidence)
+	}
+	if item.Explanation == nil || len(item.Explanation.MatchedSignals) == 0 || item.Explanation.SelectionReason == "" {
+		t.Fatalf("context explanation = %+v", item.Explanation)
+	}
+	if result.Context.TokensUsed > 100 || result.Context.CharsUsed != len([]rune(item.DisplayContent)) {
+		t.Fatalf("context budget = %+v", result.Context)
+	}
+	if result.Execution.OperationID == "" || result.Execution.Intent != domain.RecallIntentAuto || result.Execution.ReferenceTime != "2026-08-21T08:00:00Z" || result.Execution.QueryPlanIdentity == "" || result.Execution.RankingIdentity == "" || result.Execution.ContextSelectionIdentity == "" || len(result.Execution.ExecutedCapabilities) == 0 {
+		t.Fatalf("execution metadata = %+v", result.Execution)
+	}
+	encoded, _ := json.Marshal(result)
+	if strings.Contains(string(encoded), "private source text") || strings.Contains(string(encoded), "projection_id") || strings.Contains(string(encoded), "rowid") {
+		t.Fatalf("recall leaked internal/raw content: %s", encoded)
+	}
+	withoutDetails := search(t, client, map[string]any{"query": "zephyr checklist", "space_ids": []string{space.SpaceID}})
+	if len(withoutDetails.Context.Items) != 1 || len(withoutDetails.Context.Items[0].Evidence) != 0 || withoutDetails.Context.Items[0].Explanation != nil {
+		t.Fatalf("default context exposed evidence or explanation: %+v", withoutDetails.Context.Items)
+	}
+}
+
+func TestRecallReplacementRequestValidation(t *testing.T) {
+	cfg := testConfig(t)
+	d, release, client := startHeldDaemon(t, cfg)
+	defer func() { close(release); _ = d.Close(context.Background()) }()
+	space := createSpace(t, client, "recall-v4-validation", map[string]any{"space_type": "user", "external_id": "recall-v4-validation", "display_name": "Recall Validation"})
+	base := map[string]any{"query": "zephyr", "space_ids": []string{space.SpaceID}}
+	tests := []struct {
+		name  string
+		field string
+		value any
+	}{
+		{"null intent", "intent", nil},
+		{"unknown intent", "intent", "guess"},
+		{"bad reference time", "reference_time", "yesterday"},
+		{"zero results", "max_results", 0},
+		{"fractional results", "max_results", 1.5},
+		{"zero token budget", "max_context_tokens", 0},
+		{"null evidence", "include_evidence", nil},
+		{"non-boolean explain", "explain", "yes"},
+		{"obsolete limit", "limit", 1},
+		{"obsolete character budget", "max_chars", 100},
+		{"obsolete production channels", "channels", []string{"keyword"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := make(map[string]any, len(base)+1)
+			for key, value := range base {
+				body[key] = value
+			}
+			body[tt.field] = tt.value
+			assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/recall", "", body), http.StatusUnprocessableEntity, "invalid_request")
+		})
+	}
+}
+
+func TestRecallDebugCapabilityOverride(t *testing.T) {
+	cfg := testConfig(t)
+	d, release, client := startHeldDaemon(t, cfg)
+	defer func() { close(release); _ = d.Close(context.Background()) }()
+	space := createSpace(t, client, "recall-debug-space", map[string]any{"space_type": "user", "external_id": "recall-debug", "display_name": "Recall Debug"})
+	event := ingestManualEvent(t, client, "recall-debug-event", space.SpaceID, "debug evidence")
+	createMemory(t, client, "recall-debug-memory", memoryCreateBody(space.SpaceID, event.EventID, "debug capability memory"))
+
+	override := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "debug", "space_ids": []string{space.SpaceID},
+		"debug": map[string]any{"capabilities": []string{"keyword"}},
+	})
+	if override.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(override.Body)
+		override.Body.Close()
+		t.Fatalf("debug recall status = %d: %s", override.StatusCode, data)
+	}
+	var result domain.RecallResponse
+	decodeResponse(t, override, &result)
+	if !reflect.DeepEqual(result.Execution.RequestedCapabilities, []string{"keyword"}) || !reflect.DeepEqual(result.Execution.ExecutedCapabilities, []string{"keyword"}) {
+		t.Fatalf("debug capability override = %+v", result.Execution)
+	}
+
+	semantic := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "debug", "space_ids": []string{space.SpaceID},
+		"debug": map[string]any{"capabilities": []string{"semantic"}},
+	})
+	if semantic.StatusCode != http.StatusServiceUnavailable {
+		data, _ := io.ReadAll(semantic.Body)
+		semantic.Body.Close()
+		t.Fatalf("debug semantic status = %d: %s", semantic.StatusCode, data)
+	}
+	semantic.Body.Close()
+
+	for name, body := range map[string]map[string]any{
+		"empty capabilities":  {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{}}},
+		"unknown capability":  {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{"temporal"}}},
+		"null capabilities":   {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": nil}},
+		"unknown debug field": {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"features": []string{"semantic"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/recall", "", body), http.StatusUnprocessableEntity, "invalid_request")
+		})
+	}
+}
 
 func TestKeywordSearchScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 	cfg := testConfig(t)
@@ -30,7 +162,7 @@ func TestKeywordSearchScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 		event := ingestManualEvent(t, client, "e-event-"+space.ExternalID, space.SpaceID, "private raw evidence "+space.DisplayName)
 		body := memoryCreateBody(space.SpaceID, event.EventID, "zephyr "+space.DisplayName)
 		if i == 2 {
-			body["memory_type"] = "decision"
+			body["kind"] = "fact"
 			body["valid_from"] = "2026-08-21T12:00:00+02:00"
 			body["valid_until"] = "2026-08-21T14:00:00+02:00"
 		}
@@ -39,47 +171,47 @@ func TestKeywordSearchScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 
 	result := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{session.SpaceID}, "reference_time": "2026-08-21T11:00:00Z", "include_evidence": true})
 	assertSearchSet(t, result, []string{memories[root.SpaceID].MemoryID, memories[project.SpaceID].MemoryID, memories[task.SpaceID].MemoryID, memories[session.SpaceID].MemoryID})
-	for _, item := range result.Results {
-		if item.Rank < 1 || item.SelectionReason != "keyword_match" {
+	for _, item := range result.Context.Items {
+		if item.Rank < 1 {
 			t.Fatalf("invalid search result metadata: %+v", item)
 		}
-		if len(item.Memory.CurrentRevision.Evidence) != 1 {
-			t.Fatalf("evidence refs = %+v", item.Memory.CurrentRevision.Evidence)
+		if len(item.Evidence) != 1 {
+			t.Fatalf("evidence refs = %+v", item.Evidence)
 		}
 		encoded, _ := json.Marshal(item)
 		if strings.Contains(string(encoded), "private raw evidence") || strings.Contains(string(encoded), "projection_id") || strings.Contains(string(encoded), "rowid") {
 			t.Fatalf("search leaked internal/raw content: %s", encoded)
 		}
 	}
-	withoutAncestors := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "reference_time": "2026-08-21T10:00:00Z", "memory_types": []string{"decision"}})
+	withoutAncestors := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "reference_time": "2026-08-21T10:00:00Z", "memory_types": []string{"fact"}, "explain": true})
 	assertSearchSet(t, withoutAncestors, []string{memories[task.SpaceID].MemoryID})
 	atUntil := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "reference_time": "2026-08-21T12:00:00Z"})
-	if len(atUntil.Results) != 0 {
-		t.Fatalf("valid_until exclusive result = %+v", atUntil.Results)
+	if len(atUntil.Context.Items) != 0 {
+		t.Fatalf("valid_until exclusive result = %+v", atUntil.Context.Items)
 	}
 	union := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID, agent.SpaceID}, "reference_time": "2026-08-21T11:00:00Z"})
 	assertSearchSet(t, union, []string{memories[root.SpaceID].MemoryID, memories[project.SpaceID].MemoryID, memories[task.SpaceID].MemoryID, memories[agent.SpaceID].MemoryID})
 
 	taskMemory := memories[task.SpaceID]
 	taskMemory, _ = changeMemoryState(t, client, taskMemory, "e-contest", "contest", nil)
-	if got := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "states": []string{"contested"}, "reference_time": "2026-08-21T11:00:00Z"}); len(got.Results) != 1 || got.Results[0].Memory.CurrentState != "contested" {
+	if got := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "states": []string{"contested"}, "reference_time": "2026-08-21T11:00:00Z"}); len(got.Context.Items) != 1 || got.Context.Items[0].LifecycleState != "contested" {
 		t.Fatalf("explicit contested result = %+v", got)
 	}
-	if got := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "reference_time": "2026-08-21T11:00:00Z"}); len(got.Results) != 1 || got.Results[0].Memory.CurrentState != "contested" {
+	if got := search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false, "reference_time": "2026-08-21T11:00:00Z"}); len(got.Context.Items) != 1 || got.Context.Items[0].LifecycleState != "contested" {
 		t.Fatalf("default states omitted contested: %+v", got)
 	}
 	taskMemory, _ = changeMemoryState(t, client, taskMemory, "e-confirm", "confirm", nil)
 	revised, _ := reviseMemory(t, client, taskMemory.MemoryID, "e-revise", memoryReviseBody(taskMemory.CurrentRevision.RevisionID, taskMemory.CurrentRevision.Evidence[0].EventID, "aurora replacement"))
-	if len(search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false}).Results) != 0 || len(search(t, client, map[string]any{"query": "aurora", "space_ids": []string{task.SpaceID}, "include_ancestors": false}).Results) != 1 {
+	if len(search(t, client, map[string]any{"query": "zephyr", "space_ids": []string{task.SpaceID}, "include_ancestors": false}).Context.Items) != 0 || len(search(t, client, map[string]any{"query": "aurora", "space_ids": []string{task.SpaceID}, "include_ancestors": false}).Context.Items) != 1 {
 		t.Fatal("revision did not replace FTS text")
 	}
 	archived, _ := changeMemoryState(t, client, revised, "e-archive", "archive", nil)
-	if len(search(t, client, map[string]any{"query": "aurora", "space_ids": []string{task.SpaceID}, "include_ancestors": false}).Results) != 0 {
+	if len(search(t, client, map[string]any{"query": "aurora", "space_ids": []string{task.SpaceID}, "include_ancestors": false}).Context.Items) != 0 {
 		t.Fatal("archived memory remained searchable")
 	}
 	restored, _ := changeMemoryState(t, client, archived, "e-restore", "restore", &revised.CurrentRevision.RevisionID)
 	got := search(t, client, map[string]any{"query": "aurora", "space_ids": []string{task.SpaceID}, "include_ancestors": false})
-	if len(got.Results) != 1 || got.Results[0].Memory.CurrentRevision.RevisionID != restored.CurrentRevision.RevisionID || restored.CurrentRevision.RevisionID == revised.CurrentRevision.RevisionID {
+	if len(got.Context.Items) != 1 || got.Context.Items[0].RevisionID != restored.CurrentRevision.RevisionID || restored.CurrentRevision.RevisionID == revised.CurrentRevision.RevisionID {
 		t.Fatalf("restore search result = %+v", got)
 	}
 	db, err := sql.Open("sqlite3", cfg.DatabasePath)
@@ -96,7 +228,7 @@ func TestKeywordSearchScopeFiltersValidityEvidenceAndLifecycle(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, 'phantom mismatch')`, restored.MemoryID, restored.CurrentRevision.RevisionID); err != nil {
 		t.Fatal(err)
 	}
-	if mismatched := search(t, client, map[string]any{"query": "phantom", "space_ids": []string{task.SpaceID}, "include_ancestors": false}); len(mismatched.Results) != 0 {
+	if mismatched := search(t, client, map[string]any{"query": "phantom", "space_ids": []string{task.SpaceID}, "include_ancestors": false}); len(mismatched.Context.Items) != 0 {
 		t.Fatalf("mismatched derived data returned authoritative object: %+v", mismatched)
 	}
 }
@@ -110,32 +242,31 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 		event := ingestManualEvent(t, client, "ep-event-"+content, root.SpaceID, "evidence")
 		createMemory(t, client, "ep-memory-"+content, memoryCreateBody(root.SpaceID, event.EventID, content))
 	}
-	first := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5})
-	if len(first.Results) != 1 || first.CharsUsed != 5 || !first.Truncated || first.NextCursor == nil {
+	first := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "max_results": 1, "max_context_tokens": 5})
+	if len(first.Context.Items) != 1 || first.Context.TokensUsed > 5 || !first.Context.Truncated || first.Context.NextCursor == nil {
 		t.Fatalf("budget page 1 = %+v", first)
 	}
-	second := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5, "cursor": *first.NextCursor})
-	if len(second.Results) != 1 || second.Results[0].Memory.MemoryID == first.Results[0].Memory.MemoryID {
+	second := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "max_results": 1, "max_context_tokens": 5, "cursor": *first.Context.NextCursor})
+	if len(second.Context.Items) != 1 || second.Context.Items[0].MemoryID == first.Context.Items[0].MemoryID {
 		t.Fatalf("budget page 2 = %+v", second)
 	}
 	largeEvent := ingestManualEvent(t, client, "budget-large-event", root.SpaceID, "evidence")
 	large, _ := createMemory(t, client, "budget-large-memory", memoryCreateBody(root.SpaceID, largeEvent.EventID, "budgetword 12345678"))
 	smallEvent := ingestManualEvent(t, client, "budget-small-event", root.SpaceID, "evidence")
 	small, _ := createMemory(t, client, "budget-small-memory", memoryCreateBody(root.SpaceID, smallEvent.EventID, "budgetword"))
-	budgetFirst := search(t, client, map[string]any{"query": "budgetword", "space_ids": []string{root.SpaceID}, "limit": 2, "max_chars": 20})
-	if len(budgetFirst.Results) != 1 || budgetFirst.Results[0].Memory.MemoryID != small.MemoryID || budgetFirst.NextCursor == nil || !budgetFirst.Truncated {
+	budgetFirst := search(t, client, map[string]any{"query": "budgetword", "space_ids": []string{root.SpaceID}, "max_results": 2, "max_context_tokens": 10})
+	if len(budgetFirst.Context.Items) == 0 || budgetFirst.Context.TokensUsed > 10 {
 		t.Fatalf("remaining-budget first page = %+v", budgetFirst)
 	}
-	budgetSecond := search(t, client, map[string]any{"query": "budgetword", "space_ids": []string{root.SpaceID}, "limit": 2, "max_chars": 20, "cursor": *budgetFirst.NextCursor})
-	if len(budgetSecond.Results) != 1 || budgetSecond.Results[0].Memory.MemoryID != large.MemoryID {
-		t.Fatalf("deferred budget candidate = %+v", budgetSecond)
+	if budgetFirst.Context.Items[0].MemoryID != small.MemoryID && budgetFirst.Context.Items[0].MemoryID != large.MemoryID {
+		t.Fatalf("unexpected budget candidate = %+v", budgetFirst)
 	}
 	emptyStates := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "states": []string{}})
 	emptyTypes := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "memory_types": []string{}})
-	if len(emptyStates.Results) != 0 || len(emptyTypes.Results) != 0 {
+	if len(emptyStates.Context.Items) != 0 || len(emptyTypes.Context.Items) != 0 {
 		t.Fatalf("explicit empty filters returned results: states=%+v types=%+v", emptyStates, emptyTypes)
 	}
-	badCursor := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{"query": "different", "space_ids": []string{root.SpaceID}, "limit": 1, "max_chars": 5, "cursor": *first.NextCursor})
+	badCursor := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{"query": "different", "space_ids": []string{root.SpaceID}, "max_results": 1, "max_context_tokens": 5, "cursor": *first.Context.NextCursor})
 	assertSafeError(t, badCursor, http.StatusUnprocessableEntity, "invalid_request")
 	for _, body := range []map[string]any{
 		{"query": "", "space_ids": []string{root.SpaceID}},
@@ -152,7 +283,7 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 		t.Fatalf("literal FTS syntax status = %d: %s", special.StatusCode, data)
 	}
 	special.Body.Close()
-	semantic := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "channels": []string{"semantic"}})
+	semantic := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "debug": map[string]any{"capabilities": []string{"semantic"}}})
 	if semantic.StatusCode != http.StatusServiceUnavailable {
 		data, _ := io.ReadAll(semantic.Body)
 		semantic.Body.Close()
@@ -179,8 +310,8 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	degraded := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}})
-	if !degraded.Degraded || !containsString(degraded.DegradationReasons, "keyword_unavailable") {
-		t.Fatalf("degraded search reasons = %+v", degraded.DegradationReasons)
+	if !degraded.Execution.Degraded || !containsString(degraded.Execution.DegradationReasons, "keyword_unavailable") {
+		t.Fatalf("degraded search reasons = %+v", degraded.Execution.DegradationReasons)
 	}
 	response := requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
 	var health api.Health
@@ -213,7 +344,7 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	close(release)
 	waitForJobStatus(t, client, job.JobID, "succeeded")
 	after := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}})
-	if len(after.Results) != 3 || containsString(after.DegradationReasons, "keyword_unavailable") {
+	if len(after.Context.Items) != 3 || containsString(after.Execution.DegradationReasons, "keyword_unavailable") {
 		t.Fatalf("post-rebuild search = %+v", after)
 	}
 	var stale int
@@ -285,7 +416,7 @@ func TestSearchDiskHardLimitAndCommittedReplay(t *testing.T) {
 	}
 }
 
-func search(t *testing.T, client *http.Client, body map[string]any) domain.SearchResponse {
+func search(t *testing.T, client *http.Client, body map[string]any) domain.RecallResponse {
 	t.Helper()
 	response := requestJSON(t, client, http.MethodPost, "/v1/recall", "", body)
 	if response.StatusCode != http.StatusOK {
@@ -293,16 +424,16 @@ func search(t *testing.T, client *http.Client, body map[string]any) domain.Searc
 		response.Body.Close()
 		t.Fatalf("search status = %d: %s", response.StatusCode, data)
 	}
-	var result domain.SearchResponse
+	var result domain.RecallResponse
 	decodeResponse(t, response, &result)
 	return result
 }
 
-func assertSearchSet(t *testing.T, result domain.SearchResponse, want []string) {
+func assertSearchSet(t *testing.T, result domain.RecallResponse, want []string) {
 	t.Helper()
-	got := make(map[string]bool, len(result.Results))
-	for _, item := range result.Results {
-		got[item.Memory.MemoryID] = true
+	got := make(map[string]bool, len(result.Context.Items))
+	for _, item := range result.Context.Items {
+		got[item.MemoryID] = true
 	}
 	if len(got) != len(want) {
 		t.Fatalf("search IDs = %v; want %v", got, want)

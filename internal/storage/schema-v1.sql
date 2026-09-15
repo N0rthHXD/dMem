@@ -32,6 +32,19 @@ WHERE space_type = 'user';
 CREATE INDEX memory_spaces_parent_idx
 ON memory_spaces(parent_space_id, space_type, external_id);
 
+CREATE TABLE source_streams (
+    source_stream_id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    source_type TEXT NOT NULL CHECK (source_type IN ('message', 'conversation', 'tool_call', 'tool_result', 'file_reference', 'collector_event', 'manual')),
+    source_name TEXT NOT NULL,
+    source_stream_key TEXT NOT NULL CHECK (length(source_stream_key) > 0),
+    created_at TEXT NOT NULL,
+    UNIQUE (space_id, source_stream_key)
+) STRICT;
+
+CREATE INDEX source_streams_space_idx
+ON source_streams(space_id, source_type, source_stream_key);
+
 CREATE TABLE raw_contents (
     content_id TEXT PRIMARY KEY,
     content_kind TEXT NOT NULL CHECK (content_kind IN ('text', 'json', 'reference')),
@@ -58,6 +71,8 @@ CREATE TABLE raw_events (
     source_type TEXT NOT NULL CHECK (source_type IN ('message', 'conversation', 'tool_call', 'tool_result', 'file_reference', 'collector_event', 'manual')),
     source_name TEXT NOT NULL,
     source_event_id TEXT,
+    source_stream_id TEXT REFERENCES source_streams(source_stream_id) ON DELETE RESTRICT,
+    sequence INTEGER CHECK (sequence IS NULL OR sequence >= 0),
     caller_id TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
     received_at TEXT NOT NULL,
@@ -75,10 +90,17 @@ ON raw_events(source_name, occurred_at DESC, event_id DESC);
 CREATE INDEX raw_events_operation_idx
 ON raw_events(operation_id);
 
+CREATE UNIQUE INDEX raw_events_stream_sequence
+ON raw_events(source_stream_id, sequence)
+WHERE source_stream_id IS NOT NULL;
+
+CREATE INDEX raw_events_stream_order_idx
+ON raw_events(source_stream_id, sequence, occurred_at, event_id)
+WHERE source_stream_id IS NOT NULL;
+
 CREATE TABLE memories (
     memory_id TEXT PRIMARY KEY,
     space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
-    memory_type TEXT NOT NULL CHECK (memory_type IN ('fact', 'preference', 'constraint', 'decision', 'task', 'event', 'project_context', 'agent_experience', 'aggregate')),
     current_revision_id TEXT NOT NULL,
     current_state TEXT NOT NULL CHECK (current_state IN ('active', 'contested', 'superseded', 'archived', 'expired', 'retracted', 'deleted')),
     frozen INTEGER NOT NULL DEFAULT 0 CHECK (frozen IN (0, 1)),
@@ -95,16 +117,28 @@ CREATE TABLE memory_revisions (
     memory_id TEXT NOT NULL REFERENCES memories(memory_id) ON DELETE RESTRICT,
     parent_revision_id TEXT,
     restored_from_revision_id TEXT,
-    content TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
     valid_from TEXT,
     valid_until TEXT,
-    confidence REAL CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    kind TEXT NOT NULL CHECK (kind IN ('fact', 'event', 'preference', 'plan', 'procedure', 'scene', 'topic', 'timeline')),
+    display_content TEXT NOT NULL,
+    canonical_content TEXT NOT NULL,
+    canonical_hash TEXT NOT NULL,
+    event_type TEXT,
+    event_time_start TEXT,
+    event_time_end TEXT,
+    time_precision TEXT CHECK (time_precision IS NULL OR time_precision IN ('exact', 'day', 'month', 'year', 'approximate', 'unknown')),
+    time_source TEXT,
+    source_speaker TEXT,
+    language TEXT,
+    sensitivity TEXT NOT NULL DEFAULT 'normal' CHECK (sensitivity IN ('normal', 'sensitive')),
+    specificity REAL NOT NULL CHECK (specificity >= 0.0 AND specificity <= 1.0),
     created_by TEXT NOT NULL,
     processing_version TEXT NOT NULL,
     processor_identity TEXT,
     created_at TEXT NOT NULL,
     CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from),
+    CHECK (event_time_end IS NULL OR event_time_start IS NULL OR event_time_end > event_time_start),
     UNIQUE (memory_id, revision_id),
     FOREIGN KEY (memory_id, parent_revision_id)
         REFERENCES memory_revisions(memory_id, revision_id)
@@ -116,6 +150,22 @@ CREATE TABLE memory_revisions (
 
 CREATE INDEX memory_revisions_memory_time_idx
 ON memory_revisions(memory_id, created_at DESC, revision_id DESC);
+
+CREATE TABLE revision_subject_entities (
+    revision_id TEXT NOT NULL REFERENCES memory_revisions(revision_id) ON DELETE RESTRICT,
+    entity_order INTEGER NOT NULL CHECK (entity_order >= 0),
+    entity_id TEXT NOT NULL,
+    PRIMARY KEY (revision_id, entity_order),
+    UNIQUE (revision_id, entity_id)
+) WITHOUT ROWID, STRICT;
+
+CREATE TABLE revision_object_entities (
+    revision_id TEXT NOT NULL REFERENCES memory_revisions(revision_id) ON DELETE RESTRICT,
+    entity_order INTEGER NOT NULL CHECK (entity_order >= 0),
+    entity_id TEXT NOT NULL,
+    PRIMARY KEY (revision_id, entity_order),
+    UNIQUE (revision_id, entity_id)
+) WITHOUT ROWID, STRICT;
 
 CREATE TRIGGER memory_revisions_no_update
 BEFORE UPDATE ON memory_revisions
@@ -165,7 +215,7 @@ CREATE TABLE memory_evidence (
     evidence_id TEXT PRIMARY KEY,
     revision_id TEXT NOT NULL REFERENCES memory_revisions(revision_id) ON DELETE RESTRICT,
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
-    evidence_type TEXT NOT NULL CHECK (evidence_type IN ('direct_statement', 'tool_result', 'manual_reference')),
+    role TEXT NOT NULL DEFAULT 'direct' CHECK (role IN ('direct', 'derived', 'temporal_anchor', 'context')),
     start_offset INTEGER CHECK (start_offset IS NULL OR start_offset >= 0),
     end_offset INTEGER CHECK (end_offset IS NULL OR end_offset >= 0),
     created_at TEXT NOT NULL,
@@ -191,11 +241,71 @@ BEGIN
     SELECT RAISE(ABORT, 'memory evidence is append-only');
 END;
 
+CREATE TABLE revision_attributes (
+    revision_id TEXT NOT NULL REFERENCES memory_revisions(revision_id) ON DELETE RESTRICT,
+    attribute_key TEXT NOT NULL CHECK (length(attribute_key) > 0),
+    attribute_value TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (revision_id, attribute_key)
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX revision_attributes_key_idx
+ON revision_attributes(attribute_key, attribute_value, revision_id);
+
+CREATE TABLE memory_quality (
+    memory_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    evidence_strength REAL NOT NULL CHECK (evidence_strength >= 0.0 AND evidence_strength <= 1.0),
+    extraction_confidence REAL NOT NULL CHECK (extraction_confidence >= 0.0 AND extraction_confidence <= 1.0),
+    specificity REAL NOT NULL CHECK (specificity >= 0.0 AND specificity <= 1.0),
+    temporal_precision REAL NOT NULL CHECK (temporal_precision >= 0.0 AND temporal_precision <= 1.0),
+    source_diversity REAL NOT NULL CHECK (source_diversity >= 0.0 AND source_diversity <= 1.0),
+    review_status REAL NOT NULL CHECK (review_status >= 0.0 AND review_status <= 1.0),
+    contradiction_penalty REAL NOT NULL CHECK (contradiction_penalty >= 0.0 AND contradiction_penalty <= 1.0),
+    duplicate_density REAL NOT NULL CHECK (duplicate_density >= 0.0 AND duplicate_density <= 1.0),
+    quality REAL NOT NULL CHECK (quality >= 0.0 AND quality <= 1.0),
+    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+    algorithm_version TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (memory_id, revision_id),
+    FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX memory_quality_generation_idx
+ON memory_quality(generation, quality, memory_id);
+
+CREATE TABLE duplicate_clusters (
+    cluster_id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    representative_memory_id TEXT NOT NULL,
+    representative_revision_id TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+    member_count INTEGER NOT NULL DEFAULT 0 CHECK (member_count >= 0),
+    algorithm_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (representative_memory_id, representative_revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX duplicate_clusters_space_idx
+ON duplicate_clusters(space_id, generation, cluster_id);
+
+CREATE TABLE duplicate_cluster_members (
+    cluster_id TEXT NOT NULL REFERENCES duplicate_clusters(cluster_id) ON DELETE RESTRICT,
+    memory_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    reason_code TEXT NOT NULL CHECK (reason_code IN ('same_logical_memory', 'shared_primary_evidence', 'equivalent_canonical_tuple', 'semantic_time_compatible', 'aggregate_provenance')),
+    similarity REAL CHECK (similarity IS NULL OR (similarity >= 0.0 AND similarity <= 1.0)),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (cluster_id, memory_id),
+    FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) WITHOUT ROWID, STRICT;
+
 CREATE TABLE candidates (
     candidate_id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
     space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
-    memory_type TEXT NOT NULL CHECK (memory_type IN ('fact', 'preference', 'constraint', 'decision', 'task', 'event', 'project_context', 'agent_experience', 'aggregate')),
+    memory_type TEXT NOT NULL CHECK (memory_type IN ('fact', 'event', 'preference', 'plan', 'procedure', 'scene', 'topic', 'timeline')),
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     valid_from TEXT,
@@ -271,6 +381,7 @@ CREATE TABLE candidate_evidence (
     candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id) ON DELETE RESTRICT,
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
     evidence_type TEXT NOT NULL CHECK (evidence_type IN ('direct_statement', 'tool_result', 'manual_reference')),
+    role TEXT NOT NULL DEFAULT 'direct' CHECK (role IN ('direct', 'derived', 'temporal_anchor', 'context')),
     start_offset INTEGER CHECK (start_offset IS NULL OR start_offset >= 0),
     end_offset INTEGER CHECK (end_offset IS NULL OR end_offset >= 0),
     created_at TEXT NOT NULL,
@@ -448,6 +559,7 @@ CREATE TABLE entity_mentions (
     mention_type TEXT NOT NULL CHECK (mention_type IN ('explicit', 'implicit')),
     source TEXT NOT NULL CHECK (source IN ('processor', 'human_confirmation')),
     surface_text TEXT,
+    confidence REAL CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
     created_by TEXT NOT NULL,
     processing_version TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -557,7 +669,7 @@ CREATE TRIGGER entity_merge_proposals_no_delete BEFORE DELETE ON entity_merge_pr
 CREATE TABLE memory_relations (
     relation_id TEXT PRIMARY KEY,
     space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
-    relation_type TEXT NOT NULL CHECK (relation_type IN ('supports', 'contradicts', 'supersedes', 'derived_from', 'related_to')),
+    relation_type TEXT NOT NULL CHECK (relation_type IN ('supports', 'contradicts', 'supersedes', 'derived_from')),
     source_memory_id TEXT NOT NULL,
     source_revision_id TEXT NOT NULL,
     target_memory_id TEXT NOT NULL,
@@ -571,7 +683,6 @@ CREATE TABLE memory_relations (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     CHECK (source_memory_id <> target_memory_id OR source_revision_id <> target_revision_id),
-    CHECK (relation_type <> 'related_to' OR (source_memory_id < target_memory_id OR (source_memory_id = target_memory_id AND source_revision_id < target_revision_id))),
     FOREIGN KEY (source_memory_id, source_revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT,
     FOREIGN KEY (target_memory_id, target_revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT,
     UNIQUE (relation_type, source_memory_id, source_revision_id, target_memory_id, target_revision_id, specification_hash)
@@ -630,7 +741,7 @@ CREATE TABLE relation_proposals (
     proposal_id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
     space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
-    relation_type TEXT NOT NULL CHECK (relation_type IN ('supports', 'contradicts', 'supersedes', 'derived_from', 'related_to')),
+    relation_type TEXT NOT NULL CHECK (relation_type IN ('supports', 'contradicts', 'supersedes', 'derived_from')),
     source_memory_id TEXT NOT NULL,
     source_revision_id TEXT NOT NULL,
     target_memory_id TEXT NOT NULL,
@@ -710,7 +821,7 @@ CREATE TABLE evolution_proposals (
     proposed_content_hash TEXT,
     valid_from TEXT,
     valid_until TEXT,
-    memory_type TEXT CHECK (memory_type IS NULL OR memory_type IN ('fact', 'preference', 'constraint', 'decision', 'task', 'event', 'project_context', 'agent_experience', 'aggregate')),
+    memory_type TEXT CHECK (memory_type IS NULL OR memory_type IN ('fact', 'event', 'preference', 'plan', 'procedure', 'scene', 'topic', 'timeline')),
     sensitivity TEXT NOT NULL DEFAULT 'normal' CHECK (sensitivity IN ('normal', 'sensitive')),
     relation_specs_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(relation_specs_json) AND json_type(relation_specs_json) = 'array'),
     mention_specs_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(mention_specs_json) AND json_type(mention_specs_json) = 'array'),
@@ -929,7 +1040,7 @@ INSERT INTO feedback_aggregate_metadata(singleton, algorithm_version, state, upd
 CREATE TABLE aggregate_descriptors (
     aggregate_id TEXT PRIMARY KEY,
     memory_id TEXT NOT NULL UNIQUE REFERENCES memories(memory_id) ON DELETE RESTRICT,
-    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic')),
+    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic', 'timeline')),
     policy_version TEXT NOT NULL,
     processing_version TEXT NOT NULL,
     sensitivity TEXT NOT NULL CHECK (sensitivity IN ('normal', 'sensitive')),
@@ -937,14 +1048,14 @@ CREATE TABLE aggregate_descriptors (
     created_at TEXT NOT NULL
 ) STRICT;
 CREATE INDEX aggregate_descriptors_kind_idx ON aggregate_descriptors(aggregate_kind, memory_id);
-CREATE TRIGGER aggregate_descriptors_validate_insert BEFORE INSERT ON aggregate_descriptors WHEN (SELECT memory_type FROM memories WHERE memory_id = NEW.memory_id) <> 'aggregate' BEGIN SELECT RAISE(ABORT, 'aggregate descriptor requires aggregate memory type'); END;
+CREATE TRIGGER aggregate_descriptors_validate_insert BEFORE INSERT ON aggregate_descriptors WHEN (SELECT r.kind FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=NEW.memory_id) IS NOT NEW.aggregate_kind BEGIN SELECT RAISE(ABORT, 'aggregate descriptor kind must match current revision'); END;
 CREATE TRIGGER aggregate_descriptors_no_update BEFORE UPDATE ON aggregate_descriptors BEGIN SELECT RAISE(ABORT, 'aggregate descriptors are immutable'); END;
 CREATE TRIGGER aggregate_descriptors_no_delete BEFORE DELETE ON aggregate_descriptors BEGIN SELECT RAISE(ABORT, 'aggregate descriptors are immutable'); END;
 
 CREATE TABLE aggregate_proposals (
     proposal_id TEXT PRIMARY KEY,
     space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
-    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic')),
+    aggregate_kind TEXT NOT NULL CHECK (aggregate_kind IN ('scene', 'topic', 'timeline')),
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     input_fingerprint TEXT NOT NULL,
@@ -1474,11 +1585,15 @@ CREATE TABLE predicates (
 ) STRICT;
 
 INSERT INTO predicates(predicate, description, created_at) VALUES
-    ('participates_in', 'entity participates in a project or activity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('uses_database', 'entity uses a database system', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('owned_by', 'entity is owned by another entity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('located_in', 'entity is located in a place', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('depends_on', 'entity depends on another entity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+    ('created_by', 'entity was created by a person or organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('depends_on', 'entity depends on another entity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('has_participant_count', 'event has a participant count', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('has_status', 'entity has a status', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('is_active', 'entity has an active state', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('located_at', 'entity is located at a place', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('member_of', 'entity is a member of an organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('owned_by', 'entity is owned by a person or organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('participates_in', 'entity participates in a project or activity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 CREATE TABLE entity_facts (
     fact_id TEXT PRIMARY KEY,
@@ -1633,5 +1748,132 @@ CREATE TABLE graph_index_metadata (
     updated_at TEXT NOT NULL
 ) STRICT;
 INSERT INTO graph_index_metadata(singleton, active_version, state, updated_at) VALUES (1, 1, 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+CREATE TABLE predicate_definitions (
+    predicate TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    subject_types_json TEXT NOT NULL CHECK (json_valid(subject_types_json) AND json_type(subject_types_json) = 'array'),
+    object_entity_types_json TEXT NOT NULL CHECK (json_valid(object_entity_types_json) AND json_type(object_entity_types_json) = 'array'),
+    object_literal_type TEXT CHECK (object_literal_type IS NULL OR object_literal_type IN ('string', 'number', 'boolean')),
+    direction TEXT NOT NULL CHECK (direction IN ('directed', 'symmetric')),
+    inverse_predicate TEXT REFERENCES predicate_definitions(predicate) ON DELETE RESTRICT,
+    cardinality TEXT NOT NULL CHECK (cardinality IN ('one', 'many')),
+    transitivity TEXT NOT NULL CHECK (transitivity IN ('none', 'permitted')),
+    temporal_policy TEXT NOT NULL CHECK (temporal_policy IN ('static', 'valid_time', 'event_time')),
+    allowed_path_positions_json TEXT NOT NULL CHECK (json_valid(allowed_path_positions_json) AND json_type(allowed_path_positions_json) = 'array'),
+    auto_confirm TEXT NOT NULL CHECK (auto_confirm IN ('never', 'exact_match', 'threshold')),
+    created_at TEXT NOT NULL,
+    CHECK ((json_array_length(object_entity_types_json) = 0) <> (object_literal_type IS NULL)),
+    CHECK (inverse_predicate IS NULL OR inverse_predicate <> predicate)
+) STRICT;
+
+CREATE TABLE event_participants (
+    event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
+    entity_id TEXT NOT NULL REFERENCES entities(entity_id) ON DELETE RESTRICT,
+    participant_role TEXT NOT NULL CHECK (length(participant_role) > 0),
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (event_id, entity_id, participant_role)
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX event_participants_entity_idx
+ON event_participants(entity_id, event_id, participant_role);
+
+CREATE TABLE event_temporal_bindings (
+    binding_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
+    binding_kind TEXT NOT NULL CHECK (binding_kind IN ('occurred_at', 'occurred_during')),
+    place_entity_id TEXT REFERENCES entities(entity_id) ON DELETE RESTRICT,
+    interval_start TEXT,
+    interval_end TEXT,
+    precision TEXT NOT NULL CHECK (precision IN ('exact', 'day', 'month', 'year', 'approximate', 'unknown')),
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    created_at TEXT NOT NULL,
+    CHECK ((binding_kind = 'occurred_at' AND place_entity_id IS NOT NULL AND interval_start IS NULL AND interval_end IS NULL) OR
+           (binding_kind = 'occurred_during' AND place_entity_id IS NULL AND interval_start IS NOT NULL)),
+    CHECK (interval_end IS NULL OR interval_start IS NULL OR interval_end > interval_start)
+) STRICT;
+
+CREATE INDEX event_temporal_bindings_event_idx
+ON event_temporal_bindings(event_id, binding_kind, binding_id);
+
+CREATE TABLE query_telemetry (
+    telemetry_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    query_plan_version TEXT NOT NULL,
+    query_type TEXT NOT NULL,
+    requested_capabilities_json TEXT NOT NULL CHECK (json_valid(requested_capabilities_json) AND json_type(requested_capabilities_json) = 'array'),
+    executed_capabilities_json TEXT NOT NULL CHECK (json_valid(executed_capabilities_json) AND json_type(executed_capabilities_json) = 'array'),
+    candidate_counts_json TEXT NOT NULL CHECK (json_valid(candidate_counts_json) AND json_type(candidate_counts_json) = 'object'),
+    rejection_counts_json TEXT NOT NULL CHECK (json_valid(rejection_counts_json) AND json_type(rejection_counts_json) = 'object'),
+    score_summary_json TEXT NOT NULL CHECK (json_valid(score_summary_json) AND json_type(score_summary_json) = 'object'),
+    graph_counts_json TEXT NOT NULL CHECK (json_valid(graph_counts_json) AND json_type(graph_counts_json) = 'object'),
+    duplicate_cluster_count INTEGER NOT NULL CHECK (duplicate_cluster_count >= 0),
+    context_tokens INTEGER NOT NULL CHECK (context_tokens >= 0),
+    context_chars INTEGER NOT NULL CHECK (context_chars >= 0),
+    ranking_identity TEXT NOT NULL,
+    context_identity TEXT NOT NULL,
+    degradation_reasons_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(degradation_reasons_json) AND json_type(degradation_reasons_json) = 'array'),
+    phase_latency_ms_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(phase_latency_ms_json) AND json_type(phase_latency_ms_json) = 'object'),
+    created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX query_telemetry_operation_idx
+ON query_telemetry(operation_id, created_at, telemetry_id);
+
+CREATE TABLE context_decisions (
+    decision_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    result_rank INTEGER CHECK (result_rank IS NULL OR result_rank > 0),
+    selection_state TEXT NOT NULL CHECK (selection_state IN ('selected', 'rejected')),
+    selection_reason TEXT NOT NULL,
+    context_identity TEXT NOT NULL,
+    estimated_tokens INTEGER NOT NULL CHECK (estimated_tokens >= 0),
+    duplicate_cluster_id TEXT REFERENCES duplicate_clusters(cluster_id) ON DELETE RESTRICT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX context_decisions_operation_idx
+ON context_decisions(operation_id, selection_state, created_at, decision_id);
+
+CREATE TABLE algorithm_identity_versions (
+    identity_kind TEXT NOT NULL CHECK (identity_kind IN (
+        'processing', 'consolidation', 'projection', 'embedding_document', 'embedding_query',
+        'semantic_calibration', 'keyword_compiler', 'entity_normalization', 'predicate_registry',
+        'graph_extraction', 'graph_scoring', 'query_planning', 'ranking_features', 'ranking_weights',
+        'context_selection', 'feedback_aggregation', 'metric_schema')),
+    identity TEXT NOT NULL CHECK (length(identity) > 0),
+    version TEXT NOT NULL CHECK (length(version) > 0),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    state TEXT NOT NULL CHECK (state IN ('active', 'building', 'degraded', 'superseded')),
+    created_at TEXT NOT NULL,
+    activated_at TEXT,
+    PRIMARY KEY (identity_kind, identity)
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX algorithm_identity_versions_state_idx
+ON algorithm_identity_versions(identity_kind, state, generation, identity);
+
+CREATE TABLE active_generation_metadata (
+    scope TEXT NOT NULL CHECK (scope IN ('membership', 'ranking', 'graph', 'context', 'evaluation')),
+    identity_kind TEXT NOT NULL CHECK (identity_kind IN (
+        'processing', 'consolidation', 'projection', 'embedding_document', 'embedding_query',
+        'semantic_calibration', 'keyword_compiler', 'entity_normalization', 'predicate_registry',
+        'graph_extraction', 'graph_scoring', 'query_planning', 'ranking_features', 'ranking_weights',
+        'context_selection', 'feedback_aggregation', 'metric_schema')),
+    identity TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (scope, identity_kind),
+    FOREIGN KEY (identity_kind, identity)
+        REFERENCES algorithm_identity_versions(identity_kind, identity)
+        ON DELETE RESTRICT
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX active_generation_metadata_identity_idx
+ON active_generation_metadata(identity_kind, identity, generation);
 
 COMMIT;

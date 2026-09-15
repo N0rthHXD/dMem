@@ -64,7 +64,7 @@ func (r *Repository) ExistingImportMappings(ctx context.Context, sourceIdentity,
 
 func (r *Repository) FindMemoryByContentHash(ctx context.Context, targetSpaceID, hash string) (string, string, error) {
 	var memoryID, revisionID string
-	err := r.store.reader.QueryRowContext(ctx, `SELECT m.memory_id,m.current_revision_id FROM memories m JOIN memory_revisions v ON v.memory_id=m.memory_id AND v.revision_id=m.current_revision_id WHERE m.space_id=? AND v.content_hash=? ORDER BY m.memory_id LIMIT 1`, targetSpaceID, hash).Scan(&memoryID, &revisionID)
+	err := r.store.reader.QueryRowContext(ctx, `SELECT m.memory_id,m.current_revision_id FROM memories m JOIN memory_revisions v ON v.memory_id=m.memory_id AND v.revision_id=m.current_revision_id WHERE m.space_id=? AND v.canonical_hash=? ORDER BY m.memory_id LIMIT 1`, targetSpaceID, hash).Scan(&memoryID, &revisionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
 	}
@@ -73,7 +73,7 @@ func (r *Repository) FindMemoryByContentHash(ctx context.Context, targetSpaceID,
 
 func (r *Repository) CurrentRevision(ctx context.Context, memoryID string) (string, string, error) {
 	var revisionID, hash string
-	err := r.store.reader.QueryRowContext(ctx, `SELECT m.current_revision_id,v.content_hash FROM memories m JOIN memory_revisions v ON v.memory_id=m.memory_id AND v.revision_id=m.current_revision_id WHERE m.memory_id=?`, memoryID).Scan(&revisionID, &hash)
+	err := r.store.reader.QueryRowContext(ctx, `SELECT m.current_revision_id,v.canonical_hash FROM memories m JOIN memory_revisions v ON v.memory_id=m.memory_id AND v.revision_id=m.current_revision_id WHERE m.memory_id=?`, memoryID).Scan(&revisionID, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", nil
 	}
@@ -305,19 +305,19 @@ func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targ
 		_, err = tx.ExecContext(ctx, `INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,source_event_id,caller_id,occurred_at,received_at,processing_status,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, operationID, targetSpace, contentID, s("source_type"), s("source_name"), s("source_event_id"), "import:"+fmt.Sprint(s("caller_id")), s("occurred_at"), s("received_at"), s("processing_status"), s("metadata_json"), s("created_at"))
 		return err
 	case "memory":
-		_, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)`, o.LocalID, targetSpace, s("memory_type"), local("current_revision_id"), s("current_state"), s("frozen"), s("sensitivity"), s("created_at"), s("updated_at"))
+		_, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`, o.LocalID, targetSpace, local("current_revision_id"), s("current_state"), s("frozen"), s("sensitivity"), s("created_at"), s("updated_at"))
 		return err
 	case "revision":
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,restored_from_revision_id,content,content_hash,valid_from,valid_until,confidence,created_by,processing_version,processor_identity,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("memory_id"), local("parent_revision_id"), local("restored_from_revision_id"), s("content"), s("content_hash"), s("valid_from"), s("valid_until"), s("confidence"), "import", s("processing_version"), s("processor_identity"), s("created_at")); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,restored_from_revision_id,valid_from,valid_until,confidence,kind,display_content,canonical_content,canonical_hash,event_type,event_time_start,event_time_end,time_precision,time_source,source_speaker,language,sensitivity,specificity,created_by,processing_version,processor_identity,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("memory_id"), local("parent_revision_id"), local("restored_from_revision_id"), s("valid_from"), s("valid_until"), s("confidence"), s("kind"), s("display_content"), s("canonical_content"), s("canonical_hash"), s("event_type"), s("event_time_start"), s("event_time_end"), s("time_precision"), s("time_source"), s("source_speaker"), s("language"), s("sensitivity"), s("specificity"), "import", s("processing_version"), s("processor_identity"), s("created_at")); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,valid_from,valid_until,updated_at) SELECT m.memory_id,?,m.space_id,m.memory_type,m.current_state,m.current_state IN ('active','contested'),?,?,?, ?,? FROM memories m WHERE m.memory_id=? AND m.current_revision_id=? ON CONFLICT(memory_id) DO UPDATE SET revision_id=excluded.revision_id,space_id=excluded.space_id,memory_type=excluded.memory_type,current_state=excluded.current_state,searchable=excluded.searchable,display_content=excluded.display_content,content_hash=excluded.content_hash,embedding_state='stale',valid_from=excluded.valid_from,valid_until=excluded.valid_until,updated_at=excluded.updated_at`, o.LocalID, s("content"), s("content_hash"), s("valid_from"), s("valid_until"), now, local("memory_id"), o.LocalID)
+		_, err := tx.ExecContext(ctx, `INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,valid_from,valid_until,updated_at) SELECT m.memory_id,r.revision_id,m.space_id,r.kind,m.current_state,m.current_state IN ('active','contested'),r.display_content,r.canonical_hash,r.valid_from,r.valid_until,? FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=? AND m.current_revision_id=? ON CONFLICT(memory_id) DO UPDATE SET revision_id=excluded.revision_id,space_id=excluded.space_id,memory_type=excluded.memory_type,current_state=excluded.current_state,searchable=excluded.searchable,display_content=excluded.display_content,content_hash=excluded.content_hash,embedding_state='stale',valid_from=excluded.valid_from,valid_until=excluded.valid_until,updated_at=excluded.updated_at`, now, local("memory_id"), o.LocalID)
 		return err
 	case "memory_state_event":
 		_, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("memory_id"), local("revision_id"), operationID, s("from_state"), s("to_state"), s("from_frozen"), s("to_frozen"), s("reason"), "import", s("created_at"))
 		return err
 	case "memory_evidence":
-		_, err := tx.ExecContext(ctx, `INSERT INTO memory_evidence(evidence_id,revision_id,event_id,evidence_type,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?)`, o.LocalID, local("revision_id"), local("event_id"), s("evidence_type"), s("start_offset"), s("end_offset"), s("created_at"))
+		_, err := tx.ExecContext(ctx, `INSERT INTO memory_evidence(evidence_id,revision_id,event_id,role,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?)`, o.LocalID, local("revision_id"), local("event_id"), s("role"), s("start_offset"), s("end_offset"), s("created_at"))
 		return err
 	case "feedback_event":
 		_, err := tx.ExecContext(ctx, `INSERT INTO feedback_events(feedback_id,operation_id,caller_id,memory_id,revision_id,feedback_type,reason_code,note,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, o.LocalID, operationID, s("caller_id"), local("memory_id"), local("revision_id"), s("feedback_type"), s("reason_code"), s("note"), s("created_at"))
@@ -338,7 +338,7 @@ func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targ
 		_, err := tx.ExecContext(ctx, `INSERT INTO entity_alias_events(alias_event_id,alias_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)`, o.LocalID, local("alias_id"), operationID, s("from_state"), s("to_state"), s("reason"), "import", s("created_at"))
 		return err
 	case "entity_mention":
-		_, err := tx.ExecContext(ctx, `INSERT INTO entity_mentions(mention_id,entity_id,memory_id,revision_id,event_id,start_offset,end_offset,mention_type,source,surface_text,created_by,processing_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("entity_id"), local("memory_id"), local("revision_id"), local("event_id"), s("start_offset"), s("end_offset"), s("mention_type"), s("source"), s("surface_text"), "import", s("processing_version"), s("created_at"))
+		_, err := tx.ExecContext(ctx, `INSERT INTO entity_mentions(mention_id,entity_id,memory_id,revision_id,event_id,start_offset,end_offset,mention_type,source,surface_text,confidence,created_by,processing_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("entity_id"), local("memory_id"), local("revision_id"), local("event_id"), s("start_offset"), s("end_offset"), s("mention_type"), s("source"), s("surface_text"), s("confidence"), "import", s("processing_version"), s("created_at"))
 		return err
 	case "relation_evidence":
 		_, err := tx.ExecContext(ctx, `INSERT INTO relation_evidence(evidence_id,relation_id,evidence_type,event_id,memory_id,revision_id,start_offset,end_offset,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("relation_id"), s("evidence_type"), local("event_id"), local("memory_id"), local("revision_id"), s("start_offset"), s("end_offset"), s("note"), "import", s("created_at"))
@@ -383,7 +383,7 @@ func importConflictProposal(ctx context.Context, tx *sql.Tx, o ImportObject, tar
 		return ErrConflict
 	}
 	proposalID := fmt.Sprint(d["local_proposal_id"])
-	_, err := tx.ExecContext(ctx, `INSERT INTO evolution_proposals(proposal_id,event_id,space_id,action,proposed_content,proposed_content_hash,memory_type,sensitivity,processor_identity,processing_version,specification_hash,created_at) VALUES (?, ?,?,'conflict',?,?,?,?, 'import','logical-v1',?,?)`, proposalID, eventID, targetSpace, d["content"], d["content_hash"], d["memory_type"], d["sensitivity"], o.ObjectHash, now)
+	_, err := tx.ExecContext(ctx, `INSERT INTO evolution_proposals(proposal_id,event_id,space_id,action,proposed_content,proposed_content_hash,memory_type,sensitivity,processor_identity,processing_version,specification_hash,created_at) VALUES (?, ?,?,'conflict',?,?,?,?, 'import','logical-v1',?,?)`, proposalID, eventID, targetSpace, d["display_content"], d["canonical_hash"], d["memory_type"], d["sensitivity"], o.ObjectHash, now)
 	if err != nil {
 		return err
 	}

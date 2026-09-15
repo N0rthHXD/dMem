@@ -124,7 +124,7 @@ func validateConflictResolution(req *domain.ConflictResolutionCommand) error {
 		return errors.New("evidence must contain at least one item")
 	}
 	for _, evidence := range req.Evidence {
-		if !validUUID(evidence.EventID) || !containsAPI([]string{"direct_statement", "tool_result", "manual_reference"}, evidence.EvidenceType) || (evidence.StartOffset == nil) != (evidence.EndOffset == nil) || evidence.StartOffset != nil && (*evidence.StartOffset < 0 || *evidence.EndOffset <= *evidence.StartOffset) {
+		if !validUUID(evidence.EventID) || !evidence.Role.Valid() || (evidence.StartOffset == nil) != (evidence.EndOffset == nil) || evidence.StartOffset != nil && (*evidence.StartOffset < 0 || *evidence.EndOffset <= *evidence.StartOffset) {
 			return errors.New("invalid evidence")
 		}
 	}

@@ -36,6 +36,46 @@ retry_max_backoff = "5m"
 disk_soft_free_bytes = 1073741824
 disk_hard_free_bytes = 268435456
 
+# Deterministic candidate consolidation (ADR 0035). Cosine thresholds never
+# supersede, contest, or delete on their own.
+[consolidation]
+version = "consolidation-v1"
+max_candidates = 32
+exact_hash_enabled = true
+same_source_event_cosine = 0.90
+same_subject_kind_cosine = 0.94
+
+# Semantic calibration replaces the fixed score floor with an absolute floor
+# plus a top-score margin.
+[semantic]
+calibration_version = "semantic-calibration-v1"
+absolute_floor = 0.35
+top_margin = 0.08
+
+# Gated graph retrieval. policy is one of off | features_only | direct | bounded_path.
+[graph]
+policy = "features_only"
+min_entity_confidence = 0.60
+min_fact_confidence = 0.70
+boost_cap = 0.08
+
+# Deterministic feature ranker. Weights are starting values, not fixed truths.
+[ranking]
+version = "feature-ranking-v1"
+semantic_weight = 1.0
+keyword_weight = 0.35
+exact_weight = 0.15
+temporal_weight = 0.10
+quality_weight = 0.10
+agreement_weight = 0.05
+
+# Budgeted context selection. max_context_chars must be at least max_context_tokens.
+[context]
+version = "context-selection-v1"
+max_context_tokens = 4000
+max_context_chars = 16000
+max_results = 20
+
 [processing]
 version = "builtin-noop-v1"
 # Controls knowledge-graph extraction (extract_graph). Defaults to true so that

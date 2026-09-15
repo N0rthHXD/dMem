@@ -136,7 +136,7 @@ func TestRelationOneHopTypeDirectionScopeAndCurrentRevision(t *testing.T) {
 	}
 	newRevision := "relation-new-revision"
 	now := "2026-08-25T15:00:00Z"
-	_, err = r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,?,'new','new-hash','test','v',?); UPDATE memories SET current_revision_id=?,updated_at=? WHERE memory_id=?`, newRevision, target.MemoryID, target.CurrentRevision.RevisionID, now, newRevision, now, target.MemoryID)
+	_, err = r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES (?,?,?,'fact','new','new','new-hash','normal',0,0,'test','v',?); UPDATE memories SET current_revision_id=?,updated_at=? WHERE memory_id=?`, newRevision, target.MemoryID, target.CurrentRevision.RevisionID, now, newRevision, now, target.MemoryID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -382,7 +382,7 @@ func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) 
 		t.Fatal(err)
 	}
 	result, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000})
-	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.CurrentRevision.Content != "alpha" {
+	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.CurrentRevision.DisplayContent != "alpha" {
 		t.Fatalf("imported memory retrieval = %+v, error = %v", result, err)
 	}
 	var mappings, provenance, importedMemories int
@@ -404,7 +404,7 @@ func TestPortabilityPerformanceAtTargetScale(t *testing.T) {
 	for n := 0; n < gates.PortabilityObjectCount; n++ {
 		memoryID := fmt.Sprintf("perf-memory-%04d", n)
 		revisionID := fmt.Sprintf("perf-revision-%04d", n)
-		if _, err = tx.Exec(`INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES (?,'`+taskSpace+`','fact',?,'active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z'); INSERT INTO memory_revisions(revision_id,memory_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,? ,?,'test','v1','2026-08-25T10:00:00Z')`, memoryID, revisionID, revisionID, memoryID, "portable benchmark "+memoryID, "hash-"+memoryID); err != nil {
+		if _, err = tx.Exec(`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES (?,'`+taskSpace+`',?,'active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z'); INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES (?,?,'fact',?,?,?,0.9,0.5,'test','v1','2026-08-25T10:00:00Z')`, memoryID, revisionID, revisionID, memoryID, "portable benchmark "+memoryID, "portable benchmark "+memoryID, "hash-"+memoryID); err != nil {
 			t.Fatal(err)
 		}
 	}

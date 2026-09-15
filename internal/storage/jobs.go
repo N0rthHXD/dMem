@@ -177,7 +177,7 @@ func (r *Repository) PrepareProcessing(ctx context.Context, claim ClaimedJob, pa
 		if err != nil {
 			return domain.ProcessingInput{}, err
 		}
-		rows, err := r.store.reader.QueryContext(ctx, `SELECT m.memory_id, r.revision_id, m.space_id, r.content, m.current_state, m.sensitivity, r.valid_from, r.valid_until FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.space_id IN (`+placeholders(len(scope))+`) AND m.current_state<>'deleted' ORDER BY m.updated_at DESC, m.memory_id DESC LIMIT ?`, appendStrings(scope, params.MaxContextMemories)...)
+		rows, err := r.store.reader.QueryContext(ctx, `SELECT m.memory_id, r.revision_id, m.space_id, r.display_content, m.current_state, m.sensitivity, r.valid_from, r.valid_until FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.space_id IN (`+placeholders(len(scope))+`) AND m.current_state<>'deleted' ORDER BY m.updated_at DESC, m.memory_id DESC LIMIT ?`, appendStrings(scope, params.MaxContextMemories)...)
 		if err != nil {
 			return domain.ProcessingInput{}, err
 		}
@@ -490,7 +490,7 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 		status = "stored"
 	}
 	value := map[string]any{
-		"candidate_count": len(result.Candidates), "provider_identity": result.ProviderIdentity,
+		"candidate_count": len(result.Proposals), "provider_identity": result.ProviderIdentity,
 		"model_identity": result.ModelIdentity, "policy_version": result.PolicyVersion,
 		"provider_request_id": result.ProviderRequestID, "usage": result.Usage,
 	}
@@ -506,8 +506,8 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 		return err
 	}
 	idCount := 1
-	for _, candidate := range result.Candidates {
-		idCount += 1 + len(candidate.Evidence)
+	for _, proposal := range result.Proposals {
+		idCount += 1 + len(proposal.Revision.Evidence)
 	}
 	ids, err := r.newIDs(idCount)
 	if err != nil {
@@ -523,50 +523,11 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 		return err
 	}
 	idIndex := 1
-	for _, candidate := range result.Candidates {
-		params := processingCandidateParams(input, result, candidate)
-		if candidate.SuggestionKind != "new" {
-			evolution, err := processingEvolutionParams(input, result, candidate)
-			if err != nil {
-				return err
-			}
-			if err := validateEvolutionProposal(ctx, tx, evolution); err != nil {
-				return err
-			}
-			hash := evolutionSpecificationHash(evolution)
-			var existing string
-			err = tx.QueryRowContext(ctx, `SELECT proposal_id FROM evolution_proposals WHERE event_id=? AND processing_version=? AND action=? AND specification_hash=?`, evolution.EventID, evolution.ProcessingVersion, evolution.Action, hash).Scan(&existing)
-			if err == nil {
-				idIndex += 1 + len(candidate.Evidence)
-				continue
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			proposalID := ids[idIndex]
-			idIndex++
-			var contentHash *string
-			if evolution.ProposedContent != nil {
-				h := sha256.Sum256([]byte(*evolution.ProposedContent))
-				value := hex.EncodeToString(h[:])
-				contentHash = &value
-			}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO evolution_proposals(proposal_id,event_id,space_id,action,proposed_content,proposed_content_hash,valid_from,valid_until,memory_type,sensitivity,relation_specs_json,mention_specs_json,processor_identity,provider_identity,model_identity,processing_version,specification_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?, '[]','[]',?,?,?,?,?,?)`, proposalID, evolution.EventID, evolution.SpaceID, evolution.Action, evolution.ProposedContent, contentHash, evolution.ValidFrom, evolution.ValidUntil, evolution.MemoryType, evolution.Sensitivity, evolution.ProcessorIdentity, evolution.ProviderIdentity, evolution.ModelIdentity, evolution.ProcessingVersion, hash, now); err != nil {
-				return err
-			}
-			for i, target := range evolution.Targets {
-				if _, err = tx.ExecContext(ctx, `INSERT INTO evolution_proposal_targets(proposal_id,target_order,memory_id,expected_revision_id,created_at) VALUES (?,?,?,?,?)`, proposalID, i, target.MemoryID, target.ExpectedRevisionID, now); err != nil {
-					return err
-				}
-			}
-			for _, evidence := range evolution.Evidence {
-				if _, err = tx.ExecContext(ctx, `INSERT INTO evolution_proposal_evidence(evidence_id,proposal_id,evidence_type,event_id,start_offset,end_offset,created_at) VALUES (?,?,'raw_event_range',?,?,?,?)`, ids[idIndex], proposalID, evidence.EventID, evidence.StartOffset, evidence.EndOffset, now); err != nil {
-					return err
-				}
-				idIndex++
-			}
-			continue
+	for _, proposal := range result.Proposals {
+		if proposal.Action != domain.ConsolidationCreate {
+			return ErrInvalidEvolutionProposal
 		}
+		params := processingCandidateParams(input, result, proposal)
 		if err := requireCandidateSources(ctx, tx, params); err != nil {
 			return err
 		}
@@ -586,7 +547,7 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 			return err
 		}
 		for _, evidence := range params.Evidence {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,evidence_type,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?)`, ids[idIndex], candidateID, evidence.EventID, evidence.EvidenceType, evidence.StartOffset, evidence.EndOffset, now); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,evidence_type,role,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?,?)`, ids[idIndex], candidateID, evidence.EventID, evidence.EvidenceType, evidence.Role, evidence.StartOffset, evidence.EndOffset, now); err != nil {
 				return candidateConstraintError(err)
 			}
 			idIndex++
@@ -624,44 +585,6 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 		return err
 	}
 	return tx.Commit()
-}
-
-func processingEvolutionParams(input domain.ProcessingInput, result domain.ProcessingResult, candidate domain.ProcessingCandidate) (CreateEvolutionProposalParams, error) {
-	memories := make(map[string]domain.ProcessingMemory, len(input.ContextMemories))
-	for _, memory := range input.ContextMemories {
-		memories[memory.MemoryID] = memory
-	}
-	targets := make([]domain.EvolutionTarget, len(candidate.RelatedMemoryIDs))
-	for i, memoryID := range candidate.RelatedMemoryIDs {
-		memory, ok := memories[memoryID]
-		if !ok || memory.RevisionID == "" {
-			return CreateEvolutionProposalParams{}, ErrInvalidEvolutionProposal
-		}
-		targets[i] = domain.EvolutionTarget{MemoryID: memoryID, ExpectedRevisionID: memory.RevisionID}
-	}
-	evidence := make([]domain.RelationEvidence, len(candidate.Evidence))
-	for i, item := range candidate.Evidence {
-		if item.StartOffset == nil || item.EndOffset == nil {
-			return CreateEvolutionProposalParams{}, ErrInvalidEvolutionProposal
-		}
-		start, end := int(*item.StartOffset), int(*item.EndOffset)
-		eventID := item.EventID
-		evidence[i] = domain.RelationEvidence{EvidenceType: "raw_event_range", EventID: &eventID, StartOffset: &start, EndOffset: &end}
-	}
-	var content *string
-	if candidate.SuggestionKind != "duplicate" {
-		value := candidate.Content
-		content = &value
-	}
-	memoryType := candidate.MemoryType
-	providerIdentity, modelIdentity := stringPointer(result.ProviderIdentity), stringPointer(result.ModelIdentity)
-	if result.ProviderIdentity == "" {
-		providerIdentity = nil
-	}
-	if result.ModelIdentity == "" {
-		modelIdentity = nil
-	}
-	return CreateEvolutionProposalParams{EventID: input.Target.EventID, SpaceID: candidate.SpaceID, Action: candidate.SuggestionKind, ProposedContent: content, ValidFrom: timePointerText(candidate.ValidFrom), ValidUntil: timePointerText(candidate.ValidUntil), MemoryType: &memoryType, Sensitivity: candidate.Sensitivity, RelationSpecs: normalizeSpecs(nil), MentionSpecs: normalizeSpecs(nil), ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Targets: targets, Evidence: evidence}, nil
 }
 
 func (r *Repository) FailProcessing(ctx context.Context, claim ClaimedJob, input domain.ProcessingInput, failure JobFailure) error {
@@ -736,9 +659,10 @@ func (r *Repository) requireJobClaim(ctx context.Context, query claimRowQuerier,
 	return err
 }
 
-func processingCandidateParams(input domain.ProcessingInput, result domain.ProcessingResult, candidate domain.ProcessingCandidate) CreateCandidateParams {
-	validFrom, validUntil := timePointerText(candidate.ValidFrom), timePointerText(candidate.ValidUntil)
-	confidence := candidate.Confidence
+func processingCandidateParams(input domain.ProcessingInput, result domain.ProcessingResult, proposal domain.MemoryCandidateProposal) CreateCandidateParams {
+	revision := proposal.Revision
+	validFrom, validUntil := timePointerText(revision.ValidFrom), timePointerText(revision.ValidUntil)
+	confidence := revision.Confidence
 	providerIdentity, modelIdentity := stringPointer(result.ProviderIdentity), stringPointer(result.ModelIdentity)
 	if result.ProviderIdentity == "" {
 		providerIdentity = nil
@@ -746,11 +670,11 @@ func processingCandidateParams(input domain.ProcessingInput, result domain.Proce
 	if result.ModelIdentity == "" {
 		modelIdentity = nil
 	}
-	evidence := make([]EvidenceParams, len(candidate.Evidence))
-	for i, item := range candidate.Evidence {
-		evidence[i] = EvidenceParams{EventID: item.EventID, EvidenceType: item.EvidenceType, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
+	evidence := make([]EvidenceParams, len(revision.Evidence))
+	for i, item := range revision.Evidence {
+		evidence[i] = EvidenceParams{EventID: item.EventID, EvidenceType: "manual_reference", Role: item.Role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
 	}
-	return CreateCandidateParams{EventID: input.Target.EventID, SpaceID: candidate.SpaceID, MemoryType: candidate.MemoryType, Content: candidate.Content, ValidFrom: validFrom, ValidUntil: validUntil, Confidence: &confidence, Sensitivity: candidate.Sensitivity, SuggestionKind: candidate.SuggestionKind, ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Evidence: evidence, RelatedMemoryIDs: append([]string(nil), candidate.RelatedMemoryIDs...)}
+	return CreateCandidateParams{EventID: input.Target.EventID, SpaceID: input.Target.SpaceID, MemoryType: string(revision.Kind), Content: revision.DisplayContent, ValidFrom: validFrom, ValidUntil: validUntil, Confidence: &confidence, Sensitivity: revision.Sensitivity, SuggestionKind: "new", ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Evidence: evidence}
 }
 
 func timePointerText(value *time.Time) *string {

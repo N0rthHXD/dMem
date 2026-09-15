@@ -280,13 +280,14 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		list = append(list, *item)
 	}
 	sortHybridCandidates(list)
+	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata)
 	start := 0
 	if params.Cursor != "" {
 		cursor, err := decodeSearchCursor(params.Cursor)
 		if err != nil {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
-		if !searchCursorMatches(cursor, semanticQueryHash(params), params, ftsVersion, status.ActiveVersion, metadata) {
+		if !searchCursorMatches(cursor, semanticQueryHash(params), params, identities) {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
 		found := false
@@ -318,7 +319,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		if err := tx.QueryRowContext(ctx, `SELECT content_hash FROM memory_projections WHERE memory_id=? AND revision_id=? AND searchable=1`, candidate.memoryID, candidate.revisionID).Scan(&projectionHash); err != nil || candidate.semanticRank > 0 && projectionHash != candidate.contentHash {
 			continue
 		}
-		chars := utf8.RuneCountInString(memory.CurrentRevision.Content)
+		chars := utf8.RuneCountInString(memory.CurrentRevision.DisplayContent)
 		if response.CharsUsed+chars > params.MaxChars {
 			response.Truncated = true
 			if len(response.Results) > 0 && chars <= params.MaxChars {
@@ -371,7 +372,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 	}
 	if response.Truncated && last != nil {
-		value := encodeSearchCursor(hash, params, ftsVersion, status.ActiveVersion, metadata, searchCandidate{memoryID: last.memoryID, revisionID: last.revisionID, score: last.score})
+		value := encodeSearchCursor(hash, params, identities, searchCandidate{memoryID: last.memoryID, revisionID: last.revisionID, score: last.score})
 		response.NextCursor = &value
 	}
 	if err := tx.Commit(); err != nil {

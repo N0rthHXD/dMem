@@ -176,26 +176,6 @@ type ProcessingInput struct {
 	Policy            ProcessingPolicy
 }
 
-type ProcessingEvidence struct {
-	EventID      string
-	EvidenceType string
-	StartOffset  *int64
-	EndOffset    *int64
-}
-
-type ProcessingCandidate struct {
-	Content          string
-	MemoryType       string
-	SpaceID          string
-	ValidFrom        *time.Time
-	ValidUntil       *time.Time
-	Confidence       float64
-	Sensitivity      string
-	SuggestionKind   string
-	Evidence         []ProcessingEvidence
-	RelatedMemoryIDs []string
-}
-
 type ProcessingUsage struct {
 	InputTokens  int
 	OutputTokens int
@@ -215,7 +195,7 @@ const (
 
 type ProcessingResult struct {
 	Code                ProcessingOutcome
-	Candidates          []ProcessingCandidate
+	Proposals           []MemoryCandidateProposal
 	Message             string
 	ReasonCode          string
 	ProviderIdentity    string
@@ -227,30 +207,10 @@ type ProcessingResult struct {
 	OmissionSummary     map[string]int
 }
 
-type MemoryEvidence struct {
-	EventID      string `json:"event_id"`
-	EvidenceType string `json:"evidence_type"`
-	StartOffset  *int64 `json:"start_offset,omitempty"`
-	EndOffset    *int64 `json:"end_offset,omitempty"`
-}
-
-type MemoryRevision struct {
-	RevisionID       string           `json:"revision_id"`
-	MemoryID         string           `json:"memory_id"`
-	ParentRevisionID *string          `json:"parent_revision_id,omitempty"`
-	Content          string           `json:"content"`
-	ValidFrom        *string          `json:"valid_from,omitempty"`
-	ValidUntil       *string          `json:"valid_until,omitempty"`
-	Confidence       *float64         `json:"confidence,omitempty"`
-	CreatedBy        string           `json:"created_by"`
-	CreatedAt        string           `json:"created_at"`
-	Evidence         []MemoryEvidence `json:"evidence,omitempty"`
-}
-
 type Memory struct {
 	MemoryID                string         `json:"memory_id"`
 	SpaceID                 string         `json:"space_id"`
-	MemoryType              string         `json:"memory_type"`
+	Kind                    MemoryKind     `json:"kind"`
 	CurrentState            string         `json:"current_state"`
 	Frozen                  bool           `json:"frozen"`
 	Sensitivity             string         `json:"sensitivity,omitempty"`
@@ -281,29 +241,29 @@ type CandidateReview struct {
 }
 
 type Candidate struct {
-	CandidateID         string            `json:"candidate_id"`
-	EventID             string            `json:"event_id"`
-	SpaceID             string            `json:"space_id"`
-	MemoryType          string            `json:"memory_type"`
-	Content             string            `json:"content"`
-	ValidFrom           *string           `json:"valid_from,omitempty"`
-	ValidUntil          *string           `json:"valid_until,omitempty"`
-	Confidence          *float64          `json:"confidence,omitempty"`
-	Sensitivity         string            `json:"sensitivity"`
-	SuggestionKind      string            `json:"suggestion_kind"`
-	ProcessorIdentity   string            `json:"processor_identity"`
-	ProviderIdentity    *string           `json:"provider_identity,omitempty"`
-	ModelIdentity       *string           `json:"model_identity,omitempty"`
-	ProcessingVersion   string            `json:"processing_version"`
-	SpecificationHash   string            `json:"specification_hash"`
-	ReviewState         string            `json:"review_state"`
-	ConfirmedMemoryID   *string           `json:"confirmed_memory_id,omitempty"`
-	ConfirmedRevisionID *string           `json:"confirmed_revision_id,omitempty"`
-	Evidence            []MemoryEvidence  `json:"evidence"`
-	RelatedMemoryIDs    []string          `json:"related_memory_ids"`
-	Reviews             []CandidateReview `json:"reviews"`
-	CreatedAt           string            `json:"created_at"`
-	ReviewedAt          *string           `json:"reviewed_at,omitempty"`
+	CandidateID         string             `json:"candidate_id"`
+	EventID             string             `json:"event_id"`
+	SpaceID             string             `json:"space_id"`
+	MemoryType          string             `json:"memory_type"`
+	Content             string             `json:"content"`
+	ValidFrom           *string            `json:"valid_from,omitempty"`
+	ValidUntil          *string            `json:"valid_until,omitempty"`
+	Confidence          *float64           `json:"confidence,omitempty"`
+	Sensitivity         string             `json:"sensitivity"`
+	SuggestionKind      string             `json:"suggestion_kind"`
+	ProcessorIdentity   string             `json:"processor_identity"`
+	ProviderIdentity    *string            `json:"provider_identity,omitempty"`
+	ModelIdentity       *string            `json:"model_identity,omitempty"`
+	ProcessingVersion   string             `json:"processing_version"`
+	SpecificationHash   string             `json:"specification_hash"`
+	ReviewState         string             `json:"review_state"`
+	ConfirmedMemoryID   *string            `json:"confirmed_memory_id,omitempty"`
+	ConfirmedRevisionID *string            `json:"confirmed_revision_id,omitempty"`
+	Evidence            []RevisionEvidence `json:"evidence"`
+	RelatedMemoryIDs    []string           `json:"related_memory_ids"`
+	Reviews             []CandidateReview  `json:"reviews"`
+	CreatedAt           string             `json:"created_at"`
+	ReviewedAt          *string            `json:"reviewed_at,omitempty"`
 }
 
 type CandidatePage struct {
@@ -672,16 +632,16 @@ type ConflictResolutionEvent struct {
 }
 
 type ConflictResolutionCommand struct {
-	ResolutionType  string            `json:"resolution_type"`
-	ExpectedTargets []EvolutionTarget `json:"expected_targets"`
-	SelectedTarget  *EvolutionTarget  `json:"selected_target,omitempty"`
-	ProposedContent *string           `json:"proposed_content,omitempty"`
-	ValidFrom       *string           `json:"valid_from,omitempty"`
-	ValidUntil      *string           `json:"valid_until,omitempty"`
-	Evidence        []MemoryEvidence  `json:"evidence,omitempty"`
-	ReplacementMode *string           `json:"replacement_mode,omitempty"`
-	ResultStates    map[string]string `json:"result_states"`
-	Reason          string            `json:"reason"`
+	ResolutionType  string             `json:"resolution_type"`
+	ExpectedTargets []EvolutionTarget  `json:"expected_targets"`
+	SelectedTarget  *EvolutionTarget   `json:"selected_target,omitempty"`
+	ProposedContent *string            `json:"proposed_content,omitempty"`
+	ValidFrom       *string            `json:"valid_from,omitempty"`
+	ValidUntil      *string            `json:"valid_until,omitempty"`
+	Evidence        []RevisionEvidence `json:"evidence,omitempty"`
+	ReplacementMode *string            `json:"replacement_mode,omitempty"`
+	ResultStates    map[string]string  `json:"result_states"`
+	Reason          string             `json:"reason"`
 }
 
 type ConflictCase struct {
@@ -739,6 +699,102 @@ type SearchResponse struct {
 	CorpusGeneration         int64            `json:"corpus_generation"`
 	FeedbackAggregateVersion int64            `json:"feedback_aggregate_version"`
 	ResolvedEntities         []ResolvedEntity `json:"resolved_entities,omitempty"`
+	ReferenceTime            string           `json:"-"`
+}
+
+type RecallIntent string
+
+const (
+	RecallIntentAuto         RecallIntent = "auto"
+	RecallIntentLookup       RecallIntent = "lookup"
+	RecallIntentTemporal     RecallIntent = "temporal"
+	RecallIntentEntity       RecallIntent = "entity"
+	RecallIntentRelational   RecallIntent = "relational"
+	RecallIntentMultiHop     RecallIntent = "multi_hop"
+	RecallIntentProcedural   RecallIntent = "procedural"
+	RecallIntentExploratory  RecallIntent = "exploratory"
+	RecallIntentVerification RecallIntent = "verification"
+)
+
+func (i RecallIntent) Valid() bool {
+	switch i {
+	case RecallIntentAuto, RecallIntentLookup, RecallIntentTemporal, RecallIntentEntity,
+		RecallIntentRelational, RecallIntentMultiHop, RecallIntentProcedural,
+		RecallIntentExploratory, RecallIntentVerification:
+		return true
+	default:
+		return false
+	}
+}
+
+// RecallDebugOverrides is the evaluation/debug-only contract. Production
+// callers express intent and budget; explicit capability overrides exist only
+// for evaluation and debugging.
+type RecallDebugOverrides struct {
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+type RecallRequest struct {
+	Query            string                `json:"query"`
+	SpaceIDs         []string              `json:"space_ids"`
+	IncludeAncestors bool                  `json:"include_ancestors"`
+	ReferenceTime    string                `json:"reference_time,omitempty"`
+	Intent           RecallIntent          `json:"intent"`
+	Debug            *RecallDebugOverrides `json:"debug,omitempty"`
+	MaxResults       int                   `json:"max_results"`
+	MaxContextTokens int                   `json:"max_context_tokens"`
+	IncludeEvidence  bool                  `json:"include_evidence"`
+	Explain          bool                  `json:"explain"`
+	Cursor           string                `json:"cursor,omitempty"`
+}
+
+type RecallExplanation struct {
+	MatchedSignals  []string `json:"matched_signals"`
+	SelectionReason string   `json:"selection_reason"`
+}
+
+type ContextItem struct {
+	Rank            int                `json:"rank"`
+	MemoryID        string             `json:"memory_id"`
+	RevisionID      string             `json:"revision_id"`
+	Kind            MemoryKind         `json:"kind"`
+	DisplayContent  string             `json:"display_content"`
+	EventTimeStart  *time.Time         `json:"event_time_start,omitempty"`
+	EventTimeEnd    *time.Time         `json:"event_time_end,omitempty"`
+	ValidFrom       *time.Time         `json:"valid_from,omitempty"`
+	ValidUntil      *time.Time         `json:"valid_until,omitempty"`
+	SourceSpeaker   string             `json:"source_speaker,omitempty"`
+	Evidence        []RevisionEvidence `json:"evidence,omitempty"`
+	Confidence      float64            `json:"confidence"`
+	LifecycleState  string             `json:"lifecycle_state"`
+	EstimatedTokens int                `json:"estimated_tokens"`
+	Explanation     *RecallExplanation `json:"explanation,omitempty"`
+}
+
+type ContextPackage struct {
+	Items      []ContextItem `json:"items"`
+	TokensUsed int           `json:"tokens_used"`
+	CharsUsed  int           `json:"chars_used"`
+	Truncated  bool          `json:"truncated"`
+	NextCursor *string       `json:"next_cursor"`
+}
+
+type RecallExecutionMetadata struct {
+	OperationID              string       `json:"operation_id"`
+	Intent                   RecallIntent `json:"intent"`
+	ReferenceTime            string       `json:"reference_time"`
+	RequestedCapabilities    []string     `json:"requested_capabilities"`
+	ExecutedCapabilities     []string     `json:"executed_capabilities"`
+	Degraded                 bool         `json:"degraded"`
+	DegradationReasons       []string     `json:"degradation_reasons"`
+	QueryPlanIdentity        string       `json:"query_plan_identity"`
+	RankingIdentity          string       `json:"ranking_identity"`
+	ContextSelectionIdentity string       `json:"context_selection_identity"`
+}
+
+type RecallResponse struct {
+	Context   ContextPackage          `json:"context"`
+	Execution RecallExecutionMetadata `json:"execution"`
 }
 
 type FeedbackSearchContext struct {

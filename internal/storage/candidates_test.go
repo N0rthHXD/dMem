@@ -102,7 +102,7 @@ func TestCandidateConfirmCreatesExactlyOneActiveMemoryAtomicallyAndReplays(t *te
 	if err != nil || replay {
 		t.Fatalf("ConfirmCandidate() = %+v, replay=%t, error=%v", memory, replay, err)
 	}
-	if memory.CurrentState != "active" || memory.CurrentRevision.Content != candidate.Content || !reflect.DeepEqual(memory.CurrentRevision.Confidence, candidate.Confidence) || !reflect.DeepEqual(memory.CurrentRevision.Evidence, candidate.Evidence) {
+	if memory.CurrentState != "active" || memory.CurrentRevision.DisplayContent != candidate.Content || !reflect.DeepEqual(memory.CurrentRevision.Confidence, *candidate.Confidence) || len(memory.CurrentRevision.Evidence) != len(candidate.Evidence) {
 		t.Fatalf("confirmed memory = %+v", memory)
 	}
 	confirmed, err := repository.GetCandidate(context.Background(), candidate.CandidateID)
@@ -233,7 +233,7 @@ func TestPendingCandidateExcludedFromMemoryListAndAllSearchModes(t *testing.T) {
 			t.Fatalf("%v search = %+v, %v", channels, result, err)
 		}
 		for _, item := range result.Results {
-			if item.Memory.CurrentRevision.Content == candidate.Content {
+			if item.Memory.CurrentRevision.DisplayContent == candidate.Content {
 				t.Fatalf("%v search returned pending candidate: %+v", channels, item)
 			}
 		}

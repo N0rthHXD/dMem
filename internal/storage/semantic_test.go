@@ -93,7 +93,7 @@ func TestEmbedMemoryWithoutEvidenceUsesExplicitManualClassification(t *testing.T
 	configureSemanticTest(t, repository, embedding)
 	memory := createTestMemory(t, repository, "manual-no-evidence")
 	revisionID := "manual-no-evidence-revision"
-	if _, err := repository.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,?,'initial searchable memory','manual-no-evidence-hash','test','test-v1','2026-08-21T12:00:00Z'); UPDATE memories SET current_revision_id=? WHERE memory_id=?; UPDATE memory_projections SET revision_id=?,content_hash='manual-no-evidence-hash' WHERE memory_id=?; UPDATE memory_fts SET revision_id=? WHERE memory_id=?`, revisionID, memory.MemoryID, memory.CurrentRevision.RevisionID, revisionID, memory.MemoryID, revisionID, memory.MemoryID, revisionID, memory.MemoryID); err != nil {
+	if _, err := repository.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES (?,?,?,'fact','initial searchable memory','initial searchable memory','manual-no-evidence-hash','normal',0,0,'test','test-v1','2026-08-21T12:00:00Z'); UPDATE memories SET current_revision_id=? WHERE memory_id=?; UPDATE memory_projections SET revision_id=?,content_hash='manual-no-evidence-hash' WHERE memory_id=?; UPDATE memory_fts SET revision_id=? WHERE memory_id=?`, revisionID, memory.MemoryID, memory.CurrentRevision.RevisionID, revisionID, memory.MemoryID, revisionID, memory.MemoryID, revisionID, memory.MemoryID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.store.writer.Exec(`INSERT INTO embedding_eligibility(memory_id,revision_id,space_id,configuration_generation,policy_generation,eligible,reason_code,evaluated_at) VALUES (?,?,?,?,?,?,?,?)`, memory.MemoryID, revisionID, "space-1", 0, 0, 1, "test", formatTime(repository.runtime.Now())); err != nil {
@@ -622,9 +622,6 @@ func TestHybridKeywordEligibilityAppliedBeforeBoundedRecall(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	ineligible := createMemoryWithContent(t, repository, "bounded-keyword-ineligible", strings.Repeat("boundedword ", 20))
 	eligible := createMemoryWithContent(t, repository, "bounded-keyword-eligible", "boundedword")
-	if _, err := repository.store.writer.Exec(`UPDATE memories SET memory_type='decision' WHERE memory_id=?`, ineligible.MemoryID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := repository.store.writer.Exec(`UPDATE memory_projections SET memory_type='decision' WHERE memory_id=?`, ineligible.MemoryID); err != nil {
 		t.Fatal(err)
 	}
@@ -1114,7 +1111,7 @@ func createMemoryWithContent(t *testing.T, repository *Repository, key, content 
 
 func createMemoryInSpace(t *testing.T, repository *Repository, key, spaceID, content string) domain.Memory {
 	t.Helper()
-	params := CreateMemoryParams{SpaceID: spaceID, MemoryType: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "semantic test"}
+	params := CreateMemoryParams{SpaceID: spaceID, Kind: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "semantic test"}
 	memory, replay, err := repository.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
 	if err != nil || replay {
 		t.Fatalf("create semantic memory = %+v, replay=%t, %v", memory, replay, err)

@@ -247,5 +247,5 @@ func validateFactProposalRequest(v factProposalRequest) (storage.CreateFactPropo
 }
 
 func validPredicateAPI(v string) bool {
-	return containsAPI([]string{"participates_in", "uses_database", "owned_by", "located_in", "depends_on"}, v)
+	return containsAPI([]string{"created_by", "depends_on", "has_participant_count", "has_status", "is_active", "located_at", "member_of", "owned_by", "participates_in"}, v)
 }

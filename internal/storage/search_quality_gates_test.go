@@ -69,7 +69,7 @@ func searchQualityGateFixture(t *testing.T) (*Repository, searchQualityCorpus, s
 		}
 	}
 	create := func(key, space, content, state string) (string, string) {
-		params := CreateMemoryParams{SpaceID: space, MemoryType: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "search quality gate"}
+		params := CreateMemoryParams{SpaceID: space, Kind: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "search quality gate"}
 		memory, _, err := r.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
 		if err != nil {
 			t.Fatal(err)
@@ -90,7 +90,7 @@ func searchQualityGateFixture(t *testing.T) (*Repository, searchQualityCorpus, s
 	_, siblingRevision := create("quality-sibling", corpus.SiblingSpace, "Alice PROJECT-ALPHA weekly launch brief", "active")
 	conflictA, conflictRevisionA := create("quality-conflict-a", corpus.PrimarySpace, "launch date is Friday", "contested")
 	conflictB, conflictRevisionB := create("quality-conflict-b", corpus.PrimarySpace, "launch date is Monday", "contested")
-	if _, err := r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES ('revision-stale-current',? ,?,'current archive token','current-hash','test','v1','2026-08-25T11:00:00Z'); UPDATE memories SET current_revision_id='revision-stale-current',updated_at='2026-08-25T11:00:00Z' WHERE memory_id=?; UPDATE memory_projections SET revision_id='revision-stale-current',display_content='current archive token',content_hash='current-hash',updated_at='2026-08-25T11:00:00Z' WHERE memory_id=?`, staleMemory, staleRevision, staleMemory, staleMemory); err != nil {
+	if _, err := r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('revision-stale-current',?,?,'fact','current archive token','current archive token','current-hash','normal',0,0,'test','v1','2026-08-25T11:00:00Z'); UPDATE memories SET current_revision_id='revision-stale-current',updated_at='2026-08-25T11:00:00Z' WHERE memory_id=?; UPDATE memory_projections SET revision_id='revision-stale-current',display_content='current archive token',content_hash='current-hash',updated_at='2026-08-25T11:00:00Z' WHERE memory_id=?`, staleMemory, staleRevision, staleMemory, staleMemory); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.store.writer.Exec(`INSERT INTO entity_mentions(mention_id,entity_id,memory_id,revision_id,start_offset,end_offset,mention_type,source,surface_text,created_by,processing_version,created_at) VALUES ('mention-current','entity-alice',?,?,0,5,'explicit','human_confirmation','Alice','test','v1','2026-08-25T10:00:00Z'),('mention-stale','entity-alice',(SELECT memory_id FROM memory_revisions WHERE revision_id=?),?,9,14,'explicit','human_confirmation','Alice','test','v1','2026-08-25T10:00:00Z'),('mention-sibling','entity-alice',(SELECT memory_id FROM memory_revisions WHERE revision_id=?),?,0,5,'explicit','human_confirmation','Alice','test','v1','2026-08-25T10:00:00Z')`, entityMemory, entityRevision, staleRevision, staleRevision, siblingRevision, siblingRevision); err != nil {
@@ -130,7 +130,7 @@ func TestSearchQualityStaleRevisionRecallZero(t *testing.T) {
 	}
 	stale := 0
 	for _, item := range result.Results {
-		if item.Memory.CurrentRevision.Content == "obsolete Alice archive token" {
+		if item.Memory.CurrentRevision.DisplayContent == "obsolete Alice archive token" {
 			stale++
 		}
 	}

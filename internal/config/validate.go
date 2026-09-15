@@ -82,6 +82,26 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	if doc.Processing.Version == DefaultProcessingVersion && processing.Enabled {
 		return Config{}, newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_processing_version", Path: "processing.version"})
 	}
+	consolidation, err := buildConsolidationConfig(doc.Consolidation)
+	if err != nil {
+		return Config{}, err
+	}
+	semantic, err := buildSemanticConfig(doc.Semantic)
+	if err != nil {
+		return Config{}, err
+	}
+	graph, err := buildGraphConfig(doc.Graph)
+	if err != nil {
+		return Config{}, err
+	}
+	ranking, err := buildRankingConfig(doc.Ranking)
+	if err != nil {
+		return Config{}, err
+	}
+	contextCfg, err := buildContextConfig(doc.Context)
+	if err != nil {
+		return Config{}, err
+	}
 	graphEnabled := true
 	if doc.Processing.GraphEnabled != nil {
 		graphEnabled = *doc.Processing.GraphEnabled
@@ -112,6 +132,11 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 		ProcessingProvider:  processing,
 		EmbeddingProvider:   embedding,
 		GraphEnabled:        graphEnabled,
+		Consolidation:       consolidation,
+		Semantic:            semantic,
+		Graph:               graph,
+		Ranking:             ranking,
+		Context:             contextCfg,
 	}
 	cfg.SourceIdentity = sourceIdentity(data)
 	cfg.EffectiveIdentity = effectiveIdentity(cfg)

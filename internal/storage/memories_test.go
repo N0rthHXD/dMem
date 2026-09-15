@@ -85,10 +85,22 @@ func directEvidence(eventID string) []EvidenceParams {
 	return []EvidenceParams{{EventID: eventID, EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}}
 }
 
+func equalEvidenceValues(a, b []domain.RevisionEvidence) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].EventID != b[i].EventID || a[i].Role != b[i].Role || !reflect.DeepEqual(a[i].EventTime, b[i].EventTime) || !reflect.DeepEqual(a[i].EventSequence, b[i].EventSequence) || !reflect.DeepEqual(a[i].StartOffset, b[i].StartOffset) || !reflect.DeepEqual(a[i].EndOffset, b[i].EndOffset) {
+			return false
+		}
+	}
+	return true
+}
+
 func createTestMemory(t *testing.T, repository *Repository, key string) domain.Memory {
 	t.Helper()
 	params := CreateMemoryParams{
-		SpaceID: "space-1", MemoryType: "fact", Content: "initial searchable memory",
+		SpaceID: "space-1", Kind: "fact", Content: "initial searchable memory",
 		Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "initial extraction",
 	}
 	memory, replay, err := repository.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
@@ -123,7 +135,7 @@ func TestMEMCreateIsAtomicProjectedSearchableAuditedAndReplaySafe(t *testing.T) 
 	validFrom, validUntil := "2026-08-20T00:00:00Z", "2026-09-20T00:00:00Z"
 	start, end := int64(2), int64(9)
 	params := CreateMemoryParams{
-		SpaceID: "space-1", MemoryType: "preference", Content: "prefers deterministic storage tests",
+		SpaceID: "space-1", Kind: "preference", Content: "prefers deterministic storage tests",
 		ValidFrom: &validFrom, ValidUntil: &validUntil, Sensitivity: "sensitive", Reason: "create reason",
 		Evidence: []EvidenceParams{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}},
 	}
@@ -133,10 +145,10 @@ func TestMEMCreateIsAtomicProjectedSearchableAuditedAndReplaySafe(t *testing.T) 
 		t.Fatalf("CreateMemory() = %+v, replay=%t, error=%v", memory, replay, err)
 	}
 	wantTime := formatTime(clock.now)
-	if memory.SpaceID != params.SpaceID || memory.MemoryType != params.MemoryType || memory.CurrentState != "active" || memory.Frozen || memory.Sensitivity != "sensitive" || memory.CreatedAt != wantTime || memory.UpdatedAt != wantTime {
+	if memory.SpaceID != params.SpaceID || string(memory.Kind) != params.Kind || memory.CurrentState != "active" || memory.Frozen || memory.Sensitivity != "sensitive" || memory.CreatedAt != wantTime || memory.UpdatedAt != wantTime {
 		t.Fatalf("created memory = %+v", memory)
 	}
-	if memory.CurrentRevision.Content != params.Content || memory.CurrentRevision.ParentRevisionID != nil || memory.CurrentRevision.CreatedBy != identity.CallerID || memory.CurrentRevision.CreatedAt != wantTime || !reflect.DeepEqual(memory.CurrentRevision.Evidence, []domain.MemoryEvidence{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}}) {
+	if memory.CurrentRevision.DisplayContent != params.Content || memory.CurrentRevision.CanonicalContent != params.Content || memory.CurrentRevision.ParentRevisionID != nil || memory.CurrentRevision.CreatedBy != identity.CallerID || memory.CurrentRevision.CreatedAt != wantTime || len(memory.CurrentRevision.Evidence) != 1 || memory.CurrentRevision.Evidence[0].EventID != "event-1" || memory.CurrentRevision.Evidence[0].Role != domain.EvidenceRoleDirect || !reflect.DeepEqual(memory.CurrentRevision.Evidence[0].StartOffset, &start) || !reflect.DeepEqual(memory.CurrentRevision.Evidence[0].EndOffset, &end) {
 		t.Fatalf("created revision = %+v", memory.CurrentRevision)
 	}
 
@@ -173,7 +185,7 @@ func TestMEMRevisionAndStateEventRowsAreImmutable(t *testing.T) {
 	t.Parallel()
 	repository, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, repository, "immutable-create")
-	if _, err := repository.store.writer.Exec(`UPDATE memory_revisions SET content='mutated' WHERE revision_id=?`, memory.CurrentRevision.RevisionID); err == nil {
+	if _, err := repository.store.writer.Exec(`UPDATE memory_revisions SET display_content='mutated' WHERE revision_id=?`, memory.CurrentRevision.RevisionID); err == nil {
 		t.Fatal("memory revision update succeeded")
 	}
 	events, err := repository.ListMemoryStateEvents(context.Background(), memory.MemoryID)
@@ -187,7 +199,7 @@ func TestMEMRevisionAndStateEventRowsAreImmutable(t *testing.T) {
 		t.Fatal("memory state event delete succeeded")
 	}
 	got, err := repository.GetMemory(context.Background(), memory.MemoryID)
-	if err != nil || got.CurrentRevision.Content != "initial searchable memory" {
+	if err != nil || got.CurrentRevision.DisplayContent != "initial searchable memory" {
 		t.Fatalf("GetMemory() after rejected mutations = %+v, %v", got, err)
 	}
 }
@@ -205,7 +217,7 @@ func TestMEMRevisePreservesOldRevisionAndDoesNotAppendStateEvent(t *testing.T) {
 	if err != nil || replay {
 		t.Fatalf("ReviseMemory() = %+v, replay=%t, error=%v", revised, replay, err)
 	}
-	if revised.CurrentRevision.RevisionID == oldRevision.RevisionID || revised.CurrentRevision.ParentRevisionID == nil || *revised.CurrentRevision.ParentRevisionID != oldRevision.RevisionID || revised.CurrentRevision.Content != params.Content || revised.CurrentRevision.CreatedAt != formatTime(clock.now) {
+	if revised.CurrentRevision.RevisionID == oldRevision.RevisionID || revised.CurrentRevision.ParentRevisionID == nil || *revised.CurrentRevision.ParentRevisionID != oldRevision.RevisionID || revised.CurrentRevision.DisplayContent != params.Content || revised.CurrentRevision.CreatedAt != formatTime(clock.now) {
 		t.Fatalf("revised memory = %+v", revised)
 	}
 	revisions, err := repository.ListMemoryRevisions(ctx, memory.MemoryID)
@@ -249,7 +261,7 @@ func TestMEMRejectedWritesLeaveNoPartialRows(t *testing.T) {
 	}
 	for _, test := range invalidCreates {
 		before := memoryTableCounts(t, repository)
-		params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: "rejected", Sensitivity: "normal", Evidence: test.evidence, Reason: test.name}
+		params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "rejected", Sensitivity: "normal", Evidence: test.evidence, Reason: test.name}
 		if _, _, err := repository.CreateMemory(ctx, memoryIdentity("create-"+test.name, "/v1/memories", params), params); !errors.Is(err, ErrInvalidEvidence) {
 			t.Fatalf("CreateMemory(%s) error = %v", test.name, err)
 		}
@@ -300,7 +312,7 @@ func TestMEMEvidenceOffsetConstraintsRollbackWholeCreate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository, _ := newMemoryTestRepository(t)
 			before := memoryTableCounts(t, repository)
-			params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: "bad offsets", Sensitivity: "normal", Evidence: []EvidenceParams{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: test.start, EndOffset: test.end}}, Reason: test.name}
+			params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "bad offsets", Sensitivity: "normal", Evidence: []EvidenceParams{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: test.start, EndOffset: test.end}}, Reason: test.name}
 			if _, _, err := repository.CreateMemory(ctx, memoryIdentity("offset-"+test.name, "/v1/memories", params), params); !errors.Is(err, ErrInvalidEvidence) {
 				t.Fatalf("CreateMemory() error = %v; want ErrInvalidEvidence", err)
 			}
@@ -326,7 +338,7 @@ func TestMEMEvidenceScopeAndContentKindValidation(t *testing.T) {
 		}
 	}
 	create := func(key, spaceID string, evidence EvidenceParams) error {
-		params := CreateMemoryParams{SpaceID: spaceID, MemoryType: "fact", Content: key, Sensitivity: "normal", Evidence: []EvidenceParams{evidence}, Reason: key}
+		params := CreateMemoryParams{SpaceID: spaceID, Kind: "fact", Content: key, Sensitivity: "normal", Evidence: []EvidenceParams{evidence}, Reason: key}
 		_, _, err := repository.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
 		return err
 	}
@@ -384,14 +396,14 @@ func TestMEMArchiveRemovesSearchAndRestoreCopiesRevision(t *testing.T) {
 	if err != nil || replay {
 		t.Fatalf("restore = %+v, replay=%t, error=%v", restored, replay, err)
 	}
-	if restored.CurrentState != "active" || restored.CurrentRevision.RevisionID == source.RevisionID || restored.CurrentRevision.ParentRevisionID == nil || *restored.CurrentRevision.ParentRevisionID != archived.CurrentRevision.RevisionID || restored.CurrentRevision.Content != source.Content || restored.CurrentRevision.ValidFrom != source.ValidFrom || restored.CurrentRevision.ValidUntil != source.ValidUntil || !reflect.DeepEqual(restored.CurrentRevision.Evidence, source.Evidence) {
+	if restored.CurrentState != "active" || restored.CurrentRevision.RevisionID == source.RevisionID || restored.CurrentRevision.ParentRevisionID == nil || *restored.CurrentRevision.ParentRevisionID != archived.CurrentRevision.RevisionID || restored.CurrentRevision.DisplayContent != source.DisplayContent || !reflect.DeepEqual(restored.CurrentRevision.ValidFrom, source.ValidFrom) || !reflect.DeepEqual(restored.CurrentRevision.ValidUntil, source.ValidUntil) || !equalEvidenceValues(restored.CurrentRevision.Evidence, source.Evidence) {
 		t.Fatalf("restored memory = %+v; source = %+v", restored, source)
 	}
 	var parentID, restoredFromID, content, validFrom, validUntil sql.NullString
-	if err := repository.store.reader.QueryRow(`SELECT parent_revision_id, restored_from_revision_id, content, valid_from, valid_until FROM memory_revisions WHERE revision_id=?`, restored.CurrentRevision.RevisionID).Scan(&parentID, &restoredFromID, &content, &validFrom, &validUntil); err != nil {
+	if err := repository.store.reader.QueryRow(`SELECT parent_revision_id, restored_from_revision_id, display_content, valid_from, valid_until FROM memory_revisions WHERE revision_id=?`, restored.CurrentRevision.RevisionID).Scan(&parentID, &restoredFromID, &content, &validFrom, &validUntil); err != nil {
 		t.Fatal(err)
 	}
-	if parentID.String != archived.CurrentRevision.RevisionID || restoredFromID.String != source.RevisionID || content.String != source.Content || validFrom.Valid != (source.ValidFrom != nil) || validUntil.Valid != (source.ValidUntil != nil) {
+	if parentID.String != archived.CurrentRevision.RevisionID || restoredFromID.String != source.RevisionID || content.String != source.DisplayContent || validFrom.Valid != (source.ValidFrom != nil) || validUntil.Valid != (source.ValidUntil != nil) {
 		t.Fatalf("restored row = parent %v restored_from %v content %v valid_from %v valid_until %v", parentID, restoredFromID, content, validFrom, validUntil)
 	}
 	if err := repository.store.reader.QueryRow(`SELECT searchable, (SELECT count(*) FROM memory_fts WHERE memory_id=? AND revision_id=?) FROM memory_projections WHERE memory_id=?`, created.MemoryID, restored.CurrentRevision.RevisionID, created.MemoryID).Scan(&searchable, &ftsRows); err != nil {
@@ -527,7 +539,7 @@ func TestMEMInjectedFailuresRollbackCreateReviseAndRestore(t *testing.T) {
 		repository, runtime := newMemoryTestRepository(t)
 		before := memoryTableCounts(t, repository)
 		runtime.failAt = runtime.id + 3
-		params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: "not committed", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "fault"}
+		params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "not committed", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "fault"}
 		if _, _, err := repository.CreateMemory(ctx, memoryIdentity("fault-create", "/v1/memories", params), params); err == nil {
 			t.Fatal("CreateMemory() succeeded with injected failure")
 		}

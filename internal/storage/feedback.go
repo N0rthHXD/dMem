@@ -138,7 +138,7 @@ func (r *Repository) createFeedbackProposal(ctx context.Context, p AppendFeedbac
 	}
 	defer tx.Rollback()
 	var eventSpace, memoryType, sensitivity string
-	if err := tx.QueryRowContext(ctx, `SELECT e.space_id,m.memory_type,m.sensitivity FROM raw_events e JOIN memories m ON m.memory_id=? WHERE e.event_id=? AND e.space_id=m.space_id`, p.MemoryID, p.SourceEventID).Scan(&eventSpace, &memoryType, &sensitivity); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT e.space_id,r.kind,m.sensitivity FROM raw_events e JOIN memories m ON m.memory_id=? JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE e.event_id=? AND e.space_id=m.space_id`, p.MemoryID, p.SourceEventID).Scan(&eventSpace, &memoryType, &sensitivity); err != nil {
 		return "", err
 	}
 	action := map[string]string{"correct": "replacement", "supplement": "supplement", "contest": "conflict"}[p.FeedbackType]

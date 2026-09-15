@@ -270,7 +270,7 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 		if e != nil {
 			return c, false, e
 		}
-		if e = r.upsertMemoryProjection(ctx, tx, m.MemoryID, m.CurrentRevision.RevisionID, m.SpaceID, m.MemoryType, state, m.CurrentRevision.Content, m.CurrentRevision.ValidFrom, m.CurrentRevision.ValidUntil, now); e != nil {
+		if e = r.upsertMemoryProjection(ctx, tx, m.MemoryID, m.CurrentRevision.RevisionID, m.SpaceID, state, now); e != nil {
 			return c, false, e
 		}
 		if e = r.markDependentAggregatesStale(ctx, tx, target.MemoryID, now); e != nil {
@@ -410,10 +410,10 @@ func containsTarget(targets []domain.EvolutionTarget, selected domain.EvolutionT
 	return false
 }
 
-func resolutionEvidence(items []domain.MemoryEvidence) []EvidenceParams {
+func resolutionEvidence(items []domain.RevisionEvidence) []EvidenceParams {
 	result := make([]EvidenceParams, len(items))
 	for i, item := range items {
-		result[i] = EvidenceParams{EventID: item.EventID, EvidenceType: item.EvidenceType, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
+		result[i] = EvidenceParams{EventID: item.EventID, Role: item.Role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
 	}
 	return result
 }
@@ -429,7 +429,7 @@ func (r *Repository) createConflictResolutionMemory(ctx context.Context, tx *sql
 	}
 	memoryID, revisionID, parent := target.MemoryID, ids[0], &target.ExpectedRevisionID
 	var memoryType, sensitivity string
-	if err = tx.QueryRowContext(ctx, `SELECT memory_type,sensitivity FROM memories WHERE memory_id=?`, target.MemoryID).Scan(&memoryType, &sensitivity); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT r.kind,m.sensitivity FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=?`, target.MemoryID).Scan(&memoryType, &sensitivity); err != nil {
 		return nil, "", "", err
 	}
 	refs := []domain.EvolutionResultRef{}
@@ -448,12 +448,16 @@ func (r *Repository) createConflictResolutionMemory(ctx context.Context, tx *sql
 				}
 			}
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,?,'active',0,?,?,?)`, memoryID, c.SpaceID, memoryType, revisionID, sensitivity, now, now); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,'active',0,?,?,?)`, memoryID, c.SpaceID, revisionID, sensitivity, now, now); err != nil {
 			return nil, "", "", err
 		}
 		refs = append(refs, domain.EvolutionResultRef{ResultType: "memory", ResultID: memoryID})
 	}
-	if err = insertRevision(ctx, tx, revisionID, memoryID, parent, nil, *p.ProposedContent, p.ValidFrom, p.ValidUntil, nil, caller, c.ProcessingVersion, nil, now); err != nil {
+	revision, err := revisionFromTextInput(revisionID, memoryID, parent, nil, memoryType, *p.ProposedContent, p.ValidFrom, p.ValidUntil, nil, sensitivity, caller, c.ProcessingVersion, nil, now)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if err = insertRevision(ctx, tx, revision); err != nil {
 		return nil, "", "", err
 	}
 	if err = insertEvidence(ctx, tx, revisionID, evidence, evidenceIDs, now); err != nil {
@@ -487,7 +491,7 @@ func (r *Repository) createConflictResolutionMemory(ctx context.Context, tx *sql
 			return nil, "", "", err
 		}
 	}
-	if err = r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, c.SpaceID, memoryType, state, *p.ProposedContent, p.ValidFrom, p.ValidUntil, now); err != nil {
+	if err = r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, c.SpaceID, state, now); err != nil {
 		return nil, "", "", err
 	}
 	refs = append(refs, domain.EvolutionResultRef{ResultType: "projection", ResultID: memoryID})

@@ -10,7 +10,6 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +25,7 @@ const (
 	maxIdentityChars      = 512
 )
 
-const processSystemPrompt = `You are a memory extraction processor for an agent system. Inspect the target event, optionally together with context events and context memories, and decide what durable memories should be recorded.
+const structuredProcessSystemPrompt = `You are a structured memory extraction processor. Inspect the target event together with the allowed context and propose zero or more structured memories.
 
 Respond with STRICT JSON ONLY (no markdown, no surrounding prose) matching this shape exactly:
 {"category":"no_memory|candidates_extracted","candidates":[...]}
@@ -35,18 +34,23 @@ If nothing is worth remembering, return {"category":"no_memory","candidates":[]}
 Otherwise return "candidates_extracted" with 1 to max_candidates candidates.
 
 Every candidate object MUST contain EXACTLY these fields and no others:
-- "content": string. A self-contained declarative memory statement.
-- "memory_type": string. One of the allowed_memory_types given in the input.
-- "space_id": string. Exactly equal to the target event's space_id.
-- "confidence": number between 0 and 1 inclusive.
+- "kind": string. One of the allowed_kinds given in the input.
+- "display_content": string. Human-readable memory statement.
+- "canonical_content": string. Normalized, lower-cased retrieval form.
+- "subject_entity_ids": array of strings (may be empty).
+- "object_entity_ids": array of strings (may be empty).
+- "event_type": string (may be empty). Only for event-like kinds.
+- "attributes": object mapping string keys to string values (may be empty).
+- "event_time": object or null. When present it has EXACTLY {"expression","start","end","precision","source"}. "start"/"end" are RFC3339 timestamps or null, "precision" is one of "exact","day","month","year","approximate","unknown", and "source" is a short provenance label. End must not precede start.
+- "valid_time": object or null with the same shape as event_time, describing when a fact or preference is valid.
+- "source_speaker": string (may be empty).
+- "language": string (may be empty).
 - "sensitivity": "normal" or "sensitive".
-- "suggestion_kind": one of "new", "duplicate", "supplement", "replacement", "conflict".
-- "evidence": non-empty array with no duplicate references. Each element has EXACTLY {"event_id","evidence_type","start_offset","end_offset"}. "event_id" must be the target event_id or a context event_id present in the input. "evidence_type" is "direct_statement", "tool_result", or "manual_reference". For "new", set BOTH "start_offset" and "end_offset" to null to cite the whole event, or set both to 0-based rune offsets into that event's content text with start_offset < end_offset and end_offset not exceeding the text length. For every other suggestion_kind, offsets must be a non-null range. Never set only one of the two.
-- "related_memory_ids": array of unique context memory ids this candidate relates to. "new" uses []; "supplement" and "replacement" require exactly one id; "duplicate" requires at least one id; "conflict" requires exactly two ids. Non-"new" candidates may only reference context memories marked proposal_capable=true.
+- "specificity": number between 0 and 1 inclusive.
+- "confidence": number between 0 and 1 inclusive.
+- "evidence": non-empty array with no duplicate references. Each element has EXACTLY {"evidence_id","event_id","event_time","event_sequence","role","start_offset","end_offset"}. "evidence_id" is a short stable identifier unique within the candidate. "event_id" must be the target event_id or a context event_id present in the input. "role" is "direct", "derived", "temporal_anchor", or "context"; at least one "direct" or "derived" element is required. "start_offset"/"end_offset" are both null for a whole-event citation or both present as 0-based rune offsets with start_offset < end_offset and end_offset within the text length. "event_time" is an optional RFC3339 timestamp and "event_sequence" an optional integer.
 
-Optionally include "valid_from" and/or "valid_until" as RFC3339 strings only when an explicit time bound is present; "valid_until" must be after "valid_from".
-
-Do not invent event_id or memory id values that were not provided in the input. Do not add any field beyond those listed. Do not request state changes or deletion.`
+Do not invent event_id values that were not provided in the input. Do not add any field beyond those listed. Do not request state changes or deletion.`
 
 type ErrorClass string
 
@@ -235,16 +239,18 @@ func (c *Client) Process(ctx context.Context, request ProcessRequest) (ProcessRe
 	request.context = acceptedEvents(request.context, contextEvents)
 	request.contextMemories = acceptedMemories(request.contextMemories, contextMemories)
 	payload := chatRequest{Model: c.model, ResponseFormat: responseFormat{Type: "json_object"}}
-	prompt := processPrompt{
+	prompt := structuredProcessPrompt{
 		ProcessorIdentity: request.processorIdentity, ProcessingVersion: request.processingVersion,
 		JobID: request.jobID, Attempt: request.attempt, Event: wireEvent(request.target),
-		ContextEvents: contextEvents, ContextMemories: contextMemories, AllowedMemoryTypes: append([]string(nil), request.allowedMemoryTypes...), MaxCandidates: request.maxCandidates, MaxContentChars: min(request.maxCandidateChars, c.maxCandidate),
+		ContextEvents: contextEvents, ContextMemories: contextMemories,
+		AllowedKinds: domainKindStrings(request.allowedKinds), MaxCandidates: request.maxCandidates,
+		MaxContentChars: min(request.maxCandidateChars, c.maxCandidate),
 	}
 	promptJSON, err := json.Marshal(prompt)
 	if err != nil {
 		return ProcessResult{}, failure(ErrorInvalidInput, "invalid_process_request")
 	}
-	payload.Messages = []chatMessage{{Role: "system", Content: processSystemPrompt}, {Role: "user", Content: string(promptJSON)}}
+	payload.Messages = []chatMessage{{Role: "system", Content: structuredProcessSystemPrompt}, {Role: "user", Content: string(promptJSON)}}
 	var response chatResponse
 	requestID, err := c.post(ctx, payload, &response)
 	if err != nil {
@@ -253,16 +259,24 @@ func (c *Client) Process(ctx context.Context, request ProcessRequest) (ProcessRe
 	if len(response.Choices) != 1 || response.Choices[0].Message.Content == "" {
 		return ProcessResult{}, failure(ErrorInvalidOutput, "malformed_chat_response")
 	}
-	var output processOutput
-	if err := decodeSingleStrict([]byte(response.Choices[0].Message.Content), &output); err != nil {
+	bounds := StructuredCandidateBounds{
+		MaxCandidates:   request.maxCandidates,
+		MaxContentChars: min(request.maxCandidateChars, c.maxCandidate),
+		MaxTotalChars:   min(request.maxTotalChars, c.maxTotalCandidate),
+		AllowedKinds:    request.allowedKinds,
+	}
+	revisions, err := DecodeStructuredCandidates([]byte(response.Choices[0].Message.Content), bounds)
+	if err != nil {
 		return ProcessResult{}, failure(ErrorInvalidOutput, "malformed_processor_output")
 	}
-	request.maxCandidateChars = min(request.maxCandidateChars, c.maxCandidate)
-	request.maxTotalChars = min(request.maxTotalChars, c.maxTotalCandidate)
-	result, err := validateProcessOutput(output, request, response.Usage, requestID)
-	if err != nil {
+	if err := validateStructuredRevisions(request, revisions); err != nil {
 		return ProcessResult{}, err
 	}
+	category := ProcessCandidatesExtracted
+	if len(revisions) == 0 {
+		category = ProcessNoMemory
+	}
+	result := ProcessResult{category: category, revisions: revisions, usage: usageFromWire(response.Usage), requestID: requestID}
 	result.omissionSummary = omissions
 	for _, count := range omissions {
 		result.omittedCount += count
@@ -277,11 +291,11 @@ func (c *Client) PreflightProcess(request ProcessRequest) error {
 	if err := c.validateEvent(request.target); err != nil {
 		return err
 	}
-	if !boundedString(request.processorIdentity) || !boundedString(request.processingVersion) || !boundedString(request.jobID) || request.attempt < 1 || request.maxCandidates < 1 || request.maxCandidates > 100 || request.maxCandidateChars < 1 || request.maxTotalChars < request.maxCandidateChars || len(request.allowedMemoryTypes) == 0 {
+	if !boundedString(request.processorIdentity) || !boundedString(request.processingVersion) || !boundedString(request.jobID) || request.attempt < 1 || request.maxCandidates < 1 || request.maxCandidates > 100 || request.maxCandidateChars < 1 || request.maxTotalChars < request.maxCandidateChars || len(request.allowedKinds) == 0 {
 		return failure(ErrorInvalidInput, "invalid_process_request")
 	}
-	for _, memoryType := range request.allowedMemoryTypes {
-		if !boundedString(memoryType) {
+	for _, kind := range request.allowedKinds {
+		if !kind.Valid() {
 			return failure(ErrorInvalidInput, "invalid_process_request")
 		}
 	}
@@ -293,51 +307,78 @@ func (c *Client) PreflightProcess(request ProcessRequest) error {
 	return nil
 }
 
-const graphExtractSystemPrompt = `You are a knowledge-graph extraction processor. Given a confirmed memory revision (source_memory_id, source_revision_id, content) and, optionally, a list of context memories, extract structured knowledge.
+// validateStructuredRevisions applies deterministic checks that require the
+// request context: every cited event must be a target or allowed context event,
+// evidence identifiers must be unique, and offsets must fall inside the cited
+// event's text.
+func validateStructuredRevisions(request ProcessRequest, revisions []domain.MemoryRevision) error {
+	events := map[string]Event{request.target.eventID: request.target}
+	for _, event := range request.context {
+		events[event.eventID] = event
+	}
+	for _, revision := range revisions {
+		seen := make(map[string]struct{}, len(revision.Evidence))
+		for _, evidence := range revision.Evidence {
+			event, ok := events[evidence.EventID]
+			if !ok {
+				return failure(ErrorInvalidOutput, "invalid_evidence_reference")
+			}
+			if evidence.StartOffset != nil {
+				length := int64(utf8.RuneCountInString(event.content.text))
+				if event.content.kind == "reference" || *evidence.StartOffset < 0 || *evidence.EndOffset <= *evidence.StartOffset || *evidence.EndOffset > length {
+					return failure(ErrorInvalidOutput, "invalid_evidence_reference")
+				}
+			}
+			if _, duplicate := seen[evidence.EvidenceID]; duplicate {
+				return failure(ErrorInvalidOutput, "invalid_evidence_reference")
+			}
+			seen[evidence.EvidenceID] = struct{}{}
+		}
+	}
+	return nil
+}
+
+const typedGraphSystemPrompt = `You are a typed knowledge-graph extraction processor. Given a confirmed memory revision and, optionally, a list of context memories, extract typed, evidence-backed knowledge.
 
 Respond with STRICT JSON ONLY (no markdown, no surrounding prose) matching this shape exactly:
-{"entities":[...],"mentions":[...],"facts":[...],"relations":[...]}
+{"entities":[...],"mentions":[...],"events":[...],"facts":[...],"relations":[...]}
 
-Every array may be empty. Do not invent memory ids or revision ids that were not provided.
+Every array may be empty. Do not invent memory ids, revision ids, or entity local ids that were not provided.
 
 - "entities": array of entity objects. Each has EXACTLY:
-  - "local_id": string. A short local identifier (e.g. "e0") unique within this response.
+  - "local_id": string. A short local identifier unique within this response.
   - "canonical_name": string. A non-empty canonical display name.
   - "entity_type": one of "person","organization","place","project","product","event","concept","other".
-  - "aliases": array of strings (may be empty). Alternative names or surface forms for this entity.
+  - "aliases": array of strings (may be empty).
   - "confidence": number between 0 and 1 inclusive.
 - "mentions": array of mention objects. Each has EXACTLY:
-  - "entity_local_id": string. Must reference an "entities" local_id in this response.
+  - "entity_local_id": string. Must reference an "entities" local_id.
   - "text": string. The exact surface text as it appears in content.
-  - "start_rune": integer. 0-based rune offset into content.
-  - "end_rune": integer. Exclusive 0-based rune offset into content. start_rune < end_rune and end_rune must not exceed the rune length of content, and content[start_rune:end_rune] (by runes) must equal "text".
+  - "start_rune"/"end_rune": 0-based and exclusive rune offsets into content with start_rune < end_rune; content[start_rune:end_rune] must equal "text".
+  - "confidence": number between 0 and 1 inclusive.
+- "events": array of event objects. Each has EXACTLY:
+  - "local_id": string. Unique within this response.
+  - "event_type": one of "meeting","message","creation","decision","travel","transaction","deployment","change","other".
+  - "participant_local_ids": array of entity local ids (may be empty).
+  - "place_local_id": string (may be empty); when set it must be a "place" entity.
+  - "time": object or null with EXACTLY {"expression","start","end","precision","source"} using the same precision values as processing.
   - "confidence": number between 0 and 1 inclusive.
 - "facts": array of entity-fact objects. Each has EXACTLY:
   - "subject_local_id": string. Must reference an "entities" local_id.
-  - "predicate": one of "participates_in","uses_database","owned_by","located_in","depends_on".
-  - "object_local_id": string. Required when the object is another entity; must reference a DIFFERENT "entities" local_id. Omit or set to "" when using object_literal.
-  - "object_literal": string. Required when the object is a literal value; omit otherwise.
-  - "object_literal_type": "string","number", or "boolean". Required only when object_literal is present.
+  - "predicate": one of the closed registry predicates (for example "member_of","located_at","owned_by","participates_in","created_by","depends_on","has_status","has_participant_count","is_active"). Free-form predicates are rejected.
+  - "object_local_id": string for entity objects, or "" when using a literal.
+  - "object_literal": string for literal objects, or "" when using an entity.
+  - "object_literal_type": "string","number", or "boolean"; required only for literals and must match the predicate.
   - "confidence": number between 0 and 1 inclusive.
-  - "valid_from", "valid_until": optional RFC3339 strings; valid_until must be after valid_from.
-  Exactly one of "object_local_id" (non-empty) and "object_literal" (non-empty) must be present.
-- "relations": array of memory-relation objects between the source revision and a context memory. Each has EXACTLY:
-  - "relation_type": one of "supports","contradicts","supersedes","derived_from","related_to".
+  - "valid_time": object or null with the same shape as event time.
+  Exactly one of "object_local_id" and "object_literal" must be non-empty.
+- "relations": array of revision relations between the source revision and a context memory. Each has EXACTLY:
+  - "relation_type": one of "supports","contradicts","supersedes","derived_from".
   - "target_memory_id": string. Must reference a context memory id provided in the input.
   - "target_revision_id": string. The current revision id of that context memory.
   - "confidence": number between 0 and 1 inclusive.
-  - "evidence": array (may be empty) of {"start_rune","end_rune"} rune ranges into content. Each start_rune < end_rune and within content bounds.
 
 Do not add any field beyond those listed.`
-
-var validGraphPredicates = map[string]struct{}{
-	"participates_in": {}, "uses_database": {}, "owned_by": {}, "located_in": {}, "depends_on": {},
-}
-
-func validGraphPredicate(value string) bool {
-	_, ok := validGraphPredicates[value]
-	return ok
-}
 
 func (c *Client) PreflightGraphExtract(request GraphExtractRequest) error {
 	if !c.Enabled() {
@@ -363,7 +404,7 @@ func (c *Client) GraphExtract(ctx context.Context, request GraphExtractRequest) 
 	contextMemories, _ := c.minimizeMemories(request.contextMemories, remaining, max(0, c.maxContext))
 	request.contextMemories = acceptedMemories(request.contextMemories, contextMemories)
 	payload := chatRequest{Model: c.model, ResponseFormat: responseFormat{Type: "json_object"}}
-	prompt := graphExtractPrompt{
+	prompt := typedGraphPrompt{
 		ProcessorIdentity: request.processorIdentity, ProcessingVersion: request.processingVersion,
 		JobID: request.jobID, Attempt: request.attempt, SourceMemoryID: request.memoryID, SourceRevisionID: request.revisionID,
 		SpaceID: request.spaceID, Content: request.content, ContextMemories: contextMemories,
@@ -373,7 +414,7 @@ func (c *Client) GraphExtract(ctx context.Context, request GraphExtractRequest) 
 	if err != nil {
 		return GraphExtractResult{}, failure(ErrorInvalidInput, "invalid_graph_extract_request")
 	}
-	payload.Messages = []chatMessage{{Role: "system", Content: graphExtractSystemPrompt}, {Role: "user", Content: string(promptJSON)}}
+	payload.Messages = []chatMessage{{Role: "system", Content: typedGraphSystemPrompt}, {Role: "user", Content: string(promptJSON)}}
 	var response chatResponse
 	requestID, err := c.post(ctx, payload, &response)
 	if err != nil {
@@ -382,151 +423,57 @@ func (c *Client) GraphExtract(ctx context.Context, request GraphExtractRequest) 
 	if len(response.Choices) != 1 || response.Choices[0].Message.Content == "" {
 		return GraphExtractResult{}, failure(ErrorInvalidOutput, "malformed_chat_response")
 	}
-	var output graphExtractOutput
-	if err := decodeSingleStrict([]byte(response.Choices[0].Message.Content), &output); err != nil {
-		return GraphExtractResult{}, failure(ErrorInvalidOutput, "malformed_graph_extract_output")
-	}
-	result, err := validateGraphExtractOutput(output, request, response.Usage, requestID)
+	bounds := TypedGraphBounds{MaxEntities: request.maxEntities, MaxFacts: request.maxFacts, MaxRelations: request.maxRelations}
+	result, err := DecodeTypedGraphOutput([]byte(response.Choices[0].Message.Content), bounds)
 	if err != nil {
+		return GraphExtractResult{}, graphDecodeFailure(err)
+	}
+	if err := validateGraphReferences(request, result); err != nil {
 		return GraphExtractResult{}, err
 	}
-	return result, nil
+	return GraphExtractResult{result: result, usage: usageFromWire(response.Usage), requestID: requestID}, nil
 }
 
-func validateGraphExtractOutput(output graphExtractOutput, request GraphExtractRequest, usage usageWire, requestID string) (GraphExtractResult, error) {
-	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 {
-		return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_usage")
+func graphDecodeFailure(err error) error {
+	switch {
+	case errors.Is(err, errUnknownPredicate), errors.Is(err, errPredicateTypeMismatch):
+		return failure(ErrorInvalidOutput, "invalid_fact_predicate")
+	case errors.Is(err, errUnknownEventType):
+		return failure(ErrorInvalidOutput, "invalid_event_type")
+	case errors.Is(err, errUnknownEntityType):
+		return failure(ErrorInvalidOutput, "invalid_graph_entity")
+	default:
+		return failure(ErrorInvalidOutput, "malformed_graph_extract_output")
 	}
+}
+
+// validateGraphReferences enforces the deterministic checks that require the
+// source content and the provided context memories: mention spans must match the
+// source text and revision relations must target a provided context memory.
+func validateGraphReferences(request GraphExtractRequest, result TypedGraphResult) error {
 	contentRunes := []rune(request.content)
-	entityIDs := make(map[string]struct{}, len(output.Entities))
-	entities := make([]GraphEntity, 0, len(output.Entities))
-	for _, item := range output.Entities {
-		if item.LocalID == "" || !boundedString(item.LocalID) {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
+	for _, mention := range result.Mentions {
+		if mention.EndRune > len(contentRunes) || string(contentRunes[mention.StartRune:mention.EndRune]) != mention.Text {
+			return failure(ErrorInvalidOutput, "invalid_graph_mention")
 		}
-		if _, duplicate := entityIDs[item.LocalID]; duplicate {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "duplicate_graph_entity")
-		}
-		entityIDs[item.LocalID] = struct{}{}
-		if strings.TrimSpace(item.CanonicalName) == "" || !boundedString(item.CanonicalName) || !validEntityTypeGraph(item.EntityType) {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
-		}
-		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
-		}
-		aliases := make([]string, 0, len(item.Aliases))
-		for _, alias := range item.Aliases {
-			if strings.TrimSpace(alias) == "" || !boundedString(alias) {
-				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_entity")
-			}
-			aliases = append(aliases, alias)
-		}
-		entities = append(entities, GraphEntity{localID: item.LocalID, canonicalName: strings.TrimSpace(item.CanonicalName), entityType: item.EntityType, aliases: aliases, confidence: item.Confidence})
-	}
-	mentions := make([]GraphMention, 0, len(output.Mentions))
-	for _, item := range output.Mentions {
-		if _, ok := entityIDs[item.EntityLocalID]; !ok {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_mention_entity")
-		}
-		if item.Text == "" || item.StartRune < 0 || item.EndRune <= item.StartRune || item.EndRune > len(contentRunes) {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_mention")
-		}
-		if string(contentRunes[item.StartRune:item.EndRune]) != item.Text {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_mention")
-		}
-		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_graph_mention")
-		}
-		mentions = append(mentions, GraphMention{entityLocalID: item.EntityLocalID, text: item.Text, startRune: item.StartRune, endRune: item.EndRune, confidence: item.Confidence})
-	}
-	facts := make([]GraphFact, 0, len(output.Facts))
-	for _, item := range output.Facts {
-		if _, ok := entityIDs[item.SubjectLocalID]; !ok {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_fact_subject")
-		}
-		if !validGraphPredicate(item.Predicate) {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_predicate")
-		}
-		hasObject := item.ObjectLocalID != ""
-		hasLiteral := item.ObjectLiteral != ""
-		if hasObject == hasLiteral {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_object")
-		}
-		if hasObject {
-			if _, ok := entityIDs[item.ObjectLocalID]; !ok {
-				return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_fact_object")
-			}
-			if item.ObjectLocalID == item.SubjectLocalID {
-				return GraphExtractResult{}, failure(ErrorInvalidOutput, "self_fact_relation")
-			}
-		}
-		if hasLiteral {
-			if item.ObjectLiteralType != "string" && item.ObjectLiteralType != "number" && item.ObjectLiteralType != "boolean" {
-				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_literal_type")
-			}
-			if !boundedString(item.ObjectLiteral) {
-				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_literal")
-			}
-		}
-		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_confidence")
-		}
-		if item.ValidFrom != nil && item.ValidUntil != nil && !item.ValidFrom.Before(*item.ValidUntil) {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_fact_validity")
-		}
-		facts = append(facts, GraphFact{subjectLocalID: item.SubjectLocalID, predicate: item.Predicate, objectLocalID: item.ObjectLocalID, objectLiteral: item.ObjectLiteral, objectLiteralType: item.ObjectLiteralType, confidence: item.Confidence, validFrom: cloneTime(item.ValidFrom), validUntil: cloneTime(item.ValidUntil)})
 	}
 	contextMemories := make(map[string]Memory, len(request.contextMemories))
 	for _, memory := range request.contextMemories {
 		contextMemories[memory.memoryID] = memory
 	}
-	relations := make([]GraphMemoryRelation, 0, len(output.Relations))
-	for _, item := range output.Relations {
-		if !validMemoryRelationType(item.RelationType) {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_relation_type")
+	for _, relation := range result.Relations {
+		memory, ok := contextMemories[relation.TargetMemoryID]
+		if !ok || memory.revisionID != relation.TargetRevisionID {
+			return failure(ErrorInvalidOutput, "unknown_relation_target")
 		}
-		memory, ok := contextMemories[item.TargetMemoryID]
-		if !ok || memory.revisionID != item.TargetRevisionID {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "unknown_relation_target")
+		if relation.TargetMemoryID == request.memoryID && relation.TargetRevisionID == request.revisionID {
+			return failure(ErrorInvalidOutput, "self_memory_relation")
 		}
-		if item.TargetMemoryID == request.memoryID && item.TargetRevisionID == request.revisionID {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "self_memory_relation")
-		}
-		if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
-			return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_relation_confidence")
-		}
-		evidence := make([]GraphRelationEvidence, 0, len(item.Evidence))
-		for _, ref := range item.Evidence {
-			if ref.StartRune < 0 || ref.EndRune <= ref.StartRune || ref.EndRune > len(contentRunes) {
-				return GraphExtractResult{}, failure(ErrorInvalidOutput, "invalid_relation_evidence")
-			}
-			evidence = append(evidence, GraphRelationEvidence{startRune: ref.StartRune, endRune: ref.EndRune})
-		}
-		relations = append(relations, GraphMemoryRelation{relationType: item.RelationType, targetMemoryID: item.TargetMemoryID, targetRevisionID: item.TargetRevisionID, confidence: item.Confidence, evidence: evidence})
 	}
-	if len(entities) > request.maxEntities || len(facts) > request.maxFacts || len(relations) > request.maxRelations {
-		return GraphExtractResult{}, failure(ErrorInvalidOutput, "graph_output_out_of_bounds")
-	}
-	return GraphExtractResult{entities: entities, mentions: mentions, facts: facts, relations: relations, usage: usageFromWire(usage), requestID: requestID}, nil
+	return nil
 }
 
-func validEntityTypeGraph(value string) bool {
-	switch value {
-	case "person", "organization", "place", "project", "product", "event", "concept", "other":
-		return true
-	}
-	return false
-}
-
-func validMemoryRelationType(value string) bool {
-	switch value {
-	case "supports", "contradicts", "supersedes", "derived_from", "related_to":
-		return true
-	}
-	return false
-}
-
-type graphExtractPrompt struct {
+type typedGraphPrompt struct {
 	ProcessorIdentity string         `json:"processor_identity"`
 	ProcessingVersion string         `json:"processing_version"`
 	JobID             string         `json:"job_id"`
@@ -539,53 +486,6 @@ type graphExtractPrompt struct {
 	MaxEntities       int            `json:"max_entities"`
 	MaxFacts          int            `json:"max_facts"`
 	MaxRelations      int            `json:"max_relations"`
-}
-
-type graphEntityWire struct {
-	LocalID       string   `json:"local_id"`
-	CanonicalName string   `json:"canonical_name"`
-	EntityType    string   `json:"entity_type"`
-	Aliases       []string `json:"aliases"`
-	Confidence    float64  `json:"confidence"`
-}
-
-type graphMentionWire struct {
-	EntityLocalID string  `json:"entity_local_id"`
-	Text          string  `json:"text"`
-	StartRune     int     `json:"start_rune"`
-	EndRune       int     `json:"end_rune"`
-	Confidence    float64 `json:"confidence"`
-}
-
-type graphFactWire struct {
-	SubjectLocalID    string     `json:"subject_local_id"`
-	Predicate         string     `json:"predicate"`
-	ObjectLocalID     string     `json:"object_local_id"`
-	ObjectLiteral     string     `json:"object_literal"`
-	ObjectLiteralType string     `json:"object_literal_type"`
-	Confidence        float64    `json:"confidence"`
-	ValidFrom         *time.Time `json:"valid_from"`
-	ValidUntil        *time.Time `json:"valid_until"`
-}
-
-type graphRelationWire struct {
-	RelationType     string                  `json:"relation_type"`
-	TargetMemoryID   string                  `json:"target_memory_id"`
-	TargetRevisionID string                  `json:"target_revision_id"`
-	Confidence       float64                 `json:"confidence"`
-	Evidence         []graphRelationEvidence `json:"evidence"`
-}
-
-type graphRelationEvidence struct {
-	StartRune int `json:"start_rune"`
-	EndRune   int `json:"end_rune"`
-}
-
-type graphExtractOutput struct {
-	Entities  []graphEntityWire   `json:"entities"`
-	Mentions  []graphMentionWire  `json:"mentions"`
-	Facts     []graphFactWire     `json:"facts"`
-	Relations []graphRelationWire `json:"relations"`
 }
 
 func acceptedEvents(events []Event, accepted []egressEvent) []Event {
@@ -945,99 +845,6 @@ func (c *Client) acquire(ctx context.Context) error {
 	}
 }
 
-func validateProcessOutput(output processOutput, request ProcessRequest, usage usageWire, requestID string) (ProcessResult, error) {
-	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 {
-		return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_usage")
-	}
-	if output.Category == ProcessNoMemory {
-		if len(output.Candidates) != 0 {
-			return ProcessResult{}, failure(ErrorInvalidOutput, "unexpected_candidates")
-		}
-		return ProcessResult{category: output.Category, usage: usageFromWire(usage), requestID: requestID}, nil
-	}
-	if output.Category != ProcessCandidatesExtracted || len(output.Candidates) == 0 || len(output.Candidates) > request.maxCandidates {
-		return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_result_category")
-	}
-	allowedTypes := makeSet(request.allowedMemoryTypes)
-	candidates := make([]Candidate, len(output.Candidates))
-	totalChars := 0
-	for i, item := range output.Candidates {
-		contentChars := utf8.RuneCountInString(item.Content)
-		totalChars += contentChars
-		if item.Content == "" || contentChars > request.maxCandidateChars || totalChars > request.maxTotalChars || item.SpaceID != request.target.spaceID {
-			return ProcessResult{}, failure(ErrorInvalidOutput, "candidate_out_of_bounds")
-		}
-		if _, ok := allowedTypes[item.MemoryType]; !ok || math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) || item.Confidence < 0 || item.Confidence > 1 {
-			return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_candidate")
-		}
-		if (item.Sensitivity != "normal" && item.Sensitivity != "sensitive") || !validSuggestion(item.SuggestionKind) || len(item.Evidence) == 0 || len(item.Evidence) > 100 || len(item.RelatedMemoryIDs) > 100 || (item.ValidFrom != nil && item.ValidUntil != nil && !item.ValidFrom.Before(*item.ValidUntil)) {
-			return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_candidate")
-		}
-		events := map[string]Event{request.target.eventID: request.target}
-		for _, event := range request.context {
-			events[event.eventID] = event
-		}
-		evidence := make([]Evidence, len(item.Evidence))
-		seenEvidence := make(map[string]struct{}, len(item.Evidence))
-		for n, reference := range item.Evidence {
-			event, ok := events[reference.EventID]
-			if !ok || !validEvidenceType(reference.EvidenceType) || (reference.StartOffset == nil) != (reference.EndOffset == nil) {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_evidence_reference")
-			}
-			if reference.StartOffset != nil && (event.content.kind == "reference" || *reference.StartOffset < 0 || *reference.EndOffset <= *reference.StartOffset || *reference.EndOffset > int64(utf8.RuneCountInString(event.content.text))) {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_evidence_reference")
-			}
-			if item.SuggestionKind != "new" && reference.StartOffset == nil {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_evidence_reference")
-			}
-			key := evidenceKey(reference)
-			if _, duplicate := seenEvidence[key]; duplicate {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_evidence_reference")
-			}
-			seenEvidence[key] = struct{}{}
-			evidence[n] = Evidence{eventID: reference.EventID, evidenceType: reference.EvidenceType, startOffset: cloneInt64(reference.StartOffset), endOffset: cloneInt64(reference.EndOffset)}
-		}
-		memoryIDs := make(map[string]Memory, len(request.contextMemories))
-		for _, memory := range request.contextMemories {
-			memoryIDs[memory.memoryID] = memory
-		}
-		seenMemoryIDs := make(map[string]struct{}, len(item.RelatedMemoryIDs))
-		for _, relatedID := range item.RelatedMemoryIDs {
-			memory, ok := memoryIDs[relatedID]
-			if !ok || !boundedString(relatedID) || item.SuggestionKind != "new" && !memory.proposalCapable {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
-			}
-			if _, duplicate := seenMemoryIDs[relatedID]; duplicate {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
-			}
-			seenMemoryIDs[relatedID] = struct{}{}
-		}
-		switch item.SuggestionKind {
-		case "supplement", "replacement":
-			if len(item.RelatedMemoryIDs) != 1 {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
-			}
-		case "conflict":
-			if len(item.RelatedMemoryIDs) != 2 {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
-			}
-		case "duplicate":
-			if len(item.RelatedMemoryIDs) == 0 {
-				return ProcessResult{}, failure(ErrorInvalidOutput, "invalid_related_memory_reference")
-			}
-		}
-		candidates[i] = Candidate{content: item.Content, memoryType: item.MemoryType, spaceID: item.SpaceID, validFrom: cloneTime(item.ValidFrom), validUntil: cloneTime(item.ValidUntil), confidence: item.Confidence, sensitivity: item.Sensitivity, evidence: evidence, suggestion: item.SuggestionKind, relatedIDs: append([]string(nil), item.RelatedMemoryIDs...)}
-	}
-	return ProcessResult{category: output.Category, candidates: candidates, usage: usageFromWire(usage), requestID: requestID}, nil
-}
-
-func evidenceKey(value evidenceWire) string {
-	if value.StartOffset == nil {
-		return value.EventID + "|-"
-	}
-	return value.EventID + "|" + strconv.FormatInt(*value.StartOffset, 10) + "|" + strconv.FormatInt(*value.EndOffset, 10)
-}
-
 func decodeSingle(data []byte, output any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(output); err != nil {
@@ -1117,13 +924,6 @@ func validEnvName(name string) bool {
 	}
 	return name != ""
 }
-func validSuggestion(value string) bool {
-	switch value {
-	case "new", "duplicate", "supplement", "replacement", "conflict":
-		return true
-	}
-	return false
-}
 func validSourceType(value string) bool {
 	switch value {
 	case "message", "conversation", "tool_call", "tool_result", "file_reference", "collector_event", "manual", "semantic_query":
@@ -1137,9 +937,6 @@ func validMemoryState(value string) bool {
 		return true
 	}
 	return false
-}
-func validEvidenceType(value string) bool {
-	return value == "direct_statement" || value == "tool_result" || value == "manual_reference"
 }
 func boundedString(value string) bool {
 	return value != "" && utf8.RuneCountInString(value) <= maxIdentityChars
@@ -1167,17 +964,17 @@ type egressEvent struct {
 	OccurredAt  string        `json:"occurred_at"`
 	Content     egressContent `json:"content"`
 }
-type processPrompt struct {
-	ProcessorIdentity  string         `json:"processor_identity"`
-	ProcessingVersion  string         `json:"processing_version"`
-	JobID              string         `json:"job_id"`
-	Attempt            int            `json:"attempt"`
-	Event              egressEvent    `json:"event"`
-	ContextEvents      []egressEvent  `json:"context_events,omitempty"`
-	ContextMemories    []egressMemory `json:"context_memories,omitempty"`
-	AllowedMemoryTypes []string       `json:"allowed_memory_types"`
-	MaxCandidates      int            `json:"max_candidates"`
-	MaxContentChars    int            `json:"max_content_chars"`
+type structuredProcessPrompt struct {
+	ProcessorIdentity string         `json:"processor_identity"`
+	ProcessingVersion string         `json:"processing_version"`
+	JobID             string         `json:"job_id"`
+	Attempt           int            `json:"attempt"`
+	Event             egressEvent    `json:"event"`
+	ContextEvents     []egressEvent  `json:"context_events,omitempty"`
+	ContextMemories   []egressMemory `json:"context_memories,omitempty"`
+	AllowedKinds      []string       `json:"allowed_kinds"`
+	MaxCandidates     int            `json:"max_candidates"`
+	MaxContentChars   int            `json:"max_content_chars"`
 }
 type egressMemory struct {
 	MemoryID        string     `json:"memory_id"`
@@ -1212,28 +1009,15 @@ type chatResponse struct {
 	} `json:"choices"`
 	Usage usageWire `json:"usage"`
 }
-type candidateWire struct {
-	Content          string         `json:"content"`
-	MemoryType       string         `json:"memory_type"`
-	SpaceID          string         `json:"space_id"`
-	ValidFrom        *time.Time     `json:"valid_from"`
-	ValidUntil       *time.Time     `json:"valid_until"`
-	Confidence       float64        `json:"confidence"`
-	Sensitivity      string         `json:"sensitivity"`
-	Evidence         []evidenceWire `json:"evidence"`
-	SuggestionKind   string         `json:"suggestion_kind"`
-	RelatedMemoryIDs []string       `json:"related_memory_ids"`
+
+func domainKindStrings(kinds []domain.MemoryKind) []string {
+	result := make([]string, len(kinds))
+	for i, kind := range kinds {
+		result[i] = string(kind)
+	}
+	return result
 }
-type evidenceWire struct {
-	EventID      string `json:"event_id"`
-	EvidenceType string `json:"evidence_type"`
-	StartOffset  *int64 `json:"start_offset"`
-	EndOffset    *int64 `json:"end_offset"`
-}
-type processOutput struct {
-	Category   ProcessCategory `json:"category"`
-	Candidates []candidateWire `json:"candidates"`
-}
+
 type embeddingWireRequest struct {
 	Model      string   `json:"model"`
 	Input      []string `json:"input"`

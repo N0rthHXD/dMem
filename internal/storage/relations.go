@@ -46,14 +46,6 @@ type RelationFilter struct {
 	Limit                                int
 }
 
-func canonicalizeRelation(p CreateRelationProposalParams) CreateRelationProposalParams {
-	if p.RelationType == "related_to" && (p.SourceMemoryID > p.TargetMemoryID || p.SourceMemoryID == p.TargetMemoryID && p.SourceRevisionID > p.TargetRevisionID) {
-		p.SourceMemoryID, p.TargetMemoryID = p.TargetMemoryID, p.SourceMemoryID
-		p.SourceRevisionID, p.TargetRevisionID = p.TargetRevisionID, p.SourceRevisionID
-	}
-	return p
-}
-
 func relationSpecificationHash(p CreateRelationProposalParams) string {
 	value := struct {
 		Type, SourceMemory, SourceRevision, TargetMemory, TargetRevision string
@@ -66,11 +58,10 @@ func relationSpecificationHash(p CreateRelationProposalParams) string {
 }
 
 func validRelationType(v string) bool {
-	return contains([]string{"supports", "contradicts", "supersedes", "derived_from", "related_to"}, v)
+	return contains([]string{"supports", "contradicts", "supersedes", "derived_from"}, v)
 }
 
 func (r *Repository) CreateRelationProposal(ctx context.Context, identity WriteIdentity, p CreateRelationProposalParams) (domain.RelationProposal, bool, error) {
-	p = canonicalizeRelation(p)
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.RelationProposal{}, false, err
@@ -181,7 +172,7 @@ func validateRelationEvidence(ctx context.Context, q candidateQueryer, space str
 		if e.EventID != nil || e.MemoryID == nil || e.RevisionID == nil {
 			return ErrInvalidRelationProposal
 		}
-		if err := q.QueryRowContext(ctx, `SELECT r.content,m.space_id FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.memory_id=? AND r.revision_id=?`, *e.MemoryID, *e.RevisionID).Scan(&text, &sourceSpace); err != nil {
+		if err := q.QueryRowContext(ctx, `SELECT r.display_content,m.space_id FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.memory_id=? AND r.revision_id=?`, *e.MemoryID, *e.RevisionID).Scan(&text, &sourceSpace); err != nil {
 			return ErrInvalidRelationProposal
 		}
 	default:

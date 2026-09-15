@@ -93,28 +93,70 @@ type SearchParams struct {
 	Cursor                 string
 }
 
+// searchIdentities binds a cursor to every algorithm identity that can change
+// candidate membership, rank, or rendered context. The decoder accepts only the
+// current version and no legacy channel payload (ADR 0035 section 11).
+type searchIdentities struct {
+	Schema     string
+	QueryPlan  string
+	Membership string
+	Ranking    string
+	Graph      string
+	Context    string
+	Feedback   string
+}
+
+const (
+	searchQueryPlanIdentity = "query-plan-v1"
+	searchContextIdentity   = "context-selection-v1"
+)
+
+func currentSearchIdentities(ftsVersion, semanticVersion int, metadata searchMetadata) searchIdentities {
+	return searchIdentities{
+		Schema:     "schema-v" + strconv.Itoa(SchemaVersion),
+		QueryPlan:  searchQueryPlanIdentity,
+		Membership: membershipIdentity(ftsVersion, semanticVersion, metadata),
+		Ranking:    rankingVersion,
+		Graph:      graphIdentity(metadata),
+		Context:    searchContextIdentity,
+		Feedback:   "feedback-v" + strconv.FormatInt(metadata.feedbackAggregateVersion, 10),
+	}
+}
+
+func membershipIdentity(ftsVersion, semanticVersion int, metadata searchMetadata) string {
+	return "membership-v1" +
+		":fts=" + strconv.Itoa(ftsVersion) +
+		":semantic=" + strconv.Itoa(semanticVersion) +
+		":corpus=" + strconv.FormatInt(metadata.corpusGeneration, 10) +
+		":entity=" + strconv.FormatInt(metadata.entityIndexVersion, 10) +
+		":entity_generation=" + strconv.FormatInt(metadata.entityIndexGeneration, 10) +
+		":relation=" + strconv.FormatInt(metadata.relationIndexVersion, 10) +
+		":relation_generation=" + strconv.FormatInt(metadata.relationIndexGeneration, 10)
+}
+
+func graphIdentity(metadata searchMetadata) string {
+	return "graph-v1" +
+		":version=" + strconv.FormatInt(metadata.graphIndexVersion, 10) +
+		":generation=" + strconv.FormatInt(metadata.graphIndexGeneration, 10) +
+		":state=" + metadata.graphIndexState
+}
+
 type searchCursor struct {
-	Version                  int      `json:"v"`
-	QueryHash                string   `json:"q"`
-	RequestedChannels        []string `json:"rc"`
-	ExecutedChannels         []string `json:"ec"`
-	RankingVersion           string   `json:"rv"`
-	FTSVersion               int      `json:"fv"`
-	SemanticVersion          int      `json:"sv"`
-	CorpusGeneration         int64    `json:"cg"`
-	FeedbackAggregateVersion int64    `json:"av"`
-	EntityIndexVersion       int64    `json:"ev"`
-	RelationIndexVersion     int64    `json:"lv"`
-	GraphIndexVersion        int64    `json:"gv"`
-	EntityIndexGeneration    int64    `json:"eg"`
-	RelationIndexGeneration  int64    `json:"lg"`
-	GraphIndexGeneration     int64    `json:"gg"`
-	Limit                    int      `json:"l"`
-	MaxChars                 int      `json:"b"`
-	ScoreBits                string   `json:"s"`
-	MemoryID                 string   `json:"m"`
-	RevisionID               string   `json:"r"`
-	ReferenceTime            string   `json:"rt"`
+	Version            int    `json:"v"`
+	SchemaIdentity     string `json:"si"`
+	QueryHash          string `json:"q"`
+	QueryPlanIdentity  string `json:"qp"`
+	MembershipIdentity string `json:"mi"`
+	RankingIdentity    string `json:"ri"`
+	GraphIdentity      string `json:"gi"`
+	ContextIdentity    string `json:"ci"`
+	FeedbackIdentity   string `json:"fi"`
+	Limit              int    `json:"l"`
+	MaxChars           int    `json:"b"`
+	ScoreBits          string `json:"s"`
+	MemoryID           string `json:"m"`
+	RevisionID         string `json:"r"`
+	ReferenceTime      string `json:"rt"`
 }
 
 type searchCandidate struct {
@@ -144,10 +186,18 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		}
 		params.ReferenceTime = cursor.ReferenceTime
 	}
-	if hasChannel(params.EffectiveChannels, ChannelSemantic) {
-		return r.searchSemanticHybrid(ctx, params)
+	if params.ReferenceTime == "" {
+		params.ReferenceTime = formatTime(r.runtime.Now())
 	}
-	return r.searchKeywordGraph(ctx, params)
+	var response domain.SearchResponse
+	var err error
+	if hasChannel(params.EffectiveChannels, ChannelSemantic) {
+		response, err = r.searchSemanticHybrid(ctx, params)
+	} else {
+		response, err = r.searchKeywordGraph(ctx, params)
+	}
+	response.ReferenceTime = params.ReferenceTime
+	return response, err
 }
 
 // searchKeywordGraph executes the keyword and/or graph channels without the
@@ -188,7 +238,8 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		after = &cursor
 	}
 	hash := searchQueryHash(params)
-	if after != nil && !searchCursorMatches(*after, hash, params, ftsVersion, params.SemanticVersion, metadata) {
+	identities := currentSearchIdentities(ftsVersion, params.SemanticVersion, metadata)
+	if after != nil && !searchCursorMatches(*after, hash, params, identities) {
 		return domain.SearchResponse{}, ErrInvalidCursor
 	}
 	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
@@ -292,7 +343,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 			lastInspected = &candidate
 			continue
 		}
-		chars := utf8.RuneCountInString(memory.CurrentRevision.Content)
+		chars := utf8.RuneCountInString(memory.CurrentRevision.DisplayContent)
 		if response.CharsUsed+chars > params.MaxChars {
 			response.Truncated = true
 			if len(response.Results) > 0 && chars <= params.MaxChars {
@@ -332,7 +383,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		response.CharsUsed += chars
 	}
 	if hasMore && lastInspected != nil {
-		next := encodeSearchCursor(hash, params, ftsVersion, params.SemanticVersion, metadata, *lastInspected)
+		next := encodeSearchCursor(hash, params, identities, *lastInspected)
 		response.NextCursor = &next
 	}
 	if err := tx.Commit(); err != nil {
@@ -488,7 +539,7 @@ func searchCandidateCurrent(memory domain.Memory, candidate searchCandidate, spa
 	if memory.CurrentRevision.RevisionID != candidate.revisionID {
 		return false
 	}
-	if candidate.ftsContent != "" && (memory.CurrentRevision.Content != candidate.ftsContent || memory.CurrentRevision.Content != candidate.projectionContent) {
+	if candidate.ftsContent != "" && (memory.CurrentRevision.DisplayContent != candidate.ftsContent || memory.CurrentRevision.DisplayContent != candidate.projectionContent) {
 		return false
 	}
 	return searchMemoryCurrent(memory, spaces, params)
@@ -514,7 +565,7 @@ func searchScope(ctx context.Context, tx *sql.Tx, starts []string, ancestors boo
 }
 
 func searchMemoryCurrent(memory domain.Memory, spaces []string, params SearchParams) bool {
-	if params.ExcludeStaleAggregates && memory.MemoryType == "aggregate" && memory.AggregateStale {
+	if params.ExcludeStaleAggregates && memory.AggregateStale {
 		return false
 	}
 	if !contains(spaces, memory.SpaceID) || !contains(params.States, memory.CurrentState) {
@@ -523,7 +574,7 @@ func searchMemoryCurrent(memory domain.Memory, spaces []string, params SearchPar
 	if memory.CurrentState != "active" && memory.CurrentState != "contested" {
 		return false
 	}
-	if params.MemoryTypesSet && !contains(params.MemoryTypes, memory.MemoryType) {
+	if params.MemoryTypesSet && !contains(params.MemoryTypes, string(memory.Kind)) {
 		return false
 	}
 	reference, err := time.Parse(time.RFC3339Nano, params.ReferenceTime)
@@ -531,14 +582,12 @@ func searchMemoryCurrent(memory domain.Memory, spaces []string, params SearchPar
 		return false
 	}
 	if memory.CurrentRevision.ValidFrom != nil {
-		from, err := time.Parse(time.RFC3339Nano, *memory.CurrentRevision.ValidFrom)
-		if err != nil || reference.Before(from) {
+		if reference.Before(*memory.CurrentRevision.ValidFrom) {
 			return false
 		}
 	}
 	if memory.CurrentRevision.ValidUntil != nil {
-		until, err := time.Parse(time.RFC3339Nano, *memory.CurrentRevision.ValidUntil)
-		if err != nil || !reference.Before(until) {
+		if !reference.Before(*memory.CurrentRevision.ValidUntil) {
 			return false
 		}
 	}
@@ -572,24 +621,23 @@ func searchQueryHash(params SearchParams) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func searchCursorMatches(cursor searchCursor, hash string, params SearchParams, ftsVersion, semanticVersion int, metadata searchMetadata) bool {
-	return cursor.QueryHash == hash && cursor.ReferenceTime == params.ReferenceTime && equalStringSlices(cursor.RequestedChannels, params.Channels) && equalStringSlices(cursor.ExecutedChannels, params.EffectiveChannels) && cursor.RankingVersion == rankingVersion && cursor.FTSVersion == ftsVersion && cursor.SemanticVersion == semanticVersion && cursor.CorpusGeneration == metadata.corpusGeneration && cursor.FeedbackAggregateVersion == metadata.feedbackAggregateVersion && cursor.EntityIndexVersion == metadata.entityIndexVersion && cursor.RelationIndexVersion == metadata.relationIndexVersion && cursor.GraphIndexVersion == metadata.graphIndexVersion && cursor.EntityIndexGeneration == metadata.entityIndexGeneration && cursor.RelationIndexGeneration == metadata.relationIndexGeneration && cursor.GraphIndexGeneration == metadata.graphIndexGeneration && cursor.Limit == params.Limit && cursor.MaxChars == params.MaxChars
+func searchCursorMatches(cursor searchCursor, hash string, params SearchParams, identities searchIdentities) bool {
+	return cursor.QueryHash == hash && cursor.ReferenceTime == params.ReferenceTime &&
+		cursor.SchemaIdentity == identities.Schema && cursor.QueryPlanIdentity == identities.QueryPlan &&
+		cursor.MembershipIdentity == identities.Membership && cursor.RankingIdentity == identities.Ranking &&
+		cursor.GraphIdentity == identities.Graph && cursor.ContextIdentity == identities.Context &&
+		cursor.FeedbackIdentity == identities.Feedback &&
+		cursor.Limit == params.Limit && cursor.MaxChars == params.MaxChars
 }
 
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
+func encodeSearchCursor(hash string, params SearchParams, identities searchIdentities, candidate searchCandidate) string {
+	value := searchCursor{
+		Version: 5, SchemaIdentity: identities.Schema, QueryHash: hash, QueryPlanIdentity: identities.QueryPlan,
+		MembershipIdentity: identities.Membership, RankingIdentity: identities.Ranking, GraphIdentity: identities.Graph,
+		ContextIdentity: identities.Context, FeedbackIdentity: identities.Feedback, Limit: params.Limit,
+		MaxChars: params.MaxChars, ScoreBits: strconv.FormatUint(math.Float64bits(candidate.score), 16),
+		MemoryID: candidate.memoryID, RevisionID: candidate.revisionID, ReferenceTime: params.ReferenceTime,
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func encodeSearchCursor(hash string, params SearchParams, ftsVersion, semanticVersion int, metadata searchMetadata, candidate searchCandidate) string {
-	value := searchCursor{Version: 4, QueryHash: hash, RequestedChannels: params.Channels, ExecutedChannels: params.EffectiveChannels, RankingVersion: rankingVersion, FTSVersion: ftsVersion, SemanticVersion: semanticVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, EntityIndexVersion: metadata.entityIndexVersion, RelationIndexVersion: metadata.relationIndexVersion, GraphIndexVersion: metadata.graphIndexVersion, EntityIndexGeneration: metadata.entityIndexGeneration, RelationIndexGeneration: metadata.relationIndexGeneration, GraphIndexGeneration: metadata.graphIndexGeneration, Limit: params.Limit, MaxChars: params.MaxChars, ScoreBits: strconv.FormatUint(math.Float64bits(candidate.score), 16), MemoryID: candidate.memoryID, RevisionID: candidate.revisionID, ReferenceTime: params.ReferenceTime}
 	encoded, _ := json.Marshal(value)
 	return base64.RawURLEncoding.EncodeToString(encoded)
 }
@@ -597,7 +645,11 @@ func encodeSearchCursor(hash string, params SearchParams, ftsVersion, semanticVe
 func decodeSearchCursor(value string) (searchCursor, error) {
 	var cursor searchCursor
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.Version != 4 || cursor.QueryHash == "" || len(cursor.RequestedChannels) == 0 || len(cursor.ExecutedChannels) == 0 || cursor.RankingVersion != rankingVersion || cursor.FTSVersion < 1 || cursor.MemoryID == "" || cursor.RevisionID == "" || cursor.ReferenceTime == "" {
+	if err != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.Version != 5 ||
+		cursor.SchemaIdentity == "" || cursor.QueryHash == "" || cursor.QueryPlanIdentity == "" ||
+		cursor.MembershipIdentity == "" || cursor.RankingIdentity == "" || cursor.GraphIdentity == "" ||
+		cursor.ContextIdentity == "" || cursor.FeedbackIdentity == "" ||
+		cursor.MemoryID == "" || cursor.RevisionID == "" || cursor.ReferenceTime == "" {
 		return searchCursor{}, ErrInvalidCursor
 	}
 	bits, err := strconv.ParseUint(cursor.ScoreBits, 16, 64)
@@ -608,11 +660,6 @@ func decodeSearchCursor(value string) (searchCursor, error) {
 		return searchCursor{}, ErrInvalidCursor
 	}
 	return cursor, nil
-}
-
-func parseScoreBits(value string) uint64 {
-	bits, _ := strconv.ParseUint(value, 16, 64)
-	return bits
 }
 
 func contains(values []string, value string) bool {

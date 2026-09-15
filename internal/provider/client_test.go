@@ -29,6 +29,10 @@ func TestDisabledDoesNotResolveSecretOrUseHTTP(t *testing.T) {
 	assertProviderError(t, err, ErrorDisabled, "provider_disabled")
 }
 
+func wholeEventStructuredCandidate() string {
+	return strings.Replace(validStructuredCandidate, `"role":"direct","start_offset":0,"end_offset":16`, `"role":"direct","start_offset":null,"end_offset":null`, 1)
+}
+
 func TestProcessMinimizesContentAndUsesExplicitSecret(t *testing.T) {
 	t.Setenv("DMEM_TEST_SECRET", "test-secret-value")
 	var requests atomic.Int32
@@ -58,37 +62,35 @@ func TestProcessMinimizesContentAndUsesExplicitSecret(t *testing.T) {
 			t.Errorf("request did not apply minimization: %s", user)
 		}
 		w.Header().Set("X-Request-Id", "request-123")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"category\":\"candidates_extracted\",\"candidates\":[{\"content\":\"remember this\",\"memory_type\":\"fact\",\"space_id\":\"space-a\",\"confidence\":0.8,\"sensitivity\":\"sensitive\",\"evidence\":[{\"event_id\":\"event-a\",\"evidence_type\":\"manual_reference\",\"start_offset\":null,\"end_offset\":null}],\"suggestion_kind\":\"new\",\"related_memory_ids\":[]}]}"}}],"usage":{"prompt_tokens":12,"completion_tokens":5}}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":` + strconv.Quote(structuredCandidatesOutput(wholeEventStructuredCandidate())) + `}}],"usage":{"prompt_tokens":12,"completion_tokens":5}}`))
 	}))
 	defer server.Close()
 
 	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions", Limits: Limits{MaxContextItems: 1}})
-	target := NewEvent("event-a", "space-a", "file_reference", "source", "normal", time.Unix(1, 0), NewReferenceContent("text/plain", 42, "sha256:abc"))
+	target := NewEvent("event-1", "space-a", "file_reference", "source", "normal", time.Unix(1, 0), NewReferenceContent("text/plain", 42, "sha256:abc"))
 	contextEvents := []Event{
 		NewEvent("context-a", "space-a", "message", "source", "normal", time.Unix(2, 0), NewTextContent("text/plain", "allowed-context")),
 		NewEvent("context-b", "space-a", "message", "source", "normal", time.Unix(3, 0), NewTextContent("text/plain", "context-over-limit")),
 	}
-	result, err := client.Process(context.Background(), NewProcessRequest("processor-a", "v2", "job-a", 1, target, contextEvents, nil, []string{"fact"}, 2, 1000))
+	result, err := client.Process(context.Background(), NewProcessRequest("processor-a", "v2", "job-a", 1, target, contextEvents, nil, []domain.MemoryKind{domain.MemoryKindFact}, 2, 1000))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Category() != "candidates_extracted" || len(result.Candidates()) != 1 || result.ProviderRequestID() != "request-123" {
+	revisions := result.Revisions()
+	if result.Category() != ProcessCandidatesExtracted || len(revisions) != 1 || result.ProviderRequestID() != "request-123" {
 		t.Fatalf("result = %+v", result)
 	}
-	candidate := result.Candidates()[0]
-	if candidate.Sensitivity() != "sensitive" || len(candidate.Evidence()) != 1 || candidate.Evidence()[0].EvidenceType() != "manual_reference" {
-		t.Fatalf("candidate contract = %+v", candidate)
+	revision := revisions[0]
+	if revision.Kind != domain.MemoryKindFact || revision.CanonicalContent != "alice prefers tea" || len(revision.Evidence) != 1 || revision.Evidence[0].Role != domain.EvidenceRoleDirect || revision.Evidence[0].EventID != "event-1" {
+		t.Fatalf("revision = %+v", revision)
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("requests = %d", requests.Load())
 	}
 }
 
-func TestProcessPreservesContextMemoryBudgetSensitivityAndTypedEvidence(t *testing.T) {
+func TestProcessPreservesContextBudgetAndStructuredPrompt(t *testing.T) {
 	t.Setenv("DMEM_TEST_SECRET", "secret")
-	validFrom := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	validUntil := validFrom.Add(24 * time.Hour)
-	start, end := int64(1), int64(4)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Messages []chatMessage `json:"messages"`
@@ -96,32 +98,43 @@ func TestProcessPreservesContextMemoryBudgetSensitivityAndTypedEvidence(t *testi
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		var prompt processPrompt
+		var prompt structuredProcessPrompt
 		if err := json.Unmarshal([]byte(body.Messages[1].Content), &prompt); err != nil {
 			t.Fatal(err)
 		}
-		if prompt.MaxContentChars != 80 || len(prompt.ContextMemories) != 1 {
+		if prompt.MaxContentChars != 80 || len(prompt.ContextMemories) != 1 || len(prompt.AllowedKinds) != 1 || prompt.AllowedKinds[0] != "fact" {
 			t.Fatalf("provider prompt = %+v", prompt)
 		}
 		memory := prompt.ContextMemories[0]
-		if memory.MemoryID != "memory-a" || memory.RevisionID != "revision-a" || memory.Content != "bounded memory" || memory.State != "contested" || memory.Sensitivity != "normal" || memory.ValidFrom == nil || memory.ValidUntil == nil {
+		if memory.MemoryID != "memory-a" || memory.RevisionID != "revision-a" || memory.Content != "bounded memory" || memory.State != "contested" || memory.Sensitivity != "normal" {
 			t.Fatalf("context memory = %+v", memory)
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"candidates_extracted\",\"candidates\":[{\"content\":\"typed result\",\"memory_type\":\"fact\",\"space_id\":\"space-a\",\"confidence\":0.9,\"sensitivity\":\"sensitive\",\"evidence\":[{\"event_id\":\"event-a\",\"evidence_type\":\"tool_result\",\"start_offset\":1,\"end_offset\":4}],\"suggestion_kind\":\"supplement\",\"related_memory_ids\":[\"memory-a\"]}]}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"no_memory\",\"candidates\":[]}"}}]}`))
 	}))
 	defer server.Close()
 	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
-	target := NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "source text"))
-	memory := NewMemory("memory-a", "revision-a", "space-a", "bounded memory", "contested", "normal", &validFrom, &validUntil)
-	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, []Memory{memory}, []string{"fact"}, 1, 80))
+	target := NewEvent("event-1", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "source text"))
+	memory := NewMemory("memory-a", "revision-a", "space-a", "bounded memory", "contested", "normal", nil, nil)
+	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, []Memory{memory}, []domain.MemoryKind{domain.MemoryKindFact}, 1, 80))
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate := result.Candidates()[0]
-	evidence := candidate.Evidence()[0]
-	if candidate.Sensitivity() != "sensitive" || evidence.EvidenceType() != "tool_result" || evidence.StartOffset() == nil || *evidence.StartOffset() != start || evidence.EndOffset() == nil || *evidence.EndOffset() != end {
-		t.Fatalf("candidate = %+v evidence = %+v", candidate, evidence)
+	if result.Category() != ProcessNoMemory || len(result.Revisions()) != 0 {
+		t.Fatalf("result = %+v", result)
 	}
+}
+
+func TestProcessRejectsStructuredEvidenceOutsideOffsets(t *testing.T) {
+	t.Setenv("DMEM_TEST_SECRET", "secret")
+	outOfRange := strings.Replace(validStructuredCandidate, `"end_offset":16`, `"end_offset":4096`, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(structuredCandidatesOutput(outOfRange)) + `}}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
+	target := NewEvent("event-1", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "source text"))
+	_, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, nil, []domain.MemoryKind{domain.MemoryKindFact}, 1, 1000))
+	assertProviderError(t, err, ErrorInvalidOutput, "invalid_evidence_reference")
 }
 
 func TestProcessUsesOneContextBudgetAndMarksReadOnlyMemories(t *testing.T) {
@@ -133,7 +146,7 @@ func TestProcessUsesOneContextBudgetAndMarksReadOnlyMemories(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		var prompt processPrompt
+		var prompt structuredProcessPrompt
 		if err := json.Unmarshal([]byte(body.Messages[1].Content), &prompt); err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +163,7 @@ func TestProcessUsesOneContextBudgetAndMarksReadOnlyMemories(t *testing.T) {
 		NewMemoryWithProposalCapability("memory-a", "revision-a", "ancestor", "read only", "active", "normal", false, nil, nil),
 		NewMemory("memory-b", "revision-b", "space-a", "over limit", "active", "normal", nil, nil),
 	}
-	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, events, memories, []string{"fact"}, 1, 100))
+	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, events, memories, []domain.MemoryKind{domain.MemoryKindFact}, 1, 100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,52 +174,16 @@ func TestProcessUsesOneContextBudgetAndMarksReadOnlyMemories(t *testing.T) {
 
 func TestProcessRejectsEvidenceFromOmittedContext(t *testing.T) {
 	t.Setenv("DMEM_TEST_SECRET", "secret")
+	denied := strings.Replace(wholeEventStructuredCandidate(), `"event_id":"event-1"`, `"event_id":"denied"`, 1)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"category\":\"candidates_extracted\",\"candidates\":[{\"content\":\"result\",\"memory_type\":\"fact\",\"space_id\":\"space-a\",\"confidence\":0.8,\"sensitivity\":\"normal\",\"evidence\":[{\"event_id\":\"denied\",\"evidence_type\":\"direct_statement\",\"start_offset\":null,\"end_offset\":null}],\"suggestion_kind\":\"new\",\"related_memory_ids\":[]}] }"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(structuredCandidatesOutput(denied)) + `}}]}`))
 	}))
 	defer server.Close()
 	client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
 	target := NewEvent("target", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "target"))
-	denied := NewEvent("denied", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "private"))
-	_, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, []Event{denied}, nil, []string{"fact"}, 1, 100))
+	deniedEvent := NewEvent("denied", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "private"))
+	_, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, []Event{deniedEvent}, nil, []domain.MemoryKind{domain.MemoryKindFact}, 1, 1000))
 	assertProviderError(t, err, ErrorInvalidOutput, "invalid_evidence_reference")
-}
-
-func TestProcessRejectsJobLayerOnlyCandidateViolations(t *testing.T) {
-	t.Setenv("DMEM_TEST_SECRET", "secret")
-	for _, test := range []struct {
-		name     string
-		output   string
-		wantCode string
-	}{
-		{
-			name:     "non-new whole-event evidence",
-			output:   `{"category":"candidates_extracted","candidates":[{"content":"result","memory_type":"fact","space_id":"space-a","confidence":0.8,"sensitivity":"normal","evidence":[{"event_id":"event-a","evidence_type":"direct_statement","start_offset":null,"end_offset":null}],"suggestion_kind":"supplement","related_memory_ids":["memory-a"]}]}`,
-			wantCode: "invalid_evidence_reference",
-		},
-		{
-			name:     "missing supplement target",
-			output:   `{"category":"candidates_extracted","candidates":[{"content":"result","memory_type":"fact","space_id":"space-a","confidence":0.8,"sensitivity":"normal","evidence":[{"event_id":"event-a","evidence_type":"direct_statement","start_offset":0,"end_offset":6}],"suggestion_kind":"supplement","related_memory_ids":[]}]}`,
-			wantCode: "invalid_related_memory_reference",
-		},
-		{
-			name:     "duplicate memory target",
-			output:   `{"category":"candidates_extracted","candidates":[{"content":"result","memory_type":"fact","space_id":"space-a","confidence":0.8,"sensitivity":"normal","evidence":[{"event_id":"event-a","evidence_type":"direct_statement","start_offset":0,"end_offset":6}],"suggestion_kind":"duplicate","related_memory_ids":["memory-a","memory-a"]}]}`,
-			wantCode: "invalid_related_memory_reference",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(test.output) + `}}]}`))
-			}))
-			defer server.Close()
-			client := newTestClient(t, server, Config{Endpoint: server.URL + "/chat/completions"})
-			target := NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "source text"))
-			memory := NewMemory("memory-a", "revision-a", "space-a", "context", "active", "normal", nil, nil)
-			_, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, []Memory{memory}, []string{"fact"}, 1, 100))
-			assertProviderError(t, err, ErrorInvalidOutput, test.wantCode)
-		})
-	}
 }
 
 func TestPolicyRejectsBeforeSecretAndNetwork(t *testing.T) {
@@ -225,7 +202,7 @@ func TestPolicyRejectsBeforeSecretAndNetwork(t *testing.T) {
 		{"sensitivity", NewEvent("event-a", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "private-content")), "sensitivity_not_allowed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := client.Process(context.Background(), NewProcessRequest("p", "v", "j", 1, test.target, nil, nil, []string{"fact"}, 1, 1000))
+			_, err := client.Process(context.Background(), NewProcessRequest("p", "v", "j", 1, test.target, nil, nil, []domain.MemoryKind{domain.MemoryKindFact}, 1, 1000))
 			assertProviderError(t, err, ErrorPolicy, test.code)
 		})
 	}
@@ -401,7 +378,7 @@ func TestProcessEnforcesAggregateTargetAndContextCharacterBudget(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		var prompt processPrompt
+		var prompt structuredProcessPrompt
 		if err := json.Unmarshal([]byte(body.Messages[1].Content), &prompt); err != nil {
 			t.Fatal(err)
 		}
@@ -417,7 +394,7 @@ func TestProcessEnforcesAggregateTargetAndContextCharacterBudget(t *testing.T) {
 		NewEvent("context-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "7890")),
 		NewEvent("context-b", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "excluded")),
 	}
-	if _, err := client.Process(context.Background(), NewProcessRequest("p", "v", "j", 1, target, contextEvents, nil, []string{"fact"}, 1, 10)); err != nil {
+	if _, err := client.Process(context.Background(), NewProcessRequest("p", "v", "j", 1, target, contextEvents, nil, []domain.MemoryKind{domain.MemoryKindFact}, 1, 10)); err != nil {
 		t.Fatal(err)
 	}
 	if requests.Load() != 1 {
@@ -476,7 +453,7 @@ func TestProcessRejectsUnrecognizedOutputFields(t *testing.T) {
 	defer server.Close()
 	client := newTestClient(t, server, Config{})
 	target := NewEvent("event-a", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "content"))
-	_, err := client.Process(context.Background(), NewProcessRequest("p", "v", "j", 1, target, nil, nil, []string{"fact"}, 1, 1000))
+	_, err := client.Process(context.Background(), NewProcessRequest("p", "v", "j", 1, target, nil, nil, []domain.MemoryKind{domain.MemoryKindFact}, 1, 1000))
 	assertProviderError(t, err, ErrorInvalidOutput, "malformed_processor_output")
 }
 
@@ -531,7 +508,7 @@ func TestProcessOmitsDeniedOptionalContext(t *testing.T) {
 	client := newTestClient(t, server, Config{})
 	target := NewEvent("target", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "allowed target"))
 	denied := NewEvent("context", "space-a", "message", "source", "sensitive", time.Now(), NewTextContent("text/plain", "denied context"))
-	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, []Event{denied}, nil, []string{"fact"}, 1, 100, 100))
+	result, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, []Event{denied}, nil, []domain.MemoryKind{domain.MemoryKindFact}, 1, 100, 100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +525,7 @@ func TestProcessNormalizesMIMEPolicyKeys(t *testing.T) {
 	defer server.Close()
 	client := newTestClient(t, server, Config{Policy: Policy{ContentTypes: []string{" Text/Plain "}}})
 	target := NewEvent("target", "space-a", "message", "source", "normal", time.Now(), NewTextContent("text/plain", "content"))
-	if _, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, nil, []string{"fact"}, 1, 100)); err != nil {
+	if _, err := client.Process(context.Background(), NewProcessRequest("processor", "v1", "job", 1, target, nil, nil, []domain.MemoryKind{domain.MemoryKindFact}, 1, 100)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -625,3 +602,241 @@ func assertProviderError(t *testing.T, err error, class ErrorClass, code string)
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+const validStructuredCandidate = `{"kind":"fact","display_content":"Alice prefers tea","canonical_content":"alice prefers tea","subject_entity_ids":["alice"],"object_entity_ids":[],"event_type":"","attributes":{"preference":"tea"},"event_time":{"expression":"yesterday","start":"2024-03-01T09:00:00Z","end":"2024-03-01T10:00:00Z","precision":"exact","source":"relative_anchor"},"valid_time":{"expression":"","start":"2024-01-01T00:00:00Z","end":"2024-12-31T00:00:00Z","precision":"day","source":"explicit"},"source_speaker":"alice","language":"en","sensitivity":"normal","specificity":0.7,"confidence":0.9,"evidence":[{"evidence_id":"ev-1","event_id":"event-1","event_time":"2024-03-01T09:00:00Z","event_sequence":1,"role":"direct","start_offset":0,"end_offset":16}]}`
+
+func structuredCandidatesOutput(candidate string) string {
+	return `{"category":"candidates_extracted","candidates":[` + candidate + `]}`
+}
+
+func TestDecodeStructuredCandidatesNormalizesProposal(t *testing.T) {
+	revisions, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(validStructuredCandidate)), StructuredCandidateBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revisions) != 1 {
+		t.Fatalf("revisions = %d", len(revisions))
+	}
+	revision := revisions[0]
+	if revision.Kind != domain.MemoryKindFact || revision.CanonicalContent != "alice prefers tea" || revision.DisplayContent != "Alice prefers tea" {
+		t.Fatalf("revision = %+v", revision)
+	}
+	if revision.EventTimeStart == nil || revision.EventTimeEnd == nil || revision.TimePrecision != domain.TimePrecisionExact || revision.TimeSource != "relative_anchor" {
+		t.Fatalf("event time = %+v", revision)
+	}
+	if revision.ValidFrom == nil || revision.ValidUntil == nil {
+		t.Fatalf("valid time = %+v", revision)
+	}
+	if len(revision.SubjectEntityIDs) != 1 || revision.SubjectEntityIDs[0] != "alice" || revision.Attributes["preference"] != "tea" {
+		t.Fatalf("structured fields = %+v", revision)
+	}
+	if len(revision.Evidence) != 1 || revision.Evidence[0].Role != domain.EvidenceRoleDirect || revision.Evidence[0].EventID != "event-1" {
+		t.Fatalf("evidence = %+v", revision.Evidence)
+	}
+}
+
+func TestDecodeStructuredCandidatesNoMemory(t *testing.T) {
+	revisions, err := DecodeStructuredCandidates([]byte(`{"category":"no_memory","candidates":[]}`), StructuredCandidateBounds{})
+	if err != nil || len(revisions) != 0 {
+		t.Fatalf("no_memory = %v, %v", revisions, err)
+	}
+	_, err = DecodeStructuredCandidates([]byte(structuredCandidatesOutput(validStructuredCandidate)), StructuredCandidateBounds{MaxCandidates: 0})
+	if err != nil {
+		t.Fatalf("single candidate with default bounds rejected: %v", err)
+	}
+	_, err = DecodeStructuredCandidates([]byte(`{"category":"no_memory","candidates":[`+validStructuredCandidate+`]}`), StructuredCandidateBounds{})
+	if !errors.Is(err, errInvalidStructuredOutput) {
+		t.Fatalf("no_memory with candidates error = %v", err)
+	}
+}
+
+func TestDecodeStructuredCandidatesStrictDecode(t *testing.T) {
+	cases := map[string]string{
+		"unknown field": strings.Replace(validStructuredCandidate, `"kind":"fact"`, `"kind":"fact","extra":true`, 1),
+		"unknown top":   strings.Replace(validStructuredCandidate, `"kind":"fact"`, `"kind":"fact","unexpected":{"nested":1}`, 1),
+		"invalid json":  `{"category":"candidates_extracted","candidates":[`,
+		"invalid cat":   `{"category":"everything","candidates":[]}`,
+	}
+	for name, candidate := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(candidate)), StructuredCandidateBounds{}); !errors.Is(err, errInvalidStructuredOutput) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	// A second JSON value after the object is not a single strict document.
+	_, err := DecodeStructuredCandidates([]byte(`{"category":"no_memory","candidates":[]} {"category":"no_memory","candidates":[]}`), StructuredCandidateBounds{})
+	if !errors.Is(err, errInvalidStructuredOutput) {
+		t.Fatalf("additional value error = %v", err)
+	}
+}
+
+func TestDecodeStructuredCandidatesRejectsInvalidFields(t *testing.T) {
+	cases := map[string]string{
+		"aggregate kind":        strings.Replace(validStructuredCandidate, `"kind":"fact"`, `"kind":"scene"`, 1),
+		"empty canonical":       strings.Replace(validStructuredCandidate, `"canonical_content":"alice prefers tea"`, `"canonical_content":"  "`, 1),
+		"confidence high":       strings.Replace(validStructuredCandidate, `"confidence":0.9`, `"confidence":1.5`, 1),
+		"specificity low":       strings.Replace(validStructuredCandidate, `"specificity":0.7`, `"specificity":-0.5`, 1),
+		"bad sensitivity":       strings.Replace(validStructuredCandidate, `"sensitivity":"normal"`, `"sensitivity":"secret"`, 1),
+		"duplicate evidence id": strings.Replace(validStructuredCandidate, `"evidence_id":"ev-1"`, `"evidence_id":""`, 1),
+		"bad role":              strings.Replace(validStructuredCandidate, `"role":"direct"`, `"role":"hint"`, 1),
+		"half range":            strings.Replace(validStructuredCandidate, `,"end_offset":16`, ``, 1),
+		"bad range":             strings.Replace(validStructuredCandidate, `"end_offset":16`, `"end_offset":0`, 1),
+	}
+	for name, candidate := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(candidate)), StructuredCandidateBounds{}); !errors.Is(err, errInvalidStructuredOutput) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodeStructuredCandidatesTimeWindowsAndAuthority(t *testing.T) {
+	invertedEvent := strings.Replace(validStructuredCandidate,
+		`"start":"2024-03-01T09:00:00Z","end":"2024-03-01T10:00:00Z"`,
+		`"start":"2024-03-01T10:00:00Z","end":"2024-03-01T09:00:00Z"`, 1)
+	invertedValid := strings.Replace(validStructuredCandidate,
+		`"start":"2024-01-01T00:00:00Z","end":"2024-12-31T00:00:00Z"`,
+		`"start":"2024-12-31T00:00:00Z","end":"2024-01-01T00:00:00Z"`, 1)
+	contextOnly := strings.Replace(validStructuredCandidate, `"role":"direct"`, `"role":"context"`, 1)
+	for name, candidate := range map[string]string{
+		"inverted event window": invertedEvent,
+		"inverted valid window": invertedValid,
+		"context-only evidence": contextOnly,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(candidate)), StructuredCandidateBounds{}); !errors.Is(err, errInvalidStructuredOutput) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+
+	unknownPrecision := strings.Replace(validStructuredCandidate, `"precision":"exact"`, `"precision":""`, 1)
+	revisions, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(unknownPrecision)), StructuredCandidateBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revisions[0].TimePrecision != domain.TimePrecisionUnknown {
+		t.Fatalf("empty precision did not normalize: %q", revisions[0].TimePrecision)
+	}
+}
+
+func TestDecodeStructuredCandidatesBounds(t *testing.T) {
+	twoCandidates := structuredCandidatesOutput(validStructuredCandidate + "," + validStructuredCandidate)
+	if _, err := DecodeStructuredCandidates([]byte(twoCandidates), StructuredCandidateBounds{MaxCandidates: 1}); !errors.Is(err, errInvalidStructuredOutput) {
+		t.Fatalf("candidate count error = %v", err)
+	}
+	if _, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(validStructuredCandidate)), StructuredCandidateBounds{MaxContentChars: 4}); !errors.Is(err, errInvalidStructuredOutput) {
+		t.Fatalf("content bounds error = %v", err)
+	}
+	twoEvidence := strings.Replace(validStructuredCandidate, `"evidence":[`,
+		`"evidence":[{"evidence_id":"ev-0","event_id":"event-1","role":"direct","start_offset":0,"end_offset":3},`, 1)
+	if _, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(twoEvidence)), StructuredCandidateBounds{MaxEvidencePerCandidate: 1}); !errors.Is(err, errInvalidStructuredOutput) {
+		t.Fatalf("evidence bounds error = %v", err)
+	}
+	twoRefs := strings.Replace(validStructuredCandidate, `"subject_entity_ids":["alice"]`, `"subject_entity_ids":["alice","bob"]`, 1)
+	if _, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(twoRefs)), StructuredCandidateBounds{MaxEntityRefs: 1}); !errors.Is(err, errInvalidStructuredOutput) {
+		t.Fatalf("entity ref bounds error = %v", err)
+	}
+}
+
+const validTypedGraphOutput = `{"entities":[{"local_id":"e0","canonical_name":"Alice","entity_type":"person","aliases":["A"],"confidence":0.9},{"local_id":"e1","canonical_name":"Alpha","entity_type":"project","aliases":[],"confidence":0.8},{"local_id":"e2","canonical_name":"Paris","entity_type":"place","aliases":[],"confidence":0.9},{"local_id":"e3","canonical_name":"Beta","entity_type":"project","aliases":[],"confidence":0.8}],"mentions":[{"entity_local_id":"e0","text":"Alice","start_rune":0,"end_rune":5,"confidence":0.9}],"events":[{"local_id":"x0","event_type":"meeting","participant_local_ids":["e0"],"place_local_id":"e2","time":{"expression":"yesterday","start":"2024-03-01T09:00:00Z","end":"2024-03-01T10:00:00Z","precision":"exact","source":"relative_anchor"},"confidence":0.8}],"facts":[{"subject_local_id":"e0","predicate":"participates_in","object_local_id":"e1","confidence":0.9},{"subject_local_id":"e1","predicate":"has_status","object_literal":"active","object_literal_type":"string","confidence":0.9},{"subject_local_id":"e1","predicate":"depends_on","object_local_id":"e3","confidence":0.7}],"relations":[{"relation_type":"supports","target_memory_id":"memory-a","target_revision_id":"revision-a","confidence":0.8}]}`
+
+func TestDecodeTypedGraphOutputAcceptsTypedKnowledge(t *testing.T) {
+	result, err := DecodeTypedGraphOutput([]byte(validTypedGraphOutput), TypedGraphBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entities) != 4 || len(result.Mentions) != 1 || len(result.Events) != 1 || len(result.Facts) != 3 || len(result.Relations) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Mentions[0].EntityLocalID != "e0" || result.Mentions[0].Text != "Alice" || result.Mentions[0].EndRune != 5 {
+		t.Fatalf("mention = %+v", result.Mentions[0])
+	}
+	event := result.Events[0]
+	if event.EventType != "meeting" || len(event.ParticipantLocalIDs) != 1 || event.PlaceLocalID != "e2" || event.Time == nil {
+		t.Fatalf("event = %+v", event)
+	}
+	if result.Facts[0].Predicate != "participates_in" || result.Facts[1].ObjectLiteral != "active" || result.Facts[2].Predicate != "depends_on" {
+		t.Fatalf("facts = %+v", result.Facts)
+	}
+	if !containsString(PredicateNames(), "member_of") || !containsString(PredicateNames(), "depends_on") {
+		t.Fatalf("predicate registry = %v", PredicateNames())
+	}
+}
+
+func TestDecodeTypedGraphOutputRejectsClosedContractViolations(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want error
+	}{
+		"unknown predicate": {
+			body: strings.Replace(validTypedGraphOutput, `"predicate":"participates_in"`, `"predicate":"hates"`, 1),
+			want: errUnknownPredicate,
+		},
+		"predicate type mismatch": {
+			body: strings.Replace(validTypedGraphOutput, `"predicate":"participates_in"`, `"predicate":"member_of"`, 1),
+			want: errPredicateTypeMismatch,
+		},
+		"literal type mismatch": {
+			body: strings.Replace(validTypedGraphOutput, `"object_literal_type":"string"`, `"object_literal_type":"number"`, 1),
+			want: errPredicateTypeMismatch,
+		},
+		"unknown entity type": {
+			body: strings.Replace(validTypedGraphOutput, `"entity_type":"person"`, `"entity_type":"rocket"`, 1),
+			want: errUnknownEntityType,
+		},
+		"unknown event type": {
+			body: strings.Replace(validTypedGraphOutput, `"event_type":"meeting"`, `"event_type":"party"`, 1),
+			want: errUnknownEventType,
+		},
+		"broad relation": {
+			body: strings.Replace(validTypedGraphOutput, `"relation_type":"supports"`, `"relation_type":"related_to"`, 1),
+			want: errInvalidGraphOutput,
+		},
+		"unknown participant": {
+			body: strings.Replace(validTypedGraphOutput, `"participant_local_ids":["e0"]`, `"participant_local_ids":["missing"]`, 1),
+			want: errInvalidGraphOutput,
+		},
+		"unknown mention entity": {
+			body: strings.Replace(validTypedGraphOutput, `"entity_local_id":"e0","text":"Alice"`, `"entity_local_id":"missing","text":"Alice"`, 1),
+			want: errInvalidGraphOutput,
+		},
+		"inverted mention range": {
+			body: strings.Replace(validTypedGraphOutput, `"start_rune":0,"end_rune":5`, `"start_rune":5,"end_rune":2`, 1),
+			want: errInvalidGraphOutput,
+		},
+		"self fact": {
+			body: strings.Replace(validTypedGraphOutput, `"predicate":"depends_on","object_local_id":"e3"`, `"predicate":"depends_on","object_local_id":"e1"`, 1),
+			want: errInvalidGraphOutput,
+		},
+		"duplicate entity": {
+			body: strings.Replace(validTypedGraphOutput, `"local_id":"e1"`, `"local_id":"e0"`, 1),
+			want: errInvalidGraphOutput,
+		},
+		"unknown field": {
+			body: strings.Replace(validTypedGraphOutput, `"canonical_name":"Alice"`, `"canonical_name":"Alice","extra":true`, 1),
+			want: errInvalidGraphOutput,
+		},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeTypedGraphOutput([]byte(test.body), TypedGraphBounds{}); !errors.Is(err, test.want) {
+				t.Fatalf("error = %v; want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestDecodeTypedGraphOutputBounds(t *testing.T) {
+	if _, err := DecodeTypedGraphOutput([]byte(validTypedGraphOutput), TypedGraphBounds{MaxEntities: 1}); !errors.Is(err, errInvalidGraphOutput) {
+		t.Fatalf("entity bounds error = %v", err)
+	}
+	if _, err := DecodeTypedGraphOutput([]byte(validTypedGraphOutput), TypedGraphBounds{MaxAliases: 0}); err != nil {
+		t.Fatalf("default alias bound rejected valid output: %v", err)
+	}
+	if _, err := DecodeTypedGraphOutput([]byte(`{"entities":[{"local_id":"e0","canonical_name":"Alice","entity_type":"person","aliases":["A","B"],"confidence":0.9}]}`), TypedGraphBounds{MaxAliases: 1}); !errors.Is(err, errInvalidGraphOutput) {
+		t.Fatalf("alias bounds error = %v", err)
+	}
+}

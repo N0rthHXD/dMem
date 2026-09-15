@@ -91,8 +91,8 @@ func TestDeferredRevisionFKAndAuthorityGuards(t *testing.T) {
 	}
 	statements := []string{
 		`INSERT INTO memory_spaces(space_id, space_type, external_id, display_name, created_at) VALUES ('user', 'user', 'user', 'User', 'now')`,
-		`INSERT INTO memories(memory_id, space_id, memory_type, current_revision_id, current_state, created_at, updated_at) VALUES ('memory', 'user', 'aggregate', 'revision', 'superseded', 'now', 'now')`,
-		`INSERT INTO memory_revisions(revision_id, memory_id, content, content_hash, created_by, processing_version, created_at) VALUES ('revision', 'memory', 'content', 'hash', 'test', 'v1', 'now')`,
+		`INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, created_at, updated_at) VALUES ('memory', 'user', 'revision', 'superseded', 'now', 'now')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('revision','memory','scene','content','content','hash','normal',0,0,'test','v1','now')`,
 		`INSERT INTO feedback_events(feedback_id, operation_id, caller_id, memory_id, revision_id, feedback_type, reason_code, created_at) VALUES ('feedback', 'op', 'caller', 'memory', 'revision', 'useful', 'answered_query', 'now')`,
 	}
 	for _, statement := range statements {
@@ -388,8 +388,8 @@ func TestEmbeddingEligibilityTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		`INSERT INTO memories(memory_id, space_id, memory_type, current_revision_id, current_state, created_at, updated_at) VALUES ('elig-mem', 'elig-user', 'aggregate', 'elig-rev', 'active', 'now', 'now')`,
-		`INSERT INTO memory_revisions(revision_id, memory_id, content, content_hash, created_by, processing_version, created_at) VALUES ('elig-rev', 'elig-mem', 'content', 'hash', 'test', 'v1', 'now')`,
+		`INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, created_at, updated_at) VALUES ('elig-mem', 'elig-user', 'elig-rev', 'active', 'now', 'now')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('elig-rev','elig-mem','scene','content','content','hash','normal',0,0,'test','v1','now')`,
 	} {
 		if _, err := tx.Exec(statement); err != nil {
 			tx.Rollback()
@@ -552,6 +552,518 @@ func TestConfigurationTablesHaveNoSecretColumns(t *testing.T) {
 	}
 }
 
+func seedContractAuthority(t *testing.T, store *Store, suffix string) (spaceID, eventID, memoryID, revisionID string) {
+	t.Helper()
+	spaceID = "space-" + suffix
+	eventID = "event-" + suffix
+	memoryID = "memory-" + suffix
+	revisionID = "revision-" + suffix
+	contentID := "content-" + suffix
+	tx, err := store.writer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		fmt.Sprintf(`INSERT INTO memory_spaces(space_id, space_type, external_id, display_name, created_at) VALUES ('%s', 'user', '%s', 'Contract User', 'now')`, spaceID, spaceID),
+		fmt.Sprintf(`INSERT INTO raw_contents(content_id, content_kind, content_text, media_type, content_hash, size_bytes, created_at) VALUES ('%s', 'text', 'hello', 'text/plain', 'hash-%s', 5, 'now')`, contentID, suffix),
+		fmt.Sprintf(`INSERT INTO raw_events(event_id, operation_id, space_id, content_id, source_type, source_name, caller_id, occurred_at, received_at, created_at) VALUES ('%s', 'op-%s', '%s', '%s', 'message', 'source', 'caller', 'now', 'now', 'now')`, eventID, suffix, spaceID, contentID),
+		fmt.Sprintf(`INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, created_at, updated_at) VALUES ('%s', '%s', '%s', 'active', 'now', 'now')`, memoryID, spaceID, revisionID),
+		fmt.Sprintf(`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('%s','%s','scene','content','content','hash-%s','normal',0,0,'test','v1','now')`, revisionID, memoryID, suffix),
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			tx.Rollback()
+			t.Fatalf("seed contract authority failed: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("seed contract authority commit failed: %v", err)
+	}
+	return spaceID, eventID, memoryID, revisionID
+}
+
+func TestOrderedEventStreamSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "event-streams.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "source_streams", map[string]bool{
+		"source_stream_id": false, "space_id": false, "source_type": false,
+		"source_name": false, "source_stream_key": false, "created_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "raw_events", nil, map[string]bool{
+		"source_stream_id": false, "sequence": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertIndex(t, store, "raw_events", "raw_events_stream_sequence")
+
+	space, _, _, _ := seedContractAuthority(t, store, "stream")
+	if _, err := store.writer.Exec(
+		`INSERT INTO source_streams(source_stream_id, space_id, source_type, source_name, source_stream_key, created_at) VALUES ('stream-1', ?, 'conversation', 'chat', 'chat-1', 'now')`, space,
+	); err != nil {
+		t.Fatalf("valid source_streams insert rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(
+		`INSERT INTO source_streams(source_stream_id, space_id, source_type, source_name, source_stream_key, created_at) VALUES ('stream-dup', ?, 'conversation', 'chat', 'chat-1', 'now')`, space,
+	); err == nil {
+		t.Fatal("source_streams accepted duplicate stream key in the same space")
+	}
+	if _, err := store.writer.Exec(
+		`INSERT INTO raw_events(event_id, operation_id, space_id, content_id, source_type, source_name, caller_id, occurred_at, received_at, created_at) VALUES ('event-stream-2', 'op-stream-2', ?, 'content-stream', 'message', 'source', 'caller', 'now', 'now', 'now')`, space,
+	); err != nil {
+		t.Fatalf("second stream event insert rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(
+		`UPDATE raw_events SET source_stream_id='stream-1', sequence=0 WHERE event_id='event-stream'`,
+	); err != nil {
+		t.Fatalf("raw_events stream assignment rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(
+		`UPDATE raw_events SET source_stream_id='stream-1', sequence=1 WHERE event_id='event-stream-2'`,
+	); err != nil {
+		t.Fatalf("distinct stream sequence rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(
+		`UPDATE raw_events SET sequence=0 WHERE event_id='event-stream-2'`,
+	); err == nil {
+		t.Fatal("raw_events accepted duplicate sequence within a source stream")
+	}
+}
+
+func TestStructuredRevisionSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "structured-revisions.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "memory_revisions", map[string]bool{
+		"kind": false, "display_content": false, "canonical_content": false, "canonical_hash": false,
+		"sensitivity": false, "specificity": false, "confidence": false,
+	}, map[string]bool{
+		"event_type": false, "time_precision": false, "time_source": false,
+		"event_time_start": false, "event_time_end": false, "source_speaker": false,
+		"language": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertColumnAbsent(t, store, "memories", "memory_type")
+	assertColumnAbsent(t, store, "memory_revisions", "content")
+	assertColumnAbsent(t, store, "memory_revisions", "content_hash")
+	_, _, memoryID, _ := seedContractAuthority(t, store, "structured")
+
+	valid := `INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,event_type,event_time_start,event_time_end,time_precision,time_source,source_speaker,language,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('rev-ok',?,'event','Alice met Bob','alice met bob','ch-1','meeting','2024-03-01T09:00:00Z','2024-03-01T10:00:00Z','exact','statement','alice','en','normal',0.8,0.9,'test','v1','now')`
+	if _, err := store.writer.Exec(valid, memoryID); err != nil {
+		t.Fatalf("valid structured revision rejected: %v", err)
+	}
+	invalidKind := `INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('rev-bad-kind',?,'constraint','raw','raw','h-k','normal',0,0,'test','v1','now')`
+	if _, err := store.writer.Exec(invalidKind, memoryID); err == nil {
+		t.Fatal("memory_revisions accepted unsupported kind")
+	}
+	invalidPrecision := `INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,time_precision,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('rev-bad-precision',?,'fact','raw','raw','h-p','fortnight','normal',0,0,'test','v1','now')`
+	if _, err := store.writer.Exec(invalidPrecision, memoryID); err == nil {
+		t.Fatal("memory_revisions accepted unsupported time_precision")
+	}
+	invertedWindow := `INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,event_time_start,event_time_end,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('rev-bad-window',?,'event','raw','raw','h-w','2024-03-01T10:00:00Z','2024-03-01T09:00:00Z','normal',0,0,'test','v1','now')`
+	if _, err := store.writer.Exec(invertedWindow, memoryID); err == nil {
+		t.Fatal("memory_revisions accepted inverted event time window")
+	}
+}
+
+func TestRevisionAttributesSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "revision-attributes.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "revision_attributes", map[string]bool{
+		"revision_id": false, "attribute_key": false, "attribute_value": false, "created_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, revisionID := seedContractAuthority(t, store, "attributes")
+	if _, err := store.writer.Exec(
+		`INSERT INTO revision_attributes(revision_id, attribute_key, attribute_value, created_at) VALUES (?, 'role', 'engineer', 'now')`, revisionID,
+	); err != nil {
+		t.Fatalf("valid revision_attributes insert rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(
+		`INSERT INTO revision_attributes(revision_id, attribute_key, attribute_value, created_at) VALUES (?, 'role', 'manager', 'now')`, revisionID,
+	); err == nil {
+		t.Fatal("revision_attributes accepted duplicate attribute key")
+	}
+}
+
+func TestEvidenceRoleSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "evidence-roles.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "memory_evidence", map[string]bool{"role": true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "candidate_evidence", map[string]bool{"role": true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, eventID, _, revisionID := seedContractAuthority(t, store, "evidence")
+	if _, err := store.writer.Exec(
+		`INSERT INTO memory_evidence(evidence_id, revision_id, event_id, role, created_at) VALUES ('ev-context', ?, ?, 'context', 'now')`, revisionID, eventID,
+	); err != nil {
+		t.Fatalf("valid evidence role rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(
+		`INSERT INTO memory_evidence(evidence_id, revision_id, event_id, role, created_at) VALUES ('ev-bad', ?, ?, 'bogus', 'now')`, revisionID, eventID,
+	); err == nil {
+		t.Fatal("memory_evidence accepted unsupported evidence role")
+	}
+}
+
+func TestDuplicateClusterSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "duplicate-clusters.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "duplicate_clusters", map[string]bool{
+		"cluster_id": false, "space_id": false, "representative_memory_id": false,
+		"representative_revision_id": false, "generation": false, "member_count": false,
+		"algorithm_version": false, "created_at": false, "updated_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "duplicate_cluster_members", map[string]bool{
+		"cluster_id": false, "memory_id": false, "revision_id": false, "reason_code": false, "created_at": false,
+	}, map[string]bool{"similarity": false}); err != nil {
+		t.Fatal(err)
+	}
+	space, _, memoryID, revisionID := seedContractAuthority(t, store, "cluster")
+	if _, err := store.writer.Exec(
+		`INSERT INTO duplicate_clusters(cluster_id, space_id, representative_memory_id, representative_revision_id, member_count, algorithm_version, created_at, updated_at) VALUES ('cluster-1', ?, ?, ?, 1, 'duplicate-v1', 'now', 'now')`, space, memoryID, revisionID,
+	); err != nil {
+		t.Fatalf("valid duplicate_clusters insert rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(
+		`INSERT INTO duplicate_cluster_members(cluster_id, memory_id, revision_id, reason_code, similarity, created_at) VALUES ('cluster-1', ?, ?, 'same_logical_memory', 0.99, 'now')`, memoryID, revisionID,
+	); err != nil {
+		t.Fatalf("valid duplicate_cluster_members insert rejected: %v", err)
+	}
+}
+
+func TestMemoryQualityProjectionSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "memory-quality.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "memory_quality", map[string]bool{
+		"memory_id": false, "revision_id": false, "evidence_strength": false,
+		"extraction_confidence": false, "specificity": false, "temporal_precision": false,
+		"source_diversity": false, "review_status": false, "contradiction_penalty": false,
+		"duplicate_density": false, "quality": false, "generation": false,
+		"algorithm_version": false, "updated_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, _, memoryID, revisionID := seedContractAuthority(t, store, "quality")
+	valid := `INSERT INTO memory_quality(memory_id, revision_id, evidence_strength, extraction_confidence, specificity, temporal_precision, source_diversity, review_status, contradiction_penalty, duplicate_density, quality, algorithm_version, updated_at) VALUES (?, ?, 0.9, 0.8, 0.7, 0.6, 0.5, 1.0, 0.1, 0.2, 0.75, 'quality-v1', 'now')`
+	if _, err := store.writer.Exec(valid, memoryID, revisionID); err != nil {
+		t.Fatalf("valid memory_quality insert rejected: %v", err)
+	}
+	invalid := `INSERT INTO memory_quality(memory_id, revision_id, evidence_strength, extraction_confidence, specificity, temporal_precision, source_diversity, review_status, contradiction_penalty, duplicate_density, quality, algorithm_version, updated_at) VALUES ('missing', 'missing', 0.9, 0.8, 0.7, 0.6, 0.5, 1.0, 0.1, 0.2, 1.5, 'quality-v1', 'now')`
+	if _, err := store.writer.Exec(invalid); err == nil {
+		t.Fatal("memory_quality accepted out-of-bounds quality")
+	}
+}
+
+func TestTypedPredicateAndEventSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "typed-graph.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "predicate_definitions", map[string]bool{
+		"predicate": false, "version": false, "subject_types_json": false,
+		"object_entity_types_json": false, "direction": false, "cardinality": false,
+		"transitivity": false, "temporal_policy": false, "allowed_path_positions_json": false,
+		"auto_confirm": false, "created_at": false,
+	}, map[string]bool{"object_literal_type": false, "inverse_predicate": false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "event_participants", map[string]bool{
+		"event_id": false, "entity_id": false, "participant_role": false, "confidence": false, "created_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "event_temporal_bindings", map[string]bool{
+		"binding_id": false, "event_id": false, "binding_kind": false, "precision": false, "confidence": false, "created_at": false,
+	}, map[string]bool{"place_entity_id": false, "interval_start": false, "interval_end": false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "entity_mentions", nil, map[string]bool{"confidence": false}); err != nil {
+		t.Fatal(err)
+	}
+	validPredicate := `INSERT INTO predicate_definitions(predicate, version, subject_types_json, object_entity_types_json, direction, cardinality, transitivity, temporal_policy, allowed_path_positions_json, auto_confirm, created_at) VALUES ('works_for', 'v1', '["person"]', '["organization"]', 'directed', 'many', 'none', 'valid_time', '["first","second"]', 'exact_match', 'now')`
+	if _, err := store.writer.Exec(validPredicate); err != nil {
+		t.Fatalf("valid predicate_definitions insert rejected: %v", err)
+	}
+	invalidDirection := `INSERT INTO predicate_definitions(predicate, version, subject_types_json, object_entity_types_json, direction, cardinality, transitivity, temporal_policy, allowed_path_positions_json, auto_confirm, created_at) VALUES ('bad_dir', 'v1', '["person"]', '["organization"]', 'sideways', 'many', 'none', 'valid_time', '[]', 'never', 'now')`
+	if _, err := store.writer.Exec(invalidDirection); err == nil {
+		t.Fatal("predicate_definitions accepted unsupported direction")
+	}
+}
+
+func TestCurrentSchemaPredicateSnapshot(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "predicate-snapshot.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	rows, err := store.reader.Query(`SELECT predicate FROM predicates ORDER BY predicate`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var predicate string
+		if err := rows.Scan(&predicate); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, predicate)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"created_by", "depends_on", "has_participant_count", "has_status", "is_active", "located_at", "member_of", "owned_by", "participates_in"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("schema predicates = %v, want %v", got, want)
+	}
+}
+
+func TestTypedGraphAuthorityAndBroadRelationRemoval(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "typed-graph-authority.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "entity_facts", map[string]bool{
+		"fact_id": false, "space_id": false, "subject_entity_id": false, "predicate": false,
+		"source_memory_id": false, "source_revision_id": false, "state": false, "source": false,
+		"specification_hash": false, "created_by": false, "processing_version": false,
+		"created_at": false, "updated_at": false,
+	}, map[string]bool{
+		"object_entity_id": false, "object_literal": false, "object_literal_type": false,
+		"confidence": false, "valid_from": false, "valid_until": false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "entity_fact_evidence", map[string]bool{
+		"evidence_id": false, "fact_id": false, "evidence_type": false, "created_by": false, "created_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "relation_evidence", map[string]bool{
+		"evidence_id": false, "relation_id": false, "evidence_type": false, "created_by": false, "created_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceSpace, _, _, _ := seedContractAuthority(t, store, "relation-source")
+	tx, err := store.writer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, created_at, updated_at) VALUES ('memory-relation-target', '` + sourceSpace + `', 'revision-relation-target', 'active', 'now', 'now')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('revision-relation-target','memory-relation-target','scene','content','content','hash-relation-target','normal',0,0,'test','v1','now')`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			tx.Rollback()
+			t.Fatalf("seed relation target failed: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	relation := `INSERT INTO memory_relations(relation_id, space_id, relation_type, source_memory_id, source_revision_id, target_memory_id, target_revision_id, source, specification_hash, created_by, processing_version, created_at, updated_at) VALUES ('relation-broad', ?, ?, 'memory-relation-source', 'revision-relation-source', 'memory-relation-target', 'revision-relation-target', 'human_confirmation', 'spec', 'test', 'v1', 'now', 'now')`
+	if _, err := store.writer.Exec(relation, sourceSpace, "supports"); err != nil {
+		t.Fatalf("typed relation insert rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(relation, sourceSpace, "related_to"); err == nil {
+		t.Fatal("memory_relations accepted removed broad related_to authority")
+	}
+	proposal := `INSERT INTO relation_proposals(proposal_id, event_id, space_id, relation_type, source_memory_id, source_revision_id, target_memory_id, target_revision_id, evidence_json, processor_identity, processing_version, specification_hash, created_at) VALUES ('proposal-broad', 'event-relation-source', ?, ?, 'memory-relation-source', 'revision-relation-source', 'memory-relation-target', 'revision-relation-target', '[]', 'processor', 'v1', 'spec', 'now')`
+	if _, err := store.writer.Exec(proposal, sourceSpace, "related_to"); err == nil {
+		t.Fatal("relation_proposals accepted removed broad related_to authority")
+	}
+}
+
+func TestAlgorithmIdentityAndActiveGenerationSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "identity-generations.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "algorithm_identity_versions", map[string]bool{
+		"identity_kind": false, "identity": false, "version": false, "generation": false,
+		"state": false, "created_at": false,
+	}, map[string]bool{"activated_at": false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertColumns(store, "active_generation_metadata", map[string]bool{
+		"scope": false, "identity_kind": false, "identity": false, "generation": false, "updated_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	seedIdentity := `INSERT INTO algorithm_identity_versions(identity_kind, identity, version, generation, state, created_at) VALUES ('ranking_weights', 'sha256:weights', 'v1', 1, 'active', 'now')`
+	if _, err := store.writer.Exec(seedIdentity); err != nil {
+		t.Fatalf("valid algorithm identity insert rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(`INSERT INTO algorithm_identity_versions(identity_kind, identity, version, generation, state, created_at) VALUES ('unknown_kind', 'sha256:x', 'v1', 1, 'active', 'now')`); err == nil {
+		t.Fatal("algorithm_identity_versions accepted unsupported identity_kind")
+	}
+	if _, err := store.writer.Exec(`INSERT INTO algorithm_identity_versions(identity_kind, identity, version, generation, state, created_at) VALUES ('ranking_weights', 'sha256:bad', 'v1', 1, 'published', 'now')`); err == nil {
+		t.Fatal("algorithm_identity_versions accepted unsupported state")
+	}
+	if _, err := store.writer.Exec(`INSERT INTO active_generation_metadata(scope, identity_kind, identity, generation, updated_at) VALUES ('ranking', 'ranking_weights', 'sha256:weights', 1, 'now')`); err != nil {
+		t.Fatalf("valid active generation insert rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(`INSERT INTO active_generation_metadata(scope, identity_kind, identity, generation, updated_at) VALUES ('nonsense', 'ranking_weights', 'sha256:weights', 1, 'now')`); err == nil {
+		t.Fatal("active_generation_metadata accepted unsupported scope")
+	}
+	if _, err := store.writer.Exec(`INSERT INTO active_generation_metadata(scope, identity_kind, identity, generation, updated_at) VALUES ('context', 'context_selection', 'sha256:missing', 1, 'now')`); err == nil {
+		t.Fatal("active_generation_metadata accepted identity without a stored version")
+	}
+}
+
+func TestQueryTelemetrySchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "query-telemetry.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "query_telemetry", map[string]bool{
+		"telemetry_id": false, "operation_id": false, "query_plan_version": false, "query_type": false,
+		"requested_capabilities_json": false, "executed_capabilities_json": false,
+		"candidate_counts_json": false, "rejection_counts_json": false, "score_summary_json": false,
+		"graph_counts_json": false, "duplicate_cluster_count": false, "context_tokens": false,
+		"context_chars": false, "ranking_identity": false, "context_identity": false,
+		"degradation_reasons_json": false, "phase_latency_ms_json": false, "created_at": false,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	valid := `INSERT INTO query_telemetry(telemetry_id, operation_id, query_plan_version, query_type, requested_capabilities_json, executed_capabilities_json, candidate_counts_json, rejection_counts_json, score_summary_json, graph_counts_json, duplicate_cluster_count, context_tokens, context_chars, ranking_identity, context_identity, degradation_reasons_json, phase_latency_ms_json, created_at) VALUES ('tel-1', 'op-1', 'query-plan-v1', 'lookup', '["semantic","keyword"]', '["semantic","keyword"]', '{"semantic":10,"keyword":5}', '{"scope":1}', '{"max":0.9}', '{"seeds":2}', 1, 128, 512, 'sha256:r', 'sha256:c', '[]', '{"plan":0.1}', 'now')`
+	if _, err := store.writer.Exec(valid); err != nil {
+		t.Fatalf("valid query_telemetry insert rejected: %v", err)
+	}
+}
+
+func TestContextDecisionSchema(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "context-decisions.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := assertColumns(store, "context_decisions", map[string]bool{
+		"decision_id": false, "operation_id": false, "memory_id": false, "revision_id": false,
+		"selection_state": false, "selection_reason": false, "context_identity": false,
+		"estimated_tokens": false, "created_at": false,
+	}, map[string]bool{"result_rank": false, "duplicate_cluster_id": false}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, memoryID, revisionID := seedContractAuthority(t, store, "context")
+	valid := `INSERT INTO context_decisions(decision_id, operation_id, memory_id, revision_id, result_rank, selection_state, selection_reason, context_identity, estimated_tokens, created_at) VALUES ('dec-1', 'op-1', ?, ?, 1, 'selected', 'primary_relevance', 'sha256:c', 64, 'now')`
+	if _, err := store.writer.Exec(valid, memoryID, revisionID); err != nil {
+		t.Fatalf("valid context_decisions insert rejected: %v", err)
+	}
+	invalid := `INSERT INTO context_decisions(decision_id, operation_id, memory_id, revision_id, selection_state, selection_reason, context_identity, estimated_tokens, created_at) VALUES ('dec-bad', 'op-1', ?, ?, 'maybe', 'primary_relevance', 'sha256:c', 64, 'now')`
+	if _, err := store.writer.Exec(invalid, memoryID, revisionID); err == nil {
+		t.Fatal("context_decisions accepted unsupported selection_state")
+	}
+}
+
+func TestReplacementKindEnumsExcludeObsoleteMemoryTypes(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "kind-enums.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	space, eventID, _, _ := seedContractAuthority(t, store, "kind-enums")
+	for i, kind := range []string{"fact", "event", "preference", "plan", "procedure", "scene", "topic", "timeline"} {
+		candidate := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, content, content_hash, suggestion_kind, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, ?, 'content', 'hash', 'new', 'processor', 'v1', ?, 'now')`
+		if _, err := store.writer.Exec(candidate, fmt.Sprintf("candidate-kind-%d", i), eventID, space, kind, fmt.Sprintf("candidate-spec-%d", i)); err != nil {
+			t.Fatalf("candidates rejected replacement kind %q: %v", kind, err)
+		}
+		proposal := `INSERT INTO evolution_proposals(proposal_id, event_id, space_id, action, proposed_content, proposed_content_hash, memory_type, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'supplement', 'content', 'hash', ?, 'processor', 'v1', ?, 'now')`
+		if _, err := store.writer.Exec(proposal, fmt.Sprintf("proposal-kind-%d", i), eventID, space, kind, fmt.Sprintf("proposal-spec-%d", i)); err != nil {
+			t.Fatalf("evolution_proposals rejected replacement kind %q: %v", kind, err)
+		}
+	}
+	for i, obsolete := range []string{"constraint", "decision", "task", "project_context", "agent_experience", "aggregate"} {
+		candidate := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, content, content_hash, suggestion_kind, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, ?, 'content', 'hash', 'new', 'processor', 'v1', ?, 'now')`
+		if _, err := store.writer.Exec(candidate, fmt.Sprintf("candidate-obsolete-%d", i), eventID, space, obsolete, fmt.Sprintf("candidate-obsolete-spec-%d", i)); err == nil {
+			t.Fatalf("candidates accepted obsolete memory_type %q", obsolete)
+		}
+		proposal := `INSERT INTO evolution_proposals(proposal_id, event_id, space_id, action, proposed_content, proposed_content_hash, memory_type, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'supplement', 'content', 'hash', ?, 'processor', 'v1', ?, 'now')`
+		if _, err := store.writer.Exec(proposal, fmt.Sprintf("proposal-obsolete-%d", i), eventID, space, obsolete, fmt.Sprintf("proposal-obsolete-spec-%d", i)); err == nil {
+			t.Fatalf("evolution_proposals accepted obsolete memory_type %q", obsolete)
+		}
+	}
+}
+
+func assertIndex(t *testing.T, store *Store, table, index string) {
+	t.Helper()
+	rows, err := store.reader.Query(`PRAGMA index_list(` + table + `)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq, unique, partial int
+		var name, origin string
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatal(err)
+		}
+		if name == index {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("index %s on %s is missing", index, table)
+}
+
 func assertColumns(store *Store, table string, notNull map[string]bool, nullable map[string]bool) error {
 	rows, err := store.reader.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
@@ -588,4 +1100,27 @@ func assertColumns(store *Store, table string, notNull map[string]bool, nullable
 		}
 	}
 	return nil
+}
+
+func assertColumnAbsent(t *testing.T, store *Store, table, column string) {
+	t.Helper()
+	rows, err := store.reader.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err = rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == column {
+			t.Fatalf("%s retains obsolete column %s", table, column)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 }

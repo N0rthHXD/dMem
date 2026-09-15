@@ -513,15 +513,19 @@ func (r *Repository) confirmEvolutionRevision(ctx context.Context, tx *sql.Tx, p
 		memoryID, revisionID, parent = ids[0], ids[1], nil
 	}
 	if newMemory {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,?,'active',0,?,?,?)`, memoryID, p.SpaceID, memoryType, revisionID, p.Sensitivity, now, now); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,'active',0,?,?,?)`, memoryID, p.SpaceID, revisionID, p.Sensitivity, now, now); err != nil {
 			return nil, err
 		}
 	} else {
-		if err = tx.QueryRowContext(ctx, `SELECT memory_type FROM memories WHERE memory_id=?`, memoryID).Scan(&memoryType); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT r.kind FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=?`, memoryID).Scan(&memoryType); err != nil {
 			return nil, err
 		}
 	}
-	if err = insertRevision(ctx, tx, revisionID, memoryID, parent, nil, *p.ProposedContent, p.ValidFrom, p.ValidUntil, nil, caller, p.ProcessingVersion, &p.ProcessorIdentity, now); err != nil {
+	revision, err := revisionFromTextInput(revisionID, memoryID, parent, nil, memoryType, *p.ProposedContent, p.ValidFrom, p.ValidUntil, nil, p.Sensitivity, caller, p.ProcessingVersion, &p.ProcessorIdentity, now)
+	if err != nil {
+		return nil, err
+	}
+	if err = insertRevision(ctx, tx, revision); err != nil {
 		return nil, err
 	}
 	evidenceStart := 1
@@ -546,7 +550,7 @@ func (r *Repository) confirmEvolutionRevision(ctx context.Context, tx *sql.Tx, p
 			return nil, err
 		}
 	}
-	if err = r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, p.SpaceID, memoryType, state, *p.ProposedContent, p.ValidFrom, p.ValidUntil, now); err != nil {
+	if err = r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, p.SpaceID, state, now); err != nil {
 		return nil, err
 	}
 	if !newMemory {
@@ -597,9 +601,8 @@ func (r *Repository) confirmEvolutionReplacement(ctx context.Context, tx *sql.Tx
 		if e != nil {
 			return nil, e
 		}
-		var oldState, memoryType, content string
-		var validFrom, validUntil *string
-		if e = tx.QueryRowContext(ctx, `SELECT m.current_state,m.memory_type,r.content,r.valid_from,r.valid_until FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=?`, p.Targets[0].MemoryID).Scan(&oldState, &memoryType, &content, &validFrom, &validUntil); e != nil {
+		var oldState string
+		if e = tx.QueryRowContext(ctx, `SELECT current_state FROM memories WHERE memory_id=?`, p.Targets[0].MemoryID).Scan(&oldState); e != nil {
 			return nil, e
 		}
 		res, e := tx.ExecContext(ctx, `UPDATE memories SET current_state='archived',updated_at=? WHERE memory_id=? AND current_revision_id=?`, now, p.Targets[0].MemoryID, p.Targets[0].ExpectedRevisionID)
@@ -612,7 +615,7 @@ func (r *Repository) confirmEvolutionReplacement(ctx context.Context, tx *sql.Tx
 		if _, e = tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) SELECT ?,memory_id,current_revision_id,?,?,'archived',frozen,frozen,'superseded',?,? FROM memories WHERE memory_id=?`, stateEventID, operationID, oldState, caller, now, p.Targets[0].MemoryID); e != nil {
 			return nil, e
 		}
-		if e = r.upsertMemoryProjection(ctx, tx, p.Targets[0].MemoryID, p.Targets[0].ExpectedRevisionID, p.SpaceID, memoryType, "archived", content, validFrom, validUntil, now); e != nil {
+		if e = r.upsertMemoryProjection(ctx, tx, p.Targets[0].MemoryID, p.Targets[0].ExpectedRevisionID, p.SpaceID, "archived", now); e != nil {
 			return nil, e
 		}
 		if e = r.markDependentAggregatesStale(ctx, tx, p.Targets[0].MemoryID, now); e != nil {
@@ -670,7 +673,7 @@ func (r *Repository) confirmEvolutionConflict(ctx context.Context, tx *sql.Tx, p
 			if e != nil {
 				return nil, e
 			}
-			if e = r.upsertMemoryProjection(ctx, tx, m.MemoryID, m.CurrentRevision.RevisionID, m.SpaceID, m.MemoryType, "contested", m.CurrentRevision.Content, m.CurrentRevision.ValidFrom, m.CurrentRevision.ValidUntil, now); e != nil {
+			if e = r.upsertMemoryProjection(ctx, tx, m.MemoryID, m.CurrentRevision.RevisionID, m.SpaceID, "contested", now); e != nil {
 				return nil, e
 			}
 		}

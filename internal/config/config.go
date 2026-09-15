@@ -31,12 +31,12 @@ type Config struct {
 	MaxConnections      int
 	MaxRequestSize      int64
 
-	WorkerCount        int
-	QueueSoftLimit     int
-	QueueHardLimit     int
-	MaxAttempts        int
-	LeaseDuration      time.Duration
-	PerJobTimeout      time.Duration
+	WorkerCount         int
+	QueueSoftLimit      int
+	QueueHardLimit      int
+	MaxAttempts         int
+	LeaseDuration       time.Duration
+	PerJobTimeout       time.Duration
 	RetryInitialBackoff time.Duration
 	RetryMaxBackoff     time.Duration
 
@@ -48,6 +48,12 @@ type Config struct {
 	EmbeddingProvider  ProviderConfig
 
 	GraphEnabled bool
+
+	Consolidation ConsolidationConfig
+	Semantic      SemanticConfig
+	Graph         GraphConfig
+	Ranking       RankingConfig
+	Context       ContextConfig
 }
 
 func Default() (Config, error) {
@@ -60,22 +66,22 @@ func Default() (Config, error) {
 		return Config{}, err
 	}
 	return Config{
-		ConfigVersion:      1,
-		DataDir:            dataDir,
-		RuntimeDir:         runtimeDir,
-		DatabaseFilename:   "dmem.db",
-		SocketFilename:     "dmem.sock",
-		DatabasePath:       filepath.Join(dataDir, "dmem.db"),
-		Endpoint:           filepath.Join(runtimeDir, "dmem.sock"),
-		RequestTimeout:     30 * time.Second,
+		ConfigVersion:       1,
+		DataDir:             dataDir,
+		RuntimeDir:          runtimeDir,
+		DatabaseFilename:    "dmem.db",
+		SocketFilename:      "dmem.sock",
+		DatabasePath:        filepath.Join(dataDir, "dmem.db"),
+		Endpoint:            filepath.Join(runtimeDir, "dmem.sock"),
+		RequestTimeout:      30 * time.Second,
 		ShutdownGracePeriod: 15 * time.Second,
-		MaxConnections:     64,
-		MaxRequestSize:     4 * 1024 * 1024,
-		WorkerCount:        2,
-		QueueSoftLimit:     10000,
-		QueueHardLimit:     20000,
-		MaxAttempts:        3,
-		LeaseDuration:      30 * time.Second,
+		MaxConnections:      64,
+		MaxRequestSize:      4 * 1024 * 1024,
+		WorkerCount:         2,
+		QueueSoftLimit:      10000,
+		QueueHardLimit:      20000,
+		MaxAttempts:         3,
+		LeaseDuration:       30 * time.Second,
 		PerJobTimeout:       2 * time.Minute,
 		RetryInitialBackoff: time.Second,
 		RetryMaxBackoff:     5 * time.Minute,
@@ -83,6 +89,11 @@ func Default() (Config, error) {
 		DiskHardFree:        256 << 20,
 		ProcessingVersion:   DefaultProcessingVersion,
 		GraphEnabled:        true,
+		Consolidation:       defaultConsolidationConfig(),
+		Semantic:            defaultSemanticConfig(),
+		Graph:               defaultGraphConfig(),
+		Ranking:             defaultRankingConfig(),
+		Context:             defaultContextConfig(),
 	}, nil
 }
 

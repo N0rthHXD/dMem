@@ -192,7 +192,7 @@ func validateEntityFactEvidence(ctx context.Context, tx *sql.Tx, space string, e
 		if e.EventID != nil || e.MemoryID == nil || e.RevisionID == nil {
 			return ErrInvalidFactProposal
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT r.content, m.space_id FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.memory_id=? AND r.revision_id=?`, *e.MemoryID, *e.RevisionID).Scan(&text, &sourceSpace); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT r.display_content, m.space_id FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.memory_id=? AND r.revision_id=?`, *e.MemoryID, *e.RevisionID).Scan(&text, &sourceSpace); err != nil {
 			return ErrInvalidFactProposal
 		}
 	default:

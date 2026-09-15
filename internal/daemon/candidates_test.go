@@ -62,7 +62,7 @@ func TestCandidateReviewAPIConfirmRejectAndReplay(t *testing.T) {
 	}
 	var memory domain.Memory
 	decodeResponse(t, response, &memory)
-	if memory.CurrentState != "active" || memory.CurrentRevision.Content != "confirmable candidate" || memory.CurrentRevision.Confidence == nil || *memory.CurrentRevision.Confidence != 0.75 {
+	if memory.CurrentState != "active" || memory.CurrentRevision.DisplayContent != "confirmable candidate" || memory.CurrentRevision.Confidence != 0.75 {
 		t.Fatalf("confirmed memory = %+v", memory)
 	}
 	response = requestJSON(t, client, http.MethodPost, "/v1/candidates/"+confirmedID+"/confirm", "confirm-candidate", review)

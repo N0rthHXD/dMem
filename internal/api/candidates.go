@@ -38,7 +38,7 @@ func (h *Handler) candidates(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "invalid review_state", requestID, "", false, nil)
 		return
 	}
-	if filter.MemoryType != "" && !validMemoryType(filter.MemoryType) {
+	if filter.MemoryType != "" && !validMemoryKind(filter.MemoryType) {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "invalid memory_type", requestID, "", false, nil)
 		return
 	}

@@ -51,20 +51,20 @@ func (p *ProviderProcessor) ProcessGraph(ctx context.Context, input domain.Graph
 	}
 	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted, ProviderIdentity: p.client.Identity(), ModelIdentity: p.client.ModelIdentity(), ProviderRequestID: output.ProviderRequestID(), Usage: domain.ProcessingUsage{InputTokens: output.Usage().InputTokens(), OutputTokens: output.Usage().OutputTokens()}}
 	for _, entity := range output.Entities() {
-		result.Entities = append(result.Entities, domain.GraphEntity{LocalID: entity.LocalID(), CanonicalName: entity.CanonicalName(), EntityType: entity.EntityType(), Aliases: entity.Aliases(), Confidence: entity.Confidence()})
+		result.Entities = append(result.Entities, domain.GraphEntity{LocalID: entity.LocalID, CanonicalName: entity.CanonicalName, EntityType: entity.EntityType, Aliases: entity.Aliases, Confidence: entity.Confidence})
 	}
 	for _, mention := range output.Mentions() {
-		result.Mentions = append(result.Mentions, domain.GraphMention{EntityLocalID: mention.EntityLocalID(), Text: mention.Text(), StartRune: mention.StartRune(), EndRune: mention.EndRune(), Confidence: mention.Confidence()})
+		result.Mentions = append(result.Mentions, domain.GraphMention{EntityLocalID: mention.EntityLocalID, Text: mention.Text, StartRune: mention.StartRune, EndRune: mention.EndRune, Confidence: mention.Confidence})
 	}
 	for _, fact := range output.Facts() {
-		result.Facts = append(result.Facts, domain.GraphFact{SubjectLocalID: fact.SubjectLocalID(), Predicate: fact.Predicate(), ObjectLocalID: fact.ObjectLocalID(), ObjectLiteral: fact.ObjectLiteral(), ObjectLiteralType: fact.ObjectLiteralType(), Confidence: fact.Confidence(), ValidFrom: fact.ValidFrom(), ValidUntil: fact.ValidUntil()})
+		item := domain.GraphFact{SubjectLocalID: fact.SubjectLocalID, Predicate: fact.Predicate, ObjectLocalID: fact.ObjectLocalID, ObjectLiteral: fact.ObjectLiteral, ObjectLiteralType: fact.ObjectLiteralType, Confidence: fact.Confidence}
+		if fact.ValidTime != nil {
+			item.ValidFrom, item.ValidUntil = fact.ValidTime.Start, fact.ValidTime.End
+		}
+		result.Facts = append(result.Facts, item)
 	}
 	for _, relation := range output.Relations() {
-		item := domain.GraphMemoryRelation{RelationType: relation.RelationType(), TargetMemoryID: relation.TargetMemoryID(), TargetRevisionID: relation.TargetRevisionID(), Confidence: relation.Confidence()}
-		for _, evidence := range relation.Evidence() {
-			item.Evidence = append(item.Evidence, domain.GraphRelationEvidence{StartRune: evidence.StartRune(), EndRune: evidence.EndRune()})
-		}
-		result.Relations = append(result.Relations, item)
+		result.Relations = append(result.Relations, domain.GraphMemoryRelation{RelationType: relation.RelationType, TargetMemoryID: relation.TargetMemoryID, TargetRevisionID: relation.TargetRevisionID, Confidence: relation.Confidence})
 	}
 	if len(result.Entities) == 0 && len(result.Mentions) == 0 && len(result.Facts) == 0 && len(result.Relations) == 0 {
 		result.Code = domain.GraphExtractionEmpty
@@ -82,9 +82,13 @@ func (p *ProviderProcessor) Preflight(input domain.ProcessingInput) *domain.Proc
 }
 
 func providerRequest(input domain.ProcessingInput) provider.ProcessRequest {
+	kinds := make([]domain.MemoryKind, 0, len(input.Policy.AllowedMemoryTypes))
+	for _, memoryType := range input.Policy.AllowedMemoryTypes {
+		kinds = append(kinds, domain.MemoryKind(memoryType))
+	}
 	return provider.NewProcessRequest(
 		input.ProcessorIdentity, input.ProcessingVersion, input.JobID, input.Attempt,
-		providerEvent(input.Target), providerEvents(input.ContextEvents), providerMemories(input.ContextMemories), input.Policy.AllowedMemoryTypes, input.Policy.MaxCandidates, input.Policy.MaxCandidateChars, input.Policy.MaxTotalCandidateChars,
+		providerEvent(input.Target), providerEvents(input.ContextEvents), providerMemories(input.ContextMemories), kinds, input.Policy.MaxCandidates, input.Policy.MaxCandidateChars, input.Policy.MaxTotalCandidateChars,
 	)
 }
 
@@ -120,16 +124,8 @@ func (p *ProviderProcessor) result(input domain.ProcessingInput, output provider
 		result.OmissionSummary[reason] += count
 		result.OmittedContextCount += count
 	}
-	for _, candidate := range output.Candidates() {
-		item := domain.ProcessingCandidate{
-			Content: candidate.Content(), MemoryType: candidate.MemoryType(), SpaceID: candidate.SpaceID(),
-			ValidFrom: candidate.ValidFrom(), ValidUntil: candidate.ValidUntil(), Confidence: candidate.Confidence(),
-			Sensitivity: candidate.Sensitivity(), SuggestionKind: candidate.SuggestionKind(), RelatedMemoryIDs: candidate.RelatedMemoryIDs(),
-		}
-		for _, evidence := range candidate.Evidence() {
-			item.Evidence = append(item.Evidence, domain.ProcessingEvidence{EventID: evidence.EventID(), EvidenceType: evidence.EvidenceType(), StartOffset: evidence.StartOffset(), EndOffset: evidence.EndOffset()})
-		}
-		result.Candidates = append(result.Candidates, item)
+	for _, revision := range output.Revisions() {
+		result.Proposals = append(result.Proposals, domain.MemoryCandidateProposal{Revision: revision, Action: domain.ConsolidationCreate})
 	}
 	return result
 }

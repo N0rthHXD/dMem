@@ -15,6 +15,143 @@ func sourceIdentity(data []byte) string {
 	return "sha256:" + hex.EncodeToString(h[:])
 }
 
+// algorithmIdentity hashes a kind-tagged, non-secret canonical payload. JSON
+// marshaling sorts map keys, so callers must normalize slice order themselves.
+// This is the single identity generator for every behavior-changing algorithm
+// contract in ADR 0035.
+func algorithmIdentity(kind string, version string, payload map[string]any) string {
+	canonical := map[string]any{"kind": kind, "version": version}
+	for key, value := range payload {
+		canonical[key] = value
+	}
+	data, _ := json.Marshal(canonical)
+	h := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(h[:])
+}
+
+func ProcessingIdentity(version string, allowedKinds []string, maxCandidates, maxContentChars int) string {
+	return algorithmIdentity("processing", version, map[string]any{
+		"allowed_kinds":     sortedUnique(normalizeSet(allowedKinds)),
+		"max_candidates":    maxCandidates,
+		"max_content_chars": maxContentChars,
+	})
+}
+
+func ConsolidationIdentity(version string, kindThresholds map[string]float64, maxCandidates int) string {
+	return algorithmIdentity("consolidation", version, map[string]any{
+		"kind_thresholds": kindThresholds,
+		"max_candidates":  maxCandidates,
+	})
+}
+
+func ProjectionIdentity(version string, canonicalFields []string) string {
+	return algorithmIdentity("projection", version, map[string]any{
+		"canonical_fields": sortedUnique(normalizeSet(canonicalFields)),
+	})
+}
+
+func EmbeddingDocumentIdentity(providerModel, formatVersion string, dimensions int, kindPrefixes map[string]string) string {
+	return algorithmIdentity("embedding_document", formatVersion, map[string]any{
+		"provider_model": providerModel,
+		"dimensions":     dimensions,
+		"kind_prefixes":  kindPrefixes,
+	})
+}
+
+func EmbeddingQueryIdentity(providerModel, formatVersion string, dimensions int, instructions string) string {
+	return algorithmIdentity("embedding_query", formatVersion, map[string]any{
+		"provider_model": providerModel,
+		"dimensions":     dimensions,
+		"instructions":   instructions,
+	})
+}
+
+func SemanticCalibrationIdentity(version string, absoluteFloor, topMargin float64, byKind map[string]float64) string {
+	return algorithmIdentity("semantic_calibration", version, map[string]any{
+		"absolute_floor": absoluteFloor,
+		"top_margin":     topMargin,
+		"by_kind":        byKind,
+	})
+}
+
+func KeywordCompilerIdentity(version string, tokenizer, language string, weights map[string]float64) string {
+	return algorithmIdentity("keyword_compiler", version, map[string]any{
+		"tokenizer": tokenizer,
+		"language":  language,
+		"weights":   weights,
+	})
+}
+
+func EntityNormalizationIdentity(version string, stages []string) string {
+	return algorithmIdentity("entity_normalization", version, map[string]any{
+		"stages": sortedUnique(normalizeSet(stages)),
+	})
+}
+
+func PredicateRegistryIdentity(version string, predicates []string) string {
+	return algorithmIdentity("predicate_registry", version, map[string]any{
+		"predicates": sortedUnique(normalizeSet(predicates)),
+	})
+}
+
+func GraphExtractionIdentity(version, contractVersion, model string, maxEntities, maxFacts, maxRelations int) string {
+	return algorithmIdentity("graph_extraction", version, map[string]any{
+		"contract_version": contractVersion,
+		"model":            model,
+		"max_entities":     maxEntities,
+		"max_facts":        maxFacts,
+		"max_relations":    maxRelations,
+	})
+}
+
+func GraphScoringIdentity(version string, weights map[string]float64, hopDecay float64) string {
+	return algorithmIdentity("graph_scoring", version, map[string]any{
+		"weights":   weights,
+		"hop_decay": hopDecay,
+	})
+}
+
+func QueryPlanIdentity(version string, rules, questionTypes []string) string {
+	return algorithmIdentity("query_planning", version, map[string]any{
+		"rules":          sortedUnique(normalizeSet(rules)),
+		"question_types": sortedUnique(normalizeSet(questionTypes)),
+	})
+}
+
+func RankingFeatureIdentity(version string, features []string) string {
+	return algorithmIdentity("ranking_features", version, map[string]any{
+		"features": sortedUnique(normalizeSet(features)),
+	})
+}
+
+func RankingWeightIdentity(featureIdentity, version string, weights map[string]float64) string {
+	return algorithmIdentity("ranking_weights", version, map[string]any{
+		"feature_identity": featureIdentity,
+		"weights":          weights,
+	})
+}
+
+func ContextSelectionIdentity(version, policyVersion, tokenFormatIdentity string, budgets map[string]int) string {
+	return algorithmIdentity("context_selection", version, map[string]any{
+		"policy_version":        policyVersion,
+		"token_format_identity": tokenFormatIdentity,
+		"budgets":               budgets,
+	})
+}
+
+func FeedbackAggregationIdentity(version string, windowDays, minSupport int) string {
+	return algorithmIdentity("feedback_aggregation", version, map[string]any{
+		"window_days": windowDays,
+		"min_support": minSupport,
+	})
+}
+
+func MetricSchemaIdentity(version string, metrics []string) string {
+	return algorithmIdentity("metric_schema", version, map[string]any{
+		"metrics": sortedUnique(normalizeSet(metrics)),
+	})
+}
+
 func effectiveIdentity(cfg Config) string {
 	canonical := canonicalConfig(cfg)
 	data, _ := json.Marshal(canonical)
@@ -111,6 +248,12 @@ type canonicalConfigStruct struct {
 	GraphEnabled        bool              `json:"graph_enabled"`
 	ProcessingProvider  canonicalProvider `json:"processing_provider"`
 	EmbeddingProvider   canonicalProvider `json:"embedding_provider"`
+
+	Consolidation ConsolidationConfig `json:"consolidation"`
+	Semantic      SemanticConfig      `json:"semantic"`
+	Graph         GraphConfig         `json:"graph"`
+	Ranking       RankingConfig       `json:"ranking"`
+	Context       ContextConfig       `json:"context"`
 }
 
 type canonicalProvider struct {
@@ -191,6 +334,11 @@ func canonicalConfig(cfg Config) canonicalConfigStruct {
 		GraphEnabled:        cfg.GraphEnabled,
 		ProcessingProvider:  canonicalProviderConfig(cfg.ProcessingProvider, true),
 		EmbeddingProvider:   canonicalProviderConfig(cfg.EmbeddingProvider, false),
+		Consolidation:       cfg.Consolidation,
+		Semantic:            cfg.Semantic,
+		Graph:               cfg.Graph,
+		Ranking:             cfg.Ranking,
+		Context:             cfg.Context,
 	}
 	return c
 }

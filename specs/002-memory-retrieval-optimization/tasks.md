@@ -190,85 +190,85 @@ directly and use fresh databases. Do not write a migration.
 
 ### Decision And Contract Tests
 
-- [ ] T019 [P] [CONTRACT] Add a superseding ADR for structured memories,
+- [X] T019 [P] [CONTRACT] Add a superseding ADR for structured memories,
   consolidation, query planning, feature ranking, gated graph retrieval, and
   context selection in `docs/adr/0035-memory-retrieval-v4.md`
-- [ ] T020 [P] [CONTRACT] Add failing domain tests for memory kinds, structured
+- [X] T020 [P] [CONTRACT] Add failing domain tests for memory kinds, structured
   revision fields, event time versus valid time, evidence roles, confidence,
   specificity, language, and source speaker in `internal/domain/`
-- [ ] T021 [P] [CONTRACT] Add failing schema contract tests for ordered event
+- [X] T021 [P] [CONTRACT] Add failing schema contract tests for ordered event
   streams, structured revisions, canonical attributes, evidence roles, duplicate
   clusters, memory quality, typed predicates/events, query telemetry, and
   context decisions in `internal/storage/schema_contract_test.go`
-- [ ] T022 [P] [CONTRACT] Add failing canonical identity tests for processing,
+- [X] T022 [P] [CONTRACT] Add failing canonical identity tests for processing,
   consolidation, projection, embedding document/query, semantic calibration,
   keyword compiler, entity normalization, predicate registry, graph extraction,
   graph scoring, query planning, ranking features/weights, context selection,
   feedback aggregation, and metric schema in `internal/config/identity_test.go`
-- [ ] T023 [P] [CONTRACT] Add failing strict provider-contract tests for
+- [X] T023 [P] [CONTRACT] Add failing strict provider-contract tests for
   structured candidates, normalized time proposals, evidence roles, typed graph
   entities/events/facts, closed predicates, and bounded output in
   `internal/provider/client_test.go`
 
 ### Domain And Schema Replacement
 
-- [ ] T024 [CONTRACT] Replace memory and revision domain models with the target
+- [X] T024 [CONTRACT] Replace memory and revision domain models with the target
   kinds and structured fields in `internal/domain/models.go` and focused domain
   files
-- [ ] T025 [CONTRACT] Replace schema v1 with ordered event streams, structured
+- [X] T025 [CONTRACT] Replace schema v1 with ordered event streams, structured
   revision authority/projections, evidence roles, quality and duplicate
   projections, and required indexes in `internal/storage/schema-v1.sql` and
   `docs/storage/schema-v1.sql`
-- [ ] T026 [CONTRACT] Replace graph schema with typed predicate definitions,
+- [X] T026 [CONTRACT] Replace graph schema with typed predicate definitions,
   typed literals/events, persisted mention confidence, evidence-backed facts and
   revision relations; remove broad `related_to` authority in both schema files
-- [ ] T027 [CONTRACT] Add version identity storage and active-generation metadata
+- [X] T027 [CONTRACT] Add version identity storage and active-generation metadata
   for every membership, ranking, graph, context, and evaluation identity in both
   schema files and storage domain models
-- [ ] T028 [CONTRACT] Update repository scan/write helpers to compile against the
+- [X] T028 [CONTRACT] Update repository scan/write helpers to compile against the
   replacement schema in `internal/storage/` without implementing old-schema
   reads
 
 ### Provider And Configuration Contracts
 
-- [ ] T029 [P] [CONTRACT] Replace processing provider request/response types with
+- [X] T029 [P] [CONTRACT] Replace processing provider request/response types with
   structured candidate and consolidation proposal types in
   `internal/provider/contracts.go` and `internal/domain/`
-- [ ] T030 [P] [CONTRACT] Replace graph provider output with typed entities,
+- [X] T030 [P] [CONTRACT] Replace graph provider output with typed entities,
   aliases, mentions, events, facts, and explicit revision relations in
   `internal/provider/contracts.go`
-- [ ] T031 [CONTRACT] Implement strict decoding and deterministic validation for
+- [X] T031 [CONTRACT] Implement strict decoding and deterministic validation for
   the replacement processing and graph contracts in
   `internal/provider/client.go` and `internal/jobs/validation.go`
-- [ ] T032 [CONTRACT] Add strict configuration sections and bounds for
+- [X] T032 [CONTRACT] Add strict configuration sections and bounds for
   consolidation, semantic calibration, graph gates, ranking, and context budgets
   in `internal/config/`, `docs/operations/config.example.toml`, and configuration
   tests
-- [ ] T033 [CONTRACT] Implement canonical non-secret identity generation for all
+- [X] T033 [CONTRACT] Implement canonical non-secret identity generation for all
   new algorithm contracts in `internal/config/identity.go`
 
 ### API Contract Replacement
 
-- [ ] T034 [P] [CONTRACT] Add failing API tests for intent, reference time,
+- [X] T034 [P] [CONTRACT] Add failing API tests for intent, reference time,
   maximum results, context-token budget, evidence, explain mode, execution
   metadata, and structured context in `internal/daemon/search_api_test.go`
-- [ ] T035 [P] [CONTRACT] Define replacement recall request/response and explain
+- [X] T035 [P] [CONTRACT] Define replacement recall request/response and explain
   models in `internal/domain/models.go` and `docs/api/openapi.yaml`
-- [ ] T036 [CONTRACT] Replace recall request validation and response serialization
+- [X] T036 [CONTRACT] Replace recall request validation and response serialization
   in `internal/api/agent.go`, `internal/api/search.go`, and daemon route tests
-- [ ] T037 [CONTRACT] Remove production channel selection as the primary API
+- [X] T037 [CONTRACT] Remove production channel selection as the primary API
   abstraction; retain explicit channel/feature overrides only in a clearly named
   evaluation/debug contract
-- [ ] T038 [CONTRACT] Replace cursor payload and validation so it accepts only the
+- [X] T038 [CONTRACT] Replace cursor payload and validation so it accepts only the
   new schema, query-plan, candidate-membership, ranking, graph, context, and
   feedback identities
 
 ### Foundational Compilation
 
-- [ ] T039 [CONTRACT] Update fixtures, helper constructors, direct remember,
+- [X] T039 [CONTRACT] Update fixtures, helper constructors, direct remember,
   explicit memory creation, import/export types, backup/restore validation, and
   tests to compile and initialize only the new schema
-- [ ] T040 [CONTRACT] Update executable schema/OpenAPI snapshots and remove all
+- [X] T040 [CONTRACT] Update executable schema/OpenAPI snapshots and remove all
   obsolete enum values, `rrf-v3`, `related_to`, old graph predicates, and old
   recall fields from current contracts
 

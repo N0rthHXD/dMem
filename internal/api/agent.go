@@ -15,7 +15,7 @@ import (
 type rememberRequest struct {
 	SpaceID       string         `json:"space_id"`
 	Content       string         `json:"content"`
-	MemoryType    string         `json:"memory_type,omitempty"`
+	Kind          string         `json:"kind,omitempty"`
 	Sensitivity   string         `json:"sensitivity,omitempty"`
 	ValidFrom     *string        `json:"valid_from,omitempty"`
 	ValidUntil    *string        `json:"valid_until,omitempty"`
@@ -27,18 +27,27 @@ type rememberRequest struct {
 }
 
 type recallRequest struct {
-	Query                  string          `json:"query"`
-	SpaceIDs               []string        `json:"space_ids"`
-	IncludeAncestors       json.RawMessage `json:"include_ancestors"`
-	MemoryTypes            json.RawMessage `json:"memory_types"`
-	States                 json.RawMessage `json:"states"`
-	ReferenceTime          json.RawMessage `json:"reference_time"`
-	Channels               json.RawMessage `json:"channels"`
-	Limit                  json.RawMessage `json:"limit"`
-	MaxChars               json.RawMessage `json:"max_chars"`
-	IncludeEvidence        json.RawMessage `json:"include_evidence"`
-	Cursor                 json.RawMessage `json:"cursor"`
-	ExcludeStaleAggregates json.RawMessage `json:"exclude_stale_aggregates"`
+	Query                  string              `json:"query"`
+	SpaceIDs               []string            `json:"space_ids"`
+	IncludeAncestors       json.RawMessage     `json:"include_ancestors"`
+	MemoryTypes            json.RawMessage     `json:"memory_types"`
+	States                 json.RawMessage     `json:"states"`
+	ReferenceTime          json.RawMessage     `json:"reference_time"`
+	Intent                 json.RawMessage     `json:"intent"`
+	Debug                  *recallDebugRequest `json:"debug"`
+	MaxResults             json.RawMessage     `json:"max_results"`
+	MaxContextTokens       json.RawMessage     `json:"max_context_tokens"`
+	IncludeEvidence        json.RawMessage     `json:"include_evidence"`
+	Explain                json.RawMessage     `json:"explain"`
+	Cursor                 json.RawMessage     `json:"cursor"`
+	ExcludeStaleAggregates json.RawMessage     `json:"exclude_stale_aggregates"`
+}
+
+// recallDebugRequest is the evaluation/debug-only contract. Production
+// callers express intent and budget; explicit capability overrides exist only
+// for evaluation and debugging.
+type recallDebugRequest struct {
+	Capabilities json.RawMessage `json:"capabilities"`
 }
 
 type memoryFeedbackRequest struct {
@@ -71,8 +80,8 @@ func (h *Handler) remember(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "space_id must be a UUID", requestID, "", false, nil)
 		return
 	}
-	if request.MemoryType == "" {
-		request.MemoryType = "fact"
+	if request.Kind == "" {
+		request.Kind = "fact"
 	}
 	if request.Sensitivity == "" {
 		request.Sensitivity = "normal"
@@ -90,7 +99,7 @@ func (h *Handler) remember(w http.ResponseWriter, r *http.Request) {
 		request.Reason = "agent_remember"
 	}
 	command := application.RememberCommand{
-		SpaceID: request.SpaceID, Content: request.Content, MemoryType: request.MemoryType, Sensitivity: request.Sensitivity,
+		SpaceID: request.SpaceID, Content: request.Content, Kind: request.Kind, Sensitivity: request.Sensitivity,
 		ValidFrom: request.ValidFrom, ValidUntil: request.ValidUntil, SourceName: request.SourceName,
 		SourceEventID: request.SourceEventID, OccurredAt: request.OccurredAt, Metadata: request.Metadata, Reason: request.Reason,
 	}
@@ -128,7 +137,7 @@ func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
 		h.serviceError(w, err, requestID)
 		return
 	}
-	h.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, recallResponse(requestID, query, result))
 }
 
 func (h *Handler) memoryFeedback(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +230,7 @@ func appIdentity(caller, key, requestID, method, route string, request any) appl
 }
 
 func recallQuery(request recallRequest) (application.RecallQuery, error) {
-	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Channels: []string{"keyword", "semantic", "graph"}, Limit: 10, MaxChars: 12000}
+	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Channels: []string{"keyword", "semantic", "graph"}, Limit: 20, MaxContextTokens: 4000, MaxChars: 16000}
 	seenSpaces := map[string]bool{}
 	for _, id := range request.SpaceIDs {
 		if !validUUID(id) {
@@ -258,19 +267,28 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 		}
 		query.ReferenceTime, query.ReferenceTimeSet = formatAPITime(parsed), true
 	}
-	if request.Channels != nil {
-		if isNull(request.Channels) || json.Unmarshal(request.Channels, &query.Channels) != nil || !validValues(query.Channels, validChannels) {
-			return application.RecallQuery{}, errors.New("channels is invalid")
+	if request.Intent != nil {
+		if isNull(request.Intent) || json.Unmarshal(request.Intent, &query.Intent) != nil || !query.Intent.Valid() {
+			return application.RecallQuery{}, errors.New("intent is invalid")
 		}
 	}
-	if err := decodeRange(request.Limit, &query.Limit, 1, 100, "limit"); err != nil {
+	if request.Debug != nil && request.Debug.Capabilities != nil {
+		if isNull(request.Debug.Capabilities) || json.Unmarshal(request.Debug.Capabilities, &query.Channels) != nil || len(query.Channels) == 0 || !validValues(query.Channels, validChannels) {
+			return application.RecallQuery{}, errors.New("debug.capabilities is invalid")
+		}
+	}
+	if err := decodeRange(request.MaxResults, &query.Limit, 1, 1000, "max_results"); err != nil {
 		return application.RecallQuery{}, err
 	}
-	if err := decodeRange(request.MaxChars, &query.MaxChars, 1, 100000, "max_chars"); err != nil {
+	if err := decodeRange(request.MaxContextTokens, &query.MaxContextTokens, 1, 1000000, "max_context_tokens"); err != nil {
 		return application.RecallQuery{}, err
 	}
+	query.MaxChars = query.MaxContextTokens
 	if request.IncludeEvidence != nil && (isNull(request.IncludeEvidence) || json.Unmarshal(request.IncludeEvidence, &query.IncludeEvidence) != nil) {
 		return application.RecallQuery{}, errors.New("include_evidence must be a boolean")
+	}
+	if request.Explain != nil && (isNull(request.Explain) || json.Unmarshal(request.Explain, &query.Explain) != nil) {
+		return application.RecallQuery{}, errors.New("explain must be a boolean")
 	}
 	if request.Cursor != nil && (isNull(request.Cursor) || json.Unmarshal(request.Cursor, &query.Cursor) != nil) {
 		return application.RecallQuery{}, errors.New("cursor must be a string")

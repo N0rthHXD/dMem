@@ -168,7 +168,7 @@ func entityInSpace(ctx context.Context, q candidateQueryer, entityID, spaceID st
 func mentionSourceText(ctx context.Context, q candidateQueryer, space string, memoryID, revisionID, eventID *string, requireCurrent bool) (string, error) {
 	var text, sourceSpace string
 	if memoryID != nil && revisionID != nil && eventID == nil {
-		query := `SELECT r.content,m.space_id FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.memory_id=? AND r.revision_id=?`
+		query := `SELECT r.display_content,m.space_id FROM memory_revisions r JOIN memories m ON m.memory_id=r.memory_id WHERE r.memory_id=? AND r.revision_id=?`
 		if requireCurrent {
 			query += ` AND m.current_revision_id=r.revision_id AND m.current_state IN ('active','contested')`
 		}

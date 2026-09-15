@@ -102,7 +102,7 @@ func graphClaimInput(t *testing.T, r *Repository) (ClaimedJob, domain.GraphExtra
 
 func createGraphMemory(t *testing.T, r *Repository, key, content string) domain.Memory {
 	t.Helper()
-	params := CreateMemoryParams{SpaceID: "space-1", MemoryType: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "graph extraction"}
+	params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "graph extraction"}
 	memory, replay, err := r.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
 	if err != nil || replay {
 		t.Fatalf("create memory %s: %+v, replay=%t, err=%v", key, memory, replay, err)
@@ -145,17 +145,17 @@ func TestGraphFactSupersedesOlderFactOnNewRevision(t *testing.T) {
 	seedEntity(t, r, "entity-alice", "Alice", "person")
 	memory := createTestMemory(t, r, "fact-evolve")
 
-	// First revision: Alice uses PostgreSQL.
+	// First revision: Alice has active status.
 	claim, input := graphClaimInput(t, r)
 	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
 		Entities: []domain.GraphEntity{{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95}},
-		Facts:    []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "uses_database", ObjectLiteral: "PostgreSQL", ObjectLiteralType: "string", Confidence: 0.95}},
+		Facts:    []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "has_status", ObjectLiteral: "active", ObjectLiteralType: "string", Confidence: 0.95}},
 	}
 	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
 		t.Fatal(err)
 	}
-	// Second revision: Alice uses MySQL -> conflicting fact stays pending review.
-	revised, _, err := r.ReviseMemory(context.Background(), memoryIdentity("fact-evolve-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice uses MySQL", Evidence: directEvidence("event-2"), Reason: "update"}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice uses MySQL", Evidence: directEvidence("event-2"), Reason: "update"})
+	// Second revision: Alice is paused -> conflicting fact stays pending review.
+	revised, _, err := r.ReviseMemory(context.Background(), memoryIdentity("fact-evolve-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice is paused", Evidence: directEvidence("event-2"), Reason: "update"}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice is paused", Evidence: directEvidence("event-2"), Reason: "update"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,16 +163,16 @@ func TestGraphFactSupersedesOlderFactOnNewRevision(t *testing.T) {
 	claim2, input2 := graphClaimInput(t, r)
 	result2 := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
 		Entities: []domain.GraphEntity{{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95}},
-		Facts:    []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "uses_database", ObjectLiteral: "MySQL", ObjectLiteralType: "string", Confidence: 0.95}},
+		Facts:    []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "has_status", ObjectLiteral: "paused", ObjectLiteralType: "string", Confidence: 0.95}},
 	}
 	if err := r.CommitGraphExtraction(context.Background(), claim2, input2, GraphExtractionCommit{Result: result2}); err != nil {
 		t.Fatal(err)
 	}
 	var pending int
-	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_fact_proposals WHERE predicate='uses_database' AND review_state='pending'`).Scan(&pending); err != nil || pending != 1 {
+	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_fact_proposals WHERE predicate='has_status' AND review_state='pending'`).Scan(&pending); err != nil || pending != 1 {
 		t.Fatalf("conflicting fact pending proposals=%d err=%v", pending, err)
 	}
-	// Confirming the newer fact supersedes the older PostgreSQL fact.
+	// Confirming the newer fact supersedes the older active status.
 	page, err := r.ListFactProposals(context.Background(), FactProposalFilter{SpaceID: "space-1", ReviewState: "pending", Limit: 10})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("pending fact proposals=%+v err=%v", page, err)
@@ -181,7 +181,7 @@ func TestGraphFactSupersedesOlderFactOnNewRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var active, superseded int
-	if err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM entity_facts WHERE predicate='uses_database' AND state='active' AND object_literal='MySQL'), (SELECT count(*) FROM entity_facts WHERE predicate='uses_database' AND state='superseded' AND object_literal='PostgreSQL')`).Scan(&active, &superseded); err != nil || active != 1 || superseded != 1 {
+	if err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM entity_facts WHERE predicate='has_status' AND state='active' AND object_literal='paused'), (SELECT count(*) FROM entity_facts WHERE predicate='has_status' AND state='superseded' AND object_literal='active')`).Scan(&active, &superseded); err != nil || active != 1 || superseded != 1 {
 		t.Fatalf("temporal evolution active=%d superseded=%d err=%v", active, superseded, err)
 	}
 }
@@ -326,8 +326,8 @@ func TestFactProposalConcurrentConfirm(t *testing.T) {
 	seedEntity(t, r, "entity-alice", "Alice", "person")
 	memory := createTestMemory(t, r, "fact-concurrent")
 	conf := 0.9
-	lit, typ := "PostgreSQL", "string"
-	p := CreateFactProposalParams{EventID: "event-1", SpaceID: "space-1", SubjectEntityID: "entity-alice", Predicate: "uses_database", ObjectLiteral: &lit, ObjectLiteralType: &typ, SourceMemoryID: memory.MemoryID, SourceRevisionID: memory.CurrentRevision.RevisionID, Confidence: &conf, Evidence: []domain.EntityFactEvidence{{EvidenceType: "human_confirmation"}}, ProcessorIdentity: "p", ProcessingVersion: "v"}
+	lit, typ := "active", "string"
+	p := CreateFactProposalParams{EventID: "event-1", SpaceID: "space-1", SubjectEntityID: "entity-alice", Predicate: "has_status", ObjectLiteral: &lit, ObjectLiteralType: &typ, SourceMemoryID: memory.MemoryID, SourceRevisionID: memory.CurrentRevision.RevisionID, Confidence: &conf, Evidence: []domain.EntityFactEvidence{{EvidenceType: "human_confirmation"}}, ProcessorIdentity: "p", ProcessingVersion: "v"}
 	proposal, _, err := r.CreateFactProposal(context.Background(), memoryIdentity("fact-concurrent-create", "/v1/fact-proposals", p), p)
 	if err != nil {
 		t.Fatal(err)
@@ -355,7 +355,7 @@ func TestFactProposalConcurrentConfirm(t *testing.T) {
 		t.Fatalf("concurrent confirm wins=%d reviewed=%d", wins, reviewed)
 	}
 	var facts int
-	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_facts WHERE subject_entity_id='entity-alice' AND predicate='uses_database' AND state='active'`).Scan(&facts); err != nil || facts != 1 {
+	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_facts WHERE subject_entity_id='entity-alice' AND predicate='has_status' AND state='active'`).Scan(&facts); err != nil || facts != 1 {
 		t.Fatalf("facts after concurrent confirm=%d err=%v", facts, err)
 	}
 }

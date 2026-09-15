@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
@@ -24,13 +26,14 @@ var (
 type EvidenceParams struct {
 	EventID      string
 	EvidenceType string
+	Role         domain.EvidenceRole
 	StartOffset  *int64
 	EndOffset    *int64
 }
 
 type CreateMemoryParams struct {
 	SpaceID     string
-	MemoryType  string
+	Kind        string
 	Content     string
 	ValidFrom   *string
 	ValidUntil  *string
@@ -42,7 +45,7 @@ type CreateMemoryParams struct {
 type RememberParams struct {
 	SpaceID       string
 	Content       string
-	MemoryType    string
+	Kind          string
 	Sensitivity   string
 	ValidFrom     *string
 	ValidUntil    *string
@@ -83,7 +86,7 @@ type ChangeMemoryStateParams struct {
 }
 
 func (r *Repository) CreateMemory(ctx context.Context, identity WriteIdentity, params CreateMemoryParams) (domain.Memory, bool, error) {
-	if params.MemoryType == "aggregate" {
+	if params.Kind == "aggregate" {
 		return domain.Memory{}, false, ErrInvalidAggregateProposal
 	}
 	tx, err := r.store.writer.BeginTx(ctx, nil)
@@ -106,10 +109,14 @@ func (r *Repository) CreateMemory(ctx context.Context, identity WriteIdentity, p
 	}
 	memoryID, revisionID, stateEventID, operationID, auditID := ids[0], ids[1], ids[2], ids[3], ids[4]
 	now := formatTime(r.runtime.Now())
-	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id, space_id, memory_type, current_revision_id, current_state, frozen, sensitivity, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', 0, ?, ?, ?)`, memoryID, params.SpaceID, params.MemoryType, revisionID, params.Sensitivity, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, frozen, sensitivity, created_at, updated_at) VALUES (?, ?, ?, 'active', 0, ?, ?, ?)`, memoryID, params.SpaceID, revisionID, params.Sensitivity, now, now); err != nil {
 		return domain.Memory{}, false, err
 	}
-	if err := insertRevision(ctx, tx, revisionID, memoryID, nil, nil, params.Content, params.ValidFrom, params.ValidUntil, nil, identity.CallerID, r.processingVersion, nil, now); err != nil {
+	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, params.Kind, params.Content, params.ValidFrom, params.ValidUntil, nil, params.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
+	if err != nil {
+		return domain.Memory{}, false, err
+	}
+	if err := insertRevision(ctx, tx, revision); err != nil {
 		return domain.Memory{}, false, err
 	}
 	if err := insertEvidence(ctx, tx, revisionID, params.Evidence, ids[5:], now); err != nil {
@@ -118,7 +125,7 @@ func (r *Repository) CreateMemory(ctx context.Context, identity WriteIdentity, p
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id, memory_id, revision_id, operation_id, from_state, to_state, from_frozen, to_frozen, reason, created_by, created_at) VALUES (?, ?, ?, ?, NULL, 'active', NULL, 0, ?, ?, ?)`, stateEventID, memoryID, revisionID, operationID, params.Reason, identity.CallerID, now); err != nil {
 		return domain.Memory{}, false, err
 	}
-	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, params.SpaceID, params.MemoryType, "active", params.Content, params.ValidFrom, params.ValidUntil, now); err != nil {
+	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, params.SpaceID, "active", now); err != nil {
 		return domain.Memory{}, false, err
 	}
 	result, err := getMemory(ctx, tx, memoryID, false)
@@ -176,10 +183,14 @@ func (r *Repository) Remember(ctx context.Context, identity WriteIdentity, param
 	if _, err := tx.ExecContext(ctx, `INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,source_event_id,caller_id,occurred_at,received_at,processing_status,metadata_json,created_at) VALUES (?,?,?,?,'manual',?,?,?,?,?,'processed',?,?)`, eventID, operationID, params.SpaceID, contentID, params.SourceName, params.SourceEventID, identity.CallerID, params.OccurredAt, now, string(metadata), now); err != nil {
 		return RememberResult{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,memory_type,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,?,'active',0,?,?,?)`, memoryID, params.SpaceID, params.MemoryType, revisionID, params.Sensitivity, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,'active',0,?,?,?)`, memoryID, params.SpaceID, revisionID, params.Sensitivity, now, now); err != nil {
 		return RememberResult{}, false, err
 	}
-	if err := insertRevision(ctx, tx, revisionID, memoryID, nil, nil, params.Content, params.ValidFrom, params.ValidUntil, nil, identity.CallerID, r.processingVersion, nil, now); err != nil {
+	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, params.Kind, params.Content, params.ValidFrom, params.ValidUntil, nil, params.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
+	if err != nil {
+		return RememberResult{}, false, err
+	}
+	if err := insertRevision(ctx, tx, revision); err != nil {
 		return RememberResult{}, false, err
 	}
 	if err := insertEvidence(ctx, tx, revisionID, []EvidenceParams{{EventID: eventID, EvidenceType: "direct_statement"}}, []string{evidenceID}, now); err != nil {
@@ -188,7 +199,7 @@ func (r *Repository) Remember(ctx context.Context, identity WriteIdentity, param
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) VALUES (?,?,?,?,NULL,'active',NULL,0,?,?,?)`, stateEventID, memoryID, revisionID, operationID, params.Reason, identity.CallerID, now); err != nil {
 		return RememberResult{}, false, err
 	}
-	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, params.SpaceID, params.MemoryType, "active", params.Content, params.ValidFrom, params.ValidUntil, now); err != nil {
+	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, params.SpaceID, "active", now); err != nil {
 		return RememberResult{}, false, err
 	}
 	memory, err := getMemory(ctx, tx, memoryID, false)
@@ -241,7 +252,7 @@ func (r *Repository) ForgetMemory(ctx context.Context, identity WriteIdentity, m
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) VALUES (?,?,?,?,?,'deleted',?,?,?, ?,?)`, stateEventID, memoryID, current.CurrentRevision.RevisionID, operationID, current.CurrentState, current.Frozen, current.Frozen, reason, identity.CallerID, now); err != nil {
 			return domain.Memory{}, false, err
 		}
-		if err := r.upsertMemoryProjection(ctx, tx, memoryID, current.CurrentRevision.RevisionID, current.SpaceID, current.MemoryType, "deleted", current.CurrentRevision.Content, current.CurrentRevision.ValidFrom, current.CurrentRevision.ValidUntil, now); err != nil {
+		if err := r.upsertMemoryProjection(ctx, tx, memoryID, current.CurrentRevision.RevisionID, current.SpaceID, "deleted", now); err != nil {
 			return domain.Memory{}, false, err
 		}
 		if err := r.markDependentAggregatesStale(ctx, tx, memoryID, now); err != nil {
@@ -283,7 +294,7 @@ func (r *Repository) ReviseMemory(ctx context.Context, identity WriteIdentity, m
 	if current.CurrentState == "deleted" {
 		return domain.Memory{}, false, ErrNotFound
 	}
-	if current.MemoryType == "aggregate" {
+	if isAggregateMemory(ctx, tx, current.MemoryID) {
 		return domain.Memory{}, false, ErrInvalidAggregateProposal
 	}
 	if err := requireSpaceAndEvidence(ctx, tx, current.SpaceID, params.Evidence); err != nil {
@@ -295,7 +306,11 @@ func (r *Repository) ReviseMemory(ctx context.Context, identity WriteIdentity, m
 	}
 	revisionID, operationID, auditID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
-	if err := insertRevision(ctx, tx, revisionID, memoryID, &params.ExpectedRevisionID, nil, params.Content, params.ValidFrom, params.ValidUntil, nil, identity.CallerID, r.processingVersion, nil, now); err != nil {
+	revision, err := revisionFromTextInput(revisionID, memoryID, &params.ExpectedRevisionID, nil, string(current.Kind), params.Content, params.ValidFrom, params.ValidUntil, nil, current.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
+	if err != nil {
+		return domain.Memory{}, false, err
+	}
+	if err := insertRevision(ctx, tx, revision); err != nil {
 		return domain.Memory{}, false, err
 	}
 	if err := insertEvidence(ctx, tx, revisionID, params.Evidence, ids[3:], now); err != nil {
@@ -311,7 +326,7 @@ func (r *Repository) ReviseMemory(ctx context.Context, identity WriteIdentity, m
 		}
 		return domain.Memory{}, false, ErrRevisionConflict
 	}
-	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, current.SpaceID, current.MemoryType, current.CurrentState, params.Content, params.ValidFrom, params.ValidUntil, now); err != nil {
+	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, current.SpaceID, current.CurrentState, now); err != nil {
 		return domain.Memory{}, false, err
 	}
 	if err := r.markDependentAggregatesStale(ctx, tx, memoryID, now); err != nil {
@@ -356,7 +371,7 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 	if params.Action == "restore" && !noop && params.RestoreRevisionID == nil {
 		return domain.Memory{}, false, ErrInvalidStateTransition
 	}
-	if current.MemoryType == "aggregate" && params.Action == "restore" && !noop {
+	if isAggregateMemory(ctx, tx, current.MemoryID) && params.Action == "restore" && !noop {
 		return domain.Memory{}, false, ErrInvalidAggregateProposal
 	}
 	idCount := 2
@@ -373,7 +388,7 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 	operationID, auditID := ids[0], ids[1]
 	now := formatTime(r.runtime.Now())
 	revisionID := current.CurrentRevision.RevisionID
-	content, validFrom, validUntil := current.CurrentRevision.Content, current.CurrentRevision.ValidFrom, current.CurrentRevision.ValidUntil
+	revision := current.CurrentRevision
 	if params.Action == "restore" && !noop {
 		source, err := getRevision(ctx, tx, memoryID, *params.RestoreRevisionID)
 		if err != nil {
@@ -383,8 +398,15 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 			return domain.Memory{}, false, err
 		}
 		revisionID = ids[3]
-		content, validFrom, validUntil = source.Content, source.ValidFrom, source.ValidUntil
-		if err := insertRevision(ctx, tx, revisionID, memoryID, &params.ExpectedRevisionID, params.RestoreRevisionID, content, validFrom, validUntil, source.Confidence, identity.CallerID, r.processingVersion, nil, now); err != nil {
+		revision = source
+		revision.RevisionID = revisionID
+		revision.ParentRevisionID = &params.ExpectedRevisionID
+		revision.RestoredFromRevisionID = params.RestoreRevisionID
+		revision.CreatedBy = identity.CallerID
+		revision.ProcessingVersion = r.processingVersion
+		revision.ProcessorIdentity = ""
+		revision.CreatedAt = now
+		if err := insertRevision(ctx, tx, revision); err != nil {
 			return domain.Memory{}, false, err
 		}
 		evidence, err := revisionEvidence(ctx, tx, source.RevisionID)
@@ -414,7 +436,7 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id, memory_id, revision_id, operation_id, from_state, to_state, from_frozen, to_frozen, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, stateEventID, memoryID, revisionID, operationID, current.CurrentState, toState, current.Frozen, toFrozen, params.Reason, identity.CallerID, now); err != nil {
 			return domain.Memory{}, false, err
 		}
-		if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, current.SpaceID, current.MemoryType, toState, content, validFrom, validUntil, now); err != nil {
+		if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, current.SpaceID, toState, now); err != nil {
 			return domain.Memory{}, false, err
 		}
 		if err := r.markDependentAggregatesStale(ctx, tx, memoryID, now); err != nil {
@@ -596,6 +618,9 @@ func (r *Repository) ListMemoryRevisions(ctx context.Context, memoryID string) (
 		return nil, err
 	}
 	for i := range result {
+		if err = loadRevisionDetails(ctx, r.store.reader, &result[i]); err != nil {
+			return nil, err
+		}
 		result[i].Evidence, err = revisionEvidence(ctx, r.store.reader, result[i].RevisionID)
 		if err != nil {
 			return nil, err
@@ -645,13 +670,13 @@ type rowQuerier interface {
 }
 
 func getMemory(ctx context.Context, db memoryQueryer, memoryID string, hideDeleted bool) (domain.Memory, error) {
-	query := `SELECT m.memory_id, m.space_id, m.memory_type, m.current_state, m.frozen, m.sensitivity, m.created_at, m.updated_at, r.revision_id, r.memory_id, r.parent_revision_id, r.content, r.valid_from, r.valid_until, r.confidence, r.created_by, r.created_at FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=?`
+	query := `SELECT m.memory_id, m.space_id, m.current_state, m.frozen, m.sensitivity, m.created_at, m.updated_at, ` + revisionColumns("r") + ` FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=?`
 	if hideDeleted {
 		query += ` AND m.current_state <> 'deleted'`
 	}
 	var result domain.Memory
 	var frozen int64
-	err := db.QueryRowContext(ctx, query, memoryID).Scan(&result.MemoryID, &result.SpaceID, &result.MemoryType, &result.CurrentState, &frozen, &result.Sensitivity, &result.CreatedAt, &result.UpdatedAt, &result.CurrentRevision.RevisionID, &result.CurrentRevision.MemoryID, &result.CurrentRevision.ParentRevisionID, &result.CurrentRevision.Content, &result.CurrentRevision.ValidFrom, &result.CurrentRevision.ValidUntil, &result.CurrentRevision.Confidence, &result.CurrentRevision.CreatedBy, &result.CurrentRevision.CreatedAt)
+	err := scanMemoryRow(db.QueryRowContext(ctx, query, memoryID), &result, &frozen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Memory{}, ErrNotFound
 	}
@@ -659,6 +684,10 @@ func getMemory(ctx context.Context, db memoryQueryer, memoryID string, hideDelet
 		return domain.Memory{}, err
 	}
 	result.Frozen = frozen != 0
+	if err := loadRevisionDetails(ctx, db, &result.CurrentRevision); err != nil {
+		return domain.Memory{}, err
+	}
+	result.Kind = result.CurrentRevision.Kind
 	evidence, err := revisionEvidence(ctx, db, result.CurrentRevision.RevisionID)
 	if err != nil {
 		return domain.Memory{}, err
@@ -668,7 +697,7 @@ func getMemory(ctx context.Context, db memoryQueryer, memoryID string, hideDelet
 	if err != nil {
 		return domain.Memory{}, err
 	}
-	if result.MemoryType == "aggregate" {
+	if isAggregateMemory(ctx, db, result.MemoryID) {
 		var state, reasons string
 		if err = db.QueryRowContext(ctx, `SELECT f.state,f.stale_reasons_json FROM aggregate_descriptors d JOIN aggregate_freshness f ON f.aggregate_id=d.aggregate_id WHERE d.memory_id=?`, memoryID).Scan(&state, &reasons); err != nil {
 			return domain.Memory{}, err
@@ -697,37 +726,167 @@ func getMemory(ctx context.Context, db memoryQueryer, memoryID string, hideDelet
 	return result, nil
 }
 
-const revisionSelect = `SELECT revision_id, memory_id, parent_revision_id, content, valid_from, valid_until, confidence, created_by, created_at FROM memory_revisions`
+const revisionSelect = `SELECT ` + revisionColumnList + ` FROM memory_revisions`
 
-func getRevision(ctx context.Context, db interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, memoryID, revisionID string) (domain.MemoryRevision, error) {
-	return scanRevision(db.QueryRowContext(ctx, revisionSelect+` WHERE memory_id=? AND revision_id=?`, memoryID, revisionID))
+const revisionColumnList = `revision_id,memory_id,parent_revision_id,restored_from_revision_id,kind,display_content,canonical_content,canonical_hash,event_type,event_time_start,event_time_end,time_precision,time_source,valid_from,valid_until,source_speaker,language,sensitivity,specificity,confidence,created_by,processing_version,processor_identity,created_at`
+
+func revisionColumns(alias string) string {
+	parts := strings.Split(revisionColumnList, ",")
+	for i := range parts {
+		parts[i] = alias + "." + parts[i]
+	}
+	return strings.Join(parts, ",")
+}
+
+func getRevision(ctx context.Context, db memoryQueryer, memoryID, revisionID string) (domain.MemoryRevision, error) {
+	result, err := scanRevision(db.QueryRowContext(ctx, revisionSelect+` WHERE memory_id=? AND revision_id=?`, memoryID, revisionID))
+	if err != nil {
+		return result, err
+	}
+	err = loadRevisionDetails(ctx, db, &result)
+	return result, err
 }
 
 func scanRevision(row rowScanner) (domain.MemoryRevision, error) {
 	var result domain.MemoryRevision
-	err := row.Scan(&result.RevisionID, &result.MemoryID, &result.ParentRevisionID, &result.Content, &result.ValidFrom, &result.ValidUntil, &result.Confidence, &result.CreatedBy, &result.CreatedAt)
+	err := scanRevisionFields(row, &result)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.MemoryRevision{}, ErrNotFound
 	}
 	return result, err
 }
 
+type revisionScan struct {
+	parent, restored, eventType, eventStart, eventEnd, precision, timeSource sql.NullString
+	validFrom, validUntil, speaker, language, sensitivity, processor         sql.NullString
+}
+
+func revisionScanTargets(result *domain.MemoryRevision, nullable *revisionScan) []any {
+	return []any{&result.RevisionID, &result.MemoryID, &nullable.parent, &nullable.restored, &result.Kind, &result.DisplayContent, &result.CanonicalContent, &result.CanonicalHash, &nullable.eventType, &nullable.eventStart, &nullable.eventEnd, &nullable.precision, &nullable.timeSource, &nullable.validFrom, &nullable.validUntil, &nullable.speaker, &nullable.language, &nullable.sensitivity, &result.Specificity, &result.Confidence, &result.CreatedBy, &result.ProcessingVersion, &nullable.processor, &result.CreatedAt}
+}
+
+func scanRevisionFields(row rowScanner, result *domain.MemoryRevision) error {
+	var nullable revisionScan
+	if err := row.Scan(revisionScanTargets(result, &nullable)...); err != nil {
+		return err
+	}
+	return applyRevisionScan(result, nullable)
+}
+
+func scanMemoryRow(row rowScanner, result *domain.Memory, frozen *int64) error {
+	var nullable revisionScan
+	targets := []any{&result.MemoryID, &result.SpaceID, &result.CurrentState, frozen, &result.Sensitivity, &result.CreatedAt, &result.UpdatedAt}
+	targets = append(targets, revisionScanTargets(&result.CurrentRevision, &nullable)...)
+	if err := row.Scan(targets...); err != nil {
+		return err
+	}
+	return applyRevisionScan(&result.CurrentRevision, nullable)
+}
+
+func applyRevisionScan(result *domain.MemoryRevision, nullable revisionScan) error {
+	result.ParentRevisionID = memoryNullStringPointer(nullable.parent)
+	result.RestoredFromRevisionID = memoryNullStringPointer(nullable.restored)
+	result.EventType = nullable.eventType.String
+	result.TimePrecision = domain.TimePrecision(nullable.precision.String)
+	result.TimeSource = nullable.timeSource.String
+	result.SourceSpeaker = nullable.speaker.String
+	result.Language = nullable.language.String
+	result.Sensitivity = nullable.sensitivity.String
+	result.ProcessorIdentity = nullable.processor.String
+	var err error
+	if result.EventTimeStart, err = parseTimePointer(nullable.eventStart); err != nil {
+		return err
+	}
+	if result.EventTimeEnd, err = parseTimePointer(nullable.eventEnd); err != nil {
+		return err
+	}
+	if result.ValidFrom, err = parseTimePointer(nullable.validFrom); err != nil {
+		return err
+	}
+	result.ValidUntil, err = parseTimePointer(nullable.validUntil)
+	return err
+}
+
+func loadRevisionDetails(ctx context.Context, db memoryQueryer, revision *domain.MemoryRevision) error {
+	for _, spec := range []struct {
+		query string
+		ids   *[]string
+	}{
+		{`SELECT entity_id FROM revision_subject_entities WHERE revision_id=? ORDER BY entity_order`, &revision.SubjectEntityIDs},
+		{`SELECT entity_id FROM revision_object_entities WHERE revision_id=? ORDER BY entity_order`, &revision.ObjectEntityIDs},
+	} {
+		rows, err := db.QueryContext(ctx, spec.query, revision.RevisionID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			*spec.ids = append(*spec.ids, id)
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT attribute_key,attribute_value FROM revision_attributes WHERE revision_id=? ORDER BY attribute_key`, revision.RevisionID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err = rows.Scan(&key, &value); err != nil {
+			return err
+		}
+		if revision.Attributes == nil {
+			revision.Attributes = map[string]string{}
+		}
+		revision.Attributes[key] = value
+	}
+	return rows.Err()
+}
+
+func parseTimePointer(value sql.NullString) (*time.Time, error) {
+	if !value.Valid {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value.String)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func memoryNullStringPointer(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
 func revisionEvidence(ctx context.Context, db interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, revisionID string) ([]domain.MemoryEvidence, error) {
-	rows, err := db.QueryContext(ctx, `SELECT event_id, evidence_type, start_offset, end_offset FROM memory_evidence WHERE revision_id=? ORDER BY evidence_id ASC`, revisionID)
+}, revisionID string) ([]domain.RevisionEvidence, error) {
+	rows, err := db.QueryContext(ctx, `SELECT e.evidence_id,e.event_id,r.occurred_at,r.sequence,e.role,e.start_offset,e.end_offset FROM memory_evidence e JOIN raw_events r ON r.event_id=e.event_id WHERE e.revision_id=? ORDER BY r.occurred_at, r.sequence IS NULL, r.sequence, e.start_offset IS NULL, e.start_offset, e.evidence_id`, revisionID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	result := []domain.MemoryEvidence{}
+	result := []domain.RevisionEvidence{}
 	for rows.Next() {
-		var item domain.MemoryEvidence
-		if err := rows.Scan(&item.EventID, &item.EvidenceType, &item.StartOffset, &item.EndOffset); err != nil {
+		var item domain.RevisionEvidence
+		var eventTime string
+		if err := rows.Scan(&item.EvidenceID, &item.EventID, &eventTime, &item.EventSequence, &item.Role, &item.StartOffset, &item.EndOffset); err != nil {
 			return nil, err
 		}
+		parsed, err := time.Parse(time.RFC3339Nano, eventTime)
+		if err != nil {
+			return nil, err
+		}
+		item.EventTime = &parsed
 		result = append(result, item)
 	}
 	return result, rows.Err()
@@ -774,15 +933,86 @@ func requireEvidence(ctx context.Context, tx *sql.Tx, spaceID string, evidence [
 	return nil
 }
 
-func insertRevision(ctx context.Context, tx *sql.Tx, revisionID, memoryID string, parentID, restoredFrom *string, content string, validFrom, validUntil *string, confidence *float64, callerID, processingVersion string, processorIdentity *string, now string) error {
-	hash := sha256.Sum256([]byte(content))
-	_, err := tx.ExecContext(ctx, `INSERT INTO memory_revisions(revision_id, memory_id, parent_revision_id, restored_from_revision_id, content, content_hash, valid_from, valid_until, confidence, created_by, processing_version, processor_identity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, revisionID, memoryID, parentID, restoredFrom, content, hex.EncodeToString(hash[:]), validFrom, validUntil, confidence, callerID, processingVersion, processorIdentity, now)
-	return err
+func insertRevision(ctx context.Context, tx *sql.Tx, revision domain.MemoryRevision) error {
+	if revision.CanonicalHash == "" {
+		hash := sha256.Sum256([]byte(revision.CanonicalContent))
+		revision.CanonicalHash = hex.EncodeToString(hash[:])
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,restored_from_revision_id,kind,display_content,canonical_content,canonical_hash,event_type,event_time_start,event_time_end,time_precision,time_source,valid_from,valid_until,source_speaker,language,sensitivity,specificity,confidence,created_by,processing_version,processor_identity,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, revision.RevisionID, revision.MemoryID, revision.ParentRevisionID, revision.RestoredFromRevisionID, revision.Kind, revision.DisplayContent, revision.CanonicalContent, revision.CanonicalHash, nullableString(revision.EventType), formatTimePointer(revision.EventTimeStart), formatTimePointer(revision.EventTimeEnd), nullableString(string(revision.TimePrecision)), nullableString(revision.TimeSource), formatTimePointer(revision.ValidFrom), formatTimePointer(revision.ValidUntil), nullableString(revision.SourceSpeaker), nullableString(revision.Language), revision.Sensitivity, revision.Specificity, revision.Confidence, revision.CreatedBy, revision.ProcessingVersion, nullableString(revision.ProcessorIdentity), revision.CreatedAt)
+	if err != nil {
+		return err
+	}
+	for i, entityID := range revision.SubjectEntityIDs {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO revision_subject_entities(revision_id,entity_order,entity_id) VALUES (?,?,?)`, revision.RevisionID, i, entityID); err != nil {
+			return err
+		}
+	}
+	for i, entityID := range revision.ObjectEntityIDs {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO revision_object_entities(revision_id,entity_order,entity_id) VALUES (?,?,?)`, revision.RevisionID, i, entityID); err != nil {
+			return err
+		}
+	}
+	for key, value := range revision.Attributes {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO revision_attributes(revision_id,attribute_key,attribute_value,created_at) VALUES (?,?,?,?)`, revision.RevisionID, key, value, revision.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func revisionFromTextInput(revisionID, memoryID string, parentID, restoredFrom *string, kind, content string, validFrom, validUntil *string, confidence *float64, sensitivity, callerID, processingVersion string, processorIdentity *string, now string) (domain.MemoryRevision, error) {
+	revision := domain.MemoryRevision{
+		RevisionID: revisionID, MemoryID: memoryID, ParentRevisionID: parentID, RestoredFromRevisionID: restoredFrom,
+		Kind: domain.MemoryKind(kind), DisplayContent: content, CanonicalContent: content, Sensitivity: sensitivity,
+		CreatedBy: callerID, ProcessingVersion: processingVersion, CreatedAt: now,
+	}
+	if confidence != nil {
+		revision.Confidence = *confidence
+	}
+	if processorIdentity != nil {
+		revision.ProcessorIdentity = *processorIdentity
+	}
+	var err error
+	if revision.ValidFrom, err = parseOptionalTime(validFrom); err != nil {
+		return domain.MemoryRevision{}, err
+	}
+	if revision.ValidUntil, err = parseOptionalTime(validUntil); err != nil {
+		return domain.MemoryRevision{}, err
+	}
+	return revision, nil
+}
+
+func parseOptionalTime(value *string) (*time.Time, error) {
+	if value == nil {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, *value)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func formatTimePointer(value *time.Time) *string {
+	if value == nil {
+		return nil
+	}
+	formatted := formatTime(*value)
+	return &formatted
+}
+
+func isAggregateMemory(ctx context.Context, db rowQuerier, memoryID string) bool {
+	var exists int
+	return db.QueryRowContext(ctx, `SELECT 1 FROM aggregate_descriptors WHERE memory_id=?`, memoryID).Scan(&exists) == nil
 }
 
 func insertEvidence(ctx context.Context, tx *sql.Tx, revisionID string, evidence []EvidenceParams, ids []string, now string) error {
 	for i, item := range evidence {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_evidence(evidence_id, revision_id, event_id, evidence_type, start_offset, end_offset, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, ids[i], revisionID, item.EventID, item.EvidenceType, item.StartOffset, item.EndOffset, now); err != nil {
+		role := item.Role
+		if role == "" {
+			role = domain.EvidenceRoleDirect
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_evidence(evidence_id, revision_id, event_id, role, start_offset, end_offset, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, ids[i], revisionID, item.EventID, role, item.StartOffset, item.EndOffset, now); err != nil {
 			var sqliteErr sqlite3.Error
 			if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint {
 				return fmt.Errorf("%w: evidence rejected", ErrInvalidEvidence)
@@ -793,16 +1023,20 @@ func insertEvidence(ctx context.Context, tx *sql.Tx, revisionID string, evidence
 	return nil
 }
 
-func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, memoryID, revisionID, spaceID, memoryType, state, content string, validFrom, validUntil *string, now string) error {
+func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, memoryID, revisionID, spaceID, state, now string) error {
+	revision, err := getRevision(ctx, tx, memoryID, revisionID)
+	if err != nil {
+		return err
+	}
+	memoryType, content, contentHash := string(revision.Kind), revision.DisplayContent, revision.CanonicalHash
+	validFrom, validUntil := formatTimePointer(revision.ValidFrom), formatTimePointer(revision.ValidUntil)
 	searchable := state == "active" || state == "contested"
-	hash := sha256.Sum256([]byte(content))
-	contentHash := hex.EncodeToString(hash[:])
 	embeddingChanged, corpusChanged := true, true
 	revisionChanged := true
 	var previousRevision, previousSpace, previousType, previousState, previousHash string
 	var previousSearchable bool
 	var previousValidFrom, previousValidUntil sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT revision_id, space_id, memory_type, current_state, content_hash, searchable, valid_from, valid_until FROM memory_projections WHERE memory_id=?`, memoryID).Scan(&previousRevision, &previousSpace, &previousType, &previousState, &previousHash, &previousSearchable, &previousValidFrom, &previousValidUntil)
+	err = tx.QueryRowContext(ctx, `SELECT revision_id, space_id, memory_type, current_state, content_hash, searchable, valid_from, valid_until FROM memory_projections WHERE memory_id=?`, memoryID).Scan(&previousRevision, &previousSpace, &previousType, &previousState, &previousHash, &previousSearchable, &previousValidFrom, &previousValidUntil)
 	if err == nil {
 		revisionChanged = previousRevision != revisionID
 		embeddingChanged = revisionChanged || previousSpace != spaceID || previousHash != contentHash || previousSearchable != searchable
@@ -987,10 +1221,10 @@ func memoryScope(ctx context.Context, db interface {
 	return result, nil
 }
 
-func evidenceParams(items []domain.MemoryEvidence) []EvidenceParams {
+func evidenceParams(items []domain.RevisionEvidence) []EvidenceParams {
 	result := make([]EvidenceParams, len(items))
 	for i, item := range items {
-		result[i] = EvidenceParams{EventID: item.EventID, EvidenceType: item.EvidenceType, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
+		result[i] = EvidenceParams{EventID: item.EventID, Role: item.Role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
 	}
 	return result
 }

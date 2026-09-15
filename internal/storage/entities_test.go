@@ -137,7 +137,7 @@ func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	}
 	newRevision := "new-revision"
 	now := "2026-08-21T13:00:00Z"
-	if _, err = r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,content,content_hash,created_by,processing_version,created_at) VALUES (?,?,?,'replacement','replacement-hash','test','v',?); UPDATE memories SET current_revision_id=?,updated_at=? WHERE memory_id=?`, newRevision, memory.MemoryID, memory.CurrentRevision.RevisionID, now, newRevision, now, memory.MemoryID); err != nil {
+	if _, err = r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES (?,?,?,'fact','replacement','replacement','replacement-hash','normal',0,0,'test','v',?); UPDATE memories SET current_revision_id=?,updated_at=? WHERE memory_id=?`, newRevision, memory.MemoryID, memory.CurrentRevision.RevisionID, now, newRevision, now, memory.MemoryID); err != nil {
 		t.Fatal(err)
 	}
 	result, err = r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})

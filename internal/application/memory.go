@@ -30,7 +30,7 @@ type RequestIdentity struct {
 type RememberCommand struct {
 	SpaceID       string
 	Content       string
-	MemoryType    string
+	Kind          string
 	Sensitivity   string
 	ValidFrom     *string
 	ValidUntil    *string
@@ -56,10 +56,13 @@ type RecallQuery struct {
 	States                 []string
 	ReferenceTime          string
 	ReferenceTimeSet       bool
+	Intent                 domain.RecallIntent
 	Channels               []string
 	Limit                  int
 	MaxChars               int
+	MaxContextTokens       int
 	IncludeEvidence        bool
+	Explain                bool
 	ExcludeStaleAggregates bool
 	Cursor                 string
 }
@@ -118,7 +121,7 @@ func (s *Service) Remember(ctx context.Context, identity RequestIdentity, comman
 		return RememberResult{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	result, replay, err := s.repository.Remember(ctx, storageIdentity(identity), storage.RememberParams{
-		SpaceID: command.SpaceID, Content: command.Content, MemoryType: command.MemoryType,
+		SpaceID: command.SpaceID, Content: command.Content, Kind: command.Kind,
 		Sensitivity: command.Sensitivity, ValidFrom: command.ValidFrom, ValidUntil: command.ValidUntil,
 		SourceName: command.SourceName, SourceEventID: command.SourceEventID, OccurredAt: command.OccurredAt,
 		Metadata: command.Metadata, Reason: command.Reason,
@@ -176,9 +179,9 @@ func validateRemember(command RememberCommand) error {
 	if command.SpaceID == "" || strings.TrimSpace(command.Content) == "" {
 		return errors.New("space_id and content are required")
 	}
-	validTypes := map[string]bool{"fact": true, "preference": true, "constraint": true, "decision": true, "task": true, "event": true, "project_context": true, "agent_experience": true}
-	if !validTypes[command.MemoryType] || command.Sensitivity != "normal" && command.Sensitivity != "sensitive" {
-		return errors.New("memory_type or sensitivity is invalid")
+	validKinds := map[string]bool{"fact": true, "event": true, "preference": true, "plan": true, "procedure": true, "scene": true, "topic": true, "timeline": true}
+	if !validKinds[command.Kind] || command.Sensitivity != "normal" && command.Sensitivity != "sensitive" {
+		return errors.New("kind or sensitivity is invalid")
 	}
 	if command.SourceName == "" || utf8.RuneCountInString(command.SourceName) > 128 || utf8.RuneCountInString(command.Reason) < 1 || utf8.RuneCountInString(command.Reason) > 1024 {
 		return errors.New("source_name or reason is invalid")
@@ -190,8 +193,11 @@ func validateRemember(command RememberCommand) error {
 }
 
 func validateRecall(query RecallQuery) error {
-	if strings.TrimSpace(query.Query) == "" || len(query.SpaceIDs) == 0 || query.Limit < 1 || query.Limit > 100 || query.MaxChars < 1 || query.MaxChars > 100000 {
-		return errors.New("recall query, scope, limit, or character budget is invalid")
+	if strings.TrimSpace(query.Query) == "" || len(query.SpaceIDs) == 0 || query.Limit < 1 || query.Limit > 1000 || query.MaxContextTokens < 1 || query.MaxContextTokens > 1000000 || query.MaxChars < 1 || query.MaxChars > 4000000 {
+		return errors.New("recall query, scope, result limit, or context budget is invalid")
+	}
+	if !query.Intent.Valid() {
+		return errors.New("recall intent is invalid")
 	}
 	if len(query.Channels) == 0 {
 		return errors.New("recall channels must contain at least one channel")
@@ -201,9 +207,8 @@ func validateRecall(query RecallQuery) error {
 			return errors.New("recall channels is invalid")
 		}
 	}
-	validTypes := map[string]bool{"fact": true, "preference": true, "constraint": true, "decision": true, "task": true, "event": true, "project_context": true, "agent_experience": true, "aggregate": true}
 	for _, value := range query.MemoryTypes {
-		if !validTypes[value] {
+		if !domain.MemoryKind(value).Valid() {
 			return errors.New("recall memory_types is invalid")
 		}
 	}
