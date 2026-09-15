@@ -44,8 +44,11 @@ func deref(value *string) string {
 }
 
 func validFactPredicate(ctx context.Context, q candidateQueryer, predicate string) bool {
+	if _, ok := domain.LookupPredicate(predicate); !ok {
+		return false
+	}
 	var n int
-	return q.QueryRowContext(ctx, `SELECT 1 FROM predicates WHERE predicate=?`, predicate).Scan(&n) == nil
+	return q.QueryRowContext(ctx, `SELECT 1 FROM predicate_definitions WHERE predicate=?`, predicate).Scan(&n) == nil
 }
 
 func validLiteralType(value string) bool {
@@ -110,8 +113,15 @@ func (r *Repository) confirmFactProposalTx(ctx context.Context, tx *sql.Tx, prop
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE entity_facts SET state='superseded', updated_at=? WHERE space_id=? AND subject_entity_id=? AND predicate=? AND state='active' AND fact_id<>?`, now, p.SpaceID, p.SubjectEntityID, p.Predicate, factID); err != nil {
-			return err
+		definition, _ := domain.LookupPredicate(p.Predicate)
+		if definition.Cardinality == domain.PredicateCardinalityOne {
+			if _, err := tx.ExecContext(ctx, `UPDATE entity_facts SET state='superseded', updated_at=? WHERE space_id=? AND subject_entity_id=? AND predicate=? AND state='active' AND fact_id<>?`, now, p.SpaceID, p.SubjectEntityID, p.Predicate, factID); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `UPDATE entity_facts SET state='superseded', updated_at=? WHERE space_id=? AND subject_entity_id=? AND predicate=? AND state='active' AND fact_id<>? AND object_entity_id IS ? AND object_literal IS ?`, now, p.SpaceID, p.SubjectEntityID, p.Predicate, factID, p.ObjectEntityID, p.ObjectLiteral); err != nil {
+				return err
+			}
 		}
 		if err := r.markGraphIndexStale(ctx, tx, now); err != nil {
 			return err
@@ -138,10 +148,17 @@ func validateFactProposalContext(ctx context.Context, tx *sql.Tx, p createFactPr
 	if !validFactPredicate(ctx, tx, p.Predicate) {
 		return ErrInvalidFactProposal
 	}
+	definition, ok := domain.LookupPredicate(p.Predicate)
+	if !ok {
+		return ErrInvalidFactProposal
+	}
 	if !entityInSpace(ctx, tx, p.SubjectEntityID, p.SpaceID) {
 		return ErrInvalidFactProposal
 	}
 	if p.ObjectEntityID != nil {
+		if definition.Literal() {
+			return ErrInvalidFactProposal
+		}
 		if !entityInSpace(ctx, tx, *p.ObjectEntityID, p.SpaceID) {
 			return ErrInvalidFactProposal
 		}
@@ -150,7 +167,10 @@ func validateFactProposalContext(ctx context.Context, tx *sql.Tx, p createFactPr
 		}
 	}
 	if p.ObjectLiteral != nil {
-		if p.ObjectLiteralType == nil || !validLiteralType(*p.ObjectLiteralType) || *p.ObjectLiteral == "" {
+		if definition.LiteralType == "" {
+			return ErrInvalidFactProposal
+		}
+		if p.ObjectLiteralType == nil || !validLiteralType(*p.ObjectLiteralType) || *p.ObjectLiteralType != definition.LiteralType || *p.ObjectLiteral == "" {
 			return ErrInvalidFactProposal
 		}
 	}
@@ -701,6 +721,9 @@ func (r *Repository) rebuildGraphIndex(ctx context.Context, claim *ClaimedJob) e
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_index_metadata SET active_version=active_version+1, generation=generation+1, state='ready', source_fact_count=?, source_entity_count=?, source_relation_count=?, updated_at=? WHERE singleton=1`, facts, entities, relations, now); err != nil {
+		return err
+	}
+	if err = r.rebuildEntityGraphStatistics(ctx, tx, now); err != nil {
 		return err
 	}
 	return tx.Commit()

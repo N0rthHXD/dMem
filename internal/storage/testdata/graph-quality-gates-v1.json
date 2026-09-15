@@ -1,0 +1,27 @@
+{
+  "config_version": "graph-quality-gates-v1",
+  "corpus_version": "graph-quality-corpus-v1",
+  "quality": {
+    "minimum_promotion_precision": 0.5,
+    "maximum_rank_harm": 0.005,
+    "maximum_one_hop_edges": 200,
+    "maximum_paths": 100
+  },
+  "performance": {
+    "target_fact_count": 200,
+    "query_samples": 20,
+    "maximum_graph_query_p95_ms": 50.0,
+    "maximum_graph_query_heap_bytes": 67108864,
+    "maximum_graph_storage_growth": 6.0
+  },
+  "ablations": {
+    "mention_only": "direct_entity_mention",
+    "fact_only": "exact_predicate_fact,one_hop_fact",
+    "relation_only": "memory_relation",
+    "one_hop": "one_hop_fact",
+    "two_hop": "two_hop_path",
+    "confidence_gate": 0.7,
+    "seed_budget": 15,
+    "boost_cap": 0.08
+  }
+}

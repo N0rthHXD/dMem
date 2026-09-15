@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
 func TestDocumentedSchemaMatchesEmbeddedSchema(t *testing.T) {
@@ -820,7 +822,7 @@ func TestTypedPredicateAndEventSchema(t *testing.T) {
 	if err := assertColumns(store, "entity_mentions", nil, map[string]bool{"confidence": false}); err != nil {
 		t.Fatal(err)
 	}
-	validPredicate := `INSERT INTO predicate_definitions(predicate, version, subject_types_json, object_entity_types_json, direction, cardinality, transitivity, temporal_policy, allowed_path_positions_json, auto_confirm, created_at) VALUES ('works_for', 'v1', '["person"]', '["organization"]', 'directed', 'many', 'none', 'valid_time', '["first","second"]', 'exact_match', 'now')`
+	validPredicate := `INSERT INTO predicate_definitions(predicate, version, subject_types_json, object_entity_types_json, direction, cardinality, transitivity, temporal_policy, allowed_path_positions_json, auto_confirm, created_at) VALUES ('schema_probe', 'v1', '["person"]', '["organization"]', 'directed', 'many', 'none', 'valid_time', '["first","second"]', 'exact_match', 'now')`
 	if _, err := store.writer.Exec(validPredicate); err != nil {
 		t.Fatalf("valid predicate_definitions insert rejected: %v", err)
 	}
@@ -854,7 +856,7 @@ func TestCurrentSchemaPredicateSnapshot(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"created_by", "depends_on", "has_participant_count", "has_status", "is_active", "located_at", "member_of", "owned_by", "participates_in"}
+	want := domain.PredicateNames()
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("schema predicates = %v, want %v", got, want)
 	}

@@ -56,6 +56,13 @@ func (p *ProviderProcessor) ProcessGraph(ctx context.Context, input domain.Graph
 	for _, mention := range output.Mentions() {
 		result.Mentions = append(result.Mentions, domain.GraphMention{EntityLocalID: mention.EntityLocalID, Text: mention.Text, StartRune: mention.StartRune, EndRune: mention.EndRune, Confidence: mention.Confidence})
 	}
+	for _, event := range output.Events() {
+		item := domain.GraphEvent{LocalID: event.LocalID, EventType: event.EventType, ParticipantLocalIDs: event.ParticipantLocalIDs, PlaceLocalID: event.PlaceLocalID, Confidence: event.Confidence}
+		if event.Time != nil {
+			item.Time = &domain.GraphEventTime{Expression: event.Time.Expression, Start: event.Time.Start, End: event.Time.End, Precision: event.Time.Precision, Source: event.Time.Source}
+		}
+		result.Events = append(result.Events, item)
+	}
 	for _, fact := range output.Facts() {
 		item := domain.GraphFact{SubjectLocalID: fact.SubjectLocalID, Predicate: fact.Predicate, ObjectLocalID: fact.ObjectLocalID, ObjectLiteral: fact.ObjectLiteral, ObjectLiteralType: fact.ObjectLiteralType, Confidence: fact.Confidence}
 		if fact.ValidTime != nil {
@@ -66,7 +73,7 @@ func (p *ProviderProcessor) ProcessGraph(ctx context.Context, input domain.Graph
 	for _, relation := range output.Relations() {
 		result.Relations = append(result.Relations, domain.GraphMemoryRelation{RelationType: relation.RelationType, TargetMemoryID: relation.TargetMemoryID, TargetRevisionID: relation.TargetRevisionID, Confidence: relation.Confidence})
 	}
-	if len(result.Entities) == 0 && len(result.Mentions) == 0 && len(result.Facts) == 0 && len(result.Relations) == 0 {
+	if len(result.Entities) == 0 && len(result.Mentions) == 0 && len(result.Events) == 0 && len(result.Facts) == 0 && len(result.Relations) == 0 {
 		result.Code = domain.GraphExtractionEmpty
 	}
 	return result

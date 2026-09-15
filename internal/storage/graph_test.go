@@ -552,3 +552,280 @@ func TestGraphMentionConfidenceIsPersistedAndConsumed(t *testing.T) {
 		t.Fatalf("persisted mention confidence = %v", confidence)
 	}
 }
+
+func TestGraphFactPublicationUsesPredicateThreshold(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	seedEntity(t, r, "entity-alice", "Alice", "person")
+	seedEntity(t, r, "entity-acme", "Acme", "organization")
+	createGraphMemory(t, r, "graph-threshold", "Alice is a member of Acme")
+	claim, input := graphClaimInput(t, r)
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities: []domain.GraphEntity{
+			{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95},
+			{LocalID: "e1", CanonicalName: "Acme", EntityType: "organization", Confidence: 0.95},
+		},
+		Facts: []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "member_of", ObjectLocalID: "e1", Confidence: 0.7}},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	var active, pending int
+	if err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM entity_facts WHERE predicate='member_of' AND state='active'), (SELECT count(*) FROM entity_fact_proposals WHERE predicate='member_of' AND review_state='pending')`).Scan(&active, &pending); err != nil || active != 0 || pending != 1 {
+		t.Fatalf("threshold publication active=%d pending=%d err=%v", active, pending, err)
+	}
+}
+
+func TestGraphFactAutoConfirmsAtPredicateThreshold(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	seedEntity(t, r, "entity-alice", "Alice", "person")
+	seedEntity(t, r, "entity-acme", "Acme", "organization")
+	createGraphMemory(t, r, "graph-threshold-ok", "Alice is a member of Acme")
+	claim, input := graphClaimInput(t, r)
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities: []domain.GraphEntity{
+			{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95},
+			{LocalID: "e1", CanonicalName: "Acme", EntityType: "organization", Confidence: 0.95},
+		},
+		Facts: []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "member_of", ObjectLocalID: "e1", Confidence: 0.9}},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	var active int
+	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_facts WHERE predicate='member_of' AND state='active'`).Scan(&active); err != nil || active != 1 {
+		t.Fatalf("auto-confirmed facts=%d err=%v", active, err)
+	}
+}
+
+func TestGraphFactManyCardinalityAllowsMultipleObjects(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	seedEntity(t, r, "entity-alice", "Alice", "person")
+	seedEntity(t, r, "entity-acme", "Acme", "organization")
+	seedEntity(t, r, "entity-beta", "Beta", "organization")
+	createGraphMemory(t, r, "graph-many", "Alice belongs to Acme and Beta")
+	claim, input := graphClaimInput(t, r)
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities: []domain.GraphEntity{
+			{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95},
+			{LocalID: "e1", CanonicalName: "Acme", EntityType: "organization", Confidence: 0.95},
+			{LocalID: "e2", CanonicalName: "Beta", EntityType: "organization", Confidence: 0.95},
+		},
+		Facts: []domain.GraphFact{
+			{SubjectLocalID: "e0", Predicate: "member_of", ObjectLocalID: "e1", Confidence: 0.9},
+			{SubjectLocalID: "e0", Predicate: "member_of", ObjectLocalID: "e2", Confidence: 0.9},
+		},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	var active int
+	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_facts WHERE predicate='member_of' AND state='active'`).Scan(&active); err != nil || active != 2 {
+		t.Fatalf("many-cardinality active facts=%d err=%v", active, err)
+	}
+}
+
+func TestGraphFactLiteralTypeMustMatchPredicate(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	seedEntity(t, r, "entity-project", "Alpha", "project")
+	createGraphMemory(t, r, "graph-literal-type", "Alpha status")
+	claim, input := graphClaimInput(t, r)
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities: []domain.GraphEntity{{LocalID: "e0", CanonicalName: "Alpha", EntityType: "project", Confidence: 0.95}},
+		Facts:    []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "has_status", ObjectLiteral: "active", ObjectLiteralType: "number", Confidence: 0.95}},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); !errors.Is(err, ErrInvalidFactProposal) {
+		t.Fatalf("literal type mismatch error=%v, want ErrInvalidFactProposal", err)
+	}
+}
+
+func TestGraphCommitPublishesTypedEventParticipantsPlaceAndTime(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	seedEntity(t, r, "entity-alice", "Alice", "person")
+	seedEntity(t, r, "entity-paris", "Paris", "place")
+	createGraphMemory(t, r, "graph-event", "Alice met in Paris")
+	claim, input := graphClaimInput(t, r)
+	start, end := "2024-03-01T09:00:00Z", "2024-03-01T10:00:00Z"
+	startTime, _ := time.Parse(time.RFC3339, start)
+	endTime, _ := time.Parse(time.RFC3339, end)
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities: []domain.GraphEntity{
+			{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95},
+			{LocalID: "e1", CanonicalName: "Paris", EntityType: "place", Confidence: 0.95},
+		},
+		Events: []domain.GraphEvent{{
+			LocalID: "x0", EventType: "meeting", ParticipantLocalIDs: []string{"e0"}, PlaceLocalID: "e1",
+			Time:       &domain.GraphEventTime{Start: &startTime, End: &endTime, Precision: domain.TimePrecisionExact, Source: "explicit"},
+			Confidence: 0.9,
+		}},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
+		t.Fatalf("commit event: %v", err)
+	}
+	var participants, places, intervals int
+	if err := r.store.reader.QueryRow(`SELECT (SELECT count(*) FROM event_participants WHERE event_id='event-1' AND entity_id='entity-alice'), (SELECT count(*) FROM event_temporal_bindings WHERE event_id='event-1' AND binding_kind='occurred_at' AND place_entity_id='entity-paris'), (SELECT count(*) FROM event_temporal_bindings WHERE event_id='event-1' AND binding_kind='occurred_during')`).Scan(&participants, &places, &intervals); err != nil || participants != 1 || places != 1 || intervals != 1 {
+		t.Fatalf("typed event rows participants=%d places=%d intervals=%d err=%v", participants, places, intervals, err)
+	}
+}
+
+func TestGraphFactEvidenceIsDirectRevisionRange(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	seedEntity(t, r, "entity-alice", "Alice", "person")
+	seedEntity(t, r, "entity-acme", "Acme", "organization")
+	createGraphMemory(t, r, "graph-evidence-direct", "Alice belongs to Acme")
+	claim, input := graphClaimInput(t, r)
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities: []domain.GraphEntity{
+			{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95},
+			{LocalID: "e1", CanonicalName: "Acme", EntityType: "organization", Confidence: 0.95},
+		},
+		Facts: []domain.GraphFact{{SubjectLocalID: "e0", Predicate: "member_of", ObjectLocalID: "e1", Confidence: 0.95}},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	var direct int
+	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_fact_evidence WHERE evidence_type='revision_range'`).Scan(&direct); err != nil || direct != 1 {
+		t.Fatalf("direct revision evidence=%d err=%v", direct, err)
+	}
+}
+
+func TestEntityResolutionTypeHintDisambiguates(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	seedEntity(t, r, "entity-sam-person", "Sam", "person")
+	seedEntity(t, r, "entity-sam-org", "Sam", "organization")
+	tx, err := r.store.reader.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	resolved, err := resolveQueryEntitiesWithHints(context.Background(), tx, "What did Sam decide?", []string{"space-1"}, entityResolutionHints{EntityTypes: []string{"person"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].EntityID != "entity-sam-person" || resolved[0].Ambiguous {
+		t.Fatalf("type-hinted resolution = %+v", resolved)
+	}
+}
+
+func TestEntityResolutionAmbiguityProbabilitiesNormalizedByPrior(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	seedEntity(t, r, "entity-zeta", "Jordan", "person")
+	seedEntity(t, r, "entity-alpha", "Jordan", "person")
+	firstMemory := createTestMemory(t, r, "ambiguity-prior-a")
+	secondMemory := createTestMemory(t, r, "ambiguity-prior-b")
+	for i := 0; i < 3; i++ {
+		seedMention(t, r, "mention-zeta-"+strconvItoa2(i), "entity-zeta", firstMemory.MemoryID, firstMemory.CurrentRevision.RevisionID, i*2, i*2+1)
+	}
+	seedMention(t, r, "mention-alpha-0", "entity-alpha", secondMemory.MemoryID, secondMemory.CurrentRevision.RevisionID, 0, 1)
+	tx, err := r.store.reader.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	resolved, err := resolveQueryEntities(context.Background(), tx, "Jordan", []string{"space-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 2 {
+		t.Fatalf("ambiguous resolution = %+v", resolved)
+	}
+	total := 0.0
+	for _, entity := range resolved {
+		if !entity.Ambiguous {
+			t.Fatalf("alternative not marked ambiguous: %+v", entity)
+		}
+		total += entity.Confidence
+	}
+	if total < 0.99 || total > 1.01 {
+		t.Fatalf("probabilities not normalized: %v", resolved)
+	}
+	var zeta, alpha domain.ResolvedEntity
+	for _, entity := range resolved {
+		if entity.EntityID == "entity-zeta" {
+			zeta = entity
+		}
+		if entity.EntityID == "entity-alpha" {
+			alpha = entity
+		}
+	}
+	if zeta.Confidence <= alpha.Confidence {
+		t.Fatalf("prior-based probability did not favor the higher-degree entity: zeta=%v alpha=%v", zeta.Confidence, alpha.Confidence)
+	}
+}
+
+func TestEntityResolutionInsufficientConfidenceDisablesExpansion(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphCandidates(r)
+	seedEntity(t, r, "entity-zeta", "Jordan", "person")
+	seedEntity(t, r, "entity-alpha", "Jordan", "person")
+	memory := createTestMemory(t, r, "ambiguous-expansion")
+	seedMention(t, r, "mention-ambiguous-expansion", "entity-zeta", memory.MemoryID, memory.CurrentRevision.RevisionID, 0, 1)
+	tx, err := r.store.reader.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	resolved, err := resolveQueryEntities(context.Background(), tx, "Jordan", []string{"space-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := r.planQuery(context.Background(), SearchParams{Query: "Jordan", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 10, ReferenceTime: formatTime(r.runtime.Now())})
+	graph, err := r.graphChannelRecall(context.Background(), tx, params, []string{"space-1"}, graphRecallPolicy{
+		Policy: retrieval.GraphDirect, MinEntityConfidence: 0.6, MinFactConfidence: 0.7,
+		AllowNewCandidates: true, Primary: map[string]struct{}{},
+	}, resolved, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.items) != 0 {
+		t.Fatalf("low-confidence ambiguity produced graph candidates: %+v", graph.items)
+	}
+}
+
+func TestEntityGraphStatisticsProjectionAndGenerationBinding(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	seedEntity(t, r, "entity-zeta", "Zeta", "person")
+	seedEntity(t, r, "entity-alpha", "Alpha", "project")
+	memory := createTestMemory(t, r, "stats-memory")
+	for i := 0; i < 3; i++ {
+		seedMention(t, r, "stats-mention-"+strconvItoa2(i), "entity-zeta", memory.MemoryID, memory.CurrentRevision.RevisionID, i*2, i*2+1)
+	}
+	seedMention(t, r, "stats-mention-alpha", "entity-alpha", memory.MemoryID, memory.CurrentRevision.RevisionID, 100, 101)
+	if _, err := r.store.writer.Exec(`INSERT INTO entity_facts(fact_id, space_id, subject_entity_id, predicate, object_entity_id, source_memory_id, source_revision_id, confidence, state, source, specification_hash, created_by, processing_version, created_at, updated_at) VALUES ('stats-fact', 'space-1', 'entity-zeta', 'participates_in', 'entity-alpha', ?, ?, 0.9, 'active', 'auto_review', 'hash', 'test', 'v1', '2026-08-21T11:00:00Z', '2026-08-21T11:00:00Z')`, memory.MemoryID, memory.CurrentRevision.RevisionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RebuildGraphIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	statistic, err := r.EntityGraphStatistic(context.Background(), "entity-zeta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generation int64
+	if err := r.store.reader.QueryRow(`SELECT generation FROM graph_index_metadata WHERE singleton=1`).Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	if statistic.MentionCount != 3 || statistic.Degree != 1 || statistic.Generation != generation {
+		t.Fatalf("statistic = %+v, generation=%d", statistic, generation)
+	}
+	if statistic.InverseMentionFrequency <= 0 || statistic.InverseDegree <= 0 {
+		t.Fatalf("inverse frequencies not populated: %+v", statistic)
+	}
+	seedMention(t, r, "stats-mention-extra", "entity-zeta", memory.MemoryID, memory.CurrentRevision.RevisionID, 200, 201)
+	if err := r.RebuildGraphIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := r.EntityGraphStatistic(context.Background(), "entity-zeta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Generation <= statistic.Generation || updated.MentionCount != 4 {
+		t.Fatalf("projection did not advance: before=%+v after=%+v", statistic, updated)
+	}
+}

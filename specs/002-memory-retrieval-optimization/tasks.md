@@ -540,75 +540,75 @@ domain-independent, evidence-backed entity and event knowledge.
 
 ### Predicate Registry
 
-- [ ] T100 [P] [GRAPH] Add failing registry tests for subject/object types,
+- [X] T100 [P] [GRAPH] Add failing registry tests for subject/object types,
   literal types, direction, inverse predicates, cardinality, temporal policy,
   allowed path positions, and auto-confirm policy in
   `internal/domain/graph_test.go`
-- [ ] T101 [P] [GRAPH] Define a minimal general registry fixture covering
+- [X] T101 [P] [GRAPH] Define a minimal general registry fixture covering
   identity, membership, people/organizations, location, ownership, preference,
   work, participation, creation, plans, event participants/time, dependencies,
   and provenance under `internal/storage/testdata/`
-- [ ] T102 [GRAPH] Implement the closed typed predicate registry in domain and
+- [X] T102 [GRAPH] Implement the closed typed predicate registry in domain and
   storage layers and reject provider-defined free-form predicates
 
 ### Entity And Event Publication
 
-- [ ] T103 [P] [GRAPH] Add failing entity normalization tests for Unicode,
+- [X] T103 [P] [GRAPH] Add failing entity normalization tests for Unicode,
   punctuation, whitespace, case, language, alias length, pronouns, common terms,
   type compatibility, collision, and scope isolation
-- [ ] T104 [P] [GRAPH] Add failing typed event/fact publication tests for direct
+- [X] T104 [P] [GRAPH] Add failing typed event/fact publication tests for direct
   evidence, confidence, cardinality conflicts, literals, temporal bounds,
   revision fences, and review policy
-- [ ] T105 [GRAPH] Replace entity normalization and alias publication with the
+- [X] T105 [GRAPH] Replace entity normalization and alias publication with the
   versioned collision-safe policy in `internal/storage/entities.go` and graph
   commit code
-- [ ] T106 [GRAPH] Implement typed event, participant, place, time, entity fact,
+- [X] T106 [GRAPH] Implement typed event, participant, place, time, entity fact,
   typed literal, and revision-relation publication in `internal/storage/graph.go`
   and `internal/storage/graph_facts.go`
-- [ ] T107 [GRAPH] Persist provider mention confidence and direct evidence and
+- [X] T107 [GRAPH] Persist provider mention confidence and direct evidence and
   prevent context-only mentions/facts from becoming high-confidence authority
-- [ ] T108 [GRAPH] Implement predicate-specific auto-review thresholds and
+- [X] T108 [GRAPH] Implement predicate-specific auto-review thresholds and
   cardinality/conflict handling with no broad relation threshold bypass
 
 ### Entity Resolution
 
-- [ ] T109 [P] [GRAPH] Add failing query-time resolution tests for aliases,
+- [X] T109 [P] [GRAPH] Add failing query-time resolution tests for aliases,
   context/speaker/type disambiguation, multiple alternatives, probability
   normalization, unresolved ambiguity, CJK, and high-degree entities
-- [ ] T110 [GRAPH] Implement ambiguity-safe entity resolution that returns
+- [X] T110 [GRAPH] Implement ambiguity-safe entity resolution that returns
   alternatives rather than selecting by UUID and disables graph expansion when
   confidence is insufficient
-- [ ] T111 [GRAPH] Implement entity mention inverse-frequency and graph degree
+- [X] T111 [GRAPH] Implement entity mention inverse-frequency and graph degree
   statistics as rebuildable projections with generation binding
 
 ### Traversal
 
-- [ ] T112 [P] [GRAPH] Add failing traversal tests for direct facts, incoming and
+- [X] T112 [P] [GRAPH] Add failing traversal tests for direct facts, incoming and
   outgoing edges, typed heterogeneous paths, maximum two hops, allowed path
   positions, fan-out, cycles, temporal filters, scope, evidence, and stable order
-- [ ] T113 [P] [GRAPH] Add failing score tests for predicate intent, entity
+- [X] T113 [P] [GRAPH] Add failing score tests for predicate intent, entity
   confidence, fact confidence, evidence strength, temporal compatibility, hub
   penalty, hop decay, and capped corroboration
-- [ ] T114 [GRAPH] Implement query-plan-directed direct fact lookup and typed
+- [X] T114 [GRAPH] Implement query-plan-directed direct fact lookup and typed
   incoming/outgoing one-hop traversal in `internal/storage/graph_recall.go`
-- [ ] T115 [GRAPH] Implement registry-approved heterogeneous two-hop paths with
+- [X] T115 [GRAPH] Implement registry-approved heterogeneous two-hop paths with
   pre-expansion eligibility filters, bounded fan-out, cycle protection, and
   complete edge evidence
-- [ ] T116 [GRAPH] Implement versioned graph scoring with hub penalties and
+- [X] T116 [GRAPH] Implement versioned graph scoring with hub penalties and
   confidence products, preserving family explanations through ranking
-- [ ] T117 [GRAPH] Remove obsolete same-predicate path logic, old fixed
+- [X] T117 [GRAPH] Remove obsolete same-predicate path logic, old fixed
   predicates, arbitrary ID-ordered windows, and unsupported revision-relation
   candidate expansion
 
 ### Graph Quality Gates
 
-- [ ] T118 [P] [GRAPH] Add fixed graph corpora for entity, event, temporal,
+- [X] T118 [P] [GRAPH] Add fixed graph corpora for entity, event, temporal,
   relational, multi-hop, ambiguous, hub, conflict, stale, and out-of-scope cases
   under `internal/storage/testdata/`
-- [ ] T119 [GRAPH] Add graph promotion precision, graph-caused rank harm, edge/path
+- [X] T119 [GRAPH] Add graph promotion precision, graph-caused rank harm, edge/path
   counts, traversal latency, allocation, and storage-growth gates to `make
   quality` and `make performance`
-- [ ] T120 [GRAPH] Run mention-only, fact-only, revision-relation-only, one-hop,
+- [X] T120 [GRAPH] Run mention-only, fact-only, revision-relation-only, one-hop,
   two-hop, hub-penalty, confidence-gate, seed-budget, and boost-cap ablations and
   record the accepted baseline
 

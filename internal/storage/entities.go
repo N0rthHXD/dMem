@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
@@ -45,7 +46,158 @@ type EntityFilter struct {
 	IncludeMentions                    bool
 }
 
-func normalizeEntityName(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+const entityNormalizationVersion = "v1"
+const entityNormalizationPolicy = "width-fold+case-fold+space-collapse+punct-strip"
+
+// normalizeEntityName is the deterministic, versioned entity normalization
+// policy: width-fold compatibility characters, case-fold, strip punctuation and
+// symbols, and collapse whitespace. It never merges identities by itself;
+// normalization collisions create merge proposals instead.
+func normalizeEntityName(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	pendingSpace := false
+	for _, r := range foldDiacritics(strings.ToLower(foldFullWidth(value))) {
+		switch {
+		case unicode.IsSpace(r):
+			if builder.Len() > 0 {
+				pendingSpace = true
+			}
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			if pendingSpace {
+				builder.WriteRune(' ')
+				pendingSpace = false
+			}
+			builder.WriteRune(r)
+		default:
+			// Drop punctuation, symbols, and control characters.
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+// foldFullWidth maps full-width compatibility characters to their ASCII
+// equivalents so that ＡＢＣ and ABC normalize identically.
+func foldFullWidth(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range value {
+		switch {
+		case r == '\u3000':
+			builder.WriteRune(' ')
+		case r >= '\uFF01' && r <= '\uFF5E':
+			builder.WriteRune(r - 0xFEE0)
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+// foldDiacritics maps common precomposed Latin letters to their ASCII base so
+// accented and unaccented spellings of a name normalize identically. The Go
+// standard library has no Unicode normalization tables, so this conservative
+// table covers the letters that appear in entity names rather than all of NFKC.
+func foldDiacritics(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range value {
+		if folded, ok := diacriticFolds[r]; ok {
+			builder.WriteString(folded)
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
+}
+
+var diacriticFolds = map[rune]string{
+	'à': "a", 'á': "a", 'â': "a", 'ã': "a", 'ä': "a", 'å': "a",
+	'ç': "c", 'č': "c", 'ć': "c",
+	'è': "e", 'é': "e", 'ê': "e", 'ë': "e", 'ę': "e", 'ě': "e",
+	'ì': "i", 'í': "i", 'î': "i", 'ï': "i", 'ı': "i",
+	'ñ': "n", 'ń': "n",
+	'ò': "o", 'ó': "o", 'ô': "o", 'õ': "o", 'ö': "o", 'ø': "o",
+	'ù': "u", 'ú': "u", 'û': "u", 'ü': "u", 'ů': "u",
+	'ý': "y", 'ÿ': "y",
+	'ß': "ss", 'æ': "ae", 'œ': "oe",
+	'đ': "d", 'ł': "l", 'ř': "r", 'š': "s", 'ş': "s", 'ž': "z", 'ź': "z", 'ż': "z", 'ģ': "g",
+}
+
+// nonAuthoritativeAliasTerms are pronouns, generic nouns, and common terms that
+// must never auto-confirm as entity aliases. They may still be proposed for
+// review with lower confidence.
+var nonAuthoritativeAliasTerms = map[string]struct{}{
+	"he": {}, "she": {}, "they": {}, "them": {}, "it": {}, "its": {}, "this": {}, "that": {},
+	"these": {}, "those": {}, "i": {}, "me": {}, "we": {}, "us": {}, "you": {}, "him": {}, "her": {},
+	"his": {}, "their": {}, "the": {}, "a": {}, "an": {}, "person": {}, "people": {}, "someone": {},
+	"anyone": {}, "everyone": {}, "company": {}, "organization": {}, "organisation": {}, "team": {},
+	"group": {}, "thing": {}, "stuff": {}, "project": {}, "product": {}, "place": {}, "event": {},
+	"concept": {}, "other": {}, "他": {}, "她": {}, "它": {}, "他们": {}, "这个": {}, "那个": {}, "人": {},
+}
+
+// aliasPublishable is the versioned alias publication policy. An alias may
+// auto-confirm only when it is long enough, is not a pronoun or common term,
+// matches the entity type's language expectations, and meets the confidence
+// threshold. Short CJK aliases are allowed because they carry more information
+// per rune than latin initials.
+func aliasPublishable(alias, entityType string, confidence float64) bool {
+	if !validEntityType(entityType) {
+		return false
+	}
+	normalized := normalizeEntityName(alias)
+	if normalized == "" {
+		return false
+	}
+	if _, blocked := nonAuthoritativeAliasTerms[normalized]; blocked {
+		return false
+	}
+	runes := []rune(normalized)
+	minimum := 3
+	if isCJKRunes(runes) {
+		minimum = 2
+	}
+	if len(runes) < minimum {
+		return false
+	}
+	if confidence < autoConfirmAliasConfidence {
+		return false
+	}
+	return true
+}
+
+// entityPublishable applies the versioned entity publication policy: a valid
+// closed type, a non-generic canonical name, sufficient length, and confidence.
+func entityPublishable(name, entityType string, confidence float64) bool {
+	if !validEntityType(entityType) {
+		return false
+	}
+	normalized := normalizeEntityName(name)
+	if normalized == "" {
+		return false
+	}
+	if _, blocked := nonAuthoritativeAliasTerms[normalized]; blocked {
+		return false
+	}
+	runes := []rune(normalized)
+	minimum := 3
+	if isCJKRunes(runes) {
+		minimum = 2
+	}
+	if len(runes) < minimum {
+		return false
+	}
+	return confidence >= autoConfirmEntityConfidence
+}
+
+func isCJKRunes(runes []rune) bool {
+	for _, r := range runes {
+		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) {
+			return true
+		}
+	}
+	return false
+}
 
 func entityProposalHash(p CreateEntityProposalParams) string {
 	b, _ := json.Marshal(p)

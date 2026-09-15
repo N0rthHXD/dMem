@@ -859,6 +859,19 @@ CREATE TABLE entity_index_metadata (
 ) STRICT;
 INSERT INTO entity_index_metadata(singleton, active_version, state, normalization_version, updated_at) VALUES (1, 1, 'ready', 'v1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
+CREATE TABLE entity_graph_statistics (
+    entity_id TEXT PRIMARY KEY REFERENCES entities(entity_id) ON DELETE RESTRICT,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    mention_count INTEGER NOT NULL DEFAULT 0 CHECK (mention_count >= 0),
+    degree INTEGER NOT NULL DEFAULT 0 CHECK (degree >= 0),
+    inverse_mention_frequency REAL NOT NULL DEFAULT 0 CHECK (inverse_mention_frequency >= 0),
+    inverse_degree REAL NOT NULL DEFAULT 0 CHECK (inverse_degree >= 0),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    updated_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX entity_graph_statistics_space_idx ON entity_graph_statistics(space_id, entity_id);
+CREATE INDEX entity_graph_statistics_degree_idx ON entity_graph_statistics(degree, entity_id);
+
 CREATE TABLE evolution_proposals (
     proposal_id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,

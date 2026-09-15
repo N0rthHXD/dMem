@@ -25,7 +25,7 @@ const (
 	KeywordCompilerVersion = "keyword-compiler-v2"
 	SemanticCalibrationVer = "semantic-calibration-v1"
 	TemporalFeatureVersion = "temporal-features-v1"
-	GraphScoringVersion    = "graph-scoring-v2"
+	GraphScoringVersion    = "graph-scoring-v3"
 	RankingFeatureVersion  = "ranking-features-v1"
 	RankingWeightsVersion  = "ranking-weights-v1"
 )

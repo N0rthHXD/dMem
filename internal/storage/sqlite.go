@@ -96,6 +96,10 @@ func Open(ctx context.Context, path string, options Options) (*Store, error) {
 			writer.Close()
 			return nil, fmt.Errorf("initialize schema v1: %w", err)
 		}
+		if err := seedPredicateRegistry(ctx, writer); err != nil {
+			writer.Close()
+			return nil, fmt.Errorf("seed predicate registry: %w", err)
+		}
 	}
 	if err := verifySchema(ctx, writer); err != nil {
 		writer.Close()

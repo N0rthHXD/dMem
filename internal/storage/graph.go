@@ -21,6 +21,7 @@ const autoReviewIdentity = "system:auto-review-v1"
 
 const (
 	autoConfirmEntityConfidence   = 0.9
+	autoConfirmAliasConfidence    = 0.85
 	autoConfirmFactConfidence     = 0.8
 	autoConfirmRelationConfidence = 0.9
 )
@@ -168,6 +169,9 @@ func (r *Repository) CommitGraphExtraction(ctx context.Context, claim ClaimedJob
 	if err := r.commitGraphMentions(ctx, tx, input, result.Mentions, entityMap, now); err != nil {
 		return err
 	}
+	if err := r.commitGraphEvents(ctx, tx, input, eventID, result.Events, entityMap, now); err != nil {
+		return err
+	}
 	if err := r.commitGraphFacts(ctx, tx, input, eventID, result.Facts, entityMap, now); err != nil {
 		return err
 	}
@@ -267,6 +271,12 @@ func (r *Repository) resolveGraphEntities(ctx context.Context, tx *sql.Tx, input
 		case resolved.found:
 			entityMap[entity.LocalID] = resolved.entityID
 			for _, alias := range entity.Aliases {
+				if entity.EntityType != resolved.entityType && resolved.entityType != "other" && entity.EntityType != "other" {
+					continue
+				}
+				if !aliasPublishable(alias, entity.EntityType, entity.Confidence) {
+					continue
+				}
 				if err := r.autoConfirmAlias(ctx, tx, input, resolved.entityID, alias, now); err != nil {
 					return nil, err
 				}
@@ -276,7 +286,7 @@ func (r *Repository) resolveGraphEntities(ctx context.Context, tx *sql.Tx, input
 				return nil, err
 			}
 		default:
-			if entity.Confidence >= autoConfirmEntityConfidence {
+			if entityPublishable(entity.CanonicalName, entity.EntityType, entity.Confidence) {
 				entityID, err := r.autoConfirmEntity(ctx, tx, input, entity, now)
 				if err != nil {
 					return nil, err
@@ -293,9 +303,10 @@ func (r *Repository) resolveGraphEntities(ctx context.Context, tx *sql.Tx, input
 }
 
 type buildResolution struct {
-	found     bool
-	ambiguous bool
-	entityID  string
+	found      bool
+	ambiguous  bool
+	entityID   string
+	entityType string
 }
 
 func resolveEntityForBuild(ctx context.Context, tx *sql.Tx, spaceID, canonicalName, entityType string) buildResolution {
@@ -314,7 +325,7 @@ func resolveEntityForBuild(ctx context.Context, tx *sql.Tx, spaceID, canonicalNa
 		matches = append(matches, struct{ id, typ string }{id, typ})
 	}
 	if len(matches) == 1 && (matches[0].typ == entityType || entityType == "other" || matches[0].typ == "other") {
-		return buildResolution{found: true, entityID: matches[0].id}
+		return buildResolution{found: true, entityID: matches[0].id, entityType: matches[0].typ}
 	}
 	if len(matches) >= 1 {
 		if len(matches) == 1 && matches[0].typ != entityType {
@@ -336,7 +347,7 @@ func resolveEntityForBuild(ctx context.Context, tx *sql.Tx, spaceID, canonicalNa
 		aliasMatches = append(aliasMatches, struct{ id, typ string }{id, typ})
 	}
 	if len(aliasMatches) == 1 && (aliasMatches[0].typ == entityType || entityType == "other" || aliasMatches[0].typ == "other") {
-		return buildResolution{found: true, entityID: aliasMatches[0].id}
+		return buildResolution{found: true, entityID: aliasMatches[0].id, entityType: aliasMatches[0].typ}
 	}
 	if len(aliasMatches) >= 1 {
 		return buildResolution{ambiguous: true}
@@ -365,7 +376,10 @@ func (r *Repository) autoConfirmEntity(ctx context.Context, tx *sql.Tx, input do
 		if aliasNorm == norm {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO entity_aliases(alias_id, entity_id, alias, normalized_alias, normalization_version, source, state, created_by, created_at, updated_at) VALUES (?,?,?,?,?,'processor_review','active',?,?,?)`, ids[3+i], entityID, alias, aliasNorm, "v1", autoReviewIdentity, now, now); err != nil {
+		if !aliasPublishable(alias, entity.EntityType, entity.Confidence) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO entity_aliases(alias_id, entity_id, alias, normalized_alias, normalization_version, source, state, created_by, created_at, updated_at) VALUES (?,?,?,?,?,'processor_review','active',?,?,?)`, ids[3+i], entityID, alias, aliasNorm, entityNormalizationVersion, autoReviewIdentity, now, now); err != nil {
 			return "", err
 		}
 	}
@@ -460,6 +474,10 @@ func (r *Repository) commitGraphMentions(ctx context.Context, tx *sql.Tx, input 
 
 func (r *Repository) commitGraphFacts(ctx context.Context, tx *sql.Tx, input domain.GraphExtractionInput, eventID string, facts []domain.GraphFact, entityMap map[string]string, now string) error {
 	for _, fact := range facts {
+		definition, ok := domain.LookupPredicate(fact.Predicate)
+		if !ok {
+			return fmt.Errorf("%w: unknown predicate %q", ErrInvalidFactProposal, fact.Predicate)
+		}
 		subjectID, ok := entityMap[fact.SubjectLocalID]
 		if !ok || subjectID == "" {
 			continue
@@ -467,6 +485,9 @@ func (r *Repository) commitGraphFacts(ctx context.Context, tx *sql.Tx, input dom
 		var objectEntityID *string
 		var objectLiteral, objectLiteralType *string
 		if fact.ObjectLocalID != "" {
+			if definition.Literal() {
+				return fmt.Errorf("%w: %q expects a literal object", ErrInvalidFactProposal, fact.Predicate)
+			}
 			id, ok := entityMap[fact.ObjectLocalID]
 			if !ok || id == "" {
 				continue
@@ -479,7 +500,7 @@ func (r *Repository) commitGraphFacts(ctx context.Context, tx *sql.Tx, input dom
 		confidence := fact.Confidence
 		start, end := 0, len([]rune(input.Content))
 		params := createFactProposalParams{
-			EventID: eventID, SpaceID: input.SpaceID, SubjectEntityID: subjectID, Predicate: fact.Predicate,
+			EventID: eventID, SpaceID: input.SpaceID, SubjectEntityID: subjectID, Predicate: definition.Name,
 			ObjectEntityID: objectEntityID, ObjectLiteral: objectLiteral, ObjectLiteralType: objectLiteralType,
 			SourceMemoryID: input.MemoryID, SourceRevisionID: input.RevisionID, Confidence: &confidence,
 			ValidFrom: timePointerText(fact.ValidFrom), ValidUntil: timePointerText(fact.ValidUntil),
@@ -487,7 +508,13 @@ func (r *Repository) commitGraphFacts(ctx context.Context, tx *sql.Tx, input dom
 			ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: stringPointer(input.ProcessorIdentity), ModelIdentity: stringPointer(""),
 			ProcessingVersion: input.ProcessingVersion,
 		}
-		autoConfirm := confidence >= autoConfirmFactConfidence && !r.factConflictExists(ctx, tx, params)
+		if err := validateFactProposalContext(ctx, tx, params, true); err != nil {
+			return err
+		}
+		autoConfirm := factAutoConfirm(definition, confidence)
+		if autoConfirm && definition.Cardinality == domain.PredicateCardinalityOne && r.factConflictExists(ctx, tx, params) {
+			autoConfirm = false
+		}
 		proposalID, err := r.insertFactProposal(ctx, tx, params, now)
 		if err != nil {
 			return err
@@ -499,6 +526,97 @@ func (r *Repository) commitGraphFacts(ctx context.Context, tx *sql.Tx, input dom
 		}
 	}
 	return nil
+}
+
+// factAutoConfirm resolves the closed predicate publication policy against the
+// extracted confidence. No broad relation or generic threshold can bypass it.
+func factAutoConfirm(definition domain.PredicateDefinition, confidence float64) bool {
+	switch definition.AutoConfirm {
+	case domain.PredicateAutoConfirmThreshold:
+		return confidence >= definition.MinConfidence
+	case domain.PredicateAutoConfirmExactMatch:
+		return confidence >= autoConfirmFactConfidence
+	default:
+		return false
+	}
+}
+
+// commitGraphEvents publishes typed event participants, place, and time to the
+// dedicated event authority tables. Participants and bindings are idempotent and
+// never become high-confidence entity facts.
+func (r *Repository) commitGraphEvents(ctx context.Context, tx *sql.Tx, input domain.GraphExtractionInput, eventID string, events []domain.GraphEvent, entityMap map[string]string, now string) error {
+	for _, event := range events {
+		seenParticipant := map[string]struct{}{}
+		for _, local := range event.ParticipantLocalIDs {
+			entityID, ok := entityMap[local]
+			if !ok || entityID == "" {
+				continue
+			}
+			if _, duplicate := seenParticipant[entityID]; duplicate {
+				continue
+			}
+			seenParticipant[entityID] = struct{}{}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO event_participants(event_id, entity_id, participant_role, confidence, created_at) VALUES (?,?,'participant',?,?) ON CONFLICT(event_id, entity_id, participant_role) DO UPDATE SET confidence=excluded.confidence`, eventID, entityID, event.Confidence, now); err != nil {
+				return err
+			}
+		}
+		if event.PlaceLocalID != "" {
+			if placeID, ok := entityMap[event.PlaceLocalID]; ok && placeID != "" {
+				precision := domain.TimePrecisionUnknown
+				if event.Time != nil && event.Time.Precision.Valid() {
+					precision = event.Time.Precision
+				}
+				exists, err := r.eventBindingExists(ctx, tx, eventID, "occurred_at", &placeID, nil, nil)
+				if err != nil {
+					return err
+				}
+				if !exists {
+					id, err := r.runtime.ID()
+					if err != nil {
+						return err
+					}
+					if _, err := tx.ExecContext(ctx, `INSERT INTO event_temporal_bindings(binding_id, event_id, binding_kind, place_entity_id, interval_start, interval_end, precision, confidence, created_at) VALUES (?,?,'occurred_at',?,NULL,NULL,?,?,?)`, id, eventID, placeID, string(precision), event.Confidence, now); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if event.Time != nil && (event.Time.Start != nil || event.Time.End != nil) {
+			precision := event.Time.Precision
+			if !precision.Valid() {
+				precision = domain.TimePrecisionUnknown
+			}
+			var startText, endText *string
+			if event.Time.Start != nil {
+				startText = timePointerText(event.Time.Start)
+			}
+			if event.Time.End != nil {
+				endText = timePointerText(event.Time.End)
+			}
+			exists, err := r.eventBindingExists(ctx, tx, eventID, "occurred_during", nil, startText, endText)
+			if err != nil {
+				return err
+			}
+			if !exists && startText != nil {
+				id, err := r.runtime.ID()
+				if err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `INSERT INTO event_temporal_bindings(binding_id, event_id, binding_kind, place_entity_id, interval_start, interval_end, precision, confidence, created_at) VALUES (?,?,'occurred_during',NULL,?,?,?,?,?)`, id, eventID, startText, endText, string(precision), event.Confidence, now); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Repository) eventBindingExists(ctx context.Context, tx *sql.Tx, eventID, kind string, placeID, start, end *string) (bool, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM event_temporal_bindings WHERE event_id=? AND binding_kind=? AND place_entity_id IS ? AND interval_start IS ? AND interval_end IS ?`, eventID, kind, placeID, start, end).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (r *Repository) commitGraphRelations(ctx context.Context, tx *sql.Tx, input domain.GraphExtractionInput, eventID string, relations []domain.GraphMemoryRelation, now string) error {

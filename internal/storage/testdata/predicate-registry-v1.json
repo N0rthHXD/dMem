@@ -1,0 +1,675 @@
+[
+  {
+    "Name": "born_in",
+    "Description": "a person was born in a place",
+    "SubjectTypes": [
+      "person"
+    ],
+    "ObjectTypes": [
+      "place"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "static",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "created",
+    "Description": "an actor created a work",
+    "SubjectTypes": [
+      "person",
+      "organization"
+    ],
+    "ObjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "created_by",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "event_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "created_by",
+    "Description": "a work or event was created by an actor",
+    "SubjectTypes": [
+      "project",
+      "product",
+      "event"
+    ],
+    "ObjectTypes": [
+      "person",
+      "organization"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "created",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "static",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "depends_on",
+    "Description": "a work depends on another work",
+    "SubjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "ObjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "required_by",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "derived_from",
+    "Description": "a work is derived from another work",
+    "SubjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "ObjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "static",
+    "PathPositions": [
+      "first"
+    ],
+    "AutoConfirm": "never",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "dislikes",
+    "Description": "a person states a dislike for something",
+    "SubjectTypes": [
+      "person"
+    ],
+    "ObjectTypes": [
+      "concept",
+      "product",
+      "organization",
+      "place",
+      "event"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "employs",
+    "Description": "an organization employs a person",
+    "SubjectTypes": [
+      "organization"
+    ],
+    "ObjectTypes": [
+      "person"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "works_for",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "never",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "has_member",
+    "Description": "an organization has a member",
+    "SubjectTypes": [
+      "organization"
+    ],
+    "ObjectTypes": [
+      "person",
+      "organization"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "member_of",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "never",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "has_participant",
+    "Description": "an event or project has an actor participant",
+    "SubjectTypes": [
+      "event",
+      "project",
+      "concept"
+    ],
+    "ObjectTypes": [
+      "person",
+      "organization"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "participates_in",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "event_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "never",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "has_participant_count",
+    "Description": "an event has a participant count literal",
+    "SubjectTypes": [
+      "event"
+    ],
+    "ObjectTypes": null,
+    "LiteralType": "number",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "event_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "has_status",
+    "Description": "an entity has a status literal",
+    "SubjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "ObjectTypes": null,
+    "LiteralType": "string",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "is_active",
+    "Description": "an entity active-state literal",
+    "SubjectTypes": [
+      "project",
+      "concept"
+    ],
+    "ObjectTypes": null,
+    "LiteralType": "boolean",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "leads",
+    "Description": "a person leads an organization or project",
+    "SubjectTypes": [
+      "person"
+    ],
+    "ObjectTypes": [
+      "organization",
+      "project"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "located_at",
+    "Description": "an entity is located at a place",
+    "SubjectTypes": [
+      "person",
+      "organization",
+      "event",
+      "place"
+    ],
+    "ObjectTypes": [
+      "place"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "manages",
+    "Description": "a person manages another person",
+    "SubjectTypes": [
+      "person"
+    ],
+    "ObjectTypes": [
+      "person"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "reports_to",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "never",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "member_of",
+    "Description": "an actor is a member of an organization",
+    "SubjectTypes": [
+      "person",
+      "organization"
+    ],
+    "ObjectTypes": [
+      "organization"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "has_member",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "occurred_at",
+    "Description": "an event occurred at a place",
+    "SubjectTypes": [
+      "event"
+    ],
+    "ObjectTypes": [
+      "place"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "event_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "occurred_during",
+    "Description": "an event occurred during a time literal",
+    "SubjectTypes": [
+      "event"
+    ],
+    "ObjectTypes": null,
+    "LiteralType": "string",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "event_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "owned_by",
+    "Description": "a work is owned by an actor",
+    "SubjectTypes": [
+      "project",
+      "product",
+      "organization"
+    ],
+    "ObjectTypes": [
+      "person",
+      "organization"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "owns",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "owns",
+    "Description": "an actor owns a work",
+    "SubjectTypes": [
+      "person",
+      "organization"
+    ],
+    "ObjectTypes": [
+      "project",
+      "product",
+      "organization"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "owned_by",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "never",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "participates_in",
+    "Description": "an actor participates in an event, project, or concept",
+    "SubjectTypes": [
+      "person",
+      "organization"
+    ],
+    "ObjectTypes": [
+      "event",
+      "project",
+      "concept"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "has_participant",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "event_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "plan_targets",
+    "Description": "a plan targets an entity",
+    "SubjectTypes": [
+      "concept"
+    ],
+    "ObjectTypes": [
+      "project",
+      "product",
+      "event",
+      "place"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "prefers",
+    "Description": "a person states a preference for something",
+    "SubjectTypes": [
+      "person"
+    ],
+    "ObjectTypes": [
+      "concept",
+      "product",
+      "organization",
+      "place",
+      "event"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "reports_to",
+    "Description": "a person reports to another person",
+    "SubjectTypes": [
+      "person"
+    ],
+    "ObjectTypes": [
+      "person"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "manages",
+    "Cardinality": "one",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  },
+  {
+    "Name": "required_by",
+    "Description": "a work is required by another work",
+    "SubjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "ObjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "depends_on",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "never",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "same_as",
+    "Description": "two mentions refer to the same identity",
+    "SubjectTypes": [
+      "person",
+      "organization",
+      "place",
+      "project",
+      "product",
+      "event",
+      "concept"
+    ],
+    "ObjectTypes": [
+      "person",
+      "organization",
+      "place",
+      "project",
+      "product",
+      "event",
+      "concept"
+    ],
+    "LiteralType": "",
+    "Direction": "symmetric",
+    "Inverse": "",
+    "Cardinality": "one",
+    "Transitivity": "permitted",
+    "TemporalPolicy": "static",
+    "PathPositions": [
+      "first",
+      "second",
+      "intermediate"
+    ],
+    "AutoConfirm": "exact_match",
+    "MinConfidence": 0
+  },
+  {
+    "Name": "works_for",
+    "Description": "a person works for an organization",
+    "SubjectTypes": [
+      "person"
+    ],
+    "ObjectTypes": [
+      "organization"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "employs",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.85
+  },
+  {
+    "Name": "works_on",
+    "Description": "an actor works on a work",
+    "SubjectTypes": [
+      "person",
+      "organization"
+    ],
+    "ObjectTypes": [
+      "project",
+      "product",
+      "concept"
+    ],
+    "LiteralType": "",
+    "Direction": "directed",
+    "Inverse": "",
+    "Cardinality": "many",
+    "Transitivity": "none",
+    "TemporalPolicy": "valid_time",
+    "PathPositions": [
+      "first",
+      "second"
+    ],
+    "AutoConfirm": "threshold",
+    "MinConfidence": 0.8
+  }
+]

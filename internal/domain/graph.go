@@ -60,6 +60,28 @@ type GraphFact struct {
 	ValidUntil        *time.Time
 }
 
+// GraphEvent is a typed event proposal extracted from a confirmed revision. It
+// carries typed participants, an optional place entity, and a normalized time
+// proposal. Event authority is published to event_participants and
+// event_temporal_bindings, not to entity facts.
+type GraphEvent struct {
+	LocalID             string
+	EventType           string
+	ParticipantLocalIDs []string
+	PlaceLocalID        string
+	Time                *GraphEventTime
+	Confidence          float64
+}
+
+// GraphEventTime is a normalized event-time proposal with source precision.
+type GraphEventTime struct {
+	Expression string
+	Start      *time.Time
+	End        *time.Time
+	Precision  TimePrecision
+	Source     string
+}
+
 type GraphMemoryRelation struct {
 	RelationType     string
 	TargetMemoryID   string
@@ -89,6 +111,7 @@ type GraphExtractionResult struct {
 	Code              GraphExtractionOutcome
 	Entities          []GraphEntity
 	Mentions          []GraphMention
+	Events            []GraphEvent
 	Facts             []GraphFact
 	Relations         []GraphMemoryRelation
 	Message           string
@@ -231,6 +254,17 @@ type GraphSignal struct {
 	Hop               int     `json:"hop"`
 	EntityConfidence  float64 `json:"entity_confidence,omitempty"`
 	FactConfidence    float64 `json:"fact_confidence,omitempty"`
+	// EdgeDirection is "outgoing" when the resolved entity is the fact subject
+	// and "incoming" when it is the fact object. It is only set for fact and
+	// relation signals.
+	EdgeDirection string `json:"edge_direction,omitempty"`
+	// EvidenceStrength, TemporalCompatibility, HubPenalty, and PredicateIntent
+	// are the versioned graph-score-v3 edge components. A zero value means the
+	// component is unavailable and is treated as neutral (1.0), never as zero.
+	EvidenceStrength      float64 `json:"evidence_strength,omitempty"`
+	TemporalCompatibility float64 `json:"temporal_compatibility,omitempty"`
+	HubPenalty            float64 `json:"hub_penalty,omitempty"`
+	PredicateIntent       float64 `json:"predicate_intent,omitempty"`
 }
 
 // GraphPath is a bounded traversal path through entity facts. Hop always
@@ -251,4 +285,26 @@ type GraphPathEdge struct {
 	Confidence       float64 `json:"confidence,omitempty"`
 	SourceMemoryID   string  `json:"source_memory_id,omitempty"`
 	SourceRevisionID string  `json:"source_revision_id,omitempty"`
+	Direction        string  `json:"direction,omitempty"`
+	// EvidenceStrength, TemporalCompatibility, HubPenalty, and PredicateIntent
+	// are the graph-score-v3 edge components. A zero value is treated as
+	// neutral (1.0) during scoring.
+	EvidenceStrength      float64 `json:"evidence_strength,omitempty"`
+	TemporalCompatibility float64 `json:"temporal_compatibility,omitempty"`
+	HubPenalty            float64 `json:"hub_penalty,omitempty"`
+	PredicateIntent       float64 `json:"predicate_intent,omitempty"`
+}
+
+// EntityGraphStatistic is a rebuildable per-entity projection used for
+// ambiguity priors and hub penalties. InverseMentionFrequency and InverseDegree
+// increase as an entity becomes rarer, so high-degree hubs are down-weighted.
+type EntityGraphStatistic struct {
+	EntityID                string  `json:"entity_id"`
+	SpaceID                 string  `json:"space_id"`
+	MentionCount            int     `json:"mention_count"`
+	Degree                  int     `json:"degree"`
+	InverseMentionFrequency float64 `json:"inverse_mention_frequency"`
+	InverseDegree           float64 `json:"inverse_degree"`
+	Generation              int64   `json:"generation"`
+	UpdatedAt               string  `json:"updated_at"`
 }

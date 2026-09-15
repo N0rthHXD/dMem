@@ -194,3 +194,64 @@ func TestEntityIndexRebuildFromAuthority(t *testing.T) {
 		t.Fatalf("rebuilt entity index metadata=%s/%d/%d, error=%v", state, entities, mentions, err)
 	}
 }
+
+func TestEntityNormalizationUnicodePunctuationWhitespace(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"  Ａｌｉｃｅ　Ｓｍｉｔｈ ", "alice smith"},
+		{"O'Brien, Alice!", "obrien alice"},
+		{"爱丽丝。", "爱丽丝"},
+		{"Alice\t\nSmith", "alice smith"},
+		{"ALPHA", "alpha"},
+		{"  --  ", ""},
+		{"Müller", "muller"},
+	}
+	for _, test := range tests {
+		if got := normalizeEntityName(test.in); got != test.want {
+			t.Fatalf("normalizeEntityName(%q) = %q, want %q", test.in, got, test.want)
+		}
+	}
+}
+
+func TestEntityNormalizationVersionIsStable(t *testing.T) {
+	if entityNormalizationVersion == "" || entityNormalizationPolicy == "" {
+		t.Fatal("normalization identity must be defined")
+	}
+	if normalizeEntityName("Alice") != normalizeEntityName("alice") {
+		t.Fatal("normalization is not case-folded")
+	}
+}
+
+func TestAliasPublicationPolicyRejectsWeakAliases(t *testing.T) {
+	cases := []struct {
+		alias, entityType string
+		confidence        float64
+		want              bool
+	}{
+		{"Alice", "person", 0.95, true},
+		{"Al", "person", 0.99, false},
+		{"he", "person", 0.99, false},
+		{"they", "person", 0.99, false},
+		{"it", "concept", 0.99, false},
+		{"company", "organization", 0.99, false},
+		{"thing", "concept", 0.99, false},
+		{"Alice", "person", 0.5, false},
+		{"爱丽丝", "person", 0.95, true},
+		{"", "person", 0.99, false},
+	}
+	for _, test := range cases {
+		if got := aliasPublishable(test.alias, test.entityType, test.confidence); got != test.want {
+			t.Fatalf("aliasPublishable(%q, %q, %v) = %v, want %v", test.alias, test.entityType, test.confidence, got, test.want)
+		}
+	}
+}
+
+func TestEntityTypeCompatibilityRejectsUnknownTypes(t *testing.T) {
+	if validEntityType("rocket") {
+		t.Fatal("unknown entity type accepted")
+	}
+	for _, typ := range []string{"person", "organization", "place", "project", "product", "event", "concept", "other"} {
+		if !validEntityType(typ) {
+			t.Fatalf("known entity type %q rejected", typ)
+		}
+	}
+}

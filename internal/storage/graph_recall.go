@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
@@ -18,15 +18,61 @@ const (
 	graphScoreCap     = 1.2
 )
 
-// graph-score-v2 weights. Signals are aggregated per family with caps so that
-// duplicated authority evidence cannot inflate a candidate indefinitely.
+// graph-score-v3 weights. Edge scores multiply predicate intent, entity and fact
+// confidence, evidence strength, temporal compatibility, and an inverse-degree
+// hub penalty, so a generic hub cannot dominate merely by having many edges.
+// Signals are aggregated per family with caps so duplicated authority evidence
+// cannot inflate a candidate indefinitely.
 const (
 	weightDirectMention      = 1.0
 	weightExactPredicateFact = 0.9
 	weightOneHopFact         = 0.6
 	weightMemoryRelation     = 0.4
 	weightTwoHopPath         = 0.5
+
+	graphHopDecay        = 0.7
+	graphIntentFloor     = 0.6
+	graphEvidenceBase    = 0.8
+	graphEvidencePerItem = 0.1
 )
+
+// graphIntentWeight marks an edge predicate that matches the query plan's
+// target predicate intent. Edges outside the intent remain traversable but are
+// down-weighted instead of excluded.
+func graphIntentWeight(predicate string, predicates []string) float64 {
+	if len(predicates) == 0 {
+		return 1
+	}
+	if contains(predicates, predicate) {
+		return 1
+	}
+	return graphIntentFloor
+}
+
+func graphOrNeutral(value float64) float64 {
+	if value <= 0 {
+		return 1
+	}
+	return min(1, value)
+}
+
+func graphEvidenceStrength(evidenceCount int) float64 {
+	if evidenceCount <= 0 {
+		return graphOrNeutral(0)
+	}
+	return min(1, graphEvidenceBase+graphEvidencePerItem*float64(evidenceCount))
+}
+
+func graphHopDecayFor(hop int) float64 {
+	if hop <= 1 {
+		return 1
+	}
+	decay := 1.0
+	for i := 1; i < hop; i++ {
+		decay *= graphHopDecay
+	}
+	return decay
+}
 
 type graphRecallItem struct {
 	memoryID, revisionID string
@@ -37,11 +83,26 @@ type graphRecallItem struct {
 	graphRank            int
 }
 
+// entityResolutionHints carries query-plan context that may disambiguate an
+// alias span. EntityTypes is the closed set of types compatible with the query
+// intent; when exactly one alternative matches, the mention is resolved without
+// falling back to UUID order.
+type entityResolutionHints struct {
+	EntityTypes []string
+}
+
 // resolveQueryEntities performs deterministic query understanding: it finds
 // the longest active alias matches inside a natural-language query and maps
 // them to in-scope entities. Matching uses the stored normalized alias and
 // respects word boundaries for non-CJK text. It never requires a provider.
 func resolveQueryEntities(ctx context.Context, tx *sql.Tx, query string, spaces []string) ([]domain.ResolvedEntity, error) {
+	return resolveQueryEntitiesWithHints(ctx, tx, query, spaces, entityResolutionHints{})
+}
+
+// resolveQueryEntitiesWithHints is resolveQueryEntities with optional query-plan
+// hints. Ambiguous spans remain explicit alternatives with normalized
+// probabilities and never resolve by UUID order.
+func resolveQueryEntitiesWithHints(ctx context.Context, tx *sql.Tx, query string, spaces []string, hints entityResolutionHints) ([]domain.ResolvedEntity, error) {
 	if len(spaces) == 0 || strings.TrimSpace(query) == "" {
 		return nil, nil
 	}
@@ -69,6 +130,39 @@ func resolveQueryEntities(ctx context.Context, tx *sql.Tx, query string, spaces 
 		return nil, err
 	}
 	rows.Close()
+
+	// Mention count is a deterministic inverse-frequency prior used to
+	// normalize alternative probabilities. It is never a UUID tie-break.
+	mentionCount := map[string]int{}
+	priorIDs := map[string]struct{}{}
+	for _, c := range candidates {
+		priorIDs[c.entityID] = struct{}{}
+	}
+	if len(priorIDs) > 0 {
+		ids := make([]string, 0, len(priorIDs))
+		for id := range priorIDs {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		priorRows, err := tx.QueryContext(ctx, `SELECT entity_id, count(*) FROM entity_mentions WHERE entity_id IN (`+placeholders(len(ids))+`) GROUP BY entity_id`, appendStrings2(nil, ids)...)
+		if err != nil {
+			return nil, err
+		}
+		for priorRows.Next() {
+			var id string
+			var count int
+			if err := priorRows.Scan(&id, &count); err != nil {
+				priorRows.Close()
+				return nil, err
+			}
+			mentionCount[id] = count
+		}
+		if err := priorRows.Err(); err != nil {
+			priorRows.Close()
+			return nil, err
+		}
+		priorRows.Close()
+	}
 
 	lowerQuery := strings.ToLower(query)
 	runes := []rune(lowerQuery)
@@ -154,9 +248,40 @@ func resolveQueryEntities(ctx context.Context, tx *sql.Tx, query string, spaces 
 		sort.Slice(alternatives, func(i, j int) bool { return alternatives[i].id < alternatives[j].id })
 		alias := cs.group[0].alias
 		if len(alternatives) > 1 {
+			// Query-plan type hints may disambiguate when exactly one
+			// alternative has a compatible type. This is deterministic type
+			// evidence, never UUID order.
+			if len(hints.EntityTypes) > 0 {
+				var matched []alternative
+				for _, alt := range alternatives {
+					if contains(hints.EntityTypes, alt.typ) {
+						matched = append(matched, alt)
+					}
+				}
+				if len(matched) == 1 {
+					alt := matched[0]
+					key := alt.id + "\x00" + strconvItoa2(cs.start)
+					if _, ok := seen[key]; !ok {
+						seen[key] = struct{}{}
+						result = append(result, domain.ResolvedEntity{EntityID: alt.id, EntityType: alt.typ, Alias: alias, Confidence: 0.85, MatchKind: "alias_type", StartRune: cs.start, EndRune: cs.end})
+					}
+					continue
+				}
+			}
 			// An ambiguous alias is never resolved by UUID order. Emit every
-			// alternative with an ambiguity marker so graph expansion is
-			// disabled unless context disambiguates it.
+			// alternative with a normalized probability and an ambiguity marker
+			// so graph expansion stays disabled unless context disambiguates it.
+			total := 0
+			for _, alt := range alternatives {
+				total += mentionCount[alt.id] + 1
+			}
+			sort.Slice(alternatives, func(i, j int) bool {
+				left, right := mentionCount[alternatives[i].id], mentionCount[alternatives[j].id]
+				if left != right {
+					return left > right
+				}
+				return alternatives[i].id < alternatives[j].id
+			})
 			ids := make([]string, 0, len(alternatives))
 			for _, alt := range alternatives {
 				ids = append(ids, alt.id)
@@ -168,12 +293,13 @@ func resolveQueryEntities(ctx context.Context, tx *sql.Tx, query string, spaces 
 						others = append(others, id)
 					}
 				}
-				key := alt.id + "\x00" + string(rune(cs.start))
+				key := alt.id + "\x00" + strconvItoa2(cs.start)
 				if _, ok := seen[key]; ok {
 					continue
 				}
 				seen[key] = struct{}{}
-				result = append(result, domain.ResolvedEntity{EntityID: alt.id, EntityType: alt.typ, Alias: alias, Confidence: 0.5, MatchKind: "alias_ambiguous", StartRune: cs.start, EndRune: cs.end, Ambiguous: true, Alternatives: others})
+				confidence := float64(mentionCount[alt.id]+1) / float64(total)
+				result = append(result, domain.ResolvedEntity{EntityID: alt.id, EntityType: alt.typ, Alias: alias, Confidence: confidence, MatchKind: "alias_ambiguous", StartRune: cs.start, EndRune: cs.end, Ambiguous: true, Alternatives: others})
 			}
 			continue
 		}
@@ -256,6 +382,9 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 		confByEntity[re.EntityID] = re.Confidence
 		entityIDs = append(entityIDs, re.EntityID)
 	}
+	// The rebuildable inverse-degree projection supplies the hub penalty. A
+	// missing row is neutral so graph retrieval never fails closed to zero.
+	hubs := r.entityHubPenalties(ctx, tx, entityIDs)
 
 	// 0-hop: direct entity mention revisions. Mention confidence is persisted and
 	// consumed, but graph-derived revisions never become relation seeds.
@@ -290,7 +419,7 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 			if mentionConfidence.Valid {
 				conf = min(conf, mentionConfidence.Float64)
 			}
-			item.signals = append(item.signals, domain.GraphSignal{Kind: "direct_entity_mention", EntityID: entityID, Hop: 0, EntityConfidence: conf})
+			item.signals = append(item.signals, domain.GraphSignal{Kind: "direct_entity_mention", EntityID: entityID, Hop: 0, EntityConfidence: conf, HubPenalty: hubs[entityID]})
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -299,17 +428,18 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 		rows.Close()
 	}
 
-	// 1-hop entity facts: outgoing + incoming facts from resolved entities.
+	// 1-hop typed entity facts: outgoing + incoming facts from resolved entities.
 	if len(entityIDs) > 0 {
-		if err := r.graphFactHop(ctx, tx, byKey, entityIDs, confByEntity, predicates, spaces, params, policy.MinFactConfidence, limit); err != nil {
+		if err := r.graphFactHop(ctx, tx, byKey, entityIDs, confByEntity, hubs, predicates, spaces, params, policy.MinFactConfidence, limit); err != nil {
 			return result, err
 		}
 	}
 
-	// 2-hop bounded paths, only when the plan explicitly permits bounded paths
-	// and predicate intent is present.
-	if policy.Policy == retrieval.GraphBoundedPath && len(entityIDs) > 0 && len(predicates) > 0 {
-		if err := r.graphSecondHop(ctx, tx, byKey, entityIDs, predicates, spaces, params, policy.MinFactConfidence, limit); err != nil {
+	// 2-hop registry-approved heterogeneous paths. Only bounded_path intent
+	// reaches this stage; every hop is filtered by predicate path position,
+	// scope, state, current revision, valid time, and confidence before fan-out.
+	if policy.Policy == retrieval.GraphBoundedPath && len(entityIDs) > 0 {
+		if err := r.graphSecondHop(ctx, tx, byKey, entityIDs, confByEntity, hubs, predicates, spaces, params, policy.MinFactConfidence, limit); err != nil {
 			return result, err
 		}
 	}
@@ -380,8 +510,10 @@ func graphRelationOnly(signals []domain.GraphSignal) bool {
 	return hasRelation
 }
 
-// graphAggregateScore implements graph-score-v2: per-family maxima with small
-// cross-evidence bonuses, capped so repeated evidence cannot dominate.
+// graphAggregateScore implements graph-score-v3: per-family maxima over full
+// edge-confidence products with small, capped cross-evidence bonuses. Every
+// edge contributes predicate intent, entity and fact confidence, evidence
+// strength, temporal compatibility, and the inverse-degree hub penalty.
 func graphAggregateScore(signals []domain.GraphSignal, paths []domain.GraphPath) float64 {
 	mentionBest, mentionExtra := 0.0, 0
 	seenEntity := map[string]struct{}{}
@@ -393,7 +525,7 @@ func graphAggregateScore(signals []domain.GraphSignal, paths []domain.GraphPath)
 			continue
 		}
 		seenEntity[s.EntityID] = struct{}{}
-		weight := weightDirectMention * s.EntityConfidence
+		weight := weightDirectMention * clamp01(s.EntityConfidence) * graphOrNeutral(s.HubPenalty)
 		switch {
 		case weight > mentionBest:
 			if mentionBest > 0 {
@@ -416,20 +548,28 @@ func graphAggregateScore(signals []domain.GraphSignal, paths []domain.GraphPath)
 			continue
 		}
 		seenFact[s.FactID] = struct{}{}
-		weight := weightOneHopFact * s.FactConfidence * s.EntityConfidence
+		weight := clamp01(s.FactConfidence) * clamp01(s.EntityConfidence) *
+			graphOrNeutral(s.EvidenceStrength) * graphOrNeutral(s.TemporalCompatibility) *
+			graphOrNeutral(s.HubPenalty) * graphOrNeutral(s.PredicateIntent)
 		if s.Kind == "exact_predicate_fact" {
-			weight = weightExactPredicateFact * s.FactConfidence * s.EntityConfidence
+			weight *= weightExactPredicateFact
 			if weight > exactBest {
 				exactBest = weight
 			}
-		} else if weight > oneBest {
-			oneBest = weight
+		} else {
+			weight *= weightOneHopFact
+			if weight > oneBest {
+				oneBest = weight
+			}
 		}
 	}
 	factScore := max(exactBest, oneBest)
 	if exactBest > 0 && oneBest > 0 {
 		factScore += 0.15 * min(exactBest, oneBest)
 	}
+	// Capped corroboration: independent facts add at most two small bonuses so
+	// repeated evidence cannot increase score linearly with degree.
+	factScore += 0.05 * float64(min(max(len(seenFact)-1, 0), 2))
 
 	relationBest, conflictBest := 0.0, 0.0
 	seenRelation := map[string]struct{}{}
@@ -441,7 +581,7 @@ func graphAggregateScore(signals []domain.GraphSignal, paths []domain.GraphPath)
 			continue
 		}
 		seenRelation[s.RelationID] = struct{}{}
-		weight := weightMemoryRelation * s.FactConfidence
+		weight := weightMemoryRelation * clamp01(s.FactConfidence) * graphOrNeutral(s.EvidenceStrength)
 		if s.Kind == "graph_conflict" {
 			if weight > conflictBest {
 				conflictBest = weight
@@ -458,25 +598,57 @@ func graphAggregateScore(signals []domain.GraphSignal, paths []domain.GraphPath)
 	pathScore := 0.0
 	seenPath := map[string]struct{}{}
 	for _, path := range paths {
+		if len(path.Edges) == 0 {
+			continue
+		}
 		parts := make([]string, 0, len(path.Edges)+2)
 		parts = append(parts, path.StartEntityID, path.EndEntityID)
-		confidence := 1.0
+		product := 1.0
 		for _, edge := range path.Edges {
 			parts = append(parts, edge.FactID)
-			confidence *= edge.Confidence
+			product *= graphOrNeutral(edge.PredicateIntent) * clamp01(edge.Confidence) *
+				graphOrNeutral(edge.EvidenceStrength) * graphOrNeutral(edge.HubPenalty) *
+				graphOrNeutral(edge.TemporalCompatibility)
 		}
 		key := strings.Join(parts, "\x00")
 		if _, duplicate := seenPath[key]; duplicate {
 			continue
 		}
 		seenPath[key] = struct{}{}
-		if weight := weightTwoHopPath * confidence; weight > pathScore {
+		weight := weightTwoHopPath * product * graphHopDecayFor(len(path.Edges))
+		if weight > pathScore {
 			pathScore = weight
 		}
 	}
 
 	raw := mentionScore + factScore + relationScore + pathScore
 	return min(1.0, raw/graphScoreCap)
+}
+
+// entityHubPenalties loads the rebuildable inverse-degree projection for the
+// resolved entities. A missing row is neutral so an unavailable statistic does
+// not zero a candidate.
+func (r *Repository) entityHubPenalties(ctx context.Context, tx *sql.Tx, entityIDs []string) map[string]float64 {
+	penalties := make(map[string]float64, len(entityIDs))
+	if len(entityIDs) == 0 {
+		return penalties
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT entity_id, inverse_degree FROM entity_graph_statistics WHERE entity_id IN (`+placeholders(len(entityIDs))+`)`, appendStrings2(nil, entityIDs)...)
+	if err != nil {
+		return penalties
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var entityID string
+		var inverseDegree sql.NullFloat64
+		if err := rows.Scan(&entityID, &inverseDegree); err != nil {
+			return penalties
+		}
+		if inverseDegree.Valid && inverseDegree.Float64 > 0 && inverseDegree.Float64 < 1 {
+			penalties[entityID] = inverseDegree.Float64
+		}
+	}
+	return penalties
 }
 
 // eligibilitySQL builds the projection eligibility conditions (requested
@@ -504,29 +676,32 @@ func ensureGraphItem(byKey map[string]*graphRecallItem, memoryID, revisionID str
 	return item
 }
 
-func (r *Repository) graphFactHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, entityIDs []string, confByEntity map[string]float64, predicates, spaces []string, params SearchParams, minFactConfidence float64, limit int) error {
+// graphFactHop performs query-plan-directed direct fact lookup: typed incoming
+// and outgoing one-hop facts from the resolved entities. Predicate intent
+// restricts the SQL window before LIMIT when present, and a registry path
+// position check runs before the row contributes.
+func (r *Repository) graphFactHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, entityIDs []string, confByEntity map[string]float64, hubs map[string]float64, predicates, spaces []string, params SearchParams, minFactConfidence float64, limit int) error {
 	predFilter := ""
+	var predArgs []string
 	if len(predicates) > 0 {
-		predFilter = ` AND f.predicate IN (` + placeholders(len(predicates)) + `)`
+		allowed := intersectStrings(domain.PredicatePathNames(domain.PredicatePathFirst), predicates)
+		if len(allowed) == 0 {
+			return nil
+		}
+		predFilter = ` AND f.predicate IN (` + placeholders(len(allowed)) + `)`
+		predArgs = allowed
 	}
 	eligible, eligibleArgs := eligibilitySQL(params, spaces)
-	query := `SELECT f.fact_id, f.subject_entity_id, f.predicate, f.object_entity_id, f.object_literal, f.confidence, f.source_memory_id, f.source_revision_id FROM entity_facts f JOIN memory_projections p ON p.memory_id=f.source_memory_id AND p.revision_id=f.source_revision_id JOIN memories m ON m.memory_id=f.source_memory_id AND m.current_revision_id=f.source_revision_id AND m.current_state=p.current_state JOIN memory_revisions rv ON rv.memory_id=f.source_memory_id AND rv.revision_id=f.source_revision_id WHERE f.state='active' AND EXISTS (SELECT 1 FROM entity_fact_evidence fe WHERE fe.fact_id=f.fact_id) AND (f.subject_entity_id IN (` + placeholders(len(entityIDs)) + `) OR f.object_entity_id IN (` + placeholders(len(entityIDs)) + `))` + predFilter + ` AND coalesce(f.confidence, 0.5) >= ? AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?) ORDER BY (f.predicate IN (` + placeholders(max(1, len(predicates))) + `)) DESC, coalesce(f.confidence, 0.5) DESC, rv.specificity DESC, p.updated_at DESC, f.fact_id ASC LIMIT ?`
+	query := `SELECT f.fact_id, f.subject_entity_id, f.predicate, f.object_entity_id, f.object_literal, f.confidence, f.source_memory_id, f.source_revision_id, f.valid_from, f.valid_until, (SELECT count(*) FROM entity_fact_evidence fe WHERE fe.fact_id=f.fact_id) FROM entity_facts f JOIN memory_projections p ON p.memory_id=f.source_memory_id AND p.revision_id=f.source_revision_id JOIN memories m ON m.memory_id=f.source_memory_id AND m.current_revision_id=f.source_revision_id AND m.current_state=p.current_state JOIN memory_revisions rv ON rv.memory_id=f.source_memory_id AND rv.revision_id=f.source_revision_id WHERE f.state='active' AND (f.subject_entity_id IN (` + placeholders(len(entityIDs)) + `) OR f.object_entity_id IN (` + placeholders(len(entityIDs)) + `))` + predFilter + ` AND coalesce(f.confidence, 0.5) >= ? AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?) ORDER BY coalesce(f.confidence, 0.5) DESC, rv.specificity DESC, p.updated_at DESC, f.fact_id ASC LIMIT ?`
 	idArgs := appendStrings2(nil, entityIDs)
-	args := make([]any, 0, len(entityIDs)*2+len(predicates)*2+len(eligibleArgs)+len(spaces)+5)
+	args := make([]any, 0, len(entityIDs)*2+len(predArgs)+len(eligibleArgs)+len(spaces)+6)
 	args = append(args, idArgs...)
 	args = append(args, idArgs...)
-	if len(predicates) > 0 {
-		args = append(args, appendStrings2(nil, predicates)...)
-	}
+	args = append(args, appendStrings2(nil, predArgs)...)
 	args = append(args, minFactConfidence)
 	args = append(args, appendStrings2(nil, spaces)...)
 	args = append(args, eligibleArgs...)
 	args = append(args, params.ReferenceTime, params.ReferenceTime)
-	if len(predicates) > 0 {
-		args = append(args, appendStrings2(nil, predicates)...)
-	} else {
-		args = append(args, "")
-	}
 	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -535,30 +710,44 @@ func (r *Repository) graphFactHop(ctx context.Context, tx *sql.Tx, byKey map[str
 	defer rows.Close()
 	for rows.Next() {
 		var factID, subjectID, predicate, sourceMemory, sourceRevision string
-		var objectEntityID, objectLiteral sql.NullString
+		var objectEntityID, objectLiteral, validFrom, validUntil sql.NullString
 		var confidence sql.NullFloat64
-		if err := rows.Scan(&factID, &subjectID, &predicate, &objectEntityID, &objectLiteral, &confidence, &sourceMemory, &sourceRevision); err != nil {
+		var evidenceCount int
+		if err := rows.Scan(&factID, &subjectID, &predicate, &objectEntityID, &objectLiteral, &confidence, &sourceMemory, &sourceRevision, &validFrom, &validUntil, &evidenceCount); err != nil {
 			return err
 		}
-		item := ensureGraphItem(byKey, sourceMemory, sourceRevision)
+		if _, ok := domain.LookupPredicate(predicate); !ok {
+			continue
+		}
+		// The matched endpoint is whichever side of the fact is a resolved query
+		// entity. It carries the entity-resolution and hub evidence.
+		matched, direction := "", ""
+		if _, ok := confByEntity[subjectID]; ok {
+			matched, direction = subjectID, "outgoing"
+		} else if objectEntityID.Valid {
+			if _, ok := confByEntity[objectEntityID.String]; ok {
+				matched, direction = objectEntityID.String, "incoming"
+			}
+		}
+		if matched == "" {
+			continue
+		}
+		entityConf := confByEntity[matched]
 		conf := 0.5
 		if confidence.Valid {
 			conf = confidence.Float64
 		}
-		// The resolved confidence must come from whichever side of the fact
-		// matched the query entities.
-		entityConf := confByEntity[subjectID]
-		if entityConf == 0 {
-			entityConf = confByEntity[objectEntityID.String]
-		}
-		if entityConf == 0 {
-			continue
-		}
 		kind := "one_hop_fact"
-		if len(predicates) > 0 {
+		if len(predicates) > 0 && contains(predicates, predicate) {
 			kind = "exact_predicate_fact"
 		}
-		item.signals = append(item.signals, domain.GraphSignal{Kind: kind, EntityID: subjectID, Predicate: predicate, FactID: factID, Hop: 1, FactConfidence: conf, EntityConfidence: entityConf})
+		item := ensureGraphItem(byKey, sourceMemory, sourceRevision)
+		item.signals = append(item.signals, domain.GraphSignal{
+			Kind: kind, EntityID: matched, Predicate: predicate, FactID: factID, Hop: 1,
+			FactConfidence: conf, EntityConfidence: entityConf, EdgeDirection: direction,
+			EvidenceStrength: graphEvidenceStrength(evidenceCount), TemporalCompatibility: factTemporalCompatibility(params, validFrom, validUntil),
+			HubPenalty: hubPenaltyOf(hubs, matched), PredicateIntent: graphIntentWeight(predicate, predicates),
+		})
 		fact := domain.EntityFact{FactID: factID, SubjectEntityID: subjectID, Predicate: predicate, SourceMemoryID: sourceMemory, SourceRevisionID: sourceRevision, Confidence: &conf, State: "active"}
 		if objectEntityID.Valid {
 			fact.ObjectEntityID = &objectEntityID.String
@@ -570,119 +759,257 @@ func (r *Repository) graphFactHop(ctx context.Context, tx *sql.Tx, byKey map[str
 	return rows.Err()
 }
 
-func (r *Repository) graphSecondHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, startIDs, predicates, spaces []string, params SearchParams, minFactConfidence float64, limit int) error {
+// traversalEdge is one registry-approved typed edge observed while expanding a
+// bounded path. nearID is the endpoint on the already-visited side and farID is
+// the endpoint that may continue the path.
+type traversalEdge struct {
+	factID, subjectID, objectID, predicate, sourceMemory, sourceRevision string
+	confidence                                                           float64
+	evidenceStrength, temporalCompatibility, hubPenalty, predicateIntent float64
+	nearID, farID, direction                                             string
+}
+
+// traversalEdges loads one typed expansion window. Every pre-expansion filter
+// (scope, state, current revision, valid time, predicate path position, and
+// confidence) is applied in SQL before the bounded LIMIT.
+func (r *Repository) traversalEdges(ctx context.Context, tx *sql.Tx, anchors, allowed, intent, spaces []string, params SearchParams, minFactConfidence float64, hubs map[string]float64, limit int) ([]traversalEdge, error) {
+	if len(anchors) == 0 || len(allowed) == 0 {
+		return nil, nil
+	}
 	eligible, eligibleArgs := eligibilitySQL(params, spaces)
-	hopQuery := func(subjects []string) string {
-		return `SELECT fact_id, subject_entity_id, object_entity_id, predicate, confidence, source_memory_id, source_revision_id FROM (
-			SELECT f.fact_id, f.subject_entity_id, f.object_entity_id, f.predicate, f.confidence, f.source_memory_id, f.source_revision_id,
-				row_number() OVER (PARTITION BY f.subject_entity_id, f.predicate ORDER BY coalesce(f.confidence,0.5) DESC, p.updated_at DESC, f.fact_id ASC) AS rn
-			FROM entity_facts f
-			JOIN memory_projections p ON p.memory_id=f.source_memory_id AND p.revision_id=f.source_revision_id
-			JOIN memories m ON m.memory_id=f.source_memory_id AND m.current_revision_id=f.source_revision_id AND m.current_state=p.current_state
-			WHERE f.state='active' AND EXISTS (SELECT 1 FROM entity_fact_evidence fe WHERE fe.fact_id=f.fact_id) AND coalesce(f.confidence,0.5)>=? AND f.subject_entity_id IN (` + placeholders(len(subjects)) + `) AND f.object_entity_id IS NOT NULL AND f.object_entity_id<>f.subject_entity_id AND f.predicate IN (` + placeholders(len(predicates)) + `) AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?)
-		) WHERE rn<=` + strconv.Itoa(graphFanOut) + ` ORDER BY confidence DESC, fact_id ASC LIMIT ?`
-	}
-	hopArgs := func(subjects []string) []any {
-		args := make([]any, 0, len(subjects)*2+len(predicates)+len(spaces)+len(eligibleArgs)+5)
-		args = append(args, minFactConfidence)
-		args = append(args, appendStrings2(nil, subjects)...)
-		args = append(args, appendStrings2(nil, predicates)...)
-		args = append(args, appendStrings2(nil, spaces)...)
-		args = append(args, eligibleArgs...)
-		args = append(args, params.ReferenceTime, params.ReferenceTime)
-		return args
-	}
-	// First hop: facts leaving the resolved entities, fan-out capped per
-	// (subject, predicate) pair.
-	rows, err := tx.QueryContext(ctx, hopQuery(startIDs), append(hopArgs(startIDs), 2*graphMaxNeighbors)...)
+	query := `SELECT f.fact_id, f.subject_entity_id, f.object_entity_id, f.predicate, f.confidence, f.source_memory_id, f.source_revision_id, f.valid_from, f.valid_until, (SELECT count(*) FROM entity_fact_evidence fe WHERE fe.fact_id=f.fact_id) FROM entity_facts f JOIN memory_projections p ON p.memory_id=f.source_memory_id AND p.revision_id=f.source_revision_id JOIN memories m ON m.memory_id=f.source_memory_id AND m.current_revision_id=f.source_revision_id AND m.current_state=p.current_state JOIN memory_revisions rv ON rv.memory_id=f.source_memory_id AND rv.revision_id=f.source_revision_id WHERE f.state='active' AND f.object_entity_id IS NOT NULL AND f.object_entity_id<>f.subject_entity_id AND f.predicate IN (` + placeholders(len(allowed)) + `) AND (f.subject_entity_id IN (` + placeholders(len(anchors)) + `) OR f.object_entity_id IN (` + placeholders(len(anchors)) + `)) AND coalesce(f.confidence, 0.5) >= ? AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?) ORDER BY coalesce(f.confidence, 0.5) DESC, rv.specificity DESC, p.updated_at DESC, f.fact_id ASC LIMIT ?`
+	anchorArgs := appendStrings2(nil, anchors)
+	args := make([]any, 0, len(allowed)+len(anchors)*2+len(spaces)+len(eligibleArgs)+6)
+	args = append(args, appendStrings2(nil, allowed)...)
+	args = append(args, anchorArgs...)
+	args = append(args, anchorArgs...)
+	args = append(args, minFactConfidence)
+	args = append(args, appendStrings2(nil, spaces)...)
+	args = append(args, eligibleArgs...)
+	args = append(args, params.ReferenceTime, params.ReferenceTime)
+	args = append(args, limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
-	}
-	type hopEdge struct {
-		factID, subjectID, objectID, predicate, sourceMemory, sourceRevision string
-		confidence                                                           float64
-	}
-	var firstEdges []hopEdge
-	neighbors := map[string]struct{}{}
-	for rows.Next() {
-		var edge hopEdge
-		var confidence sql.NullFloat64
-		if err := rows.Scan(&edge.factID, &edge.subjectID, &edge.objectID, &edge.predicate, &confidence, &edge.sourceMemory, &edge.sourceRevision); err != nil {
-			rows.Close()
-			return err
-		}
-		edge.confidence = 0.5
-		if confidence.Valid {
-			edge.confidence = confidence.Float64
-		}
-		firstEdges = append(firstEdges, edge)
-		neighbors[edge.objectID] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	if len(neighbors) == 0 {
-		return nil
-	}
-	neighborIDs := make([]string, 0, len(neighbors))
-	for id := range neighbors {
-		neighborIDs = append(neighborIDs, id)
-	}
-	sort.Strings(neighborIDs)
-	if len(neighborIDs) > graphMaxNeighbors {
-		neighborIDs = neighborIDs[:graphMaxNeighbors]
-	}
-	byNeighbor := map[string][]hopEdge{}
-	for _, edge := range firstEdges {
-		byNeighbor[edge.objectID] = append(byNeighbor[edge.objectID], edge)
-	}
-	// Second hop: facts leaving the neighbors. Cycles are excluded by never
-	// returning to a resolved start entity.
-	rows, err = tx.QueryContext(ctx, hopQuery(neighborIDs), append(hopArgs(neighborIDs), 2*graphMaxNeighbors)...)
-	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
-	produced := 0
-	seenPath := map[string]struct{}{}
+	anchorSet := make(map[string]struct{}, len(anchors))
+	for _, id := range anchors {
+		anchorSet[id] = struct{}{}
+	}
+	var edges []traversalEdge
+	seen := map[string]struct{}{}
 	for rows.Next() {
-		var edge hopEdge
+		var factID, subjectID, objectID, predicate, sourceMemory, sourceRevision string
 		var confidence sql.NullFloat64
-		if err := rows.Scan(&edge.factID, &edge.subjectID, &edge.objectID, &edge.predicate, &confidence, &edge.sourceMemory, &edge.sourceRevision); err != nil {
-			return err
+		var validFrom, validUntil sql.NullString
+		var evidenceCount int
+		if err := rows.Scan(&factID, &subjectID, &objectID, &predicate, &confidence, &sourceMemory, &sourceRevision, &validFrom, &validUntil, &evidenceCount); err != nil {
+			return nil, err
 		}
-		edge.confidence = 0.5
+		conf := 0.5
 		if confidence.Valid {
-			edge.confidence = confidence.Float64
+			conf = confidence.Float64
 		}
-		if contains(startIDs, edge.objectID) {
+		base := traversalEdge{
+			factID: factID, subjectID: subjectID, objectID: objectID, predicate: predicate,
+			sourceMemory: sourceMemory, sourceRevision: sourceRevision, confidence: conf,
+			evidenceStrength: graphEvidenceStrength(evidenceCount), temporalCompatibility: factTemporalCompatibility(params, validFrom, validUntil),
+			predicateIntent: graphIntentWeight(predicate, intent),
+		}
+		appendEdge := func(near, far, direction string) {
+			key := near + "\x00" + direction + "\x00" + factID
+			if _, duplicate := seen[key]; duplicate {
+				return
+			}
+			seen[key] = struct{}{}
+			edge := base
+			edge.nearID, edge.farID, edge.direction = near, far, direction
+			edge.hubPenalty = min(hubPenaltyOf(hubs, near), hubPenaltyOf(hubs, far))
+			edges = append(edges, edge)
+		}
+		if _, ok := anchorSet[subjectID]; ok {
+			appendEdge(subjectID, objectID, "outgoing")
+		}
+		if _, ok := anchorSet[objectID]; ok {
+			appendEdge(objectID, subjectID, "incoming")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Bound fan-out per anchor. The SQL window is already confidence ordered, so
+	// a stable sort by anchor preserves that order while capping each node.
+	sort.SliceStable(edges, func(i, j int) bool { return edges[i].nearID < edges[j].nearID })
+	countByNear := map[string]int{}
+	bounded := edges[:0]
+	for _, edge := range edges {
+		if countByNear[edge.nearID] >= graphFanOut {
 			continue
 		}
-		for _, first := range byNeighbor[edge.subjectID] {
-			if first.subjectID == edge.objectID {
+		countByNear[edge.nearID]++
+		bounded = append(bounded, edge)
+	}
+	return bounded, nil
+}
+
+// graphSecondHop composes registry-approved heterogeneous two-hop paths. The
+// first and second hop may use different predicates, and each hop is checked
+// against its allowed path position before expansion. Cycles never return to a
+// resolved start entity.
+func (r *Repository) graphSecondHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, startIDs []string, confByEntity map[string]float64, hubs map[string]float64, predicates, spaces []string, params SearchParams, minFactConfidence float64, limit int) error {
+	firstAllowed := domain.PredicatePathNames(domain.PredicatePathFirst)
+	secondAllowed := domain.PredicatePathNames(domain.PredicatePathSecond)
+	if len(predicates) > 0 {
+		firstAllowed = intersectStrings(firstAllowed, predicates)
+		secondAllowed = intersectStrings(secondAllowed, predicates)
+	}
+	if len(firstAllowed) == 0 || len(secondAllowed) == 0 {
+		return nil
+	}
+	// First hop: every typed edge touching a resolved entity, bounded by fan-out.
+	firstEdges, err := r.traversalEdges(ctx, tx, startIDs, firstAllowed, predicates, spaces, params, minFactConfidence, hubs, 2*graphMaxNeighbors)
+	if err != nil {
+		return err
+	}
+	middleSet := map[string]struct{}{}
+	for _, edge := range firstEdges {
+		middleSet[edge.farID] = struct{}{}
+	}
+	if len(middleSet) == 0 {
+		return nil
+	}
+	middleIDs := make([]string, 0, len(middleSet))
+	for id := range middleSet {
+		middleIDs = append(middleIDs, id)
+	}
+	sort.Strings(middleIDs)
+	if len(middleIDs) > graphMaxNeighbors {
+		middleIDs = middleIDs[:graphMaxNeighbors]
+	}
+	// Load hub penalties for the intermediate entities; a generic hub must not
+	// dominate a bounded path merely by having many edges.
+	middleHubs := r.entityHubPenalties(ctx, tx, middleIDs)
+	for id, penalty := range hubs {
+		if _, ok := middleHubs[id]; !ok {
+			middleHubs[id] = penalty
+		}
+	}
+	secondEdges, err := r.traversalEdges(ctx, tx, middleIDs, secondAllowed, predicates, spaces, params, minFactConfidence, middleHubs, 4*graphMaxPaths)
+	if err != nil {
+		return err
+	}
+	byMiddle := map[string][]traversalEdge{}
+	for _, edge := range firstEdges {
+		byMiddle[edge.farID] = append(byMiddle[edge.farID], edge)
+	}
+	startSet := make(map[string]struct{}, len(startIDs))
+	for _, id := range startIDs {
+		startSet[id] = struct{}{}
+	}
+	produced := 0
+	seenPath := map[string]struct{}{}
+	for _, second := range secondEdges {
+		for _, first := range byMiddle[second.nearID] {
+			if second.farID == first.nearID || second.farID == second.nearID {
 				continue
 			}
-			key := strings.Join([]string{first.subjectID, first.factID, edge.factID}, "\x00")
+			if _, cycle := startSet[second.farID]; cycle {
+				continue
+			}
+			key := first.factID + "\x00" + second.factID
 			if _, duplicate := seenPath[key]; duplicate {
 				continue
 			}
 			seenPath[key] = struct{}{}
-			item := ensureGraphItem(byKey, edge.sourceMemory, edge.sourceRevision)
-			combined := first.confidence * edge.confidence
-			item.signals = append(item.signals, domain.GraphSignal{Kind: "two_hop_path", EntityID: first.subjectID, Predicate: edge.predicate, FactID: edge.factID, Hop: 2, FactConfidence: combined})
-			item.paths = append(item.paths, domain.GraphPath{StartEntityID: first.subjectID, Edges: []domain.GraphPathEdge{
-				{FactID: first.factID, SubjectEntityID: first.subjectID, Predicate: first.predicate, ObjectEntityID: first.objectID, Confidence: first.confidence, SourceMemoryID: first.sourceMemory, SourceRevisionID: first.sourceRevision},
-				{FactID: edge.factID, SubjectEntityID: edge.subjectID, Predicate: edge.predicate, ObjectEntityID: edge.objectID, Confidence: edge.confidence, SourceMemoryID: edge.sourceMemory, SourceRevisionID: edge.sourceRevision},
-			}, EndEntityID: edge.objectID, Hop: 2})
+			firstEdge := graphPathEdge(first)
+			secondEdge := graphPathEdge(second)
+			item := ensureGraphItem(byKey, second.sourceMemory, second.sourceRevision)
+			item.signals = append(item.signals, domain.GraphSignal{
+				Kind: "two_hop_path", EntityID: first.nearID, Predicate: second.predicate, FactID: second.factID, Hop: 2,
+				FactConfidence:  first.confidence * second.confidence,
+				PredicateIntent: max(graphOrNeutral(first.predicateIntent), graphOrNeutral(second.predicateIntent)),
+				HubPenalty:      min(first.hubPenalty, second.hubPenalty),
+			})
+			item.paths = append(item.paths, domain.GraphPath{StartEntityID: first.nearID, Edges: []domain.GraphPathEdge{firstEdge, secondEdge}, EndEntityID: second.farID, Hop: 2})
 			produced++
 			if produced >= graphMaxPaths {
 				return nil
 			}
 		}
 	}
-	return rows.Err()
+	return nil
+}
+
+func graphPathEdge(edge traversalEdge) domain.GraphPathEdge {
+	return domain.GraphPathEdge{
+		FactID: edge.factID, SubjectEntityID: edge.subjectID, Predicate: edge.predicate, ObjectEntityID: edge.objectID,
+		Confidence: edge.confidence, SourceMemoryID: edge.sourceMemory, SourceRevisionID: edge.sourceRevision, Direction: edge.direction,
+		EvidenceStrength: edge.evidenceStrength, TemporalCompatibility: edge.temporalCompatibility, HubPenalty: edge.hubPenalty, PredicateIntent: edge.predicateIntent,
+	}
+}
+
+func hubPenaltyOf(hubs map[string]float64, entityID string) float64 {
+	if penalty, ok := hubs[entityID]; ok && penalty > 0 && penalty < 1 {
+		return penalty
+	}
+	return 1
+}
+
+// factTemporalCompatibility scores how well a fact's valid-time window matches
+// the query time. Fixed facts without a window are fully compatible; when a
+// query time exists, TemporalMatch supplies the interval score.
+func factTemporalCompatibility(params SearchParams, validFrom, validUntil sql.NullString) float64 {
+	if !params.QueryTimeSet {
+		return 1
+	}
+	if !validFrom.Valid && !validUntil.Valid {
+		return 1
+	}
+	interval := retrieval.TimeInterval{Set: true, Precision: "valid"}
+	if validFrom.Valid {
+		if value, err := time.Parse(time.RFC3339Nano, validFrom.String); err == nil {
+			interval.Start = value
+		}
+	}
+	if validUntil.Valid {
+		if value, err := time.Parse(time.RFC3339Nano, validUntil.String); err == nil {
+			interval.End = value
+		}
+	}
+	if score, compatible := retrieval.TemporalMatch(params.QueryTime, interval); compatible {
+		return score
+	}
+	return graphOrNeutral(0)
+}
+
+// intersectStrings returns the sorted, deduplicated intersection of two sets.
+func intersectStrings(left, right []string) []string {
+	rightSet := make(map[string]struct{}, len(right))
+	for _, value := range right {
+		rightSet[value] = struct{}{}
+	}
+	var out []string
+	for _, value := range uniqueSortedStrings(left) {
+		if _, ok := rightSet[value]; ok {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (r *Repository) graphMemoryRelationRecall(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, seeds, spaces []string, params SearchParams, limit int) error {

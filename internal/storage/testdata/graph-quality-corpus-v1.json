@@ -1,0 +1,57 @@
+{
+  "version": "graph-quality-corpus-v1",
+  "space": "space-1",
+  "sibling_space": "space-sibling",
+  "entities": [
+    {"id": "entity-alice", "name": "Alice", "type": "person"},
+    {"id": "entity-alpha", "name": "Alpha", "type": "project"},
+    {"id": "entity-acme", "name": "Acme", "type": "organization"},
+    {"id": "entity-paris", "name": "Paris", "type": "place"},
+    {"id": "entity-summit", "name": "Summit", "type": "event"},
+    {"id": "entity-jordan-a", "name": "Jordan", "type": "person"},
+    {"id": "entity-jordan-b", "name": "Jordan", "type": "person"},
+    {"id": "entity-hub", "name": "Hub", "type": "project"}
+  ],
+  "documents": [
+    {"id": "doc-rel-works-on", "content": "Alice works on Alpha"},
+    {"id": "doc-rel-owned-by", "content": "Alpha is owned by Acme"},
+    {"id": "doc-entity-located", "content": "Alice is located in Paris"},
+    {"id": "doc-event-participant", "content": "Alice attends the Summit"},
+    {"id": "doc-ambiguous", "content": "Jordan leads the review"},
+    {"id": "doc-conflict-a", "content": "Alice joined Alpha"},
+    {"id": "doc-conflict-b", "content": "Alice left Alpha"},
+    {"id": "doc-stale", "content": "Alice archived Alpha notes"},
+    {"id": "doc-out-of-scope", "content": "Alice works on Sibling", "space": "sibling"},
+    {"id": "doc-hub", "content": "Hub connects everything"}
+  ],
+  "facts": [
+    {"id": "fact-works-on", "subject": "entity-alice", "predicate": "works_on", "object": "entity-alpha", "memory": "doc-rel-works-on", "confidence": 0.95},
+    {"id": "fact-owned-by", "subject": "entity-alpha", "predicate": "owned_by", "object": "entity-acme", "memory": "doc-rel-owned-by", "confidence": 0.95},
+    {"id": "fact-located", "subject": "entity-alice", "predicate": "located_at", "object": "entity-paris", "memory": "doc-entity-located", "confidence": 0.95, "valid_from": "2020-01-01T00:00:00Z", "valid_until": "2020-06-01T00:00:00Z"},
+    {"id": "fact-hub", "subject": "entity-alice", "predicate": "depends_on", "object": "entity-hub", "memory": "doc-hub", "confidence": 0.95}
+  ],
+  "mentions": [
+    {"id": "mention-alice-works-on", "entity": "entity-alice", "memory": "doc-rel-works-on", "start": 0, "end": 5, "confidence": 0.95},
+    {"id": "mention-alice-owned-by", "entity": "entity-alpha", "memory": "doc-rel-owned-by", "start": 0, "end": 5, "confidence": 0.95},
+    {"id": "mention-alice-located", "entity": "entity-alice", "memory": "doc-entity-located", "start": 0, "end": 5, "confidence": 0.95},
+    {"id": "mention-alice-event", "entity": "entity-alice", "memory": "doc-event-participant", "start": 0, "end": 5, "confidence": 0.95},
+    {"id": "mention-jordan-ambiguous", "entity": "entity-jordan-a", "memory": "doc-ambiguous", "start": 0, "end": 6, "confidence": 0.9},
+    {"id": "mention-alice-conflict-a", "entity": "entity-alice", "memory": "doc-conflict-a", "start": 0, "end": 5, "confidence": 0.9},
+    {"id": "mention-alice-conflict-b", "entity": "entity-alice", "memory": "doc-conflict-b", "start": 0, "end": 5, "confidence": 0.9},
+    {"id": "mention-alice-stale", "entity": "entity-alice", "memory": "doc-stale", "start": 0, "end": 5, "confidence": 0.9}
+  ],
+  "relations": [
+    {"id": "rel-supports", "type": "supports", "source": "doc-rel-works-on", "target": "doc-rel-owned-by", "confidence": 0.9},
+    {"id": "rel-contradicts", "type": "contradicts", "source": "doc-conflict-a", "target": "doc-conflict-b", "confidence": 0.9}
+  ],
+  "events": [
+    {"event_id": "event-1", "participants": ["entity-alice"], "place": "entity-paris", "start": "2024-01-01T00:00:00Z", "end": "2024-01-02T00:00:00Z"}
+  ],
+  "categories": [
+    "entity", "event", "temporal", "relational", "multi_hop", "ambiguous", "hub", "conflict", "stale", "out_of_scope"
+  ],
+  "promotion_cases": [
+    {"id": "relational", "query": "Alice works on Alpha", "entity": "entity-alice", "policy": "direct", "predicates": ["works_on"], "expected": ["doc-rel-works-on"]},
+    {"id": "multi_hop", "query": "Alice Alpha Acme", "entity": "entity-alice", "policy": "bounded_path", "predicates": ["works_on", "owned_by"], "expected": ["doc-rel-works-on", "doc-rel-owned-by"]}
+  ]
+}

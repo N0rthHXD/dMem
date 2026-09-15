@@ -20,7 +20,7 @@ import (
 const (
 	StructuredProcessingContractVersion = "processing-structured-v1"
 	TypedGraphContractVersion           = "graph-typed-v1"
-	PredicateRegistryVersion            = "predicate-registry-v1"
+	PredicateRegistryVersion            = domain.PredicateRegistryVersion
 )
 
 const (
@@ -415,42 +415,16 @@ type TypedGraphResult struct {
 	Relations []TypedGraphRelation
 }
 
-// PredicateSpec defines one closed, directional graph predicate.
-type PredicateSpec struct {
-	Name         string
-	SubjectTypes []string
-	ObjectTypes  []string
-	LiteralType  string
-	Inverse      string
-}
-
-var typedPredicateRegistry = map[string]PredicateSpec{
-	"member_of":             {Name: "member_of", SubjectTypes: []string{"person", "organization"}, ObjectTypes: []string{"organization"}},
-	"located_at":            {Name: "located_at", SubjectTypes: []string{"person", "organization", "event", "place"}, ObjectTypes: []string{"place"}},
-	"owned_by":              {Name: "owned_by", SubjectTypes: []string{"project", "product", "organization"}, ObjectTypes: []string{"person", "organization"}},
-	"participates_in":       {Name: "participates_in", SubjectTypes: []string{"person", "organization"}, ObjectTypes: []string{"event", "project", "procedure"}},
-	"created_by":            {Name: "created_by", SubjectTypes: []string{"project", "product", "event"}, ObjectTypes: []string{"person", "organization"}},
-	"depends_on":            {Name: "depends_on", SubjectTypes: []string{"project", "product", "procedure"}, ObjectTypes: []string{"project", "product", "procedure"}},
-	"has_status":            {Name: "has_status", SubjectTypes: []string{"project", "product", "plan"}, LiteralType: "string"},
-	"has_participant_count": {Name: "has_participant_count", SubjectTypes: []string{"event"}, LiteralType: "number"},
-	"is_active":             {Name: "is_active", SubjectTypes: []string{"project", "plan"}, LiteralType: "boolean"},
-}
+// PredicateSpec is the closed typed predicate definition shared with storage and
+// traversal. Provider-defined free-form predicates are rejected by LookupPredicate.
+type PredicateSpec = domain.PredicateDefinition
 
 // PredicateNames returns the sorted closed predicate set for identity hashing.
-func PredicateNames() []string {
-	names := make([]string, 0, len(typedPredicateRegistry))
-	for name := range typedPredicateRegistry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
+func PredicateNames() []string { return domain.PredicateNames() }
 
-// LookupPredicate returns the closed definition for a predicate name.
-func LookupPredicate(name string) (PredicateSpec, bool) {
-	spec, ok := typedPredicateRegistry[strings.TrimSpace(name)]
-	return spec, ok
-}
+// LookupPredicate returns the closed definition for a predicate name. A predicate
+// that is not in the registry is rejected; providers may not invent predicates.
+func LookupPredicate(name string) (PredicateSpec, bool) { return domain.LookupPredicate(name) }
 
 var typedEventTypes = map[string]struct{}{
 	"meeting": {}, "message": {}, "creation": {}, "decision": {},

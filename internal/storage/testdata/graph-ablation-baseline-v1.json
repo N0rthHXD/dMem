@@ -1,0 +1,14 @@
+{
+  "version": "graph-ablation-baseline-v1",
+  "metrics": {
+    "mention_candidates": 14,
+    "fact_candidates": 4,
+    "relation_candidates": 0,
+    "one_hop_paths": 1,
+    "two_hop_paths": 1,
+    "hub_penalty_drop": 0.7999999999999999,
+    "confidence_gate_kept": 7,
+    "seed_budget": 15,
+    "boost_cap": 0.08
+  }
+}
