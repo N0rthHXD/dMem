@@ -21,7 +21,7 @@ from dmem_locomo.runner import result_report
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STORAGE_TESTDATA = REPO_ROOT / "internal" / "storage" / "testdata"
-CAPTURE_PATH = REPO_ROOT / "evaluation" / "locomo" / "baselines" / "locomo-current-v1.json"
+CAPTURE_PATH = REPO_ROOT / "evaluation" / "locomo" / "baselines" / "locomo-phase0-rrf-v3.json"
 
 
 def test_baseline_spec_is_versioned_and_complete():
@@ -89,7 +89,7 @@ def test_build_baseline_matrix_requires_four_modes_on_one_corpus():
                         "semantic_index_version": 3,
                         "graph_index_version": 4,
                         "fts_index_version": 5,
-                        "ranking_version": "rrf-v3",
+                        "ranking_version": "ranking-weights-v1",
                         "metric_schema": METRIC_SCHEMA_VERSION,
                     },
                 },
@@ -126,7 +126,7 @@ def test_build_baseline_matrix_rejects_missing_or_unknown_identity():
                         "semantic_index_version": 3,
                         "graph_index_version": 4,
                         "fts_index_version": 5,
-                        "ranking_version": "rrf-v3",
+                        "ranking_version": "ranking-weights-v1",
                         "metric_schema": METRIC_SCHEMA_VERSION,
                     },
                 },
@@ -139,7 +139,7 @@ def test_build_baseline_matrix_rejects_missing_or_unknown_identity():
         build_baseline_matrix(runs)
 
 
-def test_current_baseline_capture_has_four_modes_on_one_immutable_corpus():
+def test_phase0_baseline_capture_has_four_modes_on_one_immutable_corpus():
     capture = json.loads(CAPTURE_PATH.read_text(encoding="utf-8"))
 
     assert capture["schema_version"] == BASELINE_SCHEMA_VERSION

@@ -156,11 +156,8 @@ func TestRelationIndexDegradedAuthorityAndRebuild(t *testing.T) {
 	if relation, err := r.GetRelation(context.Background(), *confirmed.ResultRelationID); err != nil || relation.RelationID != *confirmed.ResultRelationID {
 		t.Fatalf("authority=%+v err=%v", relation, err)
 	}
-	// The graph channel reads relation authority directly, so a degraded
-	// derived-index state neither fails the search nor fabricates a
-	// degradation reason.
 	search, err := r.SearchMemories(context.Background(), SearchParams{Query: "initial", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
-	if err != nil || search.Degraded || len(search.DegradationReasons) != 0 {
+	if err != nil || !search.Degraded || !contains(search.DegradationReasons, "graph_relation_degraded") {
 		t.Fatalf("degraded-index search=%+v err=%v", search, err)
 	}
 	tx, err := r.store.writer.BeginTx(context.Background(), nil)
@@ -187,6 +184,9 @@ func TestRelationIndexDegradedAuthorityAndRebuild(t *testing.T) {
 	state, _ := r.RelationIndexHealth(context.Background())
 	if state != "ready" {
 		t.Fatalf("rebuilt relation index state=%s, want ready", state)
+	}
+	if err := r.RebuildGraphIndex(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	search, err = r.SearchMemories(context.Background(), SearchParams{Query: "initial", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
 	if err != nil {

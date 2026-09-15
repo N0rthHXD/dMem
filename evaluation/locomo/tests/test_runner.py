@@ -252,7 +252,7 @@ def test_finalize_manifest_uses_observed_scalar_ranking_identities(tmp_path):
     cp.append_retrieval(
         {
             "qa_id": "q1",
-            "ranking_version": "rrf-v3",
+            "ranking_version": "ranking-weights-v1",
             "fts_index_version": 7,
             "semantic_index_version": 8,
             "graph_index_version": 9,
@@ -262,7 +262,7 @@ def test_finalize_manifest_uses_observed_scalar_ranking_identities(tmp_path):
     runner._finalize_manifest_identities()
 
     identities = cp.read_manifest()["identities"]
-    assert identities["ranking_version"] == "rrf-v3"
+    assert identities["ranking_version"] == "ranking-weights-v1"
     assert identities["fts_index_version"] == 7
     assert identities["semantic_index_version"] == 8
     assert identities["graph_index_version"] == 9
@@ -366,7 +366,7 @@ def test_degraded_recall_is_recorded(tmp_path):
         "results": [result("m1", ["e1"])],
         "degraded": True,
         "degradation_reasons": ["semantic_unavailable"],
-        "ranking_version": "rrf-v3",
+        "ranking_version": "ranking-weights-v1",
         "fts_index_version": 2,
     }
     runner, cp = make_runner(tmp_path, FakeClient(response))
@@ -376,7 +376,7 @@ def test_degraded_recall_is_recorded(tmp_path):
     record = cp.load_retrieval_records()[conv.qa[0].qa_id]
     assert record["degraded"] is True
     assert record["degradation_reasons"] == ["semantic_unavailable"]
-    assert record["ranking_version"] == "rrf-v3"
+    assert record["ranking_version"] == "ranking-weights-v1"
     assert record["fts_index_version"] == 2
 
 

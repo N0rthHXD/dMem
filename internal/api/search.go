@@ -112,11 +112,35 @@ func recallResponse(operationID string, query application.RecallQuery, result do
 			Kind: revision.Kind, DisplayContent: revision.DisplayContent,
 			EventTimeStart: revision.EventTimeStart, EventTimeEnd: revision.EventTimeEnd,
 			ValidFrom: revision.ValidFrom, ValidUntil: revision.ValidUntil, SourceSpeaker: revision.SourceSpeaker,
+			TimePrecision: revision.TimePrecision, TimeSource: revision.TimeSource,
 			Evidence: revision.Evidence, Confidence: revision.Confidence,
 			LifecycleState: candidate.Memory.CurrentState, EstimatedTokens: tokens,
 		}
 		if query.Explain {
-			item.Explanation = &domain.RecallExplanation{MatchedSignals: append([]string(nil), candidate.MatchedChannels...), SelectionReason: candidate.SelectionReason}
+			item.Explanation = &domain.RecallExplanation{
+				MatchedSignals:              append([]string(nil), candidate.MatchedChannels...),
+				SelectionReason:             candidate.SelectionReason,
+				Features:                    candidate.RankingFeatures,
+				GraphScore:                  candidate.GraphScore,
+				SemanticRawScore:            candidate.SemanticRawScore,
+				SemanticPercentile:          candidate.SemanticPercentile,
+				SemanticRejectionReason:     candidate.SemanticRejectionReason,
+				SemanticCalibrationIdentity: candidate.SemanticCalibrationIdentity,
+				TemporalPrecision:           candidate.TemporalPrecision,
+				TemporalSourceWording:       candidate.TemporalSourceWording,
+				TemporalTimeSource:          candidate.TemporalTimeSource,
+				QueryTimeStart:              candidate.QueryTimeStart,
+				QueryTimeEnd:                candidate.QueryTimeEnd,
+				ReferenceTimeAnchor:         candidate.ReferenceTimeAnchor,
+				RankContribution:            candidate.RankContribution,
+				GraphSignals:                candidate.GraphSignals,
+				GraphFacts:                  candidate.GraphFacts,
+				GraphPaths:                  candidate.GraphPaths,
+				KeywordRawBM25:              candidate.KeywordRawBM25,
+				KeywordMatchedFields:        candidate.KeywordMatchedFields,
+				KeywordExactMatch:           candidate.KeywordExactMatch,
+				KeywordTermCoverage:         candidate.KeywordTermCoverage,
+			}
 		}
 		items = append(items, item)
 		tokensUsed += tokens
@@ -127,7 +151,7 @@ func recallResponse(operationID string, query application.RecallQuery, result do
 			OperationID: operationID, Intent: query.Intent, ReferenceTime: result.ReferenceTime,
 			RequestedCapabilities: append([]string(nil), result.RequestedChannels...), ExecutedCapabilities: append([]string(nil), result.ExecutedChannels...),
 			Degraded: result.Degraded, DegradationReasons: degradationReasons,
-			QueryPlanIdentity: "query-plan-v1", RankingIdentity: result.RankingVersion, ContextSelectionIdentity: "context-selection-v1",
+			QueryPlanIdentity: result.QueryPlanIdentity, RankingIdentity: result.RankingIdentity, ContextSelectionIdentity: result.ContextIdentity,
 		},
 	}
 }

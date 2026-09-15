@@ -7,10 +7,17 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
 func enableGraphExtraction(r *Repository) {
 	r.SetGraphExtractionEnabled(true)
+}
+
+// enableGraphCandidates raises the configured graph trust so graph-only
+// direct/path candidates can enter. Production defaults to features_only.
+func enableGraphCandidates(r *Repository) {
+	r.SetRetrievalCalibration(retrieval.DefaultWeights(), retrieval.DefaultCalibration(), retrieval.GraphDirect, 0, 0, 0)
 }
 
 func seedEntity(t *testing.T, r *Repository, entityID, name, typ string) {
@@ -267,6 +274,7 @@ func TestEntityResolutionQueryFindsAliasesInNaturalLanguage(t *testing.T) {
 
 func TestGraphRecallDirectMentionAndFactAndMemoryRelation(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
+	enableGraphCandidates(r)
 	seedEntity(t, r, "entity-alice", "Alice", "person")
 	seedEntity(t, r, "entity-alpha", "Alpha", "project")
 	mentionMemory := createTestMemory(t, r, "graph-mention-mem")
@@ -275,6 +283,9 @@ func TestGraphRecallDirectMentionAndFactAndMemoryRelation(t *testing.T) {
 	// fact memory: source revision supporting an Alice->Alpha participates_in fact
 	factMemory := createTestMemory(t, r, "graph-fact-mem")
 	if _, err := r.store.writer.Exec(`INSERT INTO entity_facts(fact_id, space_id, subject_entity_id, predicate, object_entity_id, source_memory_id, source_revision_id, confidence, state, source, specification_hash, created_by, processing_version, created_at, updated_at) VALUES ('fact-alice-alpha', 'space-1', 'entity-alice', 'participates_in', 'entity-alpha', ?, ?, 0.9, 'active', 'auto_review', 'hash', 'test', 'v1', '2026-08-21T11:00:00Z', '2026-08-21T11:00:00Z')`, factMemory.MemoryID, factMemory.CurrentRevision.RevisionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.writer.Exec(`INSERT INTO entity_fact_evidence(evidence_id,fact_id,evidence_type,created_by,created_at) VALUES ('fact-alice-alpha-evidence','fact-alice-alpha','human_confirmation','test','2026-08-21T11:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	// memory relation: factMemory supports mentionMemory
@@ -300,6 +311,44 @@ func TestGraphRecallDirectMentionAndFactAndMemoryRelation(t *testing.T) {
 	}
 	if !signals["direct_entity_mention"] || !signals["exact_predicate_fact"] {
 		t.Fatalf("graph signals=%v results=%+v", signals, result.Results)
+	}
+}
+
+func TestGraphFactWindowOrdersByConfidenceBeforeLimit(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	seedEntity(t, r, "entity-alice", "Alice", "person")
+	seedEntity(t, r, "entity-alpha", "Alpha", "project")
+	seedEntity(t, r, "entity-beta", "Beta", "project")
+	high := createGraphMemory(t, r, "graph-window-high", "high confidence fact")
+	low := createGraphMemory(t, r, "graph-window-low", "low confidence fact")
+	insertFact := func(factID, objectID, memoryID, revisionID string, confidence float64) {
+		t.Helper()
+		if _, err := r.store.writer.Exec(`INSERT INTO entity_facts(fact_id, space_id, subject_entity_id, predicate, object_entity_id, source_memory_id, source_revision_id, confidence, state, source, specification_hash, created_by, processing_version, created_at, updated_at) VALUES (?, 'space-1', 'entity-alice', 'participates_in', ?, ?, ?, ?, 'active', 'auto_review', 'hash', 'test', 'v1', '2026-08-21T11:00:00Z', '2026-08-21T11:00:00Z')`, factID, objectID, memoryID, revisionID, confidence); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.store.writer.Exec(`INSERT INTO entity_fact_evidence(evidence_id,fact_id,evidence_type,created_by,created_at) VALUES (?,?,'human_confirmation','test','2026-08-21T11:00:00Z')`, factID+"-evidence", factID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertFact("fact-window-high", "entity-alpha", high.MemoryID, high.CurrentRevision.RevisionID, 0.95)
+	insertFact("fact-window-low", "entity-beta", low.MemoryID, low.CurrentRevision.RevisionID, 0.55)
+	if err := r.RebuildGraphIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := r.store.reader.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	params := SearchParams{SpaceIDs: []string{"space-1"}, States: []string{"active"}, ReferenceTime: "2026-08-21T12:00:00Z"}
+	policy := graphRecallPolicy{Policy: retrieval.GraphDirect, MinEntityConfidence: 0, MinFactConfidence: 0, AllowNewCandidates: true, Primary: map[string]struct{}{}}
+	resolved := []domain.ResolvedEntity{{EntityID: "entity-alice", EntityType: "person", Alias: "Alice", Confidence: 0.9, MatchKind: "alias"}}
+	graph, err := r.graphChannelRecall(context.Background(), tx, params, []string{"space-1"}, policy, resolved, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.items) != 1 || graph.items[0].memoryID != high.MemoryID {
+		t.Fatalf("graph fact window = %+v, want only the high-confidence fact", graph.items)
 	}
 }
 
@@ -357,5 +406,149 @@ func TestFactProposalConcurrentConfirm(t *testing.T) {
 	var facts int
 	if err := r.store.reader.QueryRow(`SELECT count(*) FROM entity_facts WHERE subject_entity_id='entity-alice' AND predicate='has_status' AND state='active'`).Scan(&facts); err != nil || facts != 1 {
 		t.Fatalf("facts after concurrent confirm=%d err=%v", facts, err)
+	}
+}
+
+func TestAmbiguousAliasIsNotResolvedByUUIDOrder(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	seedEntity(t, r, "entity-z", "Jordan", "person")
+	seedEntity(t, r, "entity-a", "Jordan", "person")
+	tx, err := r.store.reader.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	resolved, err := resolveQueryEntities(context.Background(), tx, "What did Jordan say?", []string{"space-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 2 {
+		t.Fatalf("ambiguous resolution = %+v", resolved)
+	}
+	for _, entity := range resolved {
+		if !entity.Ambiguous || entity.MatchKind != "alias_ambiguous" {
+			t.Fatalf("ambiguous alias resolved without marker: %+v", entity)
+		}
+		if len(entity.Alternatives) != 1 {
+			t.Fatalf("alternatives = %v", entity.Alternatives)
+		}
+	}
+}
+
+func TestUnresolvedAmbiguityDisablesGraphExpansion(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphCandidates(r)
+	seedEntity(t, r, "entity-z", "Jordan", "person")
+	seedEntity(t, r, "entity-a", "Jordan", "person")
+	memory := createMemoryWithContent(t, r, "ambiguous-mention", "unrelated content body")
+	seedMention(t, r, "mention-ambiguous", "entity-z", memory.MemoryID, memory.CurrentRevision.RevisionID, 0, 6)
+	tx, err := r.store.reader.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	resolved, err := resolveQueryEntities(context.Background(), tx, "Jordan", []string{"space-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := r.planQuery(context.Background(), SearchParams{Query: "Jordan", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 10, ReferenceTime: formatTime(r.runtime.Now())})
+	graph, err := r.graphChannelRecall(context.Background(), tx, params, []string{"space-1"}, graphRecallPolicy{
+		Policy: retrieval.GraphDirect, MinEntityConfidence: 0.6, MinFactConfidence: 0.7,
+		AllowNewCandidates: true, Primary: map[string]struct{}{},
+	}, resolved, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.items) != 0 {
+		t.Fatalf("ambiguous mention produced graph candidates: %+v", graph.items)
+	}
+}
+
+func TestGraphChannelIsFailClosedWhenUnready(t *testing.T) {
+	for _, state := range []string{"stale", "rebuilding", "degraded"} {
+		t.Run(state, func(t *testing.T) {
+			r, _ := newMemoryTestRepository(t)
+			createMemoryWithContent(t, r, "graph-state-"+state, "graphstate word")
+			if _, err := r.store.writer.Exec(`UPDATE graph_index_metadata SET state=? WHERE singleton=1`, state); err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.SearchMemories(context.Background(), SearchParams{Query: "graphstate", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if contains(result.ExecutedChannels, "graph") {
+				t.Fatalf("graph remained executed in state %q", state)
+			}
+			if !result.Degraded || !contains(result.DegradationReasons, "graph_"+state) {
+				t.Fatalf("degradation not reported: %+v", result)
+			}
+		})
+	}
+}
+
+func TestGraphChannelIsFailClosedWhenPartialOrDependencyUnready(t *testing.T) {
+	for _, test := range []struct {
+		name, setup, reason string
+	}{
+		{"partial", `UPDATE graph_index_metadata SET source_entity_count=1 WHERE singleton=1`, "graph_partial"},
+		{"entity", `UPDATE entity_index_metadata SET state='degraded' WHERE singleton=1`, "graph_entity_degraded"},
+		{"relation", `UPDATE relation_index_metadata SET state='rebuilding' WHERE singleton=1`, "graph_relation_rebuilding"},
+		{"incompatible", `UPDATE entity_index_metadata SET normalization_version='v0' WHERE singleton=1`, "graph_incompatible"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r, _ := newMemoryTestRepository(t)
+			createMemoryWithContent(t, r, "graph-readiness-"+test.name, "readinessword")
+			if err := r.RebuildGraphIndex(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.store.writer.Exec(test.setup); err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.SearchMemories(context.Background(), SearchParams{Query: "readinessword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
+			if err != nil || contains(result.ExecutedChannels, "graph") || !result.Degraded || !contains(result.DegradationReasons, test.reason) {
+				t.Fatalf("readiness result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestGraphPolicyOffIsIntentionalNotDegraded(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "anything", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, GraphPolicy: retrieval.GraphOff, Limit: 10, MaxChars: 10000})
+	if err != nil || result.Degraded || contains(result.ExecutedChannels, "graph") {
+		t.Fatalf("graph off result=%+v err=%v", result, err)
+	}
+}
+
+func TestEmptyEligibilityStillReportsGraphReadiness(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	if _, err := r.store.writer.Exec(`UPDATE graph_index_metadata SET state='stale' WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "anything", SpaceIDs: []string{"space-1"}, States: []string{}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 1000})
+	if err != nil || contains(result.ExecutedChannels, "graph") || !contains(result.DegradationReasons, "graph_stale") {
+		t.Fatalf("empty eligibility execution = %+v, %v", result, err)
+	}
+}
+
+func TestGraphMentionConfidenceIsPersistedAndConsumed(t *testing.T) {
+	r, _ := newMemoryTestRepository(t)
+	enableGraphExtraction(r)
+	seedEntity(t, r, "entity-alice", "Alice", "person")
+	createGraphMemory(t, r, "graph-confidence", "Alice is here")
+	claim, input := graphClaimInput(t, r)
+	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
+		Entities: []domain.GraphEntity{{LocalID: "e0", CanonicalName: "Alice", EntityType: "person", Confidence: 0.95}},
+		Mentions: []domain.GraphMention{{EntityLocalID: "e0", Text: "Alice", StartRune: 0, EndRune: 5, Confidence: 0.7}},
+	}
+	if err := r.CommitGraphExtraction(context.Background(), claim, input, GraphExtractionCommit{Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	var confidence float64
+	if err := r.store.reader.QueryRow(`SELECT confidence FROM entity_mentions WHERE entity_id='entity-alice'`).Scan(&confidence); err != nil {
+		t.Fatal(err)
+	}
+	if confidence != 0.7 {
+		t.Fatalf("persisted mention confidence = %v", confidence)
 	}
 }

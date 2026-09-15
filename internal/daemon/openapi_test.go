@@ -504,7 +504,7 @@ func TestOpenAPIContract(t *testing.T) {
 	}
 	c.invalidCaller(http.MethodGet, "/v1/feedback/aggregates/health")
 
-	if _, err := db.Exec(`UPDATE index_metadata SET state='degraded' WHERE index_name='memory_fts'`); err != nil {
+	if _, err := db.Exec(`UPDATE index_metadata SET state='degraded' WHERE index_name='memory_fts'; UPDATE entity_index_metadata SET state='ready',source_entity_count=(SELECT count(*) FROM entities),source_mention_count=(SELECT count(*) FROM entity_mentions) WHERE singleton=1; UPDATE relation_index_metadata SET state='ready',source_relation_count=(SELECT count(*) FROM memory_relations WHERE state='active') WHERE singleton=1; UPDATE graph_index_metadata SET state='ready',source_fact_count=(SELECT count(*) FROM entity_facts WHERE state='active'),source_entity_count=(SELECT count(*) FROM entities WHERE state='active'),source_relation_count=(SELECT count(*) FROM memory_relations WHERE state='active') WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	response = c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "contract", "space_ids": []string{space.SpaceID}, "states": []string{"active", "contested"}})

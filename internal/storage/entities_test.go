@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
 func entityProposalIdentity(key, action, id string, value any) WriteIdentity {
@@ -122,6 +124,7 @@ func TestEntitySiblingSpaceRejectedAndNotListed(t *testing.T) {
 
 func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
+	enableGraphCandidates(r)
 	entityID := confirmEntityTest(t, r, "RecallName")
 	memory := createTestMemory(t, r, "entity-recall-memory")
 	start, end := 0, 1
@@ -131,7 +134,13 @@ func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	if _, _, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("mention-recall", "confirm", proposal.ID, review), proposal.ID, review); err != nil {
 		t.Fatal(err)
 	}
-	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
+	if err := r.RebuildEntityIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RebuildGraphIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, GraphPolicy: retrieval.GraphDirect, Limit: 10, MaxChars: 10000})
 	if err != nil || len(result.Results) != 1 {
 		t.Fatalf("current recall=%+v err=%v", result, err)
 	}
@@ -140,7 +149,7 @@ func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	if _, err = r.store.writer.Exec(`INSERT INTO memory_revisions(revision_id,memory_id,parent_revision_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES (?,?,?,'fact','replacement','replacement','replacement-hash','normal',0,0,'test','v',?); UPDATE memories SET current_revision_id=?,updated_at=? WHERE memory_id=?`, newRevision, memory.MemoryID, memory.CurrentRevision.RevisionID, now, newRevision, now, memory.MemoryID); err != nil {
 		t.Fatal(err)
 	}
-	result, err = r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 10, MaxChars: 10000})
+	result, err = r.SearchMemories(context.Background(), SearchParams{Query: "RecallName", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, GraphPolicy: retrieval.GraphDirect, Limit: 10, MaxChars: 10000})
 	if err != nil || len(result.Results) != 0 {
 		t.Fatalf("stale entity mention recall=%+v, error=%v", result, err)
 	}

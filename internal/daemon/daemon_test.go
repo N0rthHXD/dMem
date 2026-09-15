@@ -19,7 +19,32 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/provider"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
+
+func TestRetrievalContractsMapEffectiveConfiguration(t *testing.T) {
+	cfg := config.Config{
+		Semantic: config.SemanticConfig{CalibrationVersion: "semantic-custom-v1", AbsoluteFloor: 0.41, TopMargin: 0.07},
+		Graph:    config.GraphConfig{Policy: "direct", MinEntityConfidence: 0, MinFactConfidence: 0.72, BoostCap: 0.04},
+		Ranking: config.RankingConfig{
+			Version: "ranking-custom-v1", SemanticWeight: 1.2, KeywordWeight: 0.3,
+			ExactWeight: 0.2, TemporalWeight: 0.15, QualityWeight: 0.12, AgreementWeight: 0.06,
+		},
+	}
+	weights, calibration, policy := retrievalContracts(cfg)
+	if weights.Version != cfg.Ranking.Version || weights.Semantic != 1.2 || weights.Keyword != 0.3 || weights.Exact != 0.2 || weights.Temporal != 0.15 || weights.Quality != 0.12 || weights.Agreement != 0.06 {
+		t.Fatalf("ranking contracts = %+v", weights)
+	}
+	if weights.GraphBoostGraphCap != 0.04 || weights.GraphOnlyAdmissionFloor != retrieval.DefaultWeights().GraphOnlyAdmissionFloor {
+		t.Fatalf("graph ranking contracts = %+v", weights)
+	}
+	if calibration.Version != "semantic-custom-v1" || calibration.AbsoluteFloor != 0.41 || calibration.TopMargin != 0.07 {
+		t.Fatalf("semantic calibration = %+v", calibration)
+	}
+	if policy != retrieval.GraphDirect {
+		t.Fatalf("graph policy = %q", policy)
+	}
+}
 
 func TestDaemonLifecycleAndHealth(t *testing.T) {
 	t.Parallel()

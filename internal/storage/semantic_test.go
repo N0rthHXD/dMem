@@ -588,7 +588,7 @@ func TestSemanticEligibilityAppliedBeforeBoundedVectorRecall(t *testing.T) {
 	}
 	setEmbeddingEligibility(t, repository, eligible, 1, true)
 	setEmbeddingEligibility(t, repository, ineligible, 1, false)
-	repository.SetEmbedding(repository.emb().Provider, "test-provider", "test-model", "test-provider/test-model", "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(repository.emb().Provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -633,7 +633,7 @@ func TestHybridKeywordEligibilityAppliedBeforeBoundedRecall(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	result, err := semanticKeywordRecall(context.Background(), tx, params, []string{"space-1"}, 1)
+	result, err := repository.keywordRecall(context.Background(), tx, params, []string{"space-1"}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,7 +784,7 @@ func TestSemanticRebuildUsesOnlyCurrentEligibleCorpus(t *testing.T) {
 	if err != nil || status.State != "ready" || status.SourceRevisionCount != 1 {
 		t.Fatalf("eligible semantic status = %+v, %v", status, err)
 	}
-	if len(provider.requests) != 1 || provider.requests[0].Inputs()[0] != "automobile eligible corpus" {
+	if len(provider.requests) != 1 || !strings.Contains(provider.requests[0].Inputs()[0], "automobile eligible corpus") || !strings.Contains(provider.requests[0].Inputs()[0], "kind:fact") {
 		t.Fatalf("embedding requests = %+v", provider.requests)
 	}
 	result, err := repository.SearchMemories(context.Background(), semanticParams("car"))
@@ -818,7 +818,7 @@ func TestSemanticEligibilityExpansionReusesCompatibleVectors(t *testing.T) {
 	}
 	requests := len(provider.requests)
 	setEmbeddingEligibility(t, repository, memory, 1, true)
-	repository.SetEmbedding(provider, "test-provider", "test-model", "test-provider/test-model", "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
 
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
@@ -839,7 +839,7 @@ func TestSemanticEligibilityNarrowingFiltersLiveCorpusImmediately(t *testing.T) 
 	}
 	setEmbeddingEligibility(t, repository, allowed, 1, true)
 	setEmbeddingEligibility(t, repository, excluded, 1, false)
-	repository.SetEmbedding(provider, "test-provider", "test-model", "test-provider/test-model", "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
 
 	if _, err := repository.SearchMemories(context.Background(), semanticParams("car")); !errors.Is(err, ErrIndexDegraded) {
 		t.Fatalf("semantic query before policy generation publish = %v", err)
@@ -1160,7 +1160,7 @@ func configureSemanticQueryPolicy(t *testing.T, repository *Repository, allowedS
 		Activation: ActivationRecord{ActivationID: "query-activation", RevisionID: "query-revision", Trigger: "startup", RequestedBy: "test", Outcome: "activated", StartedAt: now, FinishedAt: now},
 		Capabilities: []CapabilityStateRecord{
 			{Capability: "processing", Enabled: false, HealthState: "disabled", ReconciliationState: "idle"},
-			{Capability: "embedding", Enabled: true, ConfigurationIdentity: "query-config", ConfigurationGeneration: 1, CompatibilityIdentity: "test-provider/test-model", PolicyIdentity: "query-policy", PolicyGeneration: 1, HealthState: "ready", ReconciliationState: "idle"},
+			{Capability: "embedding", Enabled: true, ConfigurationIdentity: "query-config", ConfigurationGeneration: 1, CompatibilityIdentity: EmbeddingCompatibilityIdentity("test-provider/test-model"), PolicyIdentity: "query-policy", PolicyGeneration: 1, HealthState: "ready", ReconciliationState: "idle"},
 		},
 		Policies:    []ProviderPolicyRecord{{PolicyIdentity: "query-policy", Capability: "embedding", DefaultDecision: "deny", AllowedContentTypes: []string{"text/plain"}, AllowedSourceTypes: []string{"manual"}, AllowedSensitivities: []string{"normal"}, QueryAllowed: true, CreatedAt: now}},
 		Assignments: assignments,
@@ -1169,7 +1169,7 @@ func configureSemanticQueryPolicy(t *testing.T, repository *Repository, allowedS
 		t.Fatal(err)
 	}
 	runtime := repository.emb()
-	repository.SetEmbedding(runtime.Provider, "test-provider", "test-model", "test-provider/test-model", "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(runtime.Provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
 }
 
 func searchResultsByID(response domain.SearchResponse) map[string]domain.SearchResult {
@@ -1192,5 +1192,86 @@ func assertChannels(t *testing.T, got []string, want ...string) {
 	t.Helper()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("channels = %v, want %v", got, want)
+	}
+}
+
+func TestEmbeddingDocumentAndQueryFormatsAreVersioned(t *testing.T) {
+	if embeddingDocumentFormatVersion != "embedding-document-v1" || embeddingQueryFormatVersion != "embedding-query-v1" {
+		t.Fatalf("embedding format versions = %q/%q", embeddingDocumentFormatVersion, embeddingQueryFormatVersion)
+	}
+	document := embeddingDocument("event", "canonical body", "meeting", "en", "Alice", "day")
+	for _, want := range []string{"kind:event", "canonical body", "event_type:meeting", "language:en", "speaker:Alice", "time_precision:day"} {
+		if !strings.Contains(document, want) {
+			t.Fatalf("embedding document missing %q: %q", want, document)
+		}
+	}
+	if !strings.HasPrefix(embeddingQueryDocument("find the report"), "query:") {
+		t.Fatalf("query document = %q", embeddingQueryDocument("find the report"))
+	}
+}
+
+func TestEmbeddingCompatibilityBindsDocumentAndQueryFormats(t *testing.T) {
+	identity := EmbeddingCompatibilityIdentity("provider/model")
+	if identity == "" || identity == "provider/model" || identity != EmbeddingCompatibilityIdentity("provider/model") {
+		t.Fatalf("embedding compatibility identity = %q", identity)
+	}
+}
+
+func TestANNWindowIsExactlyReranked(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	configureSemanticTest(t, repository, &semanticTestProvider{})
+	relevant := createMemoryWithContent(t, repository, "ann-relevant", "automobile handbook")
+	createMemoryWithContent(t, repository, "ann-other", "generic manual")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repository.SetSemanticWindowRecall(func(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policyGeneration int, compatibilityIdentity string, dimension int, queryBlob []byte, limit int) ([]semanticRecallItem, error) {
+		rows, err := tx.QueryContext(ctx, `SELECT memory_id, revision_id, content_hash FROM memory_projections WHERE searchable=1 ORDER BY memory_id DESC`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var window []semanticRecallItem
+		for rows.Next() {
+			var item semanticRecallItem
+			if err := rows.Scan(&item.MemoryID, &item.RevisionID, &item.ContentHash); err != nil {
+				return nil, err
+			}
+			item.Score = 0.01
+			window = append(window, item)
+		}
+		return window, rows.Err()
+	})
+	result, err := repository.SearchMemories(context.Background(), semanticParams("car"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) == 0 || result.Results[0].Memory.MemoryID != relevant.MemoryID {
+		t.Fatalf("exact rerank result = %+v", result.Results)
+	}
+}
+
+func TestExplainPopulatesFeatureAndCalibrationProvenance(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	configureSemanticTest(t, repository, &semanticTestProvider{})
+	createMemoryWithContent(t, repository, "explain-provenance", "automobile explainable")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	params := semanticParams("car explainable")
+	params.Explain = true
+	result, err := repository.SearchMemories(context.Background(), params)
+	if err != nil || len(result.Results) == 0 {
+		t.Fatalf("explain search = %+v, %v", result, err)
+	}
+	item := result.Results[0]
+	if len(item.RankingFeatures) == 0 {
+		t.Fatalf("ranking features missing: %+v", item)
+	}
+	if item.SemanticRawScore == nil || item.SemanticPercentile == nil {
+		t.Fatalf("semantic provenance missing: %+v", item)
+	}
+	if item.SemanticCalibrationIdentity == "" {
+		t.Fatal("calibration identity missing")
 	}
 }

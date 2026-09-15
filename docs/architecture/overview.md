@@ -106,17 +106,13 @@ Authority, scope, policy, identity, and validity filters run before top-k.
 not an immutable vector snapshot: projection eligibility and compatible vector
 membership changes advance it transactionally.
 
-Retrieval has three top-level channels: `keyword`, `semantic`, and `graph`.
-Entity resolution is query understanding (retrieval pre-processing), not a
-separate channel: deterministic alias longest-match maps natural-language
-mentions to resolved entity IDs. The graph channel internally distinguishes
-signals — `direct_entity_mention` (0-hop), `exact_predicate_fact` / `one_hop_fact`
-(1-hop), `two_hop_path` (bounded 2-hop), and `memory_relation` /
-`graph_conflict` — and expands from a strict unified seed set of keyword
-candidates, semantic candidates, and resolved-entity direct mentions.
-Requests select explicit `channels`; channels are fused with versioned
-reciprocal-rank fusion (`rrf-v3`), each authority evidence contributing at
-most once, and bounded feedback aggregates act only as a post-ranking signal.
+Retrieval uses keyword and semantic as independent primary recall signals.
+Entity resolution is query understanding, not a separate channel. The query
+plan selects graph `off`, `features_only`, `direct`, or `bounded_path`; graph
+uses only ready compatible snapshots and calibrated primary seeds. A versioned
+deterministic feature ranker preserves raw and calibrated scores, applies a
+capped graph boost, and uses a separate admission formula for graph-only
+candidates. Explicit channel overrides are limited to evaluation and debugging.
 
 Cursors bind the authority corpus generation, live semantic corpus generation,
 and relevant ranking/index versions and generations. A generation change

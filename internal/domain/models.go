@@ -680,6 +680,34 @@ type SearchResult struct {
 	GraphPaths       []GraphPath   `json:"graph_paths,omitempty"`
 	SelectionReason  string        `json:"selection_reason"`
 	ConflictRefs     []ConflictRef `json:"conflict_refs,omitempty"`
+	// Explain fields are populated only when explain mode is requested.
+	RankingFeatures             map[string]float64 `json:"ranking_features,omitempty"`
+	GraphScore                  *float64           `json:"graph_score,omitempty"`
+	SemanticRawScore            *float64           `json:"semantic_raw_score,omitempty"`
+	SemanticPercentile          *float64           `json:"semantic_percentile,omitempty"`
+	SemanticRejectionReason     string             `json:"semantic_rejection_reason,omitempty"`
+	SemanticCalibrationIdentity string             `json:"semantic_calibration_identity,omitempty"`
+	TemporalPrecision           string             `json:"temporal_precision,omitempty"`
+	TemporalSourceWording       string             `json:"temporal_source_wording,omitempty"`
+	TemporalTimeSource          string             `json:"temporal_time_source,omitempty"`
+	QueryTimeStart              *time.Time         `json:"query_time_start,omitempty"`
+	QueryTimeEnd                *time.Time         `json:"query_time_end,omitempty"`
+	ReferenceTimeAnchor         *time.Time         `json:"reference_time_anchor,omitempty"`
+	RankContribution            RankContribution   `json:"rank_contribution,omitempty"`
+	KeywordRawBM25              *float64           `json:"keyword_raw_bm25,omitempty"`
+	KeywordMatchedFields        []string           `json:"keyword_matched_fields,omitempty"`
+	KeywordExactMatch           bool               `json:"keyword_exact_match,omitempty"`
+	KeywordTermCoverage         *float64           `json:"keyword_term_coverage,omitempty"`
+}
+
+type RankContribution struct {
+	Primary           float64 `json:"primary"`
+	GraphBoost        float64 `json:"graph_boost"`
+	GraphOnly         float64 `json:"graph_only"`
+	Penalty           float64 `json:"penalty"`
+	Feedback          float64 `json:"feedback"`
+	Final             float64 `json:"final"`
+	GraphOnlyAdmitted bool    `json:"graph_only_admitted"`
 }
 
 type SearchResponse struct {
@@ -696,6 +724,9 @@ type SearchResponse struct {
 	GraphIndexVersion        int64            `json:"graph_index_version"`
 	GraphIndexState          string           `json:"graph_index_state"`
 	RankingVersion           string           `json:"ranking_version"`
+	QueryPlanIdentity        string           `json:"query_plan_identity"`
+	RankingIdentity          string           `json:"ranking_identity"`
+	ContextIdentity          string           `json:"context_identity"`
 	CorpusGeneration         int64            `json:"corpus_generation"`
 	FeedbackAggregateVersion int64            `json:"feedback_aggregate_version"`
 	ResolvedEntities         []ResolvedEntity `json:"resolved_entities,omitempty"`
@@ -749,8 +780,28 @@ type RecallRequest struct {
 }
 
 type RecallExplanation struct {
-	MatchedSignals  []string `json:"matched_signals"`
-	SelectionReason string   `json:"selection_reason"`
+	MatchedSignals              []string           `json:"matched_signals"`
+	SelectionReason             string             `json:"selection_reason"`
+	Features                    map[string]float64 `json:"features,omitempty"`
+	GraphScore                  *float64           `json:"graph_score,omitempty"`
+	SemanticRawScore            *float64           `json:"semantic_raw_score,omitempty"`
+	SemanticPercentile          *float64           `json:"semantic_percentile,omitempty"`
+	SemanticRejectionReason     string             `json:"semantic_rejection_reason,omitempty"`
+	SemanticCalibrationIdentity string             `json:"semantic_calibration_identity,omitempty"`
+	TemporalPrecision           string             `json:"temporal_precision,omitempty"`
+	TemporalSourceWording       string             `json:"temporal_source_wording,omitempty"`
+	TemporalTimeSource          string             `json:"temporal_time_source,omitempty"`
+	QueryTimeStart              *time.Time         `json:"query_time_start,omitempty"`
+	QueryTimeEnd                *time.Time         `json:"query_time_end,omitempty"`
+	ReferenceTimeAnchor         *time.Time         `json:"reference_time_anchor,omitempty"`
+	RankContribution            RankContribution   `json:"rank_contribution"`
+	GraphSignals                []GraphSignal      `json:"graph_signals,omitempty"`
+	GraphFacts                  []EntityFact       `json:"graph_facts,omitempty"`
+	GraphPaths                  []GraphPath        `json:"graph_paths,omitempty"`
+	KeywordRawBM25              *float64           `json:"keyword_raw_bm25,omitempty"`
+	KeywordMatchedFields        []string           `json:"keyword_matched_fields,omitempty"`
+	KeywordExactMatch           bool               `json:"keyword_exact_match,omitempty"`
+	KeywordTermCoverage         *float64           `json:"keyword_term_coverage,omitempty"`
 }
 
 type ContextItem struct {
@@ -764,6 +815,8 @@ type ContextItem struct {
 	ValidFrom       *time.Time         `json:"valid_from,omitempty"`
 	ValidUntil      *time.Time         `json:"valid_until,omitempty"`
 	SourceSpeaker   string             `json:"source_speaker,omitempty"`
+	TimePrecision   TimePrecision      `json:"time_precision,omitempty"`
+	TimeSource      string             `json:"time_source,omitempty"`
 	Evidence        []RevisionEvidence `json:"evidence,omitempty"`
 	Confidence      float64            `json:"confidence"`
 	LifecycleState  string             `json:"lifecycle_state"`

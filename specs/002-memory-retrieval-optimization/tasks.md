@@ -297,118 +297,118 @@ pollution, and replace equal rank-only RRF with calibrated deterministic ranking
 
 ### QueryPlan
 
-- [ ] T041 [P] [SEARCH] Add failing query-plan tests for normalization,
+- [X] T041 [P] [SEARCH] Add failing query-plan tests for normalization,
   language, exact terms, identifiers, quoted phrases, dates, numbers, reference
   time, question type, memory kinds, predicates, budgets, and safe graph policy
   in `internal/storage/query_plan_test.go`
-- [ ] T042 [P] [SEARCH] Add failing ambiguity tests proving entity UUID order
+- [X] T042 [P] [SEARCH] Add failing ambiguity tests proving entity UUID order
   cannot resolve an ambiguous alias and unresolved ambiguity disables graph
   expansion in `internal/storage/graph_test.go`
-- [ ] T043 [SEARCH] Implement deterministic `QueryPlan` construction in a new
+- [X] T043 [SEARCH] Implement deterministic `QueryPlan` construction in a new
   `internal/retrieval/` package or the existing storage boundary, with an
   immutable versioned output
-- [ ] T044 [SEARCH] Integrate optional policy-controlled provider enrichment for
+- [X] T044 [SEARCH] Integrate optional policy-controlled provider enrichment for
   query plans with strict bounds and deterministic fallback to the local plan
-- [ ] T045 [SEARCH] Bind normalized query plan, scope, reference time, and budgets
+- [X] T045 [SEARCH] Bind normalized query plan, scope, reference time, and budgets
   into query hashes, search operation records, and cursors
 
 ### Keyword Recall
 
-- [ ] T046 [P] [SEARCH] Add failing keyword tests for short proper names,
+- [X] T046 [P] [SEARCH] Add failing keyword tests for short proper names,
   acronyms, identifiers, dates, numbers, quoted phrases, required/optional terms,
   rare-term weighting, and CJK unigram/bigram fallback in
   `internal/storage/keyword_query_test.go`
-- [ ] T047 [P] [SEARCH] Add a regression test proving semantic-enabled and
+- [X] T047 [P] [SEARCH] Add a regression test proving semantic-enabled and
   keyword-only paths return identical keyword candidates and tie-breaks
-- [ ] T048 [SEARCH] Replace the OR-only compiler with one versioned field-aware
+- [X] T048 [SEARCH] Replace the OR-only compiler with one versioned field-aware
   keyword query compiler in `internal/storage/keyword_query.go`
-- [ ] T049 [SEARCH] Consolidate duplicate keyword SQL implementations and return
+- [X] T049 [SEARCH] Consolidate duplicate keyword SQL implementations and return
   raw BM25, matched fields, exact flags, term coverage, and one deterministic
   tie-break from `internal/storage/search.go`
 
 ### Semantic Recall And Calibration
 
-- [ ] T050 [P] [SEARCH] Add failing tests for canonical embedding documents,
+- [X] T050 [P] [SEARCH] Add failing tests for canonical embedding documents,
   kind prefixes, query formatting, identity changes, language/kind calibration,
   absolute floors, relative margins, and exact-search rerank in
   `internal/storage/semantic_test.go`
-- [ ] T051 [SEARCH] Build versioned embedding documents from canonical content
+- [X] T051 [SEARCH] Build versioned embedding documents from canonical content
   and compact structured fields in `internal/storage/semantic.go`
-- [ ] T052 [SEARCH] Replace the fixed semantic score floor with a versioned
+- [X] T052 [SEARCH] Replace the fixed semantic score floor with a versioned
   calibration interface and initial deterministic absolute-floor plus top-score
   margin policy in `internal/storage/semantic_search.go`
-- [ ] T053 [SEARCH] Preserve raw similarity, calibrated similarity, percentile,
+- [X] T053 [SEARCH] Preserve raw similarity, calibrated similarity, percentile,
   calibration identity, and rejection reason through candidate generation and
   explain output
-- [ ] T054 [SEARCH] Keep exact cosine search as the correctness baseline and add
+- [X] T054 [SEARCH] Keep exact cosine search as the correctness baseline and add
   an explicit extension point and tests for optional ANN recall followed by exact
   rerank without implementing ANN unless measured scale requires it
 
 ### Temporal Features
 
-- [ ] T055 [P] [SEARCH] Add failing tests for absolute and relative query time,
+- [X] T055 [P] [SEARCH] Add failing tests for absolute and relative query time,
   interval overlap, distance, precision, anchors, impossible intervals, and
   event-time/valid-time separation in `internal/storage/temporal_test.go`
-- [ ] T056 [SEARCH] Implement temporal query features and pre-top-k impossible
+- [X] T056 [SEARCH] Implement temporal query features and pre-top-k impossible
   interval filtering in `internal/retrieval/` and storage candidate queries
-- [ ] T057 [SEARCH] Preserve source time wording, normalized interval, anchor,
+- [X] T057 [SEARCH] Preserve source time wording, normalized interval, anchor,
   precision, and temporal score in candidate explanations and context data
 
 ### Graph Containment
 
-- [ ] T058 [P] [GRAPH] Add failing tests proving stale, rebuilding, incompatible,
+- [X] T058 [P] [GRAPH] Add failing tests proving stale, rebuilding, incompatible,
   or partial graph state is removed from execution and reported as degraded in
   `internal/storage/graph_test.go`
-- [ ] T059 [P] [GRAPH] Add failing tests for top-10 semantic seeds, top-10 keyword
+- [X] T059 [P] [GRAPH] Add failing tests for top-10 semantic seeds, top-10 keyword
   seeds, maximum 15 deduplicated seeds, primary-score gates, and prohibition of
   expanded seeds in `internal/storage/fusion_test.go`
-- [ ] T060 [P] [GRAPH] Add failing tests proving weak graph rank 1 cannot equal
+- [X] T060 [P] [GRAPH] Add failing tests proving weak graph rank 1 cannot equal
   a strong graph rank 1, relation-only candidates cannot enter by default, and
   graph boost cannot demote a protected primary exact match
-- [ ] T061 [GRAPH] Remove unconditional relation auto-confirm behavior and all
+- [X] T061 [GRAPH] Remove unconditional relation auto-confirm behavior and all
   remaining `related_to` extraction, publication, retrieval, API, and fixture
   paths
-- [ ] T062 [GRAPH] Persist and consume mention confidence; enforce versioned
+- [X] T062 [GRAPH] Persist and consume mention confidence; enforce versioned
   entity, alias, mention, fact, and revision-relation publication thresholds in
   `internal/storage/graph.go`
-- [ ] T063 [GRAPH] Require ready and compatible graph metadata before graph
+- [X] T063 [GRAPH] Require ready and compatible graph metadata before graph
   lookup in all recall paths, with explicit execution and degradation metadata
-- [ ] T064 [GRAPH] Restrict graph seeds to gated primary candidates and prohibit
+- [X] T064 [GRAPH] Restrict graph seeds to gated primary candidates and prohibit
   graph/relation-expanded recursion in `internal/storage/semantic_search.go` and
   `internal/storage/search.go`
-- [ ] T065 [GRAPH] Reorder mention, fact, relation, and path windows by intent,
+- [X] T065 [GRAPH] Reorder mention, fact, relation, and path windows by intent,
   confidence, specificity, temporal compatibility, recency, and stable ID before
   LIMIT in `internal/storage/graph_recall.go`
-- [ ] T066 [GRAPH] Preserve normalized graph scores and signal-family scores
+- [X] T066 [GRAPH] Preserve normalized graph scores and signal-family scores
   through candidate union, ranking features, explain output, and telemetry
 
 ### Deterministic Feature Ranker
 
-- [ ] T067 [P] [SEARCH] Add failing feature-normalization tests for semantic,
+- [X] T067 [P] [SEARCH] Add failing feature-normalization tests for semantic,
   keyword, exact, temporal, memory quality, agreement, graph, duplicate,
   aggregate, lifecycle, and feedback features in
   `internal/retrieval/ranker_test.go`
-- [ ] T068 [P] [SEARCH] Add failing ranking tests for missing features, stable
+- [X] T068 [P] [SEARCH] Add failing ranking tests for missing features, stable
   ties, graph boost caps, graph-only admission, protected primary exact matches,
   and cursor invalidation in `internal/storage/fusion_test.go`
-- [ ] T069 [SEARCH] Implement a query-local feature vector and deterministic
+- [X] T069 [SEARCH] Implement a query-local feature vector and deterministic
   normalization in `internal/retrieval/features.go`
-- [ ] T070 [SEARCH] Replace `rrf-v3` with the versioned deterministic feature
+- [X] T070 [SEARCH] Replace `rrf-v3` with the versioned deterministic feature
   ranker and configured initial weights in `internal/retrieval/ranker.go` and
   storage recall paths
-- [ ] T071 [SEARCH] Implement graph policies `off`, `features_only`, `direct`, and
+- [X] T071 [SEARCH] Implement graph policies `off`, `features_only`, `direct`, and
   `bounded_path`, defaulting production requests to semantic plus keyword with
   graph `features_only` only when ready
-- [ ] T072 [SEARCH] Implement separate graph-only scoring, admission floor,
+- [X] T072 [SEARCH] Implement separate graph-only scoring, admission floor,
   protected-rank rule, and prohibition against receiving both graph-only score
   and graph boost
-- [ ] T073 [SEARCH] Update ranking quality fixtures, ranking identity, cursor
+- [X] T073 [SEARCH] Update ranking quality fixtures, ranking identity, cursor
   tests, explain contributions, and selection reasons for the replacement ranker
 
 **Checkpoint**:
 
 ```sh
-go test ./internal/retrieval ./internal/storage ./internal/daemon
+CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/retrieval ./internal/storage ./internal/daemon
 make quality
 make performance
 make openapi

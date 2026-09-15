@@ -2,16 +2,58 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/N0rthHXD/dMem/internal/provider"
 	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
 const semanticIndexName = "memory_semantic"
+
+// Versioned embedding document and query formats. A change to either format
+// changes the semantic compatibility identity and requires a fresh rebuild.
+const (
+	embeddingDocumentFormatVersion = "embedding-document-v1"
+	embeddingQueryFormatVersion    = "embedding-query-v1"
+)
+
+func EmbeddingCompatibilityIdentity(base string) string {
+	hash := sha256.Sum256([]byte(base + "\x00" + embeddingDocumentFormatVersion + "\x00" + embeddingQueryFormatVersion))
+	return "sha256:" + hex.EncodeToString(hash[:])
+}
+
+// embeddingDocument builds a canonical, kind-prefixed embedding input from the
+// revision's canonical content plus compact structured fields. Indexing and
+// query formatting share one versioned contract.
+func embeddingDocument(kind, canonicalContent, eventType, language, speaker, precision string) string {
+	var builder strings.Builder
+	builder.WriteString("kind:")
+	builder.WriteString(kind)
+	builder.WriteString("\n")
+	builder.WriteString(canonicalContent)
+	for _, field := range []struct{ name, value string }{
+		{"event_type", eventType}, {"language", language}, {"speaker", speaker}, {"time_precision", precision},
+	} {
+		if field.value != "" {
+			builder.WriteString("\n")
+			builder.WriteString(field.name)
+			builder.WriteString(":")
+			builder.WriteString(field.value)
+		}
+	}
+	return builder.String()
+}
+
+// embeddingQueryDocument applies the versioned query format to raw query text.
+func embeddingQueryDocument(query string) string {
+	return "query:\n" + query
+}
 
 type EmbeddingIdentity struct {
 	MemoryID, RevisionID, ContentHash, Provider, Model string
@@ -121,14 +163,16 @@ func (r *Repository) embedMemory(ctx context.Context, claim *ClaimedJob, revisio
 	if runtime.Provider == nil {
 		return errors.New("embedding provider is unavailable")
 	}
-	var memoryID, spaceID, content, hash, sensitivity string
-	err := r.store.reader.QueryRowContext(ctx, `SELECT p.memory_id, p.space_id, p.display_content, p.content_hash, m.sensitivity FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id WHERE p.revision_id=? AND p.searchable=1`, revisionID).Scan(&memoryID, &spaceID, &content, &hash, &sensitivity)
+	var memoryID, spaceID, hash, sensitivity string
+	var kind, canonicalContent, eventType, language, speaker, precision string
+	err := r.store.reader.QueryRowContext(ctx, `SELECT p.memory_id, p.space_id, p.content_hash, m.sensitivity, rv.kind, rv.canonical_content, coalesce(rv.event_type,''), coalesce(rv.language,''), coalesce(rv.source_speaker,''), coalesce(rv.time_precision,'') FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id JOIN memory_revisions rv ON rv.memory_id=p.memory_id AND rv.revision_id=p.revision_id WHERE p.revision_id=? AND p.searchable=1`, revisionID).Scan(&memoryID, &spaceID, &hash, &sensitivity, &kind, &canonicalContent, &eventType, &language, &speaker, &precision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	content := embeddingDocument(kind, canonicalContent, eventType, language, speaker, precision)
 	if err := r.RequireEffectivePolicy(ctx, "embedding", spaceID); err != nil {
 		return err
 	}

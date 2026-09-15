@@ -11,11 +11,11 @@ import (
 	"math"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -75,6 +75,7 @@ func channelsWithout(channels []string, channel string) []string {
 }
 
 type SearchParams struct {
+	OperationID            string
 	Query                  string
 	SpaceIDs               []string
 	IncludeAncestors       bool
@@ -90,7 +91,13 @@ type SearchParams struct {
 	MaxChars               int
 	IncludeEvidence        bool
 	ExcludeStaleAggregates bool
+	Explain                bool
 	Cursor                 string
+	Intent                 string
+	GraphPolicy            retrieval.GraphPolicy
+	Plan                   retrieval.QueryPlan
+	QueryTime              retrieval.TimeInterval
+	QueryTimeSet           bool
 }
 
 // searchIdentities binds a cursor to every algorithm identity that can change
@@ -107,16 +114,19 @@ type searchIdentities struct {
 }
 
 const (
-	searchQueryPlanIdentity = "query-plan-v1"
+	searchQueryPlanIdentity = retrieval.QueryPlanVersion
 	searchContextIdentity   = "context-selection-v1"
 )
 
-func currentSearchIdentities(ftsVersion, semanticVersion int, metadata searchMetadata) searchIdentities {
+// rankingVersion is the versioned deterministic feature-rank identity.
+const rankingVersion = retrieval.RankingWeightsVersion
+
+func currentSearchIdentities(ftsVersion, semanticVersion int, metadata searchMetadata, rankingIdentity string) searchIdentities {
 	return searchIdentities{
 		Schema:     "schema-v" + strconv.Itoa(SchemaVersion),
 		QueryPlan:  searchQueryPlanIdentity,
 		Membership: membershipIdentity(ftsVersion, semanticVersion, metadata),
-		Ranking:    rankingVersion,
+		Ranking:    rankingIdentity,
 		Graph:      graphIdentity(metadata),
 		Context:    searchContextIdentity,
 		Feedback:   "feedback-v" + strconv.FormatInt(metadata.feedbackAggregateVersion, 10),
@@ -130,15 +140,23 @@ func membershipIdentity(ftsVersion, semanticVersion int, metadata searchMetadata
 		":corpus=" + strconv.FormatInt(metadata.corpusGeneration, 10) +
 		":entity=" + strconv.FormatInt(metadata.entityIndexVersion, 10) +
 		":entity_generation=" + strconv.FormatInt(metadata.entityIndexGeneration, 10) +
+		":entity_state=" + metadata.entityIndexState +
+		":entity_normalization=" + metadata.entityNormalization +
 		":relation=" + strconv.FormatInt(metadata.relationIndexVersion, 10) +
-		":relation_generation=" + strconv.FormatInt(metadata.relationIndexGeneration, 10)
+		":relation_generation=" + strconv.FormatInt(metadata.relationIndexGeneration, 10) +
+		":relation_state=" + metadata.relationIndexState +
+		":keyword=" + retrieval.KeywordCompilerVersion +
+		":temporal=" + retrieval.TemporalFeatureVersion
 }
 
 func graphIdentity(metadata searchMetadata) string {
-	return "graph-v1" +
+	return retrieval.GraphScoringVersion +
 		":version=" + strconv.FormatInt(metadata.graphIndexVersion, 10) +
 		":generation=" + strconv.FormatInt(metadata.graphIndexGeneration, 10) +
-		":state=" + metadata.graphIndexState
+		":state=" + metadata.graphIndexState +
+		":facts=" + strconv.FormatInt(metadata.graphSourceFactCount, 10) +
+		":entities=" + strconv.FormatInt(metadata.graphSourceEntityCount, 10) +
+		":relations=" + strconv.FormatInt(metadata.graphSourceRelationCount, 10)
 }
 
 type searchCursor struct {
@@ -161,12 +179,33 @@ type searchCursor struct {
 
 type searchCandidate struct {
 	memoryID, revisionID, updatedAt string
+	contentHash                     string
 	ftsContent, projectionContent   string
-	keywordScore, rrfScore, score   float64
-	keywordRank, graphRank          int
+	keywordRaw, keywordScore        float64
+	semanticRaw, semanticScore      float64
+	semanticPercentile              float64
+	semanticRejected                bool
+	semanticRejectReason            string
+	graphScore                      float64
+	score                           float64
+	keywordRank, semanticRank       int
+	graphRank                       int
 	graphSignals                    []domain.GraphSignal
 	graphFacts                      []domain.EntityFact
 	graphPaths                      []domain.GraphPath
+	confidence                      float64
+	specificity                     float64
+	eventStart, eventEnd            *time.Time
+	validFrom, validUntil           *time.Time
+	timePrecision, timeSource       string
+	sourceSpeaker                   string
+	language, kind                  string
+	features                        retrieval.FeatureVector
+	rankOutput                      retrieval.RankOutput
+	graphOnly                       bool
+	protected                       bool
+	quality, duplicateRisk          *float64
+	overbreadth, lifecyclePenalty   *float64
 }
 
 func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
@@ -189,6 +228,7 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 	if params.ReferenceTime == "" {
 		params.ReferenceTime = formatTime(r.runtime.Now())
 	}
+	params = r.planQuery(ctx, params)
 	var response domain.SearchResponse
 	var err error
 	if hasChannel(params.EffectiveChannels, ChannelSemantic) {
@@ -197,6 +237,9 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 		response, err = r.searchKeywordGraph(ctx, params)
 	}
 	response.ReferenceTime = params.ReferenceTime
+	if err == nil && params.OperationID != "" {
+		err = r.recordQueryTelemetry(ctx, params, response)
+	}
 	return response, err
 }
 
@@ -238,11 +281,11 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		after = &cursor
 	}
 	hash := searchQueryHash(params)
-	identities := currentSearchIdentities(ftsVersion, params.SemanticVersion, metadata)
+	identities := currentSearchIdentities(ftsVersion, params.SemanticVersion, metadata, r.rankingIdentity())
 	if after != nil && !searchCursorMatches(*after, hash, params, identities) {
 		return domain.SearchResponse{}, ErrInvalidCursor
 	}
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
+	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, QueryPlanIdentity: params.Plan.Identity(), RankingIdentity: identities.Ranking, ContextIdentity: identities.Context, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
 	if hasChannel(executed, ChannelKeyword) && indexState != "ready" {
 		executed = channelsWithout(executed, ChannelKeyword)
 		response.ExecutedChannels = executed
@@ -253,6 +296,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
+		executed, response = r.applyGraphReadiness(params, metadata, response, executed)
 		if err := tx.Commit(); err != nil {
 			return domain.SearchResponse{}, err
 		}
@@ -276,32 +320,34 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		for i := range candidates {
 			item := candidates[i]
 			item.keywordRank = i + 1
-			all[item.memoryID+"\x00"+item.revisionID] = &item
+			copy := item
+			all[item.memoryID+"\x00"+item.revisionID] = &copy
 		}
 	}
-	if hasChannel(executed, ChannelGraph) {
-		resolved, graphErr := r.appendGraphCandidates(ctx, tx, params, spaces, all, max(100, params.Limit*10))
-		if graphErr != nil {
-			return domain.SearchResponse{}, graphErr
-		}
-		response.ResolvedEntities = resolved
+	calibrateKeywordScores(candidatePointers(all))
+	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, false, max(100, params.Limit*10))
+	if err != nil {
+		return domain.SearchResponse{}, err
+	}
+	if len(executed) == 0 {
+		return domain.SearchResponse{}, ErrIndexDegraded
 	}
 	usageScores, err := feedbackUsageScores(ctx, tx, revisionKeys(all), metadata.feedbackAggregateVersion)
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	candidates := make([]searchCandidate, 0, len(all))
-	for _, item := range all {
-		item.rrfScore = rrfScore(item.keywordRank, 0, item.graphRank)
-		item.score = item.rrfScore + 0.001*usageScores[item.revisionID]
-		candidates = append(candidates, *item)
+	list := candidatePointers(all)
+	if err := hydrateRankingProjections(ctx, tx, list); err != nil {
+		return domain.SearchResponse{}, err
 	}
-	sortCandidates(candidates)
+	list = applyTemporalFilter(list, params.QueryTime, params.Plan.QuestionType)
+	r.rankCandidates(list, params, usageScores)
+	list = admittedRankedCandidates(list)
 	start := 0
 	if after != nil {
 		found := false
-		for i := range candidates {
-			if candidates[i].memoryID == after.MemoryID && candidates[i].revisionID == after.RevisionID && strconv.FormatUint(math.Float64bits(candidates[i].score), 16) == after.ScoreBits {
+		for i := range list {
+			if list[i].memoryID == after.MemoryID && list[i].revisionID == after.RevisionID && strconv.FormatUint(math.Float64bits(list[i].score), 16) == after.ScoreBits {
 				start, found = i+1, true
 				break
 			}
@@ -314,8 +360,8 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	var lastInspected *searchCandidate
 	hasMore := false
 	returned := make(map[string]struct{})
-	for i := start; i < len(candidates); i++ {
-		candidate := candidates[i]
+	for i := start; i < len(list); i++ {
+		candidate := list[i]
 		if _, duplicate := returned[candidate.memoryID]; duplicate {
 			continue
 		}
@@ -324,7 +370,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 			if err != nil && !errors.Is(err, ErrNotFound) {
 				return domain.SearchResponse{}, err
 			}
-			if err == nil && searchCandidateCurrent(memory, candidate, spaces, params) {
+			if err == nil && searchCandidateCurrent(memory, *candidate, spaces, params) {
 				hasMore = true
 				response.Truncated = true
 				break
@@ -333,14 +379,14 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		}
 		memory, err := getMemory(ctx, tx, candidate.memoryID, false)
 		if errors.Is(err, ErrNotFound) {
-			lastInspected = &candidate
+			lastInspected = candidate
 			continue
 		}
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		if !searchCandidateCurrent(memory, candidate, spaces, params) {
-			lastInspected = &candidate
+		if !searchCandidateCurrent(memory, *candidate, spaces, params) {
+			lastInspected = candidate
 			continue
 		}
 		chars := utf8.RuneCountInString(memory.CurrentRevision.DisplayContent)
@@ -350,10 +396,10 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 				hasMore = true
 				break
 			}
-			lastInspected = &candidate
+			lastInspected = candidate
 			continue
 		}
-		lastInspected = &candidate
+		lastInspected = candidate
 		if !params.IncludeEvidence {
 			memory.CurrentRevision.Evidence = nil
 		}
@@ -378,7 +424,11 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: relevance, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs})
+		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: relevance, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate)}
+		if params.Explain {
+			r.applyExplain(candidate, &searchResult, params)
+		}
+		response.Results = append(response.Results, searchResult)
 		returned[memory.MemoryID] = struct{}{}
 		response.CharsUsed += chars
 	}
@@ -390,149 +440,6 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		return domain.SearchResponse{}, err
 	}
 	return response, nil
-}
-
-// keywordRecall performs bounded FTS recall with all eligibility filters
-// applied before the top-k cut.
-func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, limit int) ([]searchCandidate, error) {
-	ftsQuery, searchable := compileKeywordQuery(params.Query)
-	if !searchable {
-		return nil, nil
-	}
-	query := `WITH ranked AS (
-		SELECT f.memory_id, f.revision_id, f.content, p.display_content, p.updated_at, bm25(memory_fts) AS score
-		FROM memory_fts f
-		JOIN memory_projections p ON p.memory_id=f.memory_id AND p.revision_id=f.revision_id
-		JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state
-		WHERE memory_fts MATCH ? AND p.searchable=1`
-	args := []any{ftsQuery}
-	query += ` AND p.space_id IN (` + placeholders(len(spaces)) + `)`
-	for _, id := range spaces {
-		args = append(args, id)
-	}
-	query += ` AND p.current_state IN (` + placeholders(len(params.States)) + `)`
-	for _, state := range params.States {
-		args = append(args, state)
-	}
-	if params.MemoryTypesSet {
-		query += ` AND p.memory_type IN (` + placeholders(len(params.MemoryTypes)) + `)`
-		for _, memoryType := range params.MemoryTypes {
-			args = append(args, memoryType)
-		}
-	}
-	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?)`
-	args = append(args, params.ReferenceTime, params.ReferenceTime)
-	query += `) SELECT memory_id, revision_id, content, display_content, updated_at, score FROM ranked`
-	query += ` ORDER BY score ASC, updated_at DESC, memory_id ASC LIMIT ?`
-	args = append(args, limit)
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		var sqliteErr sqlite3.Error
-		if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrError {
-			message := strings.ToLower(err.Error())
-			if strings.Contains(message, "fts5: syntax error") || strings.Contains(message, "unterminated string") || strings.Contains(message, "malformed match") {
-				return nil, ErrInvalidSearchQuery
-			}
-		}
-		return nil, err
-	}
-	defer rows.Close()
-	var candidates []searchCandidate
-	for rows.Next() {
-		var item searchCandidate
-		if err := rows.Scan(&item.memoryID, &item.revisionID, &item.ftsContent, &item.projectionContent, &item.updatedAt, &item.keywordScore); err != nil {
-			return nil, err
-		}
-		if math.IsNaN(item.keywordScore) || math.IsInf(item.keywordScore, 0) {
-			return nil, ErrInvalidSearchQuery
-		}
-		candidates = append(candidates, item)
-	}
-	return candidates, rows.Err()
-}
-
-// appendGraphCandidates resolves query entities once, runs the graph channel
-// against strict seeds (keyword candidates plus resolved-entity direct
-// mentions), and merges the resulting single graph rank into all.
-func (r *Repository) appendGraphCandidates(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, all map[string]*searchCandidate, limit int) ([]domain.ResolvedEntity, error) {
-	resolved, err := resolveQueryEntities(ctx, tx, params.Query, spaces)
-	if err != nil {
-		return nil, err
-	}
-	keywordSeeds := make([]string, 0, len(all))
-	for key := range all {
-		_, revisionID, _ := strings.Cut(key, "\x00")
-		keywordSeeds = append(keywordSeeds, revisionID)
-	}
-	graph, err := r.graphChannelRecall(ctx, tx, params, spaces, resolved, keywordSeeds, limit)
-	if err != nil {
-		return nil, err
-	}
-	for i := range graph.items {
-		item := graph.items[i]
-		key := item.memoryID + "\x00" + item.revisionID
-		if existing := all[key]; existing != nil {
-			existing.graphRank = item.graphRank
-			existing.graphSignals = item.signals
-			existing.graphFacts = item.facts
-			existing.graphPaths = item.paths
-		} else {
-			all[key] = &searchCandidate{memoryID: item.memoryID, revisionID: item.revisionID, graphRank: item.graphRank, graphSignals: item.signals, graphFacts: item.facts, graphPaths: item.paths}
-		}
-	}
-	return graph.resolvedEntities, nil
-}
-
-func revisionKeys(all map[string]*searchCandidate) []string {
-	keys := make([]string, 0, len(all))
-	for key := range all {
-		_, revisionID, _ := strings.Cut(key, "\x00")
-		keys = append(keys, revisionID)
-	}
-	return keys
-}
-
-func rrfScore(keywordRank, semanticRank, graphRank int) float64 {
-	score := 0.0
-	if keywordRank > 0 {
-		score += 1 / float64(60+keywordRank)
-	}
-	if semanticRank > 0 {
-		score += 1 / float64(60+semanticRank)
-	}
-	if graphRank > 0 {
-		score += 1 / float64(60+graphRank)
-	}
-	return score
-}
-
-func sortCandidates(candidates []searchCandidate) {
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		if candidates[i].rrfScore != candidates[j].rrfScore {
-			return candidates[i].rrfScore > candidates[j].rrfScore
-		}
-		bi, bj := candidateBestRank(candidates[i]), candidateBestRank(candidates[j])
-		if bi != bj {
-			return bi < bj
-		}
-		if candidates[i].memoryID != candidates[j].memoryID {
-			return candidates[i].memoryID < candidates[j].memoryID
-		}
-		return candidates[i].revisionID < candidates[j].revisionID
-	})
-}
-
-func candidateBestRank(candidate searchCandidate) int {
-	best := 0
-	for _, rank := range []int{candidate.keywordRank, candidate.graphRank} {
-		if rank > 0 && (best == 0 || rank < best) {
-			best = rank
-		}
-	}
-	return best
 }
 
 func searchCandidateCurrent(memory domain.Memory, candidate searchCandidate, spaces []string, params SearchParams) bool {
@@ -599,9 +506,14 @@ func searchQueryHash(params SearchParams) string {
 	sort.Strings(spaces)
 	sort.Strings(types)
 	sort.Strings(states)
+	planIdentity := ""
+	if params.Plan.Version != "" {
+		planIdentity = params.Plan.Identity()
+	}
 	canonical := struct {
 		Version                int      `json:"v"`
 		Query                  string   `json:"query"`
+		QueryPlan              string   `json:"query_plan"`
 		Spaces                 []string `json:"space_ids"`
 		Ancestors              bool     `json:"include_ancestors"`
 		Types                  []string `json:"memory_types"`
@@ -615,7 +527,9 @@ func searchQueryHash(params SearchParams) string {
 		MaxChars               int      `json:"max_chars"`
 		Evidence               bool     `json:"include_evidence"`
 		ExcludeStaleAggregates bool     `json:"exclude_stale_aggregates"`
-	}{2, params.Query, spaces, params.IncludeAncestors, types, params.MemoryTypesSet, states, params.ReferenceTime, params.Channels, params.EffectiveChannels, params.SemanticVersion, params.Limit, params.MaxChars, params.IncludeEvidence, params.ExcludeStaleAggregates}
+		Intent                 string   `json:"intent"`
+		GraphPolicy            string   `json:"graph_policy"`
+	}{3, params.Query, planIdentity, spaces, params.IncludeAncestors, types, params.MemoryTypesSet, states, params.ReferenceTime, params.Channels, params.EffectiveChannels, params.SemanticVersion, params.Limit, params.MaxChars, params.IncludeEvidence, params.ExcludeStaleAggregates, params.Intent, string(params.GraphPolicy)}
 	encoded, _ := json.Marshal(canonical)
 	hash := sha256.Sum256(encoded)
 	return hex.EncodeToString(hash[:])

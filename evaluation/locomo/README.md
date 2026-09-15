@@ -262,8 +262,8 @@ and `degradation_counts` in `manifest.json`, plus per-result report fields
 Use `summarize` (which recomputes metrics from raw records and refuses a metric
 schema mismatch) to produce the immutable baseline records.
 
-The accepted current-algorithm capture is
-`baselines/locomo-current-v1.json`. It was recorded on 2026-09-14 from all 10
+The immutable Phase 0 pre-replacement capture is
+`baselines/locomo-phase0-rrf-v3.json`. It was recorded on 2026-09-14 from all 10
 conversations and 1,986 questions with no retrieval failures or degraded
 responses. All modes use dataset SHA
 `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
@@ -271,7 +271,7 @@ and shared corpus `ingestion.jsonl` SHA
 `a4225c775f1e6f2c91e332a17b4db1731b07065e3d052e587fcf81863d792165`.
 The daemon build identity is
 `9723af424262df7731b41298b6e7c6022e3769575894813b2ffe61cb940f3bec`,
-the ranking identity is `rrf-v3`, the FTS version is `1`, and the graph
+the historical ranking identity is `rrf-v3`, the FTS version is `1`, and the graph
 version is `4046`. Exact per-run semantic versions and checkpoint SHA-256
 values are retained in the capture file.
 

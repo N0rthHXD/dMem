@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
 const (
@@ -78,7 +79,6 @@ func resolveQueryEntities(ctx context.Context, tx *sql.Tx, query string, spaces 
 		entityID   string
 		entityType string
 		alias      string
-		ambiguous  bool
 	}
 	var spans []span
 	for _, c := range candidates {
@@ -124,36 +124,66 @@ func resolveQueryEntities(ctx context.Context, tx *sql.Tx, query string, spaces 
 		key := spanKey{s.start, s.end}
 		spansBySpan[key] = append(spansBySpan[key], s)
 	}
-	var chosen []span
+	type chosenSpan struct {
+		start, end int
+		group      []span
+	}
+	var chosen []chosenSpan
 	lastEnd := -1
 	for _, s := range spans {
 		if s.start < lastEnd {
 			continue
 		}
 		group := spansBySpan[spanKey{s.start, s.end}]
-		pick := group[0]
-		for _, other := range group {
-			if other.entityID < pick.entityID {
-				pick = other
-			}
-		}
-		pick.ambiguous = len(group) > 1
-		chosen = append(chosen, pick)
+		chosen = append(chosen, chosenSpan{start: s.start, end: s.end, group: group})
 		lastEnd = s.end
 	}
 	result := make([]domain.ResolvedEntity, 0, len(chosen))
 	seen := map[string]struct{}{}
-	for _, s := range chosen {
-		key := s.entityID + "\x00" + string(rune(s.start))
+	for _, cs := range chosen {
+		type alternative struct{ id, typ string }
+		var alternatives []alternative
+		seenEntity := map[string]struct{}{}
+		for _, s := range cs.group {
+			if _, duplicate := seenEntity[s.entityID]; duplicate {
+				continue
+			}
+			seenEntity[s.entityID] = struct{}{}
+			alternatives = append(alternatives, alternative{s.entityID, s.entityType})
+		}
+		sort.Slice(alternatives, func(i, j int) bool { return alternatives[i].id < alternatives[j].id })
+		alias := cs.group[0].alias
+		if len(alternatives) > 1 {
+			// An ambiguous alias is never resolved by UUID order. Emit every
+			// alternative with an ambiguity marker so graph expansion is
+			// disabled unless context disambiguates it.
+			ids := make([]string, 0, len(alternatives))
+			for _, alt := range alternatives {
+				ids = append(ids, alt.id)
+			}
+			for _, alt := range alternatives {
+				others := make([]string, 0, len(ids)-1)
+				for _, id := range ids {
+					if id != alt.id {
+						others = append(others, id)
+					}
+				}
+				key := alt.id + "\x00" + string(rune(cs.start))
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				result = append(result, domain.ResolvedEntity{EntityID: alt.id, EntityType: alt.typ, Alias: alias, Confidence: 0.5, MatchKind: "alias_ambiguous", StartRune: cs.start, EndRune: cs.end, Ambiguous: true, Alternatives: others})
+			}
+			continue
+		}
+		alt := alternatives[0]
+		key := alt.id + "\x00" + string(rune(cs.start))
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		confidence := 0.9
-		if s.ambiguous {
-			confidence = 0.5
-		}
-		result = append(result, domain.ResolvedEntity{EntityID: s.entityID, EntityType: s.entityType, Alias: s.alias, Confidence: confidence, MatchKind: "alias", StartRune: s.start, EndRune: s.end})
+		result = append(result, domain.ResolvedEntity{EntityID: alt.id, EntityType: alt.typ, Alias: alias, Confidence: 0.9, MatchKind: "alias", StartRune: cs.start, EndRune: cs.end})
 	}
 	return result, nil
 }
@@ -187,55 +217,54 @@ func utf8Len(value string) int {
 	return len([]rune(value))
 }
 
-// predicateIntent deterministically maps common query phrasings to controlled
-// predicates. It returns an empty slice when no predicate intent is present.
-func predicateIntent(query string) []string {
-	lower := strings.ToLower(query)
-	var out []string
-	mapping := []struct {
-		phrase    string
-		predicate string
-	}{
-		{"participates in", "participates_in"}, {"participate in", "participates_in"},
-		{"uses database", "uses_database"}, {"use database", "uses_database"}, {"database is", "uses_database"},
-		{"owned by", "owned_by"}, {"owns", "owned_by"},
-		{"located in", "located_in"}, {"based in", "located_in"},
-		{"depends on", "depends_on"},
-	}
-	for _, m := range mapping {
-		if strings.Contains(lower, m.phrase) {
-			out = append(out, m.predicate)
-		}
-	}
-	return out
-}
-
 type graphChannelResult struct {
 	items            []graphRecallItem
 	resolvedEntities []domain.ResolvedEntity
 }
 
+// graphRecallPolicy captures the query-local graph gate. allowNewCandidates is
+// false for features_only and true only for direct or bounded_path. primary is
+// the set of already-established primary candidate keys; relation-only and
+// expanded candidates may never enter outside that set.
+type graphRecallPolicy struct {
+	Policy              retrieval.GraphPolicy
+	MinEntityConfidence float64
+	MinFactConfidence   float64
+	AllowNewCandidates  bool
+	Predicates          []string
+	Primary             map[string]struct{}
+}
+
 // graphChannelRecall runs the graph retrieval channel. resolvedEntities must
 // come from a single upfront query-understanding pass; seeds must be raw
 // primary-channel candidates, never relation- or graph-expanded candidates.
-// Direct-mention revisions are appended to the seed set internally.
-func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, resolvedEntities []domain.ResolvedEntity, seeds []string, limit int) (graphChannelResult, error) {
+// Ambiguous mentions are excluded from expansion.
+func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policy graphRecallPolicy, resolvedEntities []domain.ResolvedEntity, seeds []string, limit int) (graphChannelResult, error) {
 	result := graphChannelResult{resolvedEntities: resolvedEntities}
 	byKey := map[string]*graphRecallItem{}
+	predicates := policy.Predicates
+
 	entityIDs := make([]string, 0, len(resolvedEntities))
+	confByEntity := map[string]float64{}
 	for _, re := range resolvedEntities {
+		if re.Ambiguous || re.Confidence < policy.MinEntityConfidence {
+			continue
+		}
+		if _, duplicate := confByEntity[re.EntityID]; duplicate {
+			continue
+		}
+		confByEntity[re.EntityID] = re.Confidence
 		entityIDs = append(entityIDs, re.EntityID)
 	}
-	predicates := predicateIntent(params.Query)
 
-	// 0-hop: direct entity mention revisions; their revisions also join the
-	// relation-expansion seed set.
-	directSeeds := make([]string, 0)
+	// 0-hop: direct entity mention revisions. Mention confidence is persisted and
+	// consumed, but graph-derived revisions never become relation seeds.
 	if len(entityIDs) > 0 {
 		eligible, eligibleArgs := eligibilitySQL(params, spaces)
-		query := `SELECT DISTINCT em.memory_id, em.revision_id, em.entity_id FROM entity_mentions em JOIN memory_projections p ON p.memory_id=em.memory_id AND p.revision_id=em.revision_id JOIN memories m ON m.memory_id=em.memory_id AND m.current_revision_id=em.revision_id AND m.current_state=p.current_state WHERE em.entity_id IN (` + placeholders(len(entityIDs)) + `) AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` ORDER BY em.memory_id, em.revision_id LIMIT ?`
+		query := `SELECT em.memory_id, em.revision_id, em.entity_id, em.confidence, em.created_at FROM entity_mentions em JOIN memory_projections p ON p.memory_id=em.memory_id AND p.revision_id=em.revision_id JOIN memories m ON m.memory_id=em.memory_id AND m.current_revision_id=em.revision_id AND m.current_state=p.current_state WHERE em.entity_id IN (` + placeholders(len(entityIDs)) + `) AND em.memory_id IS NOT NULL AND coalesce(em.confidence,0.5)>=? AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` ORDER BY coalesce(em.confidence,0.5) DESC, p.updated_at DESC, em.memory_id ASC, em.revision_id ASC LIMIT ?`
 		args := make([]any, 0, len(entityIDs)+len(spaces)+len(eligibleArgs)+1)
 		args = append(args, appendStrings2(nil, entityIDs)...)
+		args = append(args, policy.MinEntityConfidence)
 		args = append(args, appendStrings2(nil, spaces)...)
 		args = append(args, eligibleArgs...)
 		args = append(args, limit)
@@ -243,14 +272,12 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 		if err != nil {
 			return result, err
 		}
-		confByEntity := map[string]float64{}
-		for _, re := range resolvedEntities {
-			confByEntity[re.EntityID] = re.Confidence
-		}
 		seenMention := map[string]struct{}{}
 		for rows.Next() {
 			var memoryID, revisionID, entityID string
-			if err := rows.Scan(&memoryID, &revisionID, &entityID); err != nil {
+			var mentionConfidence sql.NullFloat64
+			var createdAt string
+			if err := rows.Scan(&memoryID, &revisionID, &entityID, &mentionConfidence, &createdAt); err != nil {
 				rows.Close()
 				return result, err
 			}
@@ -260,8 +287,10 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 			seenMention[memoryID+"\x00"+revisionID+"\x00"+entityID] = struct{}{}
 			item := ensureGraphItem(byKey, memoryID, revisionID)
 			conf := confByEntity[entityID]
+			if mentionConfidence.Valid {
+				conf = min(conf, mentionConfidence.Float64)
+			}
 			item.signals = append(item.signals, domain.GraphSignal{Kind: "direct_entity_mention", EntityID: entityID, Hop: 0, EntityConfidence: conf})
-			directSeeds = append(directSeeds, revisionID)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -272,22 +301,24 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 
 	// 1-hop entity facts: outgoing + incoming facts from resolved entities.
 	if len(entityIDs) > 0 {
-		if err := r.graphFactHop(ctx, tx, byKey, resolvedEntities, predicates, spaces, params, limit); err != nil {
+		if err := r.graphFactHop(ctx, tx, byKey, entityIDs, confByEntity, predicates, spaces, params, policy.MinFactConfidence, limit); err != nil {
 			return result, err
 		}
 	}
 
-	// 2-hop bounded paths, only when predicate intent is present.
-	if len(entityIDs) > 0 && len(predicates) > 0 {
-		if err := r.graphSecondHop(ctx, tx, byKey, resolvedEntities, predicates, spaces, params, limit); err != nil {
+	// 2-hop bounded paths, only when the plan explicitly permits bounded paths
+	// and predicate intent is present.
+	if policy.Policy == retrieval.GraphBoundedPath && len(entityIDs) > 0 && len(predicates) > 0 {
+		if err := r.graphSecondHop(ctx, tx, byKey, entityIDs, predicates, spaces, params, policy.MinFactConfidence, limit); err != nil {
 			return result, err
 		}
 	}
 
-	// memory_relation expansion from the unified seed set.
-	unified := make([]string, 0, len(seeds)+len(directSeeds))
+	// memory_relation expansion from primary seeds. Relations contribute
+	// features to existing candidates; they never establish a candidate.
+	unified := make([]string, 0, len(seeds))
 	seenSeeds := map[string]struct{}{}
-	for _, seed := range append(append([]string{}, seeds...), directSeeds...) {
+	for _, seed := range seeds {
 		if seed == "" {
 			continue
 		}
@@ -304,10 +335,16 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 	}
 
 	items := make([]graphRecallItem, 0, len(byKey))
-	for _, item := range byKey {
+	for key, item := range byKey {
 		item.score = graphAggregateScore(item.signals, item.paths)
 		if item.score <= 0 {
 			continue
+		}
+		relationOnly := graphRelationOnly(item.signals)
+		if _, isPrimary := policy.Primary[key]; !isPrimary {
+			if !policy.AllowNewCandidates || relationOnly {
+				continue
+			}
 		}
 		items = append(items, *item)
 	}
@@ -328,6 +365,19 @@ func (r *Repository) graphChannelRecall(ctx context.Context, tx *sql.Tx, params 
 	}
 	result.items = items
 	return result, nil
+}
+
+func graphRelationOnly(signals []domain.GraphSignal) bool {
+	hasRelation := false
+	for _, signal := range signals {
+		switch signal.Kind {
+		case "memory_relation", "graph_conflict":
+			hasRelation = true
+		case "direct_entity_mention", "exact_predicate_fact", "one_hop_fact", "two_hop_path":
+			return false
+		}
+	}
+	return hasRelation
 }
 
 // graphAggregateScore implements graph-score-v2: per-family maxima with small
@@ -425,7 +475,8 @@ func graphAggregateScore(signals []domain.GraphSignal, paths []domain.GraphPath)
 		}
 	}
 
-	return min(graphScoreCap, mentionScore+factScore+relationScore+pathScore)
+	raw := mentionScore + factScore + relationScore + pathScore
+	return min(1.0, raw/graphScoreCap)
 }
 
 // eligibilitySQL builds the projection eligibility conditions (requested
@@ -453,28 +504,30 @@ func ensureGraphItem(byKey map[string]*graphRecallItem, memoryID, revisionID str
 	return item
 }
 
-func (r *Repository) graphFactHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, resolvedEntities []domain.ResolvedEntity, predicates, spaces []string, params SearchParams, limit int) error {
-	entityIDs := make([]string, 0, len(resolvedEntities))
-	confByEntity := map[string]float64{}
-	for _, re := range resolvedEntities {
-		entityIDs = append(entityIDs, re.EntityID)
-		confByEntity[re.EntityID] = re.Confidence
-	}
+func (r *Repository) graphFactHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, entityIDs []string, confByEntity map[string]float64, predicates, spaces []string, params SearchParams, minFactConfidence float64, limit int) error {
 	predFilter := ""
 	if len(predicates) > 0 {
 		predFilter = ` AND f.predicate IN (` + placeholders(len(predicates)) + `)`
 	}
 	eligible, eligibleArgs := eligibilitySQL(params, spaces)
-	query := `SELECT f.fact_id, f.subject_entity_id, f.predicate, f.object_entity_id, f.object_literal, f.confidence, f.source_memory_id, f.source_revision_id FROM entity_facts f JOIN memory_projections p ON p.memory_id=f.source_memory_id AND p.revision_id=f.source_revision_id JOIN memories m ON m.memory_id=f.source_memory_id AND m.current_revision_id=f.source_revision_id AND m.current_state=p.current_state WHERE f.state='active' AND (f.subject_entity_id IN (` + placeholders(len(entityIDs)) + `) OR f.object_entity_id IN (` + placeholders(len(entityIDs)) + `))` + predFilter + ` AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?) ORDER BY f.fact_id LIMIT ?`
-	args := make([]any, 0, len(entityIDs)*2+len(predicates)+len(eligibleArgs)+len(spaces)+3)
-	args = append(args, appendStrings2(nil, entityIDs)...)
-	args = append(args, appendStrings2(nil, entityIDs)...)
+	query := `SELECT f.fact_id, f.subject_entity_id, f.predicate, f.object_entity_id, f.object_literal, f.confidence, f.source_memory_id, f.source_revision_id FROM entity_facts f JOIN memory_projections p ON p.memory_id=f.source_memory_id AND p.revision_id=f.source_revision_id JOIN memories m ON m.memory_id=f.source_memory_id AND m.current_revision_id=f.source_revision_id AND m.current_state=p.current_state JOIN memory_revisions rv ON rv.memory_id=f.source_memory_id AND rv.revision_id=f.source_revision_id WHERE f.state='active' AND EXISTS (SELECT 1 FROM entity_fact_evidence fe WHERE fe.fact_id=f.fact_id) AND (f.subject_entity_id IN (` + placeholders(len(entityIDs)) + `) OR f.object_entity_id IN (` + placeholders(len(entityIDs)) + `))` + predFilter + ` AND coalesce(f.confidence, 0.5) >= ? AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?) ORDER BY (f.predicate IN (` + placeholders(max(1, len(predicates))) + `)) DESC, coalesce(f.confidence, 0.5) DESC, rv.specificity DESC, p.updated_at DESC, f.fact_id ASC LIMIT ?`
+	idArgs := appendStrings2(nil, entityIDs)
+	args := make([]any, 0, len(entityIDs)*2+len(predicates)*2+len(eligibleArgs)+len(spaces)+5)
+	args = append(args, idArgs...)
+	args = append(args, idArgs...)
 	if len(predicates) > 0 {
 		args = append(args, appendStrings2(nil, predicates)...)
 	}
+	args = append(args, minFactConfidence)
 	args = append(args, appendStrings2(nil, spaces)...)
 	args = append(args, eligibleArgs...)
-	args = append(args, params.ReferenceTime, params.ReferenceTime, limit)
+	args = append(args, params.ReferenceTime, params.ReferenceTime)
+	if len(predicates) > 0 {
+		args = append(args, appendStrings2(nil, predicates)...)
+	} else {
+		args = append(args, "")
+	}
+	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -517,24 +570,21 @@ func (r *Repository) graphFactHop(ctx context.Context, tx *sql.Tx, byKey map[str
 	return rows.Err()
 }
 
-func (r *Repository) graphSecondHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, resolvedEntities []domain.ResolvedEntity, predicates, spaces []string, params SearchParams, limit int) error {
-	startIDs := make([]string, 0, len(resolvedEntities))
-	for _, re := range resolvedEntities {
-		startIDs = append(startIDs, re.EntityID)
-	}
+func (r *Repository) graphSecondHop(ctx context.Context, tx *sql.Tx, byKey map[string]*graphRecallItem, startIDs, predicates, spaces []string, params SearchParams, minFactConfidence float64, limit int) error {
 	eligible, eligibleArgs := eligibilitySQL(params, spaces)
 	hopQuery := func(subjects []string) string {
 		return `SELECT fact_id, subject_entity_id, object_entity_id, predicate, confidence, source_memory_id, source_revision_id FROM (
 			SELECT f.fact_id, f.subject_entity_id, f.object_entity_id, f.predicate, f.confidence, f.source_memory_id, f.source_revision_id,
-				row_number() OVER (PARTITION BY f.subject_entity_id, f.predicate ORDER BY f.fact_id) AS rn
+				row_number() OVER (PARTITION BY f.subject_entity_id, f.predicate ORDER BY coalesce(f.confidence,0.5) DESC, p.updated_at DESC, f.fact_id ASC) AS rn
 			FROM entity_facts f
 			JOIN memory_projections p ON p.memory_id=f.source_memory_id AND p.revision_id=f.source_revision_id
 			JOIN memories m ON m.memory_id=f.source_memory_id AND m.current_revision_id=f.source_revision_id AND m.current_state=p.current_state
-			WHERE f.state='active' AND f.subject_entity_id IN (` + placeholders(len(subjects)) + `) AND f.object_entity_id IS NOT NULL AND f.object_entity_id<>f.subject_entity_id AND f.predicate IN (` + placeholders(len(predicates)) + `) AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?)
-		) WHERE rn<=` + strconv.Itoa(graphFanOut) + ` ORDER BY fact_id LIMIT ?`
+			WHERE f.state='active' AND EXISTS (SELECT 1 FROM entity_fact_evidence fe WHERE fe.fact_id=f.fact_id) AND coalesce(f.confidence,0.5)>=? AND f.subject_entity_id IN (` + placeholders(len(subjects)) + `) AND f.object_entity_id IS NOT NULL AND f.object_entity_id<>f.subject_entity_id AND f.predicate IN (` + placeholders(len(predicates)) + `) AND p.searchable=1 AND p.space_id IN (` + placeholders(len(spaces)) + `)` + eligible + ` AND (f.valid_from IS NULL OR f.valid_from<=?) AND (f.valid_until IS NULL OR f.valid_until>?)
+		) WHERE rn<=` + strconv.Itoa(graphFanOut) + ` ORDER BY confidence DESC, fact_id ASC LIMIT ?`
 	}
 	hopArgs := func(subjects []string) []any {
-		args := make([]any, 0, len(subjects)*2+len(predicates)+len(spaces)+len(eligibleArgs)+4)
+		args := make([]any, 0, len(subjects)*2+len(predicates)+len(spaces)+len(eligibleArgs)+5)
+		args = append(args, minFactConfidence)
 		args = append(args, appendStrings2(nil, subjects)...)
 		args = append(args, appendStrings2(nil, predicates)...)
 		args = append(args, appendStrings2(nil, spaces)...)
@@ -645,7 +695,7 @@ func (r *Repository) graphMemoryRelationRecall(ctx context.Context, tx *sql.Tx, 
 		SELECT r.relation_id, r.relation_type, r.source_memory_id AS candidate_memory_id, r.source_revision_id AS candidate_revision_id, r.confidence, 'incoming' AS direction
 		FROM memory_relations r JOIN memory_projections p ON p.memory_id=r.source_memory_id AND p.revision_id=r.source_revision_id JOIN memories m ON m.memory_id=r.source_memory_id AND m.current_revision_id=r.source_revision_id AND m.current_state=p.current_state
 		WHERE r.state='active' AND r.space_id IN (` + placeholders(len(spaces)) + `) AND r.target_revision_id IN (` + placeholders(len(seeds)) + `) AND p.searchable=1` + eligible + `
-	) ORDER BY relation_id LIMIT ?`
+	) ORDER BY coalesce(confidence,0.5) DESC, relation_id ASC LIMIT ?`
 	args := make([]any, 0, 2*(len(spaces)+len(seeds)+len(eligibleArgs))+1)
 	args = append(args, appendStrings2(nil, spaces)...)
 	args = append(args, appendStrings2(nil, seeds)...)

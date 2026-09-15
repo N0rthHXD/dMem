@@ -210,6 +210,12 @@ type ResolvedEntity struct {
 	MatchKind  string  `json:"match_kind"`
 	StartRune  int     `json:"start_rune"`
 	EndRune    int     `json:"end_rune"`
+	// Ambiguous is true when one alias span maps to multiple entities. An
+	// ambiguous mention is never resolved by UUID order and disables graph
+	// expansion for that mention.
+	Ambiguous bool `json:"ambiguous,omitempty"`
+	// Alternatives lists the other entity IDs that share the alias span.
+	Alternatives []string `json:"alternatives,omitempty"`
 }
 
 // GraphSignal describes how a memory revision was recalled through the graph

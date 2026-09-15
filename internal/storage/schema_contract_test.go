@@ -969,7 +969,9 @@ func TestQueryTelemetrySchema(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 
 	if err := assertColumns(store, "query_telemetry", map[string]bool{
-		"telemetry_id": false, "operation_id": false, "query_plan_version": false, "query_type": false,
+		"telemetry_id": false, "operation_id": false, "query_plan_version": false, "query_plan_identity": false,
+		"query_hash": false, "query_type": false, "requested_scope_json": false, "reference_time": false,
+		"candidate_budget": false, "context_budget": false,
 		"requested_capabilities_json": false, "executed_capabilities_json": false,
 		"candidate_counts_json": false, "rejection_counts_json": false, "score_summary_json": false,
 		"graph_counts_json": false, "duplicate_cluster_count": false, "context_tokens": false,
@@ -978,7 +980,7 @@ func TestQueryTelemetrySchema(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	valid := `INSERT INTO query_telemetry(telemetry_id, operation_id, query_plan_version, query_type, requested_capabilities_json, executed_capabilities_json, candidate_counts_json, rejection_counts_json, score_summary_json, graph_counts_json, duplicate_cluster_count, context_tokens, context_chars, ranking_identity, context_identity, degradation_reasons_json, phase_latency_ms_json, created_at) VALUES ('tel-1', 'op-1', 'query-plan-v1', 'lookup', '["semantic","keyword"]', '["semantic","keyword"]', '{"semantic":10,"keyword":5}', '{"scope":1}', '{"max":0.9}', '{"seeds":2}', 1, 128, 512, 'sha256:r', 'sha256:c', '[]', '{"plan":0.1}', 'now')`
+	valid := `INSERT INTO query_telemetry(telemetry_id, operation_id, query_plan_version, query_plan_identity, query_hash, query_type, requested_scope_json, reference_time, candidate_budget, context_budget, requested_capabilities_json, executed_capabilities_json, candidate_counts_json, rejection_counts_json, score_summary_json, graph_counts_json, duplicate_cluster_count, context_tokens, context_chars, ranking_identity, context_identity, degradation_reasons_json, phase_latency_ms_json, created_at) VALUES ('tel-1', 'op-1', 'query-plan-v1', 'sha256:p', 'sha256:q', 'lookup', '["space-1"]', '2026-01-01T00:00:00Z', 20, 4000, '["semantic","keyword"]', '["semantic","keyword"]', '{"semantic":10,"keyword":5}', '{"scope":1}', '{"max":0.9}', '{"seeds":2}', 1, 128, 512, 'sha256:r', 'sha256:c', '[]', '{"plan":0.1}', 'now')`
 	if _, err := store.writer.Exec(valid); err != nil {
 		t.Fatalf("valid query_telemetry insert rejected: %v", err)
 	}

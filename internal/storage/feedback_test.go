@@ -172,8 +172,8 @@ func TestRankingKeepsRecallAndUsesBoundedPostFusionSignal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RankingVersion != "rrf-v3" || len(result.Results) != 2 || result.Results[0].Memory.MemoryID != b.MemoryID {
-		t.Fatalf("ranking v2 result = %+v", result)
+	if result.RankingVersion != rankingVersion || len(result.Results) != 2 || result.Results[0].Memory.MemoryID != b.MemoryID {
+		t.Fatalf("ranking result = %+v", result)
 	}
 }
 

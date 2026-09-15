@@ -10,28 +10,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
-const rankingVersion = "rrf-v3"
-
-// Exact cosine search has no native cutoff; zero and negative similarity are not relevant recalls.
-const minimumSemanticScore = 0.2
-
-type hybridCandidate struct {
-	memoryID, revisionID, contentHash string
-	keywordScore, semanticScore       float64
-	keywordRank, semanticRank         int
-	graphRank                         int
-	rrfScore, score                   float64
-	graphSignals                      []domain.GraphSignal
-	graphFacts                        []domain.EntityFact
-	graphPaths                        []domain.GraphPath
-}
+// hybridCandidate is the shared recall candidate used by both the semantic and
+// keyword-only paths.
+type hybridCandidate = searchCandidate
 
 // searchSemanticHybrid executes the semantic channel (plus keyword and graph
 // when requested) and performs three-channel RRF v3 fusion. Requested
@@ -109,7 +99,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return domain.SearchResponse{}, ErrPolicyDenied
 	}
 
-	queryResult, err := runtime.Provider.Embed(ctx, provider.NewEmbeddingQueryRequest(scope[0], "text/plain", "normal", []string{"semantic_query"}, []string{params.Query}))
+	queryResult, err := runtime.Provider.Embed(ctx, provider.NewEmbeddingQueryRequest(scope[0], "text/plain", "normal", []string{"semantic_query"}, []string{embeddingQueryDocument(params.Query)}))
 	if err != nil || len(queryResult.Vectors()) != 1 {
 		if hasChannel(params.Channels, ChannelKeyword) {
 			result, keywordErr := r.semanticKeywordFallback(ctx, params, status.ActiveVersion, append(reasons, "semantic_unavailable"))
@@ -167,8 +157,11 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	recallLimit := max(100, params.Limit*10)
 	all := map[string]*hybridCandidate{}
 	if hasChannel(executed, ChannelKeyword) {
-		keyword, err := semanticKeywordRecall(ctx, tx, params, spaces, recallLimit)
+		keyword, err := r.keywordRecall(ctx, tx, params, spaces, recallLimit)
 		if err != nil {
+			if errors.Is(err, ErrInvalidSearchQuery) {
+				return domain.SearchResponse{}, err
+			}
 			executed = channelsWithout(executed, ChannelKeyword)
 			response.ExecutedChannels, response.Degraded = executed, true
 			response.DegradationReasons = append(response.DegradationReasons, "keyword_unavailable")
@@ -214,7 +207,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
-	semantic, err := semanticVectorRecall(ctx, tx, params, spaces, runtime.PolicyGeneration, runtime.CompatibilityIdentity, len(queryVector), queryBlob, recallLimit)
+	semantic, err := r.semanticVectorRecallWindow(ctx, tx, params, spaces, runtime.PolicyGeneration, runtime.CompatibilityIdentity, len(queryVector), queryBlob, recallLimit)
 	if err != nil {
 		if hasChannel(params.Channels, ChannelKeyword) {
 			_ = tx.Rollback()
@@ -227,67 +220,49 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
 	for i, item := range semantic {
-		if item.Score < minimumSemanticScore {
-			continue
-		}
 		key := item.MemoryID + "\x00" + item.RevisionID
 		candidate := all[key]
 		if candidate == nil {
 			candidate = &hybridCandidate{memoryID: item.MemoryID, revisionID: item.RevisionID, contentHash: item.ContentHash}
 			all[key] = candidate
 		}
-		candidate.semanticRank, candidate.semanticScore = i+1, item.Score
+		candidate.semanticRank = i + 1
+		candidate.semanticRaw = item.Score
+		candidate.confidence = item.Confidence
+		candidate.eventStart, candidate.eventEnd = item.EventStart, item.EventEnd
+		candidate.validFrom, candidate.validUntil = item.ValidFrom, item.ValidUntil
+		candidate.timePrecision, candidate.sourceSpeaker, candidate.language = item.TimePrecision, item.SourceSpeaker, item.Language
+		candidate.kind = item.Kind
 	}
-	// Graph channel: strict seeds are the raw keyword and semantic candidates
-	// only; relation-expanded candidates never join the seed set.
-	seeds := make([]string, 0, len(all))
-	for key := range all {
-		_, revisionID, _ := strings.Cut(key, "\x00")
-		seeds = append(seeds, revisionID)
-	}
-	if hasChannel(executed, ChannelGraph) {
-		resolved, err := resolveQueryEntities(ctx, tx, params.Query, spaces)
-		if err != nil {
-			return domain.SearchResponse{}, err
-		}
-		graph, graphErr := r.graphChannelRecall(ctx, tx, params, spaces, resolved, seeds, recallLimit)
-		if graphErr != nil {
-			return domain.SearchResponse{}, graphErr
-		}
-		response.ResolvedEntities = graph.resolvedEntities
-		for i := range graph.items {
-			item := graph.items[i]
-			key := item.memoryID + "\x00" + item.revisionID
-			candidate := all[key]
-			if candidate == nil {
-				candidate = &hybridCandidate{memoryID: item.memoryID, revisionID: item.revisionID}
-				all[key] = candidate
-			}
-			candidate.graphRank = item.graphRank
-			candidate.graphSignals = item.signals
-			candidate.graphFacts = item.facts
-			candidate.graphPaths = item.paths
-		}
+	calibrateKeywordScores(candidatePointers(all))
+	calibrateSemanticScores(r.semanticCalibrationValue(), candidatePointers(all), params.Plan.QuestionType)
+	pruneRejectedCandidates(all)
+	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, true, recallLimit)
+	if err != nil {
+		return domain.SearchResponse{}, err
 	}
 	usageScores, err := feedbackUsageScores(ctx, tx, hybridRevisionKeys(all), metadata.feedbackAggregateVersion)
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	list := make([]hybridCandidate, 0, len(all))
-	for _, item := range all {
-		item.rrfScore = rrfScore(item.keywordRank, item.semanticRank, item.graphRank)
-		item.score = item.rrfScore + 0.001*usageScores[item.revisionID]
-		list = append(list, *item)
+	list := candidatePointers(all)
+	if err := hydrateRankingProjections(ctx, tx, list); err != nil {
+		return domain.SearchResponse{}, err
 	}
-	sortHybridCandidates(list)
-	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata)
+	list = applyTemporalFilter(list, params.QueryTime, params.Plan.QuestionType)
+	r.rankCandidates(list, params, usageScores)
+	list = admittedRankedCandidates(list)
+	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity())
+	response.RankingIdentity = identities.Ranking
+	response.ContextIdentity = identities.Context
+	hash := semanticQueryHash(params)
 	start := 0
 	if params.Cursor != "" {
 		cursor, err := decodeSearchCursor(params.Cursor)
 		if err != nil {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
-		if !searchCursorMatches(cursor, semanticQueryHash(params), params, identities) {
+		if !searchCursorMatches(cursor, hash, params, identities) {
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
 		found := false
@@ -301,8 +276,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
 	}
-	hash := semanticQueryHash(params)
-	var last *hybridCandidate
+	var last *searchCandidate
 	for i := start; i < len(list); i++ {
 		candidate := list[i]
 		memory, err := getMemory(ctx, tx, candidate.memoryID, false)
@@ -339,7 +313,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			keyword = &value
 			reason = "keyword_match"
 		}
-		if candidate.semanticRank > 0 {
+		if candidate.semanticRank > 0 && !candidate.semanticRejected {
 			channels = append(channels, ChannelSemantic)
 			value := candidate.semanticScore
 			semanticScore = &value
@@ -360,10 +334,13 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		if err != nil {
 			return domain.SearchResponse{}, err
 		}
-		response.Results = append(response.Results, domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keyword, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs})
+		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keyword, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate)}
+		if params.Explain {
+			r.applyExplain(candidate, &searchResult, params)
+		}
+		response.Results = append(response.Results, searchResult)
 		response.CharsUsed += chars
-		copy := candidate
-		last = &copy
+		last = candidate
 		if len(response.Results) == params.Limit {
 			if i+1 < len(list) {
 				response.Truncated = true
@@ -426,52 +403,19 @@ func feedbackUsageScores(ctx context.Context, tx *sql.Tx, revisionIDs []string, 
 	return result, nil
 }
 
-func semanticKeywordRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, limit int) ([]hybridCandidate, error) {
-	ftsQuery, searchable := compileKeywordQuery(params.Query)
-	if !searchable {
-		return nil, nil
-	}
-	query := `SELECT f.memory_id,f.revision_id,p.content_hash,bm25(memory_fts) FROM memory_fts f JOIN memory_projections p ON p.memory_id=f.memory_id AND p.revision_id=f.revision_id JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE memory_fts MATCH ? AND f.content=p.display_content AND p.searchable=1 AND p.current_state IN ('active','contested') AND p.space_id IN (` + placeholders(len(spaces)) + `)`
-	args := []any{ftsQuery}
-	for _, id := range spaces {
-		args = append(args, id)
-	}
-	query += ` AND p.current_state IN (` + placeholders(len(params.States)) + `)`
-	for _, state := range params.States {
-		args = append(args, state)
-	}
-	if params.MemoryTypesSet {
-		query += ` AND p.memory_type IN (` + placeholders(len(params.MemoryTypes)) + `)`
-		for _, memoryType := range params.MemoryTypes {
-			args = append(args, memoryType)
-		}
-	}
-	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?) ORDER BY bm25(memory_fts),f.memory_id LIMIT ?`
-	args = append(args, params.ReferenceTime, params.ReferenceTime)
-	args = append(args, limit)
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []hybridCandidate
-	for rows.Next() {
-		var item hybridCandidate
-		if err := rows.Scan(&item.memoryID, &item.revisionID, &item.contentHash, &item.keywordScore); err != nil {
-			return nil, err
-		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
-}
-
 type semanticRecallItem struct {
 	MemoryID, RevisionID, ContentHash string
+	Kind                              string
 	Score                             float64
+	Confidence                        float64
+	EventStart, EventEnd              *time.Time
+	ValidFrom, ValidUntil             *time.Time
+	TimePrecision, SourceSpeaker      string
+	Language                          string
 }
 
 func semanticVectorRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policyGeneration int, compatibilityIdentity string, dimension int, queryBlob []byte, limit int) ([]semanticRecallItem, error) {
-	query := `SELECT p.memory_id,p.revision_id,p.content_hash,vec_distance_cosine(e.vector_blob, ?) AS distance FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state JOIN memory_embeddings e ON e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash AND e.compatibility_identity=? AND e.dimension=? WHERE p.searchable=1 AND p.current_state IN ('active','contested') AND EXISTS (SELECT 1 FROM embedding_eligibility el WHERE el.memory_id=p.memory_id AND el.revision_id=p.revision_id AND el.policy_generation=? AND el.eligible=1) AND p.space_id IN (` + placeholders(len(spaces)) + `)`
+	query := `SELECT p.memory_id,p.revision_id,p.content_hash,rv.kind,vec_distance_cosine(e.vector_blob, ?) AS distance,rv.confidence,rv.event_time_start,rv.event_time_end,rv.time_precision,rv.source_speaker,rv.language,rv.valid_from,rv.valid_until FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state JOIN memory_revisions rv ON rv.memory_id=p.memory_id AND rv.revision_id=p.revision_id JOIN memory_embeddings e ON e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash AND e.compatibility_identity=? AND e.dimension=? WHERE p.searchable=1 AND p.current_state IN ('active','contested') AND EXISTS (SELECT 1 FROM embedding_eligibility el WHERE el.memory_id=p.memory_id AND el.revision_id=p.revision_id AND el.policy_generation=? AND el.eligible=1) AND p.space_id IN (` + placeholders(len(spaces)) + `)`
 	args := make([]any, 0, len(spaces)+len(params.States)+len(params.MemoryTypes)+4)
 	args = append(args, queryBlob, compatibilityIdentity, dimension, policyGeneration)
 	for _, id := range spaces {
@@ -487,8 +431,13 @@ func semanticVectorRecall(ctx context.Context, tx *sql.Tx, params SearchParams, 
 			args = append(args, memoryType)
 		}
 	}
-	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?) ORDER BY distance ASC,p.memory_id ASC,p.revision_id ASC LIMIT ?`
-	args = append(args, params.ReferenceTime, params.ReferenceTime, limit)
+	query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?)`
+	args = append(args, params.ReferenceTime, params.ReferenceTime)
+	temporalSQL, temporalArgs := temporalEligibilitySQL(params)
+	query += temporalSQL
+	args = append(args, temporalArgs...)
+	query += ` ORDER BY distance ASC,p.memory_id ASC,p.revision_id ASC LIMIT ?`
+	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -498,7 +447,9 @@ func semanticVectorRecall(ctx context.Context, tx *sql.Tx, params SearchParams, 
 	for rows.Next() {
 		var item semanticRecallItem
 		var distance sql.NullFloat64
-		if err := rows.Scan(&item.MemoryID, &item.RevisionID, &item.ContentHash, &distance); err != nil {
+		var confidence sql.NullFloat64
+		var eventStart, eventEnd, timePrecision, sourceSpeaker, language, validFrom, validUntil sql.NullString
+		if err := rows.Scan(&item.MemoryID, &item.RevisionID, &item.ContentHash, &item.Kind, &distance, &confidence, &eventStart, &eventEnd, &timePrecision, &sourceSpeaker, &language, &validFrom, &validUntil); err != nil {
 			return nil, err
 		}
 		if !distance.Valid {
@@ -506,6 +457,16 @@ func semanticVectorRecall(ctx context.Context, tx *sql.Tx, params SearchParams, 
 		} else {
 			item.Score = 1 - distance.Float64
 		}
+		if confidence.Valid {
+			item.Confidence = confidence.Float64
+		}
+		item.EventStart = nullableTime(eventStart)
+		item.EventEnd = nullableTime(eventEnd)
+		item.ValidFrom = nullableTime(validFrom)
+		item.ValidUntil = nullableTime(validUntil)
+		item.TimePrecision = timePrecision.String
+		item.SourceSpeaker = sourceSpeaker.String
+		item.Language = language.String
 		result = append(result, item)
 	}
 	return result, rows.Err()
@@ -569,33 +530,84 @@ func hybridRevisionKeys(all map[string]*hybridCandidate) []string {
 	return keys
 }
 
-func sortHybridCandidates(list []hybridCandidate) {
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].score != list[j].score {
-			return list[i].score > list[j].score
-		}
-		if list[i].rrfScore != list[j].rrfScore {
-			return list[i].rrfScore > list[j].rrfScore
-		}
-		bi, bj := hybridBestRank(list[i]), hybridBestRank(list[j])
-		if bi != bj {
-			return bi < bj
-		}
-		if list[i].memoryID != list[j].memoryID {
-			return list[i].memoryID < list[j].memoryID
-		}
-		return list[i].revisionID < list[j].revisionID
-	})
+// semanticVectorRecallWindow uses the exact cosine path by default. When an
+// ANN window hook is configured, its bounded window is reranked by exact cosine
+// so approximate recall can never change the final score ordering.
+func (r *Repository) semanticVectorRecallWindow(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policyGeneration int, compatibilityIdentity string, dimension int, queryBlob []byte, limit int) ([]semanticRecallItem, error) {
+	if r.semanticWindowRecall == nil {
+		return semanticVectorRecall(ctx, tx, params, spaces, policyGeneration, compatibilityIdentity, dimension, queryBlob, limit)
+	}
+	window, err := r.semanticWindowRecall(ctx, tx, params, spaces, policyGeneration, compatibilityIdentity, dimension, queryBlob, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(window) > limit {
+		window = window[:limit]
+	}
+	return exactRerankWindow(ctx, tx, window, params, spaces, policyGeneration, compatibilityIdentity, dimension, queryBlob)
 }
 
-func hybridBestRank(c hybridCandidate) int {
-	best := 0
-	for _, rank := range []int{c.keywordRank, c.semanticRank, c.graphRank} {
-		if rank > 0 && (best == 0 || rank < best) {
-			best = rank
+// exactRerankWindow recomputes exact cosine similarity for a bounded ANN window
+// and re-applies the revision projections needed by ranking features.
+func exactRerankWindow(ctx context.Context, tx *sql.Tx, window []semanticRecallItem, params SearchParams, spaces []string, policyGeneration int, compatibilityIdentity string, dimension int, queryBlob []byte) ([]semanticRecallItem, error) {
+	result := make([]semanticRecallItem, 0, len(window))
+	for _, item := range window {
+		var distance sql.NullFloat64
+		var confidence sql.NullFloat64
+		var eventStart, eventEnd, timePrecision, sourceSpeaker, language, validFrom, validUntil sql.NullString
+		query := `SELECT vec_distance_cosine(e.vector_blob, ?),rv.kind,rv.confidence,rv.event_time_start,rv.event_time_end,rv.time_precision,rv.source_speaker,rv.language,rv.valid_from,rv.valid_until FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state JOIN memory_revisions rv ON rv.memory_id=p.memory_id AND rv.revision_id=p.revision_id JOIN memory_embeddings e ON e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash AND e.compatibility_identity=? AND e.dimension=? WHERE p.memory_id=? AND p.revision_id=? AND p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility el WHERE el.memory_id=p.memory_id AND el.revision_id=p.revision_id AND el.policy_generation=? AND el.eligible=1) AND p.space_id IN (` + placeholders(len(spaces)) + `) AND p.current_state IN (` + placeholders(len(params.States)) + `)`
+		args := []any{queryBlob, compatibilityIdentity, dimension, item.MemoryID, item.RevisionID, policyGeneration}
+		args = append(args, appendStrings2(nil, spaces)...)
+		args = append(args, appendStrings2(nil, params.States)...)
+		if params.MemoryTypesSet {
+			query += ` AND p.memory_type IN (` + placeholders(len(params.MemoryTypes)) + `)`
+			args = append(args, appendStrings2(nil, params.MemoryTypes)...)
 		}
+		query += ` AND (p.valid_from IS NULL OR p.valid_from<=?) AND (p.valid_until IS NULL OR p.valid_until>?)`
+		args = append(args, params.ReferenceTime, params.ReferenceTime)
+		temporalSQL, temporalArgs := temporalEligibilitySQL(params)
+		query += temporalSQL
+		args = append(args, temporalArgs...)
+		err := tx.QueryRowContext(ctx, query, args...).Scan(&distance, &item.Kind, &confidence, &eventStart, &eventEnd, &timePrecision, &sourceSpeaker, &language, &validFrom, &validUntil)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !distance.Valid {
+			item.Score = 0
+		} else {
+			item.Score = 1 - distance.Float64
+		}
+		if confidence.Valid {
+			item.Confidence = confidence.Float64
+		}
+		item.EventStart = nullableTime(eventStart)
+		item.EventEnd = nullableTime(eventEnd)
+		item.ValidFrom = nullableTime(validFrom)
+		item.ValidUntil = nullableTime(validUntil)
+		item.TimePrecision = timePrecision.String
+		item.SourceSpeaker = sourceSpeaker.String
+		item.Language = language.String
+		result = append(result, item)
 	}
-	return best
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Score != result[j].Score {
+			return result[i].Score > result[j].Score
+		}
+		if result[i].MemoryID != result[j].MemoryID {
+			return result[i].MemoryID < result[j].MemoryID
+		}
+		return result[i].RevisionID < result[j].RevisionID
+	})
+	return result, nil
+}
+
+// semanticCalibrationValue returns the configured semantic calibration.
+func (r *Repository) semanticCalibrationValue() retrieval.Calibration {
+	_, calibration, _ := r.retrievalCalibration()
+	return calibration
 }
 
 func semanticQueryHash(params SearchParams) string {

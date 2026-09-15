@@ -80,7 +80,7 @@ def test_manifest_roundtrips_identity_block(tmp_path):
         "semantic_index_version": 3,
         "graph_index_version": 4,
         "fts_index_version": 2,
-        "ranking_version": "rrf-v3",
+        "ranking_version": "ranking-weights-v1",
         "context_selection": "none",
     }
     cp.write_manifest({"identities": identities})
@@ -108,7 +108,7 @@ def test_capture_identities_includes_all_required_identities():
         "graph_index_state": "ready",
         "fts_index_state": "ready",
     }
-    identities = capture_identities(health, {"fts_index_version": 7, "ranking_version": "rrf-v3"})
+    identities = capture_identities(health, {"fts_index_version": 7, "ranking_version": "ranking-weights-v1"})
     for key in (
         "metric_schema",
         "daemon_build_version",
@@ -124,7 +124,7 @@ def test_capture_identities_includes_all_required_identities():
         assert key in identities
     assert identities["daemon_build_commit"] == "deadbeef"
     assert identities["fts_index_version"] == 7
-    assert identities["ranking_version"] == "rrf-v3"
+    assert identities["ranking_version"] == "ranking-weights-v1"
 
 
 def test_capture_identities_uses_daemon_binary_sha_when_health_omits_build(monkeypatch):

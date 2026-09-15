@@ -25,6 +25,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/jobs"
 	"github.com/N0rthHXD/dMem/internal/provider"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -491,6 +492,15 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 
 	processingPolicyGeneration := d.policyGeneration(ctx, previous, snapshot, "processing")
 	embeddingPolicyGeneration := d.policyGeneration(ctx, previous, snapshot, "embedding")
+	weights, calibration, graphPolicy := retrievalContracts(snapshot.Config)
+	d.repository.SetRetrievalCalibration(
+		weights,
+		calibration,
+		graphPolicy,
+		snapshot.Config.Graph.MinEntityConfidence,
+		snapshot.Config.Graph.MinFactConfidence,
+		snapshot.Config.Graph.BoostCap,
+	)
 	d.repository.SetProcessingGeneration(snapshot.ActivationGeneration, processingPolicyGeneration, snapshot.ProcessingCapability.CompatibilityIdentity)
 	d.repository.SetGraphExtractionEnabled(snapshot.ProcessingCapability.Enabled && snapshot.Config.GraphEnabled)
 	d.jobs.SetProcessing(jobs.ProcessingConfig{
@@ -523,12 +533,33 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		embedding,
 		snapshot.EmbeddingCapability.Kind,
 		snapshot.EmbeddingCapability.Model,
-		snapshot.EmbeddingCapability.CompatibilityIdentity,
+		storage.EmbeddingCompatibilityIdentity(snapshot.EmbeddingCapability.CompatibilityIdentity),
 		snapshot.EmbeddingCapability.ConfigurationIdentity,
 		snapshot.ActivationGeneration,
 		embeddingPolicyGeneration,
 	)
 	return nil
+}
+
+func retrievalContracts(cfg config.Config) (retrieval.Weights, retrieval.Calibration, retrieval.GraphPolicy) {
+	weights := retrieval.DefaultWeights()
+	weights.Version = cfg.Ranking.Version
+	weights.Semantic = cfg.Ranking.SemanticWeight
+	weights.Keyword = cfg.Ranking.KeywordWeight
+	weights.Exact = cfg.Ranking.ExactWeight
+	weights.Temporal = cfg.Ranking.TemporalWeight
+	weights.Quality = cfg.Ranking.QualityWeight
+	weights.Agreement = cfg.Ranking.AgreementWeight
+	weights.GraphBoostGraphCap = cfg.Graph.BoostCap
+	calibration := retrieval.Calibration{
+		Version:        cfg.Semantic.CalibrationVersion,
+		AbsoluteFloor:  cfg.Semantic.AbsoluteFloor,
+		TopMargin:      cfg.Semantic.TopMargin,
+		ByKind:         map[string]float64{},
+		ByLanguage:     map[string]float64{},
+		ByQuestionType: map[string]float64{},
+	}
+	return weights, calibration, retrieval.GraphPolicy(cfg.Graph.Policy)
 }
 
 func (d *Daemon) Close(ctx context.Context) error {

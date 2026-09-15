@@ -15,6 +15,7 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/mattn/go-sqlite3"
 )
 
@@ -85,6 +86,34 @@ type Repository struct {
 	semanticBuildHook               func()
 	semanticActivateHook            func()
 	semanticSearchErr               error
+	rankingWeights                  retrieval.Weights
+	semanticCalibration             retrieval.Calibration
+	graphPolicy                     retrieval.GraphPolicy
+	minEntityConfidence             float64
+	minFactConfidence               float64
+	graphBoostCap                   float64
+	semanticWindowRecall            SemanticWindowRecall
+	queryEnricher                   retrieval.QueryEnricher
+	queryEnrichmentAllowed          bool
+}
+
+// SetQueryEnricher installs an optional, policy-gated query plan enrichment
+// source. When it is nil or disallowed, planning falls back to the local plan.
+func (r *Repository) SetQueryEnricher(enricher retrieval.QueryEnricher, allowed bool) {
+	r.queryEnricher = enricher
+	r.queryEnrichmentAllowed = allowed
+}
+
+// SemanticWindowRecall is the optional approximate-nearest-neighbor extension
+// point. Implementations return a bounded candidate window that the exact
+// cosine path then reranks, so exact search remains the correctness baseline.
+// It is nil by default and ANN is not implemented until measured scale requires
+// it.
+type SemanticWindowRecall func(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, policyGeneration int, compatibilityIdentity string, dimension int, queryBlob []byte, limit int) ([]semanticRecallItem, error)
+
+// SetSemanticWindowRecall installs an optional ANN window recall hook.
+func (r *Repository) SetSemanticWindowRecall(hook SemanticWindowRecall) {
+	r.semanticWindowRecall = hook
 }
 
 type embeddingRuntime struct {
@@ -108,7 +137,8 @@ func (r *Repository) setEmbeddingProvider(p provider.EmbeddingProvider) {
 }
 
 func (r *Repository) ConfigureSemantic(embedding provider.EmbeddingProvider, providerIdentity, modelIdentity string) {
-	r.SetEmbedding(embedding, providerIdentity, modelIdentity, providerIdentity+"/"+modelIdentity, providerIdentity+"/"+modelIdentity, 0, 0)
+	base := providerIdentity + "/" + modelIdentity
+	r.SetEmbedding(embedding, providerIdentity, modelIdentity, EmbeddingCompatibilityIdentity(base), base, 0, 0)
 }
 
 func (r *Repository) SetEmbedding(embedding provider.EmbeddingProvider, providerIdentity, modelIdentity, compatibilityIdentity, configurationIdentity string, generation, policyGeneration int) {
@@ -156,9 +186,55 @@ func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, m
 	r := &Repository{
 		store: store, runtime: runtime, queueSoftLimit: softLimit, queueHardLimit: hardLimit,
 		maxAttempts: maxAttempts, processingVersion: processingVersion,
+		rankingWeights:      retrieval.DefaultWeights(),
+		semanticCalibration: retrieval.DefaultCalibration(),
+		graphPolicy:         retrieval.GraphFeaturesOnly,
+		minEntityConfidence: 0.60,
+		minFactConfidence:   0.70,
+		graphBoostCap:       0.08,
 	}
 	r.embedding.Store(&embeddingRuntime{})
 	return r
+}
+
+// SetRetrievalCalibration installs the configured ranking, semantic
+// calibration, and graph gate contracts.
+func (r *Repository) SetRetrievalCalibration(weights retrieval.Weights, calibration retrieval.Calibration, graphPolicy retrieval.GraphPolicy, minEntityConfidence, minFactConfidence, graphBoostCap float64) {
+	if weights.Version != "" {
+		r.rankingWeights = weights
+	}
+	if calibration.Version != "" {
+		r.semanticCalibration = calibration
+	}
+	if graphPolicy.Valid() {
+		r.graphPolicy = graphPolicy
+	}
+	if minEntityConfidence >= 0 && minEntityConfidence <= 1 {
+		r.minEntityConfidence = minEntityConfidence
+	}
+	if minFactConfidence >= 0 && minFactConfidence <= 1 {
+		r.minFactConfidence = minFactConfidence
+	}
+	if graphBoostCap > 0 {
+		r.graphBoostCap = graphBoostCap
+		r.rankingWeights.GraphBoostGraphCap = graphBoostCap
+	}
+}
+
+func (r *Repository) retrievalCalibration() (retrieval.Weights, retrieval.Calibration, retrieval.GraphPolicy) {
+	weights := r.rankingWeights
+	if weights.Version == "" {
+		weights = retrieval.DefaultWeights()
+	}
+	calibration := r.semanticCalibration
+	if calibration.Version == "" {
+		calibration = retrieval.DefaultCalibration()
+	}
+	policy := r.graphPolicy
+	if !policy.Valid() {
+		policy = retrieval.GraphFeaturesOnly
+	}
+	return weights, calibration, policy
 }
 
 // BeginReadSnapshot starts a read-only transaction for consumers that must scan

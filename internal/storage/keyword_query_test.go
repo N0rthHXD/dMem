@@ -4,66 +4,154 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
-func TestCompileKeywordQuery(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		input string
-		want  string
-		ok    bool
-	}{
-		{name: "english question", input: "What camera did I buy for my trip?", want: `"camera" OR "trip"`, ok: true},
-		{name: "chinese question", input: "我上次去上海旅游住的是哪家酒店？", want: `"我上次" OR "上次去" OR "次去上" OR "去上海" OR "上海旅" OR "海旅游" OR "旅游住" OR "游住的" OR "住的是" OR "的是哪" OR "是哪家" OR "哪家酒" OR "家酒店"`, ok: true},
-		{name: "mixed language", input: "我购买的 Sony camera 是什么型号？", want: `"我购买" OR "购买的" OR "Sony" OR "camera" OR "是什么" OR "什么型" OR "么型号"`, ok: true},
-		{name: "hyphenated identifier", input: "Where is order ZXQ-1847?", want: `"order" OR "ZXQ-1847"`, ok: true},
-		{name: "fts operators are literals", input: `NEAR( OR AND "camera"`, want: `"NEAR" OR "camera"`, ok: true},
-		{name: "deduplicates case insensitively", input: "Camera camera CAMERA", want: `"Camera"`, ok: true},
-		{name: "no searchable term", input: "我 你 the an buy", want: "", ok: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			got, ok := compileKeywordQuery(test.input)
-			if got != test.want || ok != test.ok {
-				t.Fatalf("compileKeywordQuery(%q) = %q, %t; want %q, %t", test.input, got, ok, test.want, test.ok)
-			}
-		})
+func keywordTermByText(query retrieval.KeywordQuery, text string) (retrieval.KeywordTerm, bool) {
+	for _, term := range query.Terms {
+		if term.Text == text {
+			return term, true
+		}
+	}
+	return retrieval.KeywordTerm{}, false
+}
+
+func TestCompileKeywordPreservesNamesAcronymsIdentifiersDatesAndNumbers(t *testing.T) {
+	query := compileKeyword("Did Ann and NASA meet about ZXQ-1847 on 2026-08-21 for project 42?")
+	for _, want := range []string{"Ann", "NASA", "ZXQ-1847", "2026-08-21", "42"} {
+		term, ok := keywordTermByText(query, want)
+		if !ok {
+			t.Fatalf("compiled terms %+v missing %q", query.Terms, want)
+		}
+		if (want == "NASA" || want == "ZXQ-1847") && !term.Required {
+			t.Fatalf("term %q required=%v, want required", want, term.Required)
+		}
+		if (want == "2026-08-21" || want == "42") && !term.Exact {
+			t.Fatalf("term %q exact=%v, want exact", want, term.Exact)
+		}
+	}
+	if !query.Searchable || query.Match == "" {
+		t.Fatalf("compiled query = %+v", query)
+	}
+	if !strings.Contains(query.Match, "Ann") {
+		t.Fatalf("short proper name dropped from match: %q", query.Match)
 	}
 }
 
-func TestCompileKeywordQueryCapsTerms(t *testing.T) {
-	query, ok := compileKeywordQuery("alpha bravo charlie delta echoo foxtrot golfy hotel india juliet kiloos limaos mikeos november oscarp papaqq quebec romeoo sierra tangoa uniform victor whiskey xrayyy yankee zuluuu extraa")
-	if !ok || strings.Count(query, " OR ")+1 != maximumKeywordTerms {
-		t.Fatalf("compiled query = %q; want %d terms", query, maximumKeywordTerms)
+func TestCompileKeywordQuotedPhrasesAreRequiredExact(t *testing.T) {
+	query := compileKeyword(`find the "quarterly revenue report" now`)
+	term, ok := keywordTermByText(query, "quarterly revenue report")
+	if !ok {
+		t.Fatalf("quoted phrase missing: %+v", query.Terms)
+	}
+	if !term.Required || !term.Exact || term.Kind != retrieval.TermPhrase {
+		t.Fatalf("quoted phrase term = %+v", term)
 	}
 }
 
-func TestKeywordSearchCompilesNaturalLanguageQueries(t *testing.T) {
+func TestCompileKeywordCJKFallbackForShortSegments(t *testing.T) {
+	// Two runes cannot form a trigram: emit a bigram fallback term.
+	short := compileKeyword("上海")
+	if len(short.ShortTerms) == 0 || short.Match != "" {
+		t.Fatalf("two-rune CJK fallback = %+v", short)
+	}
+	// A single rune similarly falls back to a unigram.
+	single := compileKeyword("沪")
+	if len(single.ShortTerms) != 1 || single.ShortTerms[0] != "沪" {
+		t.Fatalf("single-rune CJK fallback = %+v", single)
+	}
+	// Three or more runes form trigrams served by the FTS trigram tokenizer.
+	long := compileKeyword("上海旅游住")
+	if long.Match == "" || len(long.ShortTerms) != 0 {
+		t.Fatalf("trigram CJK query = %+v", long)
+	}
+}
+
+func TestCompileKeywordRequiredAndOptionalClauses(t *testing.T) {
+	query := compileKeyword("what did Alice report about TOKEN42")
+	if !strings.Contains(query.Match, "AND") {
+		t.Fatalf("match lacks required term conjunction: %q", query.Match)
+	}
+	if !strings.Contains(query.Match, "OR") {
+		t.Fatalf("match lacks optional term disjunction: %q", query.Match)
+	}
+}
+
+func TestTermWeightRewardsRareTerms(t *testing.T) {
+	common := retrieval.TermWeight(0.6, 900, 1000)
+	rare := retrieval.TermWeight(0.6, 2, 1000)
+	if rare <= common {
+		t.Fatalf("rare term weight %v <= common term weight %v", rare, common)
+	}
+}
+
+func TestKeywordSearchFindsShortProperName(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
-	english := createMemoryWithContent(t, repository, "natural-language-english", "The camera for the Kyoto trip was a Fujifilm X100VI.")
-	chinese := createMemoryWithContent(t, repository, "natural-language-chinese", "上次上海旅游住在东方酒店。")
-	literal := createMemoryWithContent(t, repository, "natural-language-literal", "NEAR diagnostics are enabled.")
-
-	for _, test := range []struct {
-		query string
-		want  string
-	}{
-		{query: "What camera did I buy for my trip?", want: english.MemoryID},
-		{query: "我上次去上海旅游住的是哪家酒店？", want: chinese.MemoryID},
-		{query: "NEAR(", want: literal.MemoryID},
-	} {
-		result, err := repository.SearchMemories(context.Background(), SearchParams{Query: test.query, SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000})
-		if err != nil {
-			t.Fatalf("keyword search %q: %v", test.query, err)
+	short := createMemoryWithContent(t, repository, "short-name", "Meeting notes for Ann and Bo")
+	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "Ann", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range result.Results {
+		if item.Memory.MemoryID == short.MemoryID {
+			found = true
 		}
-		found := false
-		for _, item := range result.Results {
-			if item.Memory.MemoryID == test.want {
-				found = true
-				break
+	}
+	if !found {
+		t.Fatalf("short proper name search results = %+v", result.Results)
+	}
+}
+
+// TestKeywordCandidatesIdenticalAcrossPaths proves hybrid recall uses the same
+// keyword candidate order and tie-break as keyword-only recall.
+func TestKeywordCandidatesIdenticalAcrossPaths(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	configureSemanticTest(t, repository, &semanticTestProvider{})
+	createMemoryWithContent(t, repository, "path-keyword-a", "ZOOMTOP alpha report")
+	createMemoryWithContent(t, repository, "path-keyword-b", "ZOOMTOP beta report")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	params := SearchParams{Query: "ZOOMTOP report", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000}
+	keywordOnly, err := repository.SearchMemories(context.Background(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.Channels = []string{"keyword", "semantic"}
+	hybrid, err := repository.SearchMemories(context.Background(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := func(items []domain.SearchResult) []string {
+		result := make([]string, 0, len(items))
+		for _, item := range items {
+			if hasChannel(item.MatchedChannels, ChannelKeyword) {
+				result = append(result, item.Memory.MemoryID+"\x00"+item.Memory.CurrentRevision.RevisionID)
 			}
 		}
-		if !found {
-			t.Fatalf("keyword search %q results = %+v; missing %s", test.query, result.Results, test.want)
-		}
+		return result
+	}
+	if strings.Join(order(keywordOnly.Results), ",") != strings.Join(order(hybrid.Results), ",") {
+		t.Fatalf("keyword candidate order differs:\nkeyword-only=%v\nhybrid=%v", order(keywordOnly.Results), order(hybrid.Results))
+	}
+}
+
+func TestHybridKeywordRecallIncludesShortTerms(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	configureSemanticTest(t, repository, &semanticTestProvider{})
+	short := createMemoryWithContent(t, repository, "hybrid-short-name", "Meeting notes for Ann and Bo")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := repository.SearchMemories(context.Background(), SearchParams{Query: "Ann", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "semantic"}, Limit: 10, MaxChars: 10000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := searchResultsByID(result)[short.MemoryID]
+	if !ok || !hasChannel(item.MatchedChannels, ChannelKeyword) {
+		t.Fatalf("hybrid short-term keyword result = %+v", result.Results)
 	}
 }

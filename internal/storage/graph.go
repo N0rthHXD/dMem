@@ -451,7 +451,7 @@ func (r *Repository) commitGraphMentions(ctx context.Context, tx *sql.Tx, input 
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO entity_mentions(mention_id, entity_id, memory_id, revision_id, start_offset, end_offset, mention_type, source, surface_text, created_by, processing_version, created_at) VALUES (?,?,?,?,?,?,?, 'processor',?,?,?,?) ON CONFLICT DO NOTHING`, id, entityID, input.MemoryID, input.RevisionID, mention.StartRune, mention.EndRune, "explicit", surface, autoReviewIdentity, input.ProcessingVersion, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO entity_mentions(mention_id, entity_id, memory_id, revision_id, start_offset, end_offset, mention_type, source, surface_text, confidence, created_by, processing_version, created_at) VALUES (?,?,?,?,?,?,?, 'processor',?,?,?,?,?) ON CONFLICT DO NOTHING`, id, entityID, input.MemoryID, input.RevisionID, mention.StartRune, mention.EndRune, "explicit", surface, mention.Confidence, autoReviewIdentity, input.ProcessingVersion, now); err != nil {
 			return err
 		}
 	}
@@ -535,8 +535,6 @@ func (r *Repository) commitGraphRelations(ctx context.Context, tx *sql.Tx, input
 
 func relationAutoConfirm(relationType string, confidence float64) bool {
 	switch relationType {
-	case "related_to":
-		return true
 	case "supports", "derived_from":
 		return confidence >= autoConfirmRelationConfidence
 	default:

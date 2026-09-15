@@ -126,6 +126,7 @@ func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error(), requestID, "", false, nil)
 		return
 	}
+	query.OperationID = requestID
 	result, err := h.memoryService.Recall(r.Context(), query)
 	if err != nil {
 		// An unknown scope space is a request error, not a missing object:

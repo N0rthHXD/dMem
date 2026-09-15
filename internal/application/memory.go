@@ -48,6 +48,7 @@ type RememberResult struct {
 }
 
 type RecallQuery struct {
+	OperationID            string
 	Query                  string
 	SpaceIDs               []string
 	IncludeAncestors       bool
@@ -134,11 +135,12 @@ func (s *Service) Recall(ctx context.Context, query RecallQuery) (domain.SearchR
 		return domain.SearchResponse{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	return s.repository.SearchMemories(ctx, storage.SearchParams{
-		Query: query.Query, SpaceIDs: query.SpaceIDs, IncludeAncestors: query.IncludeAncestors,
+		OperationID: query.OperationID, Query: query.Query, SpaceIDs: query.SpaceIDs, IncludeAncestors: query.IncludeAncestors,
 		MemoryTypes: query.MemoryTypes, MemoryTypesSet: query.MemoryTypesSet, States: query.States,
 		ReferenceTime: query.ReferenceTime, ReferenceTimeSet: query.ReferenceTimeSet, Channels: query.Channels,
 		Limit: query.Limit, MaxChars: query.MaxChars, IncludeEvidence: query.IncludeEvidence,
-		ExcludeStaleAggregates: query.ExcludeStaleAggregates, Cursor: query.Cursor,
+		ExcludeStaleAggregates: query.ExcludeStaleAggregates, Explain: query.Explain, Cursor: query.Cursor,
+		Intent: string(query.Intent),
 	})
 }
 

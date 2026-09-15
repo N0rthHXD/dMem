@@ -69,7 +69,7 @@ func defaultGraphConfig() GraphConfig {
 
 func defaultRankingConfig() RankingConfig {
 	return RankingConfig{
-		Version:        "feature-ranking-v1",
+		Version:        "ranking-weights-v1",
 		SemanticWeight: 1.0, KeywordWeight: 0.35, ExactWeight: 0.15,
 		TemporalWeight: 0.10, QualityWeight: 0.10, AgreementWeight: 0.05,
 	}

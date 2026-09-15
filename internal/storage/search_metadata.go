@@ -16,6 +16,15 @@ type searchMetadata struct {
 	relationIndexGeneration  int64
 	graphIndexGeneration     int64
 	graphIndexState          string
+	entityIndexState         string
+	relationIndexState       string
+	entityNormalization      string
+	graphSourceFactCount     int64
+	graphSourceEntityCount   int64
+	graphSourceRelationCount int64
+	activeFactCount          int64
+	activeEntityCount        int64
+	activeRelationCount      int64
 }
 
 func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error) {
@@ -32,6 +41,12 @@ func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error)
 		{`SELECT generation FROM entity_index_metadata WHERE singleton=1`, &result.entityIndexGeneration},
 		{`SELECT generation FROM relation_index_metadata WHERE singleton=1`, &result.relationIndexGeneration},
 		{`SELECT generation FROM graph_index_metadata WHERE singleton=1`, &result.graphIndexGeneration},
+		{`SELECT source_fact_count FROM graph_index_metadata WHERE singleton=1`, &result.graphSourceFactCount},
+		{`SELECT source_entity_count FROM graph_index_metadata WHERE singleton=1`, &result.graphSourceEntityCount},
+		{`SELECT source_relation_count FROM graph_index_metadata WHERE singleton=1`, &result.graphSourceRelationCount},
+		{`SELECT count(*) FROM entity_facts WHERE state='active'`, &result.activeFactCount},
+		{`SELECT count(*) FROM entities WHERE state='active'`, &result.activeEntityCount},
+		{`SELECT count(*) FROM memory_relations WHERE state='active'`, &result.activeRelationCount},
 	}
 	for _, read := range reads {
 		if err := tx.QueryRowContext(ctx, read.query).Scan(read.value); err != nil {
@@ -39,6 +54,12 @@ func readSearchMetadata(ctx context.Context, tx *sql.Tx) (searchMetadata, error)
 		}
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM graph_index_metadata WHERE singleton=1`).Scan(&result.graphIndexState); err != nil {
+		return searchMetadata{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT state,normalization_version FROM entity_index_metadata WHERE singleton=1`).Scan(&result.entityIndexState, &result.entityNormalization); err != nil {
+		return searchMetadata{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM relation_index_metadata WHERE singleton=1`).Scan(&result.relationIndexState); err != nil {
 		return searchMetadata{}, err
 	}
 	return result, nil

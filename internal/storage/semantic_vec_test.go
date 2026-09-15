@@ -368,7 +368,7 @@ func TestSemanticQueryableRequiresCurrentIdentityPolicyAndDimension(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CompatibilityIdentity != "test-provider/test-model" || !repository.semanticQueryable(status, status.Dimension) {
+	if status.CompatibilityIdentity != EmbeddingCompatibilityIdentity("test-provider/test-model") || !repository.semanticQueryable(status, status.Dimension) {
 		t.Fatalf("published identity is not queryable: %+v", status)
 	}
 
