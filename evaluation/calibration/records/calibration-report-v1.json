@@ -1,0 +1,292 @@
+{
+  "boundaries": {
+    "fit_uses": [
+      "train",
+      "development"
+    ],
+    "promotion_uses": [
+      "holdout"
+    ],
+    "runtime_feedback": "not_written",
+    "selection_uses": [
+      "development"
+    ]
+  },
+  "fit": {
+    "fit_metric": 1.0,
+    "fit_query_groups": 45
+  },
+  "parameter_space": {
+    "context.minimum_utility": {
+      "maximum": 0.5,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "context.redundancy": {
+      "maximum": 1.5,
+      "minimum": 0.5,
+      "step": 0.25
+    },
+    "context.relevance": {
+      "maximum": 1.5,
+      "minimum": 0.5,
+      "step": 0.25
+    },
+    "feedback.global_weight": {
+      "maximum": 0.002,
+      "minimum": 0.0,
+      "step": 0.0005
+    },
+    "feedback.query_weight": {
+      "maximum": 0.002,
+      "minimum": 0.0,
+      "step": 0.0005
+    },
+    "graph.boost_cap": {
+      "maximum": 0.2,
+      "minimum": 0.0,
+      "step": 0.02
+    },
+    "graph.gate_floor": {
+      "maximum": 0.5,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "penalty.duplicate": {
+      "maximum": 0.4,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "penalty.overbreadth": {
+      "maximum": 0.3,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "penalty.stale": {
+      "maximum": 0.3,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "ranking.exact_weight": {
+      "maximum": 0.4,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "ranking.keyword_weight": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "ranking.quality_weight": {
+      "maximum": 0.3,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "ranking.temporal_weight": {
+      "maximum": 0.5,
+      "minimum": 0.0,
+      "step": 0.05
+    },
+    "semantic.absolute_floor": {
+      "maximum": 0.6,
+      "minimum": 0.1,
+      "step": 0.05
+    },
+    "semantic.top_margin": {
+      "maximum": 0.3,
+      "minimum": 0.0,
+      "step": 0.05
+    }
+  },
+  "promotion": {
+    "benchmark_deltas": {
+      "locomo": 0.0,
+      "longmemeval": 0.0
+    },
+    "holdout_ci": [
+      0.0,
+      0.0
+    ],
+    "promoted": false,
+    "query_type_deltas": {
+      "lookup": 0.0,
+      "multi_hop": 0.0,
+      "temporal": 0.0
+    },
+    "reasons": [
+      "paired_ci_does_not_exclude_zero"
+    ],
+    "thresholds": {
+      "maximum_benchmark_regression": 0.01,
+      "maximum_query_type_regression": 0.02,
+      "minimum_ci_lower": 0.0
+    }
+  },
+  "report_version": "calibration-report-v1",
+  "selected_weights": {
+    "context.minimum_utility": 0.2,
+    "context.redundancy": 0.9,
+    "context.relevance": 1.0,
+    "feedback.global_weight": 0.001,
+    "feedback.query_weight": 0.0005,
+    "graph.boost_cap": 0.08,
+    "graph.gate_floor": 0.2,
+    "penalty.duplicate": 0.15,
+    "penalty.overbreadth": 0.1,
+    "penalty.stale": 0.1,
+    "ranking.exact_weight": 0.15,
+    "ranking.keyword_weight": 0.35,
+    "ranking.quality_weight": 0.1,
+    "ranking.temporal_weight": 0.1,
+    "semantic.absolute_floor": 0.35,
+    "semantic.top_margin": 0.08
+  },
+  "split_assignment": {
+    "q0": "train",
+    "q1": "development",
+    "q10": "holdout",
+    "q11": "train",
+    "q12": "train",
+    "q13": "train",
+    "q14": "train",
+    "q15": "development",
+    "q16": "train",
+    "q17": "train",
+    "q18": "train",
+    "q19": "train",
+    "q2": "train",
+    "q20": "train",
+    "q21": "train",
+    "q22": "holdout",
+    "q23": "holdout",
+    "q24": "development",
+    "q25": "holdout",
+    "q26": "train",
+    "q27": "train",
+    "q28": "train",
+    "q29": "development",
+    "q3": "holdout",
+    "q30": "holdout",
+    "q31": "train",
+    "q32": "train",
+    "q33": "train",
+    "q34": "train",
+    "q35": "train",
+    "q36": "holdout",
+    "q37": "development",
+    "q38": "train",
+    "q39": "train",
+    "q4": "train",
+    "q40": "train",
+    "q41": "train",
+    "q42": "holdout",
+    "q43": "train",
+    "q44": "development",
+    "q45": "train",
+    "q46": "train",
+    "q47": "train",
+    "q48": "holdout",
+    "q49": "holdout",
+    "q5": "train",
+    "q50": "holdout",
+    "q51": "train",
+    "q52": "development",
+    "q53": "train",
+    "q54": "development",
+    "q55": "holdout",
+    "q56": "train",
+    "q57": "holdout",
+    "q58": "train",
+    "q59": "development",
+    "q6": "holdout",
+    "q7": "train",
+    "q8": "train",
+    "q9": "holdout"
+  },
+  "splits": {
+    "development": {
+      "baseline_by_benchmark": {
+        "locomo": 1.0,
+        "longmemeval": 1.0
+      },
+      "baseline_by_query_type": {
+        "lookup": 1.0,
+        "multi_hop": 1.0,
+        "temporal": 1.0
+      },
+      "baseline_metric": 1.0,
+      "by_benchmark": {
+        "locomo": 1.0,
+        "longmemeval": 1.0
+      },
+      "by_query_type": {
+        "lookup": 1.0,
+        "multi_hop": 1.0,
+        "temporal": 1.0
+      },
+      "groups": 9,
+      "mean_improvement": 0.0,
+      "mean_metric": 1.0,
+      "paired_ci": [
+        0.0,
+        0.0
+      ]
+    },
+    "holdout": {
+      "baseline_by_benchmark": {
+        "locomo": 1.0,
+        "longmemeval": 1.0
+      },
+      "baseline_by_query_type": {
+        "lookup": 1.0,
+        "multi_hop": 1.0,
+        "temporal": 1.0
+      },
+      "baseline_metric": 1.0,
+      "by_benchmark": {
+        "locomo": 1.0,
+        "longmemeval": 1.0
+      },
+      "by_query_type": {
+        "lookup": 1.0,
+        "multi_hop": 1.0,
+        "temporal": 1.0
+      },
+      "groups": 15,
+      "mean_improvement": 0.0,
+      "mean_metric": 1.0,
+      "paired_ci": [
+        0.0,
+        0.0
+      ]
+    },
+    "train": {
+      "baseline_by_benchmark": {
+        "locomo": 1.0,
+        "longmemeval": 1.0
+      },
+      "baseline_by_query_type": {
+        "lookup": 1.0,
+        "multi_hop": 1.0,
+        "temporal": 1.0
+      },
+      "baseline_metric": 1.0,
+      "by_benchmark": {
+        "locomo": 1.0,
+        "longmemeval": 1.0
+      },
+      "by_query_type": {
+        "lookup": 1.0,
+        "multi_hop": 1.0,
+        "temporal": 1.0
+      },
+      "groups": 36,
+      "mean_improvement": 0.0,
+      "mean_metric": 1.0,
+      "paired_ci": [
+        0.0,
+        0.0
+      ]
+    }
+  }
+}

@@ -496,18 +496,7 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 	if _, err := tx.ExecContext(ctx, `UPDATE relation_index_metadata SET active_version=active_version+1,generation=generation+1,state='ready',source_relation_count=(SELECT count(*) FROM memory_relations),updated_at=? WHERE singleton=1`, nowText); err != nil {
 		return 0, 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM feedback_aggregates`); err != nil {
-		return 0, 0, err
-	}
-	var feedbackGeneration int64
-	if err := tx.QueryRowContext(ctx, `SELECT generation+1 FROM feedback_aggregate_metadata WHERE singleton=1`).Scan(&feedbackGeneration); err != nil {
-		return 0, 0, err
-	}
-	windowStart := at.UTC().AddDate(0, 0, -90).Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `WITH latest AS (SELECT revision_id,caller_id,feedback_type,row_number() OVER (PARTITION BY revision_id,caller_id ORDER BY created_at DESC,feedback_id DESC) n FROM feedback_events WHERE created_at>=? AND created_at<=?), scores AS (SELECT revision_id,sum(feedback_type IN ('useful','correct')) positive,sum(feedback_type IN ('irrelevant','contest')) negative FROM latest WHERE n=1 GROUP BY revision_id) INSERT INTO feedback_aggregates(revision_id,algorithm_version,generation,positive_count,negative_count,bounded_usage_score,window_start,window_end,source_watermark,state,updated_at) SELECT revision_id,'v1',?,positive,negative,max(-1.0,min(1.0,(positive-negative)/8.0)),?,?,(SELECT max(created_at||'/'||feedback_id) FROM feedback_events WHERE created_at<=?),'current',? FROM scores ORDER BY revision_id`, windowStart, nowText, feedbackGeneration, windowStart, nowText, nowText, nowText); err != nil {
-		return 0, 0, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE feedback_aggregate_metadata SET algorithm_version='v1',generation=?,state='ready',source_watermark=(SELECT max(created_at||'/'||feedback_id) FROM feedback_events WHERE created_at<=?),window_days=90,updated_at=? WHERE singleton=1`, feedbackGeneration, nowText, nowText); err != nil {
+	if _, err := storage.AggregateFeedback(ctx, tx, at, storage.FeedbackAlgorithmVersion, 90, 3, 45); err != nil {
 		return 0, 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM aggregate_freshness`); err != nil {

@@ -23,7 +23,7 @@ func TestFeedbackAppendListPrivacyHealthAndRebuildRoutes(t *testing.T) {
 	space := createSpace(t, client, "feedback-api-space", map[string]any{"space_type": "user", "external_id": "feedback-api", "display_name": "Feedback API"})
 	event := ingestManualEvent(t, client, "feedback-api-event", space.SpaceID, "feedback source")
 	memory, _ := createMemory(t, client, "feedback-api-memory", memoryCreateBody(space.SpaceID, event.EventID, "feedback target"))
-	body := map[string]any{"space_id": space.SpaceID, "memory_id": memory.MemoryID, "revision_id": memory.CurrentRevision.RevisionID, "feedback_type": "useful", "reason_code": "answered_query", "note": "private note"}
+	body := map[string]any{"space_id": space.SpaceID, "memory_id": memory.MemoryID, "revision_id": memory.CurrentRevision.RevisionID, "feedback_purpose": "memory_quality_feedback", "feedback_type": "confirm", "reason_code": "other", "note": "private note"}
 	response := requestJSON(t, client, http.MethodPost, "/v1/feedback", "feedback-api-append", body)
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("append status = %d", response.StatusCode)
@@ -53,13 +53,18 @@ func TestFeedbackAppendListPrivacyHealthAndRebuildRoutes(t *testing.T) {
 	tooLong := body
 	tooLong["note"] = strings.Repeat("x", 2001)
 	assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/feedback", "feedback-api-long-note", tooLong), http.StatusUnprocessableEntity, "invalid_request")
+
+	mismatched := map[string]any{"space_id": space.SpaceID, "memory_id": memory.MemoryID, "revision_id": memory.CurrentRevision.RevisionID, "feedback_purpose": "memory_quality_feedback", "feedback_type": "useful", "reason_code": "answered_query"}
+	assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/feedback", "feedback-api-mismatch", mismatched), http.StatusUnprocessableEntity, "invalid_request")
+	missingDecision := map[string]any{"space_id": space.SpaceID, "memory_id": memory.MemoryID, "revision_id": memory.CurrentRevision.RevisionID, "feedback_purpose": "retrieval_feedback", "feedback_type": "useful", "reason_code": "answered_query"}
+	assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/feedback", "feedback-api-missing-decision", missingDecision), http.StatusUnprocessableEntity, "invalid_request")
 	health := requestJSON(t, client, http.MethodGet, "/v1/feedback/aggregates/health", "", nil)
 	if health.StatusCode != http.StatusOK {
 		t.Fatalf("aggregate health status = %d", health.StatusCode)
 	}
 	var aggregateHealth domain.FeedbackAggregateHealth
 	decodeResponse(t, health, &aggregateHealth)
-	if aggregateHealth.AlgorithmVersion != "v1" || aggregateHealth.WindowDays != 90 {
+	if aggregateHealth.AlgorithmVersion != "v2" || aggregateHealth.WindowDays != 90 || aggregateHealth.MinimumSupport != 3 {
 		t.Fatalf("aggregate health = %+v", aggregateHealth)
 	}
 	rebuild := requestJSON(t, client, http.MethodPost, "/v1/feedback/aggregates/rebuild", "feedback-api-rebuild", map[string]any{})

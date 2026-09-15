@@ -1051,21 +1051,50 @@ CREATE TABLE feedback_events (
     caller_id TEXT NOT NULL,
     memory_id TEXT NOT NULL,
     revision_id TEXT NOT NULL,
-    feedback_type TEXT NOT NULL CHECK (feedback_type IN ('useful', 'irrelevant', 'correct', 'supplement', 'contest')),
-    reason_code TEXT NOT NULL CHECK (reason_code IN ('answered_query', 'relevant_context', 'not_relevant', 'fact_incorrect', 'fact_incomplete', 'fact_outdated', 'conflicts_with_evidence', 'duplicate', 'other')),
+    feedback_purpose TEXT NOT NULL CHECK (feedback_purpose IN ('memory_quality_feedback', 'retrieval_feedback', 'answer_feedback')),
+    feedback_type TEXT NOT NULL CHECK (feedback_type IN ('confirm', 'correct', 'contest', 'supplement', 'useful', 'irrelevant', 'supported', 'unsupported')),
+    reason_code TEXT NOT NULL CHECK (reason_code IN ('fact_incorrect', 'fact_incomplete', 'fact_outdated', 'conflicts_with_evidence', 'duplicate', 'answered_query', 'relevant_context', 'not_relevant', 'evidence_supported', 'evidence_insufficient', 'evidence_contradicted', 'other')),
     note TEXT,
     search_operation_id TEXT,
     query_hash TEXT,
+    query_type TEXT,
+    entity_ids_json TEXT CHECK (entity_ids_json IS NULL OR (json_valid(entity_ids_json) AND json_type(entity_ids_json) = 'array')),
+    ranking_identity TEXT,
+    feature_identity TEXT,
+    context_identity TEXT,
     result_rank INTEGER CHECK (result_rank IS NULL OR result_rank > 0),
-    ranking_version TEXT,
-    matched_channels_json TEXT CHECK (matched_channels_json IS NULL OR (json_valid(matched_channels_json) AND json_type(matched_channels_json) = 'array')),
+    selection_state TEXT CHECK (selection_state IS NULL OR selection_state IN ('selected', 'rejected')),
+    matched_signals_json TEXT CHECK (matched_signals_json IS NULL OR (json_valid(matched_signals_json) AND json_type(matched_signals_json) = 'array')),
+    answer_identity TEXT,
     created_at TEXT NOT NULL,
-    CHECK ((search_operation_id IS NULL AND query_hash IS NULL AND result_rank IS NULL AND ranking_version IS NULL AND matched_channels_json IS NULL) OR (search_operation_id IS NOT NULL AND query_hash IS NOT NULL AND result_rank IS NOT NULL AND ranking_version IS NOT NULL AND matched_channels_json IS NOT NULL)),
+    CHECK (
+        (feedback_purpose = 'memory_quality_feedback'
+            AND feedback_type IN ('confirm', 'correct', 'contest', 'supplement')
+            AND reason_code IN ('fact_incorrect', 'fact_incomplete', 'fact_outdated', 'conflicts_with_evidence', 'duplicate', 'other')
+            AND search_operation_id IS NULL AND query_hash IS NULL AND query_type IS NULL AND entity_ids_json IS NULL
+            AND ranking_identity IS NULL AND feature_identity IS NULL AND context_identity IS NULL
+            AND result_rank IS NULL AND selection_state IS NULL AND matched_signals_json IS NULL AND answer_identity IS NULL)
+        OR (feedback_purpose = 'retrieval_feedback'
+            AND feedback_type IN ('useful', 'irrelevant')
+            AND reason_code IN ('answered_query', 'relevant_context', 'not_relevant', 'other')
+            AND search_operation_id IS NOT NULL AND query_hash IS NOT NULL AND query_type IS NOT NULL
+            AND ranking_identity IS NOT NULL AND feature_identity IS NOT NULL AND context_identity IS NOT NULL
+            AND result_rank IS NOT NULL AND selection_state IS NOT NULL AND matched_signals_json IS NOT NULL
+            AND answer_identity IS NULL)
+        OR (feedback_purpose = 'answer_feedback'
+            AND feedback_type IN ('supported', 'unsupported')
+            AND reason_code IN ('evidence_supported', 'evidence_insufficient', 'evidence_contradicted', 'other')
+            AND search_operation_id IS NOT NULL AND query_hash IS NOT NULL AND query_type IS NOT NULL
+            AND ranking_identity IS NOT NULL AND feature_identity IS NOT NULL AND context_identity IS NOT NULL
+            AND result_rank IS NOT NULL AND selection_state IS NOT NULL AND matched_signals_json IS NOT NULL
+            AND answer_identity IS NOT NULL)
+    ),
     FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
 ) STRICT;
 CREATE INDEX feedback_events_revision_time_idx ON feedback_events(memory_id, revision_id, created_at DESC, feedback_id DESC);
 CREATE INDEX feedback_events_caller_time_idx ON feedback_events(caller_id, created_at DESC, feedback_id DESC);
-CREATE INDEX feedback_events_type_time_idx ON feedback_events(feedback_type, created_at DESC, feedback_id DESC);
+CREATE INDEX feedback_events_type_time_idx ON feedback_events(feedback_purpose, feedback_type, created_at DESC, feedback_id DESC);
+CREATE INDEX feedback_events_query_time_idx ON feedback_events(query_hash, created_at DESC, feedback_id DESC);
 CREATE TRIGGER feedback_events_no_update BEFORE UPDATE ON feedback_events BEGIN SELECT RAISE(ABORT, 'feedback events are append-only'); END;
 CREATE TRIGGER feedback_events_no_delete BEFORE DELETE ON feedback_events BEGIN SELECT RAISE(ABORT, 'feedback events are append-only'); END;
 
@@ -1086,16 +1115,38 @@ CREATE TABLE feedback_aggregates (
 ) WITHOUT ROWID, STRICT;
 CREATE INDEX feedback_aggregates_state_idx ON feedback_aggregates(algorithm_version, state, revision_id);
 
+CREATE TABLE feedback_query_aggregates (
+    query_hash TEXT NOT NULL,
+    query_type TEXT NOT NULL,
+    revision_id TEXT NOT NULL REFERENCES memory_revisions(revision_id) ON DELETE RESTRICT,
+    algorithm_version TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    positive_count INTEGER NOT NULL CHECK (positive_count >= 0),
+    negative_count INTEGER NOT NULL CHECK (negative_count >= 0),
+    distinct_callers INTEGER NOT NULL CHECK (distinct_callers >= 0),
+    support_count INTEGER NOT NULL CHECK (support_count >= 0),
+    bounded_adjustment REAL NOT NULL CHECK (bounded_adjustment >= -1.0 AND bounded_adjustment <= 1.0),
+    window_start TEXT NOT NULL,
+    window_end TEXT NOT NULL,
+    source_watermark TEXT,
+    state TEXT NOT NULL CHECK (state IN ('current', 'stale', 'rebuilding', 'degraded')),
+    updated_at TEXT NOT NULL,
+    CHECK (window_end > window_start),
+    PRIMARY KEY (query_hash, revision_id, algorithm_version)
+) WITHOUT ROWID, STRICT;
+CREATE INDEX feedback_query_aggregates_state_idx ON feedback_query_aggregates(algorithm_version, state, query_hash, revision_id);
+
 CREATE TABLE feedback_aggregate_metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     algorithm_version TEXT NOT NULL,
     generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
     state TEXT NOT NULL CHECK (state IN ('ready', 'degraded', 'rebuilding', 'stale')),
     source_watermark TEXT,
-    window_days INTEGER NOT NULL DEFAULT 90 CHECK (window_days = 90),
+    window_days INTEGER NOT NULL DEFAULT 90 CHECK (window_days > 0),
+    minimum_support INTEGER NOT NULL DEFAULT 3 CHECK (minimum_support >= 1),
     updated_at TEXT NOT NULL
 ) STRICT;
-INSERT INTO feedback_aggregate_metadata(singleton, algorithm_version, state, updated_at) VALUES (1, 'v1', 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+INSERT INTO feedback_aggregate_metadata(singleton, algorithm_version, state, updated_at) VALUES (1, 'v2', 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 CREATE TABLE aggregate_descriptors (
     aggregate_id TEXT PRIMARY KEY,
@@ -1879,6 +1930,7 @@ CREATE TABLE query_telemetry (
     context_chars INTEGER NOT NULL CHECK (context_chars >= 0),
     ranking_identity TEXT NOT NULL,
     context_identity TEXT NOT NULL,
+    feedback_identity TEXT NOT NULL,
     degradation_reasons_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(degradation_reasons_json) AND json_type(degradation_reasons_json) = 'array'),
     phase_latency_ms_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(phase_latency_ms_json) AND json_type(phase_latency_ms_json) = 'object'),
     created_at TEXT NOT NULL

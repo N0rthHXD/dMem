@@ -91,6 +91,20 @@ func (f FeatureVector) HasPrimary() bool {
 	return false
 }
 
+// ClampSigned bounds a value to [minimum,maximum] and treats NaN as zero.
+func ClampSigned(value, minimum, maximum float64) float64 {
+	if math.IsNaN(value) {
+		return 0
+	}
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
 // Clamp01 bounds a value to [0,1] and treats NaN as zero.
 func Clamp01(value float64) float64 {
 	if math.IsNaN(value) {

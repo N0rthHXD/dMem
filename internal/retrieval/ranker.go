@@ -91,7 +91,7 @@ func Score(weights Weights, input RankInput) RankOutput {
 	output.Penalty = 0.15*value(features.DuplicateRisk) +
 		0.10*value(features.Overbreadth) +
 		0.10*value(features.StalePenalty)
-	output.Feedback = value(features.Feedback)
+	output.Feedback = signed(features.Feedback)
 	if input.GraphOnlyCandidate {
 		graph, ok := features.Value(FeatureGraph)
 		if !ok || Clamp01(graph) < weights.GraphOnlyAdmissionFloor {
@@ -104,6 +104,9 @@ func Score(weights Weights, input RankInput) RankOutput {
 			weights.GraphOnlyTemporal*value(features.Temporal) +
 			weights.GraphOnlyQuality*value(features.Quality)
 		output.Final = output.GraphOnly + output.Feedback - output.Penalty
+		if output.Final < 0 {
+			output.Final = 0
+		}
 		return output
 	}
 	if input.GraphAdmitted {
@@ -151,6 +154,15 @@ func value(pointer *float64) float64 {
 		return 0
 	}
 	return Clamp01(*pointer)
+}
+
+// signed bounds feedback to [-1,1] so negative feedback can subtract a small,
+// bounded amount while positive feedback remains additive.
+func signed(pointer *float64) float64 {
+	if pointer == nil {
+		return 0
+	}
+	return ClampSigned(*pointer, -1, 1)
 }
 
 func minFloat(a, b float64) float64 {

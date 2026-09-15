@@ -53,14 +53,15 @@ type recallDebugRequest struct {
 }
 
 type memoryFeedbackRequest struct {
-	SpaceID         string                        `json:"space_id"`
-	Type            string                        `json:"type"`
-	ReasonCode      string                        `json:"reason_code"`
-	Note            *string                       `json:"note,omitempty"`
-	Search          *domain.FeedbackSearchContext `json:"search,omitempty"`
-	CreateProposal  bool                          `json:"create_proposal,omitempty"`
-	SourceEventID   string                        `json:"source_event_id,omitempty"`
-	ProposedContent string                        `json:"proposed_content,omitempty"`
+	SpaceID         string                          `json:"space_id"`
+	Purpose         string                          `json:"feedback_purpose"`
+	Type            string                          `json:"type"`
+	ReasonCode      string                          `json:"reason_code"`
+	Note            *string                         `json:"note,omitempty"`
+	Decision        *domain.FeedbackDecisionContext `json:"decision,omitempty"`
+	CreateProposal  bool                            `json:"create_proposal,omitempty"`
+	SourceEventID   string                          `json:"source_event_id,omitempty"`
+	ProposedContent string                          `json:"proposed_content,omitempty"`
 }
 
 type forgetRequest struct {
@@ -164,8 +165,8 @@ func (h *Handler) memoryFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	command := application.FeedbackCommand{
-		SpaceID: request.SpaceID, MemoryID: memoryID, FeedbackType: request.Type, ReasonCode: request.ReasonCode,
-		Note: request.Note, Search: request.Search, CreateProposal: request.CreateProposal,
+		SpaceID: request.SpaceID, MemoryID: memoryID, Purpose: request.Purpose, FeedbackType: request.Type, ReasonCode: request.ReasonCode,
+		Note: request.Note, Decision: request.Decision, CreateProposal: request.CreateProposal,
 		SourceEventID: request.SourceEventID, ProposedContent: request.ProposedContent,
 	}
 	result, err := h.memoryService.Feedback(r.Context(), appIdentity(caller, key, requestID, r.Method, "/v1/memories/{memory_id}/feedback", struct {

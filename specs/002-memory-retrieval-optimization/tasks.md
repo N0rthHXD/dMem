@@ -726,56 +726,56 @@ and context behavior are stable.
 
 ### Feedback Contract
 
-- [ ] T141 [P] [FEEDBACK] Add failing domain/API tests separating memory quality,
+- [X] T141 [P] [FEEDBACK] Add failing domain/API tests separating memory quality,
   retrieval, and answer feedback with valid target and reason combinations
-- [ ] T142 [P] [FEEDBACK] Add failing retrieval-context tests for query hash/type,
+- [X] T142 [P] [FEEDBACK] Add failing retrieval-context tests for query hash/type,
   permitted entity IDs, ranking/features/context identities, rank, selection
   state, matched signals, caller, and timestamp
-- [ ] T143 [P] [FEEDBACK] Add failing privacy and poisoning tests for query text,
+- [X] T143 [P] [FEEDBACK] Add failing privacy and poisoning tests for query text,
   sensitivity, caller deduplication, minimum support, clamping, decay, and
   cross-scope isolation
-- [ ] T144 [FEEDBACK] Replace feedback domain, schema, API, and OpenAPI contracts
+- [X] T144 [FEEDBACK] Replace feedback domain, schema, API, and OpenAPI contracts
   with the three explicit feedback purposes
-- [ ] T145 [FEEDBACK] Persist privacy-safe retrieval and answer decision context
+- [X] T145 [FEEDBACK] Persist privacy-safe retrieval and answer decision context
   and reject identity-incompatible feedback
 
 ### Aggregation And Ranking
 
-- [ ] T146 [P] [FEEDBACK] Add failing tests proving online and maintenance
+- [X] T146 [P] [FEEDBACK] Add failing tests proving online and maintenance
   feedback rebuilds produce byte-equivalent aggregates for the same authority
   events
-- [ ] T147 [P] [FEEDBACK] Add failing tests for global bounded priors and
+- [X] T147 [P] [FEEDBACK] Add failing tests for global bounded priors and
   query-conditioned adjustments after minimum support, decay, and caller
   deduplication
-- [ ] T148 [FEEDBACK] Implement one shared versioned feedback aggregation function
+- [X] T148 [FEEDBACK] Implement one shared versioned feedback aggregation function
   used by normal storage operations, maintenance, rebuild, restore, and import
-- [ ] T149 [FEEDBACK] Implement bounded global and query-conditioned ranking
+- [X] T149 [FEEDBACK] Implement bounded global and query-conditioned ranking
   features without changing eligibility or memory authority
-- [ ] T150 [FEEDBACK] Add feedback aggregate identity and generation to ranker,
+- [X] T150 [FEEDBACK] Add feedback aggregate identity and generation to ranker,
   cursor, explain output, telemetry, export/import, backup/restore, and tests
 
 ### Calibration
 
-- [ ] T151 [P] [FEEDBACK] Add deterministic calibration tooling for semantic
+- [X] T151 [P] [FEEDBACK] Add deterministic calibration tooling for semantic
   thresholds, keyword weights, temporal features, graph gates/boosts, penalties,
   and context utility under `evaluation/`
-- [ ] T152 [FEEDBACK] Define train/development/holdout boundaries and prevent
+- [X] T152 [FEEDBACK] Define train/development/holdout boundaries and prevent
   benchmark test-set labels from entering runtime feedback or weight fitting
-- [ ] T153 [FEEDBACK] Calibrate and record deterministic weights on fixed
+- [X] T153 [FEEDBACK] Calibrate and record deterministic weights on fixed
   development sets with cross-benchmark and per-query-type reports
-- [ ] T154 [FEEDBACK] Promote calibrated weights only when paired confidence
+- [X] T154 [FEEDBACK] Promote calibrated weights only when paired confidence
   intervals and all safety/performance gates pass
 
 ### Optional Learned Reranker
 
-- [ ] T155 [P] [FEEDBACK] Define a bounded top-window reranker interface with
+- [X] T155 [P] [FEEDBACK] Define a bounded top-window reranker interface with
   deterministic ranker fallback, policy checks, strict provider bounds, and
   complete model/prompt/feature/calibration identity
-- [ ] T156 [P] [FEEDBACK] Add tests proving reranking cannot add candidates,
+- [X] T156 [P] [FEEDBACK] Add tests proving reranking cannot add candidates,
   bypass filters, cross scope, exceed budgets, or publish under a stale identity
-- [ ] T157 [FEEDBACK] Implement an evaluation-only reranker adapter after T155 and
+- [X] T157 [FEEDBACK] Implement an evaluation-only reranker adapter after T155 and
   T156; do not enable it in production defaults
-- [ ] T158 [FEEDBACK] Compare learned and deterministic reranking on the same
+- [X] T158 [FEEDBACK] Compare learned and deterministic reranking on the same
   candidate windows and promote only if gains exceed cost, latency, variance,
   and degradation thresholds
 

@@ -286,6 +286,7 @@ func verifySchema(ctx context.Context, db *sql.DB) error {
 		"feedback_aggregate_metadata",
 		"feedback_aggregates",
 		"feedback_events",
+		"feedback_query_aggregates",
 		"import_checkpoints",
 		"import_object_mappings",
 		"import_operations",

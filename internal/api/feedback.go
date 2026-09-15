@@ -15,16 +15,17 @@ import (
 const feedbackNoteLimit = 2000
 
 type appendFeedbackRequest struct {
-	SpaceID         string                        `json:"space_id"`
-	MemoryID        string                        `json:"memory_id"`
-	RevisionID      string                        `json:"revision_id"`
-	FeedbackType    string                        `json:"feedback_type"`
-	ReasonCode      string                        `json:"reason_code"`
-	Note            json.RawMessage               `json:"note"`
-	Search          *domain.FeedbackSearchContext `json:"search,omitempty"`
-	CreateProposal  bool                          `json:"create_proposal,omitempty"`
-	SourceEventID   string                        `json:"source_event_id,omitempty"`
-	ProposedContent string                        `json:"proposed_content,omitempty"`
+	SpaceID         string                          `json:"space_id"`
+	MemoryID        string                          `json:"memory_id"`
+	RevisionID      string                          `json:"revision_id"`
+	Purpose         string                          `json:"feedback_purpose"`
+	FeedbackType    string                          `json:"feedback_type"`
+	ReasonCode      string                          `json:"reason_code"`
+	Note            json.RawMessage                 `json:"note"`
+	Decision        *domain.FeedbackDecisionContext `json:"decision,omitempty"`
+	CreateProposal  bool                            `json:"create_proposal,omitempty"`
+	SourceEventID   string                          `json:"source_event_id,omitempty"`
+	ProposedContent string                          `json:"proposed_content,omitempty"`
 }
 
 func (h *Handler) feedback(w http.ResponseWriter, r *http.Request) {
@@ -66,8 +67,8 @@ func (h *Handler) feedback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	filter := storage.FeedbackFilter{CallerID: caller, SpaceID: spaceID, MemoryID: r.URL.Query().Get("memory_id"), RevisionID: r.URL.Query().Get("revision_id"), FeedbackType: r.URL.Query().Get("feedback_type"), Limit: limit, Cursor: cursor}
-	if filter.MemoryID != "" && !validUUID(filter.MemoryID) || filter.RevisionID != "" && !validUUID(filter.RevisionID) || filter.FeedbackType != "" && !feedbackTypes[filter.FeedbackType] {
+	filter := storage.FeedbackFilter{CallerID: caller, SpaceID: spaceID, MemoryID: r.URL.Query().Get("memory_id"), RevisionID: r.URL.Query().Get("revision_id"), Purpose: r.URL.Query().Get("feedback_purpose"), FeedbackType: r.URL.Query().Get("feedback_type"), Limit: limit, Cursor: cursor}
+	if filter.MemoryID != "" && !validUUID(filter.MemoryID) || filter.RevisionID != "" && !validUUID(filter.RevisionID) || filter.Purpose != "" && !isFeedbackPurpose(filter.Purpose) || filter.FeedbackType != "" && !feedbackTypes[filter.FeedbackType] {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "feedback filters are invalid", requestID, "", false, nil)
 		return
 	}
@@ -79,15 +80,27 @@ func (h *Handler) feedback(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, result)
 }
 
-var feedbackTypes = map[string]bool{"useful": true, "irrelevant": true, "correct": true, "supplement": true, "contest": true}
-var feedbackReasons = map[string]bool{"answered_query": true, "relevant_context": true, "not_relevant": true, "fact_incorrect": true, "fact_incomplete": true, "fact_outdated": true, "conflicts_with_evidence": true, "duplicate": true, "other": true}
+// feedbackTypes is the union of types across all purposes, used only for the
+// list filter. Submit validation uses the closed purpose/type/reason contract.
+var feedbackTypes = map[string]bool{"confirm": true, "correct": true, "contest": true, "supplement": true, "useful": true, "irrelevant": true, "supported": true, "unsupported": true}
+
+var feedbackSignals = map[string]bool{"keyword": true, "semantic": true, "graph": true}
+
+func isFeedbackPurpose(purpose string) bool {
+	for _, candidate := range domain.FeedbackPurposes() {
+		if candidate == purpose {
+			return true
+		}
+	}
+	return false
+}
 
 func validateFeedback(request appendFeedbackRequest) (storage.AppendFeedbackParams, error) {
 	if !validUUID(request.SpaceID) || !validUUID(request.MemoryID) || !validUUID(request.RevisionID) {
 		return storage.AppendFeedbackParams{}, errors.New("space_id, memory_id, and revision_id must be UUIDs")
 	}
-	if !feedbackTypes[request.FeedbackType] || !feedbackReasons[request.ReasonCode] {
-		return storage.AppendFeedbackParams{}, errors.New("feedback_type or reason_code is invalid")
+	if !domain.ValidFeedbackCombination(request.Purpose, request.FeedbackType, request.ReasonCode) {
+		return storage.AppendFeedbackParams{}, errors.New("feedback_purpose, feedback_type, or reason_code is invalid")
 	}
 	var note *string
 	if request.Note != nil {
@@ -97,23 +110,12 @@ func validateFeedback(request appendFeedbackRequest) (storage.AppendFeedbackPara
 		}
 		note = &value
 	}
-	if request.Search != nil {
-		s := request.Search
-		if !validUUID(s.SearchOperationID) || len(s.QueryHash) != 64 || s.ResultRank < 1 || s.RankingVersion == "" || len(s.MatchedChannels) == 0 {
-			return storage.AppendFeedbackParams{}, errors.New("search context is invalid")
-		}
-		allowed, seen := map[string]bool{"keyword": true, "semantic": true, "graph": true}, map[string]bool{}
-		for _, channel := range s.MatchedChannels {
-			if !allowed[channel] || seen[channel] {
-				return storage.AppendFeedbackParams{}, errors.New("matched_channels is invalid")
-			}
-			seen[channel] = true
-		}
-		sort.Strings(s.MatchedChannels)
+	decision, err := validateFeedbackDecision(request.Purpose, request.Decision)
+	if err != nil {
+		return storage.AppendFeedbackParams{}, err
 	}
-	canPropose := request.FeedbackType == "correct" || request.FeedbackType == "supplement" || request.FeedbackType == "contest"
-	if request.CreateProposal && !canPropose {
-		return storage.AppendFeedbackParams{}, errors.New("this feedback_type cannot create a proposal")
+	if request.CreateProposal && !domain.CanProposeEvolution(request.Purpose, request.FeedbackType) {
+		return storage.AppendFeedbackParams{}, errors.New("this feedback_purpose and feedback_type cannot create a proposal")
 	}
 	if request.SourceEventID != "" && !validUUID(request.SourceEventID) {
 		return storage.AppendFeedbackParams{}, errors.New("source_event_id must be a UUID")
@@ -121,7 +123,45 @@ func validateFeedback(request appendFeedbackRequest) (storage.AppendFeedbackPara
 	if utf8.RuneCountInString(request.ProposedContent) > 100000 {
 		return storage.AppendFeedbackParams{}, errors.New("proposed_content is too long")
 	}
-	return storage.AppendFeedbackParams{SpaceID: request.SpaceID, MemoryID: request.MemoryID, RevisionID: request.RevisionID, FeedbackType: request.FeedbackType, ReasonCode: request.ReasonCode, Note: note, Search: request.Search, CreateProposal: request.CreateProposal, SourceEventID: request.SourceEventID, ProposedContent: request.ProposedContent}, nil
+	return storage.AppendFeedbackParams{SpaceID: request.SpaceID, MemoryID: request.MemoryID, RevisionID: request.RevisionID, Purpose: request.Purpose, FeedbackType: request.FeedbackType, ReasonCode: request.ReasonCode, Note: note, Decision: decision, CreateProposal: request.CreateProposal, SourceEventID: request.SourceEventID, ProposedContent: request.ProposedContent}, nil
+}
+
+func validateFeedbackDecision(purpose string, decision *domain.FeedbackDecisionContext) (*domain.FeedbackDecisionContext, error) {
+	if !domain.FeedbackPurposeRequiresDecision(purpose) {
+		if decision != nil {
+			return nil, errors.New("memory_quality_feedback must not carry retrieval decision context")
+		}
+		return nil, nil
+	}
+	if decision == nil {
+		return nil, errors.New("retrieval and answer feedback require a decision context")
+	}
+	if !validUUID(decision.SearchOperationID) || len(decision.QueryHash) != 64 || decision.QueryType == "" || decision.RankingIdentity == "" || decision.FeatureIdentity == "" || decision.ContextIdentity == "" || decision.ResultRank < 1 || (decision.SelectionState != "selected" && decision.SelectionState != "rejected") || len(decision.MatchedSignals) == 0 {
+		return nil, errors.New("decision context is invalid")
+	}
+	for _, entityID := range decision.EntityIDs {
+		if !validUUID(entityID) {
+			return nil, errors.New("decision context entity_ids must be UUIDs")
+		}
+	}
+	signals := append([]string(nil), decision.MatchedSignals...)
+	sort.Strings(signals)
+	for i, signal := range signals {
+		if !feedbackSignals[signal] || (i > 0 && signals[i-1] == signal) {
+			return nil, errors.New("decision context matched_signals is invalid")
+		}
+	}
+	if purpose == domain.FeedbackPurposeAnswer && decision.AnswerIdentity == "" {
+		return nil, errors.New("answer feedback requires an answer_identity")
+	}
+	if purpose == domain.FeedbackPurposeRetrieval && decision.AnswerIdentity != "" {
+		return nil, errors.New("retrieval feedback must not carry an answer_identity")
+	}
+	result := *decision
+	result.EntityIDs = append([]string(nil), decision.EntityIDs...)
+	sort.Strings(result.EntityIDs)
+	result.MatchedSignals = signals
+	return &result, nil
 }
 
 func (h *Handler) feedbackAggregateHealth(w http.ResponseWriter, r *http.Request) {

@@ -731,7 +731,7 @@ var objectDataFields = map[string]string{
 	"relation_evidence":       "evidence_id relation_id evidence_type event_id memory_id revision_id start_offset end_offset note created_by created_at",
 	"relation_state_event":    "state_event_id relation_id operation_id from_state to_state reason created_by created_at",
 	"external_reference_stub": "object_id object_type referenced_by",
-	"feedback_event":          "feedback_id operation_id caller_id memory_id revision_id feedback_type reason_code note search_operation_id query_hash result_rank ranking_version matched_channels_json created_at",
+	"feedback_event":          "feedback_id operation_id caller_id memory_id revision_id feedback_purpose feedback_type reason_code note search_operation_id query_hash query_type entity_ids_json ranking_identity feature_identity context_identity result_rank selection_state matched_signals_json answer_identity created_at",
 	"aggregate_descriptor":    "aggregate_id memory_id aggregate_kind policy_version processing_version sensitivity created_by created_at",
 	"conflict_case":           "case_id space_id state opened_by processing_version created_at closed_at",
 	"conflict_participant":    "case_id participant_order memory_id revision_id input_state input_sensitivity created_at",

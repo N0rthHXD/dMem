@@ -92,7 +92,7 @@ func TestOpenAPIContract(t *testing.T) {
 	decodeResponse(t, response, &agentMemory)
 	c.replay(http.MethodPost, "/v1/remember", "agent-memory", agentMemoryBody)
 	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "agent contract", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{"keyword"}}}))
-	agentFeedback := map[string]any{"space_id": space.SpaceID, "type": "useful", "reason_code": "relevant_context"}
+	agentFeedback := map[string]any{"space_id": space.SpaceID, "feedback_purpose": "memory_quality_feedback", "type": "confirm", "reason_code": "other"}
 	c.close(c.do(http.MethodPost, "/v1/memories/"+agentMemory.Memory.MemoryID+"/feedback", "agent-feedback", agentFeedback))
 	c.close(c.do(http.MethodPost, "/v1/memories/"+agentMemory.Memory.MemoryID+"/forget", "agent-forget", map[string]any{"reason": "contract forget"}))
 
@@ -257,7 +257,7 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/conflict-cases/"+caseID+"/resolve", "conflict-resolve", resolveBody))
 	c.replay(http.MethodPost, "/v1/conflict-cases/"+caseID+"/resolve", "conflict-resolve", resolveBody)
 
-	feedbackBody := map[string]any{"space_id": space.SpaceID, "memory_id": targetMemory.MemoryID, "revision_id": targetMemory.CurrentRevision.RevisionID, "feedback_type": "useful", "reason_code": "answered_query", "note": "contract feedback"}
+	feedbackBody := map[string]any{"space_id": space.SpaceID, "memory_id": targetMemory.MemoryID, "revision_id": targetMemory.CurrentRevision.RevisionID, "feedback_purpose": "memory_quality_feedback", "feedback_type": "confirm", "reason_code": "other", "note": "contract feedback"}
 	c.close(c.do(http.MethodPost, "/v1/feedback", "feedback-create", feedbackBody))
 	c.replay(http.MethodPost, "/v1/feedback", "feedback-create", feedbackBody)
 	c.close(c.do(http.MethodGet, "/v1/feedback?space_id="+space.SpaceID, "", nil))

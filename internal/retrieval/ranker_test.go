@@ -98,6 +98,14 @@ func TestFeedbackFeatureIsBoundedAndAdditive(t *testing.T) {
 	if over.Feedback != 1 {
 		t.Fatalf("out-of-range feedback not clamped: %v", over.Feedback)
 	}
+	negative := Score(weights, RankInput{Features: FeatureVector{Semantic: pointer(0.5), Feedback: pointer(-1)}})
+	if negative.Feedback != -1 || negative.Final >= base.Final {
+		t.Fatalf("negative feedback = %v final = %v base = %v", negative.Feedback, negative.Final, base.Final)
+	}
+	under := Score(weights, RankInput{Features: FeatureVector{Semantic: pointer(0.5), Feedback: pointer(-10)}})
+	if under.Feedback != -1 {
+		t.Fatalf("out-of-range negative feedback not clamped: %v", under.Feedback)
+	}
 }
 
 func TestGraphFeatureNeverLeaksIntoPrimary(t *testing.T) {

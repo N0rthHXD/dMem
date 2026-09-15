@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -73,10 +72,11 @@ type RecallQuery struct {
 type FeedbackCommand struct {
 	SpaceID         string
 	MemoryID        string
+	Purpose         string
 	FeedbackType    string
 	ReasonCode      string
 	Note            *string
-	Search          *domain.FeedbackSearchContext
+	Decision        *domain.FeedbackDecisionContext
 	CreateProposal  bool
 	SourceEventID   string
 	ProposedContent string
@@ -154,7 +154,7 @@ func (s *Service) Feedback(ctx context.Context, identity RequestIdentity, comman
 	}
 	result, replay, err := s.repository.AppendCurrentFeedback(ctx, storageIdentity(identity), storage.AppendFeedbackParams{
 		SpaceID: command.SpaceID, MemoryID: command.MemoryID,
-		FeedbackType: command.FeedbackType, ReasonCode: command.ReasonCode, Note: command.Note, Search: command.Search,
+		Purpose: command.Purpose, FeedbackType: command.FeedbackType, ReasonCode: command.ReasonCode, Note: command.Note, Decision: command.Decision,
 		CreateProposal: command.CreateProposal, SourceEventID: command.SourceEventID, ProposedContent: command.ProposedContent,
 	})
 	return FeedbackResult{Response: result, Replay: replay}, err
@@ -239,29 +239,30 @@ func validateRecall(query RecallQuery) error {
 }
 
 func validateFeedback(command FeedbackCommand) error {
-	types := map[string]bool{"useful": true, "irrelevant": true, "correct": true, "supplement": true, "contest": true}
-	reasons := map[string]bool{"answered_query": true, "relevant_context": true, "not_relevant": true, "fact_incorrect": true, "fact_incomplete": true, "fact_outdated": true, "conflicts_with_evidence": true, "duplicate": true, "other": true}
-	if command.SpaceID == "" || command.MemoryID == "" || !types[command.FeedbackType] || !reasons[command.ReasonCode] {
-		return errors.New("feedback target, type, or reason is invalid")
+	if command.SpaceID == "" || command.MemoryID == "" || !domain.ValidFeedbackCombination(command.Purpose, command.FeedbackType, command.ReasonCode) {
+		return errors.New("feedback purpose, target, type, or reason is invalid")
 	}
 	if command.Note != nil && utf8.RuneCountInString(*command.Note) > 2000 {
 		return errors.New("feedback note is too long")
 	}
-	canPropose := command.FeedbackType == "correct" || command.FeedbackType == "supplement" || command.FeedbackType == "contest"
-	if command.CreateProposal && (!canPropose || command.SourceEventID == "" || strings.TrimSpace(command.ProposedContent) == "") {
-		return errors.New("feedback proposal requires a corrective type, source_event_id, and proposed_content")
+	if command.CreateProposal && (!domain.CanProposeEvolution(command.Purpose, command.FeedbackType) || command.SourceEventID == "" || strings.TrimSpace(command.ProposedContent) == "") {
+		return errors.New("feedback proposal requires a corrective memory_quality type, source_event_id, and proposed_content")
 	}
-	if command.Search != nil {
-		if command.Search.SearchOperationID == "" || len(command.Search.QueryHash) != 64 || command.Search.ResultRank < 1 || command.Search.RankingVersion == "" || len(command.Search.MatchedChannels) == 0 {
-			return errors.New("search context is invalid")
+	if !domain.FeedbackPurposeRequiresDecision(command.Purpose) {
+		if command.Decision != nil {
+			return errors.New("memory_quality_feedback must not carry retrieval decision context")
 		}
-		validChannels := map[string]bool{"keyword": true, "semantic": true, "graph": true}
-		for _, channel := range command.Search.MatchedChannels {
-			if !validChannels[channel] {
-				return errors.New("search context matched_channels is invalid")
-			}
-		}
-		sort.Strings(command.Search.MatchedChannels)
+		return nil
+	}
+	if command.Decision == nil {
+		return errors.New("retrieval and answer feedback require a decision context")
+	}
+	decision := command.Decision
+	if decision.SearchOperationID == "" || len(decision.QueryHash) != 64 || decision.QueryType == "" || decision.RankingIdentity == "" || decision.FeatureIdentity == "" || decision.ContextIdentity == "" || decision.ResultRank < 1 || (decision.SelectionState != "selected" && decision.SelectionState != "rejected") || len(decision.MatchedSignals) == 0 {
+		return errors.New("feedback decision context is invalid")
+	}
+	if command.Purpose == domain.FeedbackPurposeAnswer && decision.AnswerIdentity == "" {
+		return errors.New("answer feedback requires an answer_identity")
 	}
 	return nil
 }

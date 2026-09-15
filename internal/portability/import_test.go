@@ -315,7 +315,7 @@ func TestImportLocalCurrentConflictCreatesEvolutionProposal(t *testing.T) {
 
 func TestImportedFeedbackIdentityIsPreservedWithoutAggregateScore(t *testing.T) {
 	directory, database := exportedFixture(t)
-	data, _ := json.Marshal(record{ObjectID: "feedback-a", ObjectType: "feedback_event", Data: map[string]any{"feedback_id": "feedback-a", "operation_id": "feedback-op", "caller_id": "source-user", "memory_id": "memory-a", "revision_id": "revision-a", "feedback_type": "useful", "reason_code": "answered_query", "note": nil, "search_operation_id": nil, "query_hash": nil, "result_rank": nil, "ranking_version": nil, "matched_channels_json": nil, "created_at": "2026-08-25T10:00:00Z"}})
+	data, _ := json.Marshal(record{ObjectID: "feedback-a", ObjectType: "feedback_event", Data: map[string]any{"feedback_id": "feedback-a", "operation_id": "feedback-op", "caller_id": "source-user", "memory_id": "memory-a", "revision_id": "revision-a", "feedback_purpose": "memory_quality_feedback", "feedback_type": "confirm", "reason_code": "other", "note": nil, "search_operation_id": nil, "query_hash": nil, "query_type": nil, "entity_ids_json": nil, "ranking_identity": nil, "feature_identity": nil, "context_identity": nil, "result_rank": nil, "selection_state": nil, "matched_signals_json": nil, "answer_identity": nil, "created_at": "2026-08-25T10:00:00Z"}})
 	data = append(data, '\n')
 	if err := os.WriteFile(filepath.Join(directory, "feedback.jsonl"), data, 0o600); err != nil {
 		t.Fatal(err)
@@ -332,6 +332,38 @@ func TestImportedFeedbackIdentityIsPreservedWithoutAggregateScore(t *testing.T) 
 	}
 	if caller != "source-user" || aggregates != 0 || rebuilds != 5 {
 		t.Fatalf("caller/aggregates/rebuilds = %q/%d/%d", caller, aggregates, rebuilds)
+	}
+}
+
+func TestImportedRetrievalFeedbackPreservesDecisionContext(t *testing.T) {
+	directory, database := exportedFixture(t)
+	queryHash := strings.Repeat("a", 64)
+	data, _ := json.Marshal(record{ObjectID: "feedback-retrieval", ObjectType: "feedback_event", Data: map[string]any{
+		"feedback_id": "feedback-retrieval", "operation_id": "feedback-op", "caller_id": "source-user",
+		"memory_id": "memory-a", "revision_id": "revision-a", "feedback_purpose": "retrieval_feedback",
+		"feedback_type": "useful", "reason_code": "answered_query", "note": nil,
+		"search_operation_id": "00000000-0000-4000-8000-000000000123", "query_hash": queryHash, "query_type": "lookup",
+		"entity_ids_json": `["00000000-0000-4000-8000-000000000201"]`, "ranking_identity": "ranking-x",
+		"feature_identity": "features-x", "context_identity": "context-x", "result_rank": 1,
+		"selection_state": "selected", "matched_signals_json": `["keyword"]`, "answer_identity": nil,
+		"created_at": "2026-08-25T10:00:00Z",
+	}})
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(directory, "feedback.jsonl"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resealPackage(t, directory)
+	status, err := NewImporter(database.repo, DefaultImportLimits()).Import(context.Background(), directory, ImportRequest{TargetSpaceID: rootSpace, CreatedBy: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var purpose, queryType, rankingIdentity, selectionState string
+	var rank int
+	if err := database.writer.QueryRow(`SELECT feedback_purpose,query_type,ranking_identity,selection_state,result_rank FROM feedback_events WHERE operation_id=?`, status.ImportOperationID).Scan(&purpose, &queryType, &rankingIdentity, &selectionState, &rank); err != nil {
+		t.Fatal(err)
+	}
+	if purpose != "retrieval_feedback" || queryType != "lookup" || rankingIdentity != "ranking-x" || selectionState != "selected" || rank != 1 {
+		t.Fatalf("decision context not preserved: %q/%q/%q/%q/%d", purpose, queryType, rankingIdentity, selectionState, rank)
 	}
 }
 

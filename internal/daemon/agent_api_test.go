@@ -55,7 +55,7 @@ func TestAgentMemoryAPI(t *testing.T) {
 		t.Fatalf("recall result = %+v", recalled)
 	}
 
-	feedbackBody := map[string]any{"space_id": space.SpaceID, "type": "useful", "reason_code": "relevant_context"}
+	feedbackBody := map[string]any{"space_id": space.SpaceID, "feedback_purpose": "memory_quality_feedback", "type": "confirm", "reason_code": "other"}
 	response = requestJSON(t, client, http.MethodPost, "/v1/memories/"+remembered.Memory.MemoryID+"/feedback", "agent-feedback", feedbackBody)
 	if response.StatusCode != http.StatusCreated || response.Header.Get("Idempotent-Replay") != "false" {
 		t.Fatalf("feedback status/header = %d/%q", response.StatusCode, response.Header.Get("Idempotent-Replay"))

@@ -736,6 +736,7 @@ type SearchResponse struct {
 	ContextIdentity          string           `json:"context_identity"`
 	CorpusGeneration         int64            `json:"corpus_generation"`
 	FeedbackAggregateVersion int64            `json:"feedback_aggregate_version"`
+	FeedbackIdentity         string           `json:"feedback_identity"`
 	ResolvedEntities         []ResolvedEntity `json:"resolved_entities,omitempty"`
 	ReferenceTime            string           `json:"-"`
 	// Context is the structured, budgeted selection built after ranking. It is
@@ -866,6 +867,8 @@ type RecallExecutionMetadata struct {
 	RankingIdentity          string       `json:"ranking_identity"`
 	ContextSelectionIdentity string       `json:"context_selection_identity"`
 	RankingVersion           string       `json:"ranking_version"`
+	FeedbackIdentity         string       `json:"feedback_identity"`
+	FeedbackAggregateVersion int64        `json:"feedback_aggregate_version"`
 	FTSIndexVersion          int          `json:"fts_index_version"`
 	SemanticIndexVersion     int          `json:"semantic_index_version"`
 	GraphIndexVersion        int64        `json:"graph_index_version"`
@@ -877,25 +880,35 @@ type RecallResponse struct {
 	Execution RecallExecutionMetadata `json:"execution"`
 }
 
-type FeedbackSearchContext struct {
+// FeedbackDecisionContext is the privacy-safe, identity-bound retrieval or
+// answer decision that produced a result. It deliberately excludes query text
+// and unpermitted entity identifiers.
+type FeedbackDecisionContext struct {
 	SearchOperationID string   `json:"search_operation_id"`
 	QueryHash         string   `json:"query_hash"`
+	QueryType         string   `json:"query_type"`
+	EntityIDs         []string `json:"entity_ids,omitempty"`
+	RankingIdentity   string   `json:"ranking_identity"`
+	FeatureIdentity   string   `json:"feature_identity"`
+	ContextIdentity   string   `json:"context_identity"`
 	ResultRank        int      `json:"result_rank"`
-	RankingVersion    string   `json:"ranking_version"`
-	MatchedChannels   []string `json:"matched_channels"`
+	SelectionState    string   `json:"selection_state"`
+	MatchedSignals    []string `json:"matched_signals"`
+	AnswerIdentity    string   `json:"answer_identity,omitempty"`
 }
 
 type FeedbackEvent struct {
-	FeedbackID   string                 `json:"feedback_id"`
-	OperationID  string                 `json:"operation_id"`
-	CallerID     string                 `json:"caller_id"`
-	MemoryID     string                 `json:"memory_id"`
-	RevisionID   string                 `json:"revision_id"`
-	FeedbackType string                 `json:"feedback_type"`
-	ReasonCode   string                 `json:"reason_code"`
-	Note         *string                `json:"note,omitempty"`
-	Search       *FeedbackSearchContext `json:"search,omitempty"`
-	CreatedAt    string                 `json:"created_at"`
+	FeedbackID   string                   `json:"feedback_id"`
+	OperationID  string                   `json:"operation_id"`
+	CallerID     string                   `json:"caller_id"`
+	MemoryID     string                   `json:"memory_id"`
+	RevisionID   string                   `json:"revision_id"`
+	Purpose      string                   `json:"feedback_purpose"`
+	FeedbackType string                   `json:"feedback_type"`
+	ReasonCode   string                   `json:"reason_code"`
+	Note         *string                  `json:"note,omitempty"`
+	Decision     *FeedbackDecisionContext `json:"decision,omitempty"`
+	CreatedAt    string                   `json:"created_at"`
 }
 
 type ProposalOutcome struct {
@@ -934,6 +947,7 @@ type FeedbackAggregateHealth struct {
 	Generation       int64   `json:"generation"`
 	SourceWatermark  *string `json:"source_watermark,omitempty"`
 	WindowDays       int     `json:"window_days"`
+	MinimumSupport   int     `json:"minimum_support"`
 }
 
 type MemoryStateEvent struct {

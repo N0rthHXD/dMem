@@ -233,7 +233,7 @@ func (r *Repository) FinishImport(ctx context.Context, operationID string, gener
 		{"rebuild_semantic", semanticIndexName, r.embeddingIdentity(), "waiting"},
 		{"rebuild_entity_index", entityIndexName, r.processingVersion, "pending"},
 		{"rebuild_relation_index", relationIndexName, r.processingVersion, "pending"},
-		{"rebuild_feedback_aggregates", "feedback_aggregates", "v1", "pending"},
+		{"rebuild_feedback_aggregates", "feedback_aggregates", FeedbackAlgorithmVersion, "pending"},
 		{"rebuild_quality", "memory_quality", r.processingVersion, "pending"},
 		{"rebuild_duplicates", "duplicate_clusters", r.processingVersion, "pending"},
 	} {
@@ -336,7 +336,11 @@ func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targ
 		_, err := tx.ExecContext(ctx, `INSERT INTO memory_evidence(evidence_id,revision_id,event_id,role,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?)`, o.LocalID, local("revision_id"), local("event_id"), s("role"), s("start_offset"), s("end_offset"), s("created_at"))
 		return err
 	case "feedback_event":
-		_, err := tx.ExecContext(ctx, `INSERT INTO feedback_events(feedback_id,operation_id,caller_id,memory_id,revision_id,feedback_type,reason_code,note,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, o.LocalID, operationID, s("caller_id"), local("memory_id"), local("revision_id"), s("feedback_type"), s("reason_code"), s("note"), s("created_at"))
+		resultRank, rankErr := importedSequence(s("result_rank"))
+		if rankErr != nil {
+			return rankErr
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO feedback_events(feedback_id,operation_id,caller_id,memory_id,revision_id,feedback_purpose,feedback_type,reason_code,note,search_operation_id,query_hash,query_type,entity_ids_json,ranking_identity,feature_identity,context_identity,result_rank,selection_state,matched_signals_json,answer_identity,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, operationID, s("caller_id"), local("memory_id"), local("revision_id"), s("feedback_purpose"), s("feedback_type"), s("reason_code"), s("note"), s("search_operation_id"), s("query_hash"), s("query_type"), s("entity_ids_json"), s("ranking_identity"), s("feature_identity"), s("context_identity"), resultRank, s("selection_state"), s("matched_signals_json"), s("answer_identity"), s("created_at"))
 		return err
 	case "relation":
 		_, err := tx.ExecContext(ctx, `INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,state,source,confidence,specification_hash,created_by,processing_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, targetSpace, s("relation_type"), local("source_memory_id"), local("source_revision_id"), local("target_memory_id"), local("target_revision_id"), s("state"), "import", s("confidence"), s("specification_hash"), "import", s("processing_version"), s("created_at"), s("updated_at"))

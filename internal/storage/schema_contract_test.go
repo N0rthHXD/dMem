@@ -39,7 +39,7 @@ func TestSchemaInitializationCatalogAndEnums(t *testing.T) {
 	}
 	for _, statement := range []string{
 		`INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES ('bad-job', 'op', 'unknown', 'index', 'index', 'v1', 'pending', 1, 'now', 'now')`,
-		`INSERT INTO feedback_events(feedback_id, operation_id, caller_id, memory_id, revision_id, feedback_type, reason_code, created_at) VALUES ('bad-feedback', 'op', 'caller', 'missing', 'missing', 'click', 'other', 'now')`,
+		`INSERT INTO feedback_events(feedback_id, operation_id, caller_id, memory_id, revision_id, feedback_purpose, feedback_type, reason_code, created_at) VALUES ('bad-feedback', 'op', 'caller', 'missing', 'missing', 'click_feedback', 'useful', 'other', 'now')`,
 	} {
 		if _, err := store.writer.Exec(statement); err == nil {
 			t.Fatalf("invalid schema enum accepted: %s", statement)
@@ -95,7 +95,7 @@ func TestDeferredRevisionFKAndAuthorityGuards(t *testing.T) {
 		`INSERT INTO memory_spaces(space_id, space_type, external_id, display_name, created_at) VALUES ('user', 'user', 'user', 'User', 'now')`,
 		`INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, created_at, updated_at) VALUES ('memory', 'user', 'revision', 'superseded', 'now', 'now')`,
 		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('revision','memory','scene','content','content','hash','normal',0,0,'test','v1','now')`,
-		`INSERT INTO feedback_events(feedback_id, operation_id, caller_id, memory_id, revision_id, feedback_type, reason_code, created_at) VALUES ('feedback', 'op', 'caller', 'memory', 'revision', 'useful', 'answered_query', 'now')`,
+		`INSERT INTO feedback_events(feedback_id, operation_id, caller_id, memory_id, revision_id, feedback_purpose, feedback_type, reason_code, created_at) VALUES ('feedback', 'op', 'caller', 'memory', 'revision', 'memory_quality_feedback', 'confirm', 'other', 'now')`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
@@ -977,12 +977,12 @@ func TestQueryTelemetrySchema(t *testing.T) {
 		"requested_capabilities_json": false, "executed_capabilities_json": false,
 		"candidate_counts_json": false, "rejection_counts_json": false, "score_summary_json": false,
 		"graph_counts_json": false, "duplicate_cluster_count": false, "context_tokens": false,
-		"context_chars": false, "ranking_identity": false, "context_identity": false,
+		"context_chars": false, "ranking_identity": false, "context_identity": false, "feedback_identity": false,
 		"degradation_reasons_json": false, "phase_latency_ms_json": false, "created_at": false,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	valid := `INSERT INTO query_telemetry(telemetry_id, operation_id, query_plan_version, query_plan_identity, query_hash, query_type, requested_scope_json, reference_time, candidate_budget, context_budget, requested_capabilities_json, executed_capabilities_json, candidate_counts_json, rejection_counts_json, score_summary_json, graph_counts_json, duplicate_cluster_count, context_tokens, context_chars, ranking_identity, context_identity, degradation_reasons_json, phase_latency_ms_json, created_at) VALUES ('tel-1', 'op-1', 'query-plan-v1', 'sha256:p', 'sha256:q', 'lookup', '["space-1"]', '2026-01-01T00:00:00Z', 20, 4000, '["semantic","keyword"]', '["semantic","keyword"]', '{"semantic":10,"keyword":5}', '{"scope":1}', '{"max":0.9}', '{"seeds":2}', 1, 128, 512, 'sha256:r', 'sha256:c', '[]', '{"plan":0.1}', 'now')`
+	valid := `INSERT INTO query_telemetry(telemetry_id, operation_id, query_plan_version, query_plan_identity, query_hash, query_type, requested_scope_json, reference_time, candidate_budget, context_budget, requested_capabilities_json, executed_capabilities_json, candidate_counts_json, rejection_counts_json, score_summary_json, graph_counts_json, duplicate_cluster_count, context_tokens, context_chars, ranking_identity, context_identity, feedback_identity, degradation_reasons_json, phase_latency_ms_json, created_at) VALUES ('tel-1', 'op-1', 'query-plan-v1', 'sha256:p', 'sha256:q', 'lookup', '["space-1"]', '2026-01-01T00:00:00Z', 20, 4000, '["semantic","keyword"]', '["semantic","keyword"]', '{"semantic":10,"keyword":5}', '{"scope":1}', '{"max":0.9}', '{"seeds":2}', 1, 128, 512, 'sha256:r', 'sha256:c', 'feedback-v2', '[]', '{"plan":0.1}', 'now')`
 	if _, err := store.writer.Exec(valid); err != nil {
 		t.Fatalf("valid query_telemetry insert rejected: %v", err)
 	}

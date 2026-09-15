@@ -132,7 +132,7 @@ func currentSearchIdentities(ftsVersion, semanticVersion int, metadata searchMet
 		Ranking:    rankingIdentity,
 		Graph:      graphIdentity(metadata),
 		Context:    searchContextIdentity,
-		Feedback:   "feedback-v" + strconv.FormatInt(metadata.feedbackAggregateVersion, 10),
+		Feedback:   "feedback-v" + strconv.FormatInt(metadata.feedbackAggregateVersion, 10) + ":" + FeedbackAggregationIdentity(),
 	}
 }
 
@@ -291,7 +291,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	if after != nil && !searchCursorMatches(*after, hash, params, identities) {
 		return domain.SearchResponse{}, ErrInvalidCursor
 	}
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, QueryPlanIdentity: params.Plan.Identity(), RankingIdentity: identities.Ranking, ContextIdentity: identities.Context, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
+	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, QueryPlanIdentity: params.Plan.Identity(), RankingIdentity: identities.Ranking, ContextIdentity: identities.Context, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, FeedbackIdentity: identities.Feedback, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
 	if hasChannel(executed, ChannelKeyword) && indexState != "ready" {
 		executed = channelsWithout(executed, ChannelKeyword)
 		response.ExecutedChannels = executed
@@ -338,7 +338,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	if len(executed) == 0 {
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
-	usageScores, err := feedbackUsageScores(ctx, tx, revisionKeys(all), metadata.feedbackAggregateVersion)
+	usageScores, err := r.FeedbackUsageScores(ctx, tx, revisionKeys(all), metadata.feedbackAggregateVersion, searchQueryHash(params))
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}

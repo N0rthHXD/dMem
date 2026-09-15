@@ -120,7 +120,8 @@ func recallResponse(operationID string, query application.RecallQuery, result do
 			RequestedCapabilities: append([]string(nil), result.RequestedChannels...), ExecutedCapabilities: append([]string(nil), result.ExecutedChannels...),
 			Degraded: result.Degraded, DegradationReasons: append([]string{}, result.DegradationReasons...),
 			QueryPlanIdentity: result.QueryPlanIdentity, RankingIdentity: result.RankingIdentity, ContextSelectionIdentity: contextIdentity,
-			RankingVersion: result.RankingVersion, FTSIndexVersion: result.FTSIndexVersion,
+			RankingVersion: result.RankingVersion, FeedbackIdentity: result.FeedbackIdentity, FeedbackAggregateVersion: result.FeedbackAggregateVersion,
+			FTSIndexVersion:      result.FTSIndexVersion,
 			SemanticIndexVersion: result.SemanticIndexVersion, GraphIndexVersion: result.GraphIndexVersion, GraphIndexState: result.GraphIndexState,
 		},
 	}

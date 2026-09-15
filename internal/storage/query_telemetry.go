@@ -95,12 +95,12 @@ func (r *Repository) recordQueryTelemetry(ctx context.Context, params SearchPara
 	if _, err := tx.ExecContext(ctx, `INSERT INTO query_telemetry(
 		telemetry_id,operation_id,query_plan_version,query_plan_identity,query_hash,query_type,requested_scope_json,reference_time,candidate_budget,context_budget,requested_capabilities_json,executed_capabilities_json,
 		candidate_counts_json,rejection_counts_json,score_summary_json,graph_counts_json,duplicate_cluster_count,
-		context_tokens,context_chars,ranking_identity,context_identity,degradation_reasons_json,phase_latency_ms_json,created_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?)`,
+		context_tokens,context_chars,ranking_identity,context_identity,feedback_identity,degradation_reasons_json,phase_latency_ms_json,created_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?)`,
 		ids[0], params.OperationID, params.Plan.Version, params.Plan.Identity(), searchQueryHash(params), params.Plan.QuestionType,
 		string(scope), params.ReferenceTime, params.Plan.CandidateBudget, params.Plan.ContextBudget, string(requested), string(executed),
 		string(candidates), string(rejections), string(scores), string(graph), duplicateClusters, tokensUsed,
-		response.CharsUsed, response.RankingIdentity, response.ContextIdentity, string(degraded), string(latency), now); err != nil {
+		response.CharsUsed, response.RankingIdentity, response.ContextIdentity, response.FeedbackIdentity, string(degraded), string(latency), now); err != nil {
 		return err
 	}
 	for i, item := range selected {

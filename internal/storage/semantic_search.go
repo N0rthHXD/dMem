@@ -241,7 +241,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	usageScores, err := feedbackUsageScores(ctx, tx, hybridRevisionKeys(all), metadata.feedbackAggregateVersion)
+	usageScores, err := r.FeedbackUsageScores(ctx, tx, hybridRevisionKeys(all), metadata.feedbackAggregateVersion, searchQueryHash(params))
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
@@ -255,6 +255,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity())
 	response.RankingIdentity = identities.Ranking
 	response.ContextIdentity = identities.Context
+	response.FeedbackIdentity = identities.Feedback
 	hash := semanticQueryHash(params)
 	start := 0
 	if params.Cursor != "" {
@@ -353,51 +354,6 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return domain.SearchResponse{}, err
 	}
 	return response, nil
-}
-
-func feedbackUsageScore(ctx context.Context, tx *sql.Tx, revisionID string, generation int64) (float64, error) {
-	var score float64
-	err := tx.QueryRowContext(ctx, `SELECT bounded_usage_score FROM feedback_aggregates WHERE revision_id=? AND algorithm_version='v1' AND generation=? AND state='current'`, revisionID, generation).Scan(&score)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	return score, err
-}
-
-// feedbackUsageScores batch-loads bounded usage scores for a candidate window,
-// replacing per-candidate point queries during fusion.
-func feedbackUsageScores(ctx context.Context, tx *sql.Tx, revisionIDs []string, generation int64) (map[string]float64, error) {
-	result := make(map[string]float64, len(revisionIDs))
-	const batchSize = 400
-	for start := 0; start < len(revisionIDs); start += batchSize {
-		end := min(start+batchSize, len(revisionIDs))
-		batch := revisionIDs[start:end]
-		args := make([]any, 0, len(batch)+2)
-		query := `SELECT revision_id, bounded_usage_score FROM feedback_aggregates WHERE revision_id IN (` + placeholders(len(batch)) + `) AND algorithm_version='v1' AND generation=? AND state='current'`
-		for _, id := range batch {
-			args = append(args, id)
-		}
-		args = append(args, generation)
-		rows, err := tx.QueryContext(ctx, query, args...)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var revisionID string
-			var score float64
-			if err := rows.Scan(&revisionID, &score); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			result[revisionID] = score
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		rows.Close()
-	}
-	return result, nil
 }
 
 type semanticRecallItem struct {
