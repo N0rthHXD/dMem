@@ -122,6 +122,13 @@ def cmd_run(args: argparse.Namespace) -> None:
             if args.retrieval_workers is not None
             else cfg.retrieval.workers
         ),
+        corpus_dir=args.corpus_output,
+        capabilities_override=(
+            [value for value in args.capabilities.split(",") if value]
+            if args.capabilities else None
+        ),
+        graph_policy=args.graph_policy,
+        disable_diversification=args.disable_diversification,
     )
 
     cp = Checkpoint(args.output)
@@ -137,6 +144,9 @@ def cmd_run(args: argparse.Namespace) -> None:
             "max_chars": max_chars,
             "cutoffs": cutoffs,
             "answer_cutoff": answer_cutoff,
+            "capabilities_override": config.capabilities_override,
+            "graph_policy": config.graph_policy,
+            "disable_diversification": config.disable_diversification,
         }
         ok, msg = cp.is_compatible(compat)
         if not ok:
@@ -152,7 +162,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         if not health.get("ready"):
             print("daemon not ready", file=sys.stderr)
             sys.exit(1)
-        if health.get("processor_state") == "not_configured":
+        if not args.corpus_output and health.get("processor_state") == "not_configured":
             print(
                 "LongMemEval evaluation requires an enabled processing provider; "
                 "use a daemon config with [processing.provider].enabled=true",
@@ -166,6 +176,60 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(json.dumps(summary, indent=2))
         if not summary.get("complete", False):
             raise SystemExit(1)
+    finally:
+        client.close()
+
+
+def _stage_client(cfg: EvalConfig, args: argparse.Namespace) -> DMemClient:
+    socket_path = resolve_socket(cfg, args.socket)
+    client = DMemClient(socket_path, caller_id=args.caller_id, timeout=args.request_timeout)
+    if not client.health().get("ready"):
+        client.close()
+        raise RuntimeError("daemon not ready")
+    return client
+
+
+def cmd_corpus(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    cases, sha = load_dataset(args.dataset)
+    client = _stage_client(cfg, args)
+    try:
+        config = RunConfig(
+            run_id=args.run_id, dataset_sha=sha,
+            socket_path=resolve_socket(cfg, args.socket),
+            confirmation_policy=cfg.ingestion.confirmation_policy,
+            job_poll_interval=cfg.ingestion.job_poll_interval,
+            job_timeout=cfg.ingestion.job_timeout,
+            invalid_evidence_reference_retries=cfg.ingestion.invalid_evidence_reference_retries,
+            transient_retries=cfg.ingestion.transient_retries,
+            caller_id=args.caller_id, output_dir=args.output,
+            ingestion_workers=cfg.ingestion.workers,
+        )
+        result = Runner(client, config, Checkpoint(args.output)).ingest_corpus(cases)
+        print(json.dumps(result, indent=2))
+        if not result.get("complete"):
+            raise SystemExit(1)
+    finally:
+        client.close()
+
+
+def cmd_indexes(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    _, sha = load_dataset(args.dataset)
+    cp = Checkpoint(args.corpus_output)
+    manifest = cp.read_manifest() or {}
+    if manifest.get("dataset_sha") != sha or manifest.get("run_type") != "corpus":
+        raise ValueError("corpus manifest does not match the evaluation dataset")
+    client = _stage_client(cfg, args)
+    try:
+        config = RunConfig(
+            run_id=manifest["run_id"], dataset_sha=sha,
+            socket_path=resolve_socket(cfg, args.socket),
+            caller_id=args.caller_id, output_dir=args.corpus_output,
+            job_poll_interval=cfg.ingestion.job_poll_interval,
+            job_timeout=cfg.ingestion.job_timeout,
+        )
+        print(json.dumps(Runner(client, config, cp).build_indexes(), indent=2))
     finally:
         client.close()
 
@@ -448,6 +512,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-chars", type=int, default=None)
     p.add_argument("--cutoffs", default=None)
     p.add_argument("--answer-cutoff", type=int, default=None)
+    p.add_argument("--corpus-output", default=None)
+    p.add_argument("--capabilities", default=None)
+    p.add_argument(
+        "--graph-policy", default=None,
+        choices=["off", "features_only", "direct", "bounded_path"],
+    )
+    p.add_argument("--disable-diversification", action="store_true")
     p.add_argument(
         "--max-cases",
         type=int,
@@ -474,6 +545,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resume", action="store_true")
     p.add_argument("--fail-on-degraded", action="store_true")
     p.set_defaults(func=cmd_run)
+
+    for name, function in (("corpus", cmd_corpus), ("indexes", cmd_indexes)):
+        p = sub.add_parser(name)
+        p.add_argument("--dataset", required=True)
+        p.add_argument("--socket", default=None)
+        p.add_argument("--run-id", required=name == "corpus")
+        p.add_argument("--output", default="results/longmemeval/corpus")
+        p.add_argument("--corpus-output", required=name == "indexes")
+        p.add_argument("--caller-id", default="longmemeval")
+        p.add_argument("--request-timeout", type=float, default=120.0)
+        p.set_defaults(func=function)
 
     # -- generate --
     p = sub.add_parser("generate", help="Generate answers from retrieval results")

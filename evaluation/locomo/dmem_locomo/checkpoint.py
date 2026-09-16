@@ -43,8 +43,7 @@ class Checkpoint:
     def is_compatible(self, expected: dict[str, Any]) -> tuple[bool, str]:
         """Compare every expected key against the stored manifest.
 
-        A key that is missing from the manifest is a mismatch; there is no
-        legacy fallback for pre-identity checkpoints.
+        A key that is missing from the manifest is a mismatch.
         """
         manifest = self.read_manifest()
         if manifest is None:

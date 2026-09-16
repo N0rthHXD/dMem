@@ -738,6 +738,26 @@ func TestDecodeStructuredCandidatesTimeWindowsAndAuthority(t *testing.T) {
 	}
 }
 
+func TestDecodeStructuredCandidatesCollapsesZeroWidthTimeWindows(t *testing.T) {
+	point := strings.Replace(validStructuredCandidate,
+		`"start":"2024-03-01T09:00:00Z","end":"2024-03-01T10:00:00Z"`,
+		`"start":"2024-03-01T09:00:00Z","end":"2024-03-01T09:00:00Z"`, 1)
+	point = strings.Replace(point,
+		`"start":"2024-01-01T00:00:00Z","end":"2024-12-31T00:00:00Z"`,
+		`"start":"2024-01-01T00:00:00Z","end":"2024-01-01T00:00:00Z"`, 1)
+	revisions, err := DecodeStructuredCandidates([]byte(structuredCandidatesOutput(point)), StructuredCandidateBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := revisions[0]
+	if revision.EventTimeStart == nil || revision.EventTimeEnd != nil {
+		t.Fatalf("zero-width event window not collapsed: start=%v end=%v", revision.EventTimeStart, revision.EventTimeEnd)
+	}
+	if revision.ValidFrom == nil || revision.ValidUntil != nil {
+		t.Fatalf("zero-width valid window not collapsed: from=%v until=%v", revision.ValidFrom, revision.ValidUntil)
+	}
+}
+
 func TestDecodeStructuredCandidatesBounds(t *testing.T) {
 	twoCandidates := structuredCandidatesOutput(validStructuredCandidate + "," + validStructuredCandidate)
 	if _, err := DecodeStructuredCandidates([]byte(twoCandidates), StructuredCandidateBounds{MaxCandidates: 1}); !errors.Is(err, errInvalidStructuredOutput) {
@@ -807,8 +827,8 @@ func TestDecodeTypedGraphOutputRejectsClosedContractViolations(t *testing.T) {
 			body: strings.Replace(validTypedGraphOutput, `"event_type":"meeting"`, `"event_type":"party"`, 1),
 			want: errUnknownEventType,
 		},
-		"broad relation": {
-			body: strings.Replace(validTypedGraphOutput, `"relation_type":"supports"`, `"relation_type":"related_to"`, 1),
+		"free-form relation": {
+			body: strings.Replace(validTypedGraphOutput, `"relation_type":"supports"`, `"relation_type":"free_association"`, 1),
 			want: errInvalidGraphOutput,
 		},
 		"unknown participant": {

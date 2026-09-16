@@ -1,0 +1,13 @@
+{
+  "config_version": "decision-scale-gates-v1",
+  "description": "Scale gates for consolidation, feature calculation, MMR selection, write amplification, and decision-stage allocation.",
+  "performance": {
+    "target_memory_count": 300,
+    "query_samples": 50,
+    "maximum_consolidation_p95_ms": 100.0,
+    "maximum_feature_p95_ms": 25.0,
+    "maximum_mmr_selection_p95_ms": 100.0,
+    "maximum_write_amplification": 600.0,
+    "maximum_decision_heap_bytes": 134217728
+  }
+}

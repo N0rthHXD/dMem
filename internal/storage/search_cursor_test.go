@@ -75,7 +75,7 @@ func TestSearchCursorDoesNotCarryChannelSelectors(t *testing.T) {
 func TestSearchCursorRejectsLegacyChannelPayload(t *testing.T) {
 	legacy, err := json.Marshal(map[string]any{
 		"v": 4, "q": "query-hash", "rc": []string{"keyword"}, "ec": []string{"keyword"},
-		"rv": "rrf-v3", "fv": 1, "sv": 0, "m": "memory-1", "r": "revision-1",
+		"rv": "obsolete-ranking", "fv": 1, "sv": 0, "m": "memory-1", "r": "revision-1",
 		"rt": "2026-08-21T10:00:00Z", "s": "3fe0000000000000",
 	})
 	if err != nil {
@@ -83,6 +83,31 @@ func TestSearchCursorRejectsLegacyChannelPayload(t *testing.T) {
 	}
 	if _, err := decodeSearchCursor(base64.RawURLEncoding.EncodeToString(legacy)); !errors.Is(err, ErrInvalidCursor) {
 		t.Fatalf("legacy channel cursor error = %v, want ErrInvalidCursor", err)
+	}
+}
+
+func TestSearchCursorRejectsUnknownFields(t *testing.T) {
+	valid := searchCursor{
+		Version: 5, SchemaIdentity: "schema-v1", QueryHash: "query-hash", QueryPlanIdentity: "query-plan-v1",
+		MembershipIdentity: "membership-v1", RankingIdentity: "ranking-v1", GraphIdentity: "graph-v1",
+		ContextIdentity: "context-v1", FeedbackIdentity: "feedback-v1", Limit: 5, MaxChars: 100,
+		ScoreBits: "3fe0000000000000", MemoryID: "memory-1", RevisionID: "revision-1", ReferenceTime: "2026-08-21T10:00:00Z",
+	}
+	payload, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["unknown"] = true
+	payload, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeSearchCursor(base64.RawURLEncoding.EncodeToString(payload)); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("cursor with unknown field error = %v, want ErrInvalidCursor", err)
 	}
 }
 

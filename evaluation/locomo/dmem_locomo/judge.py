@@ -73,6 +73,8 @@ def judge_answers(
     cp.assert_phase_compatible({
         "judge_model": model,
         "judge_prompt": JUDGE_PROMPT_VERSION,
+        "judge_temperature": 0,
+        "judge_max_tokens": 10,
     })
     generation_records = cp.load_generation_records()
     done = cp.load_judge_qids()
@@ -151,5 +153,7 @@ def judge_answers(
     existing["semantic_judge"] = summary
     existing["judge_model"] = model
     existing["judge_prompt"] = JUDGE_PROMPT_VERSION
+    existing["judge_temperature"] = 0
+    existing["judge_max_tokens"] = 10
     cp.write_manifest(existing)
     return summary

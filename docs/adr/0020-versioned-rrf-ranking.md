@@ -1,7 +1,8 @@
 # ADR 0020：固定版本 RRF 混合排序与 cursor
 
-- 状态：accepted
+- 状态：superseded（被 [0035](0035-memory-retrieval-v4.md) 取代：等权 RRF 由版本化确定性特征 ranker 取代）
 - 日期：2026-08-21
+- 关联：被 [0035](0035-memory-retrieval-v4.md) 取代
 
 ## 决策
 

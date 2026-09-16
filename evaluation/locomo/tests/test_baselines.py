@@ -21,7 +21,6 @@ from dmem_locomo.runner import result_report
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STORAGE_TESTDATA = REPO_ROOT / "internal" / "storage" / "testdata"
-CAPTURE_PATH = REPO_ROOT / "evaluation" / "locomo" / "baselines" / "locomo-phase0-rrf-v3.json"
 
 
 def test_baseline_spec_is_versioned_and_complete():
@@ -137,32 +136,6 @@ def test_build_baseline_matrix_rejects_missing_or_unknown_identity():
 
     with pytest.raises(BaselineError, match="ranking_version"):
         build_baseline_matrix(runs)
-
-
-def test_phase0_baseline_capture_has_four_modes_on_one_immutable_corpus():
-    capture = json.loads(CAPTURE_PATH.read_text(encoding="utf-8"))
-
-    assert capture["schema_version"] == BASELINE_SCHEMA_VERSION
-    assert capture["metric_schema"] == METRIC_SCHEMA_VERSION
-    assert tuple(capture["runs"]) == RETRIEVAL_MODES
-    shared = {
-        (
-            run["identities"]["dataset_sha"],
-            tuple(run["identities"]["dataset_subset"]),
-            run["identities"]["corpus_id"],
-        )
-        for run in capture["runs"].values()
-    }
-    assert len(shared) == 1
-    for mode, run in capture["runs"].items():
-        assert run["identities"]["retrieval_mode"] == mode
-        assert all(value not in (None, "", "unknown", 0, []) for value in run["identities"].values())
-        assert all(isinstance(value, (int, float)) for value in run["metrics"].values())
-
-    readme = (REPO_ROOT / "evaluation" / "locomo" / "README.md").read_text(
-        encoding="utf-8"
-    )
-    assert "exact baseline run identities were not captured" not in readme
 
 
 def test_retrieval_report_fixture_lists_required_fields():

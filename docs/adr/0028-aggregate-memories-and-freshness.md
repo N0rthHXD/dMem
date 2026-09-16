@@ -1,8 +1,8 @@
 # ADR 0028：普通 Aggregate memory 与 freshness descriptor
 
-- 状态：superseded（stale aggregate 默认包含与 scene/topic-only 约束由 [0035](0035-memory-retrieval-v4.md) 取代；普通 aggregate memory、完整 provenance 与可重建 freshness descriptor 继续有效）
+- 状态：partially superseded（[0035](0035-memory-retrieval-v4.md) 取代 stale aggregate 默认包含与 scene/topic-only 约束；普通 aggregate memory、完整 provenance 与可重建 freshness descriptor 继续有效）
 - 日期：2026-08-25
-- 关联：被 [0035](0035-memory-retrieval-v4.md) 取代
+- 关联：[0035](0035-memory-retrieval-v4.md) 仅取代上述默认检索与 kind 范围，保留本 ADR 的其余决定
 
 ## 决策
 

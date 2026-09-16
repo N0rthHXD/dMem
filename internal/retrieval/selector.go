@@ -161,6 +161,72 @@ func SelectContext(input SelectInput) SelectOutput {
 	return output
 }
 
+// SelectContextFixedCutoff selects cluster representatives in deterministic
+// rank order without the MMR utility. It is the fixed-cutoff ablation baseline:
+// it still collapses duplicate clusters and enforces every hard budget, but it
+// never trades relevance for evidence/source coverage. It exists only for
+// evaluation/debug ablations and is bound into the selection identity.
+func SelectContextFixedCutoff(input SelectInput) SelectOutput {
+	policy := PolicyForQuestionType(input.QuestionType)
+	policy.Version = ContextSelectionVersion + ":fixed-cutoff"
+	policy.PreserveOrder = true
+	policy.Discontinuity = 0
+	policy.MinimumUtility = 0
+	output := SelectOutput{
+		Version: ContextSelectionVersion, Identity: policy.Identity(), Policy: policy,
+		Items: []domain.SelectedContextItem{}, Rejected: []domain.RejectedContextCandidate{},
+	}
+	state := newSelectionState(policy, input.Budget)
+	if len(input.Candidates) == 0 {
+		output.Stopped, output.StopReason = true, StopReasonNoCandidates
+		output.Accounting = state.accounting()
+		return output
+	}
+	clusters := buildContextClusters(input.Candidates)
+	for _, cluster := range clusters {
+		for _, member := range cluster.members {
+			if member == cluster.rep {
+				continue
+			}
+			state.reject(input.Candidates[member], cluster.id, StopReasonDuplicateCluster)
+		}
+	}
+	order := make([]int, len(clusters))
+	for i := range clusters {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return clusterOrderLess(clusters[order[i]], clusters[order[j]], input.Candidates)
+	})
+	for position, index := range order {
+		if state.stopped {
+			break
+		}
+		cluster := clusters[index]
+		if reason := state.budgetFailure(cluster); reason != "" {
+			state.reject(input.Candidates[cluster.rep], cluster.id, reason)
+			state.lastBudgetReason = reason
+			continue
+		}
+		state.add(cluster, input.Candidates)
+		if state.resultReached() {
+			state.stopWith(StopReasonResultBudget, order[position+1:], clusters, input.Candidates)
+		}
+	}
+	if !state.stopped {
+		state.stopped, state.stopReason = true, StopReasonExhausted
+		if state.lastBudgetReason != "" {
+			state.stopReason = state.lastBudgetReason
+		}
+	}
+	output.Items = state.items
+	output.Rejected = state.rejected
+	output.Stopped = state.stopped
+	output.StopReason = state.stopReason
+	output.Accounting = state.accounting()
+	return output
+}
+
 // contextCluster is one provenance-linked group of candidates collapsed to a
 // single representative.
 type contextCluster struct {

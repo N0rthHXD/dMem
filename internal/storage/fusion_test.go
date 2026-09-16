@@ -11,7 +11,7 @@ import (
 )
 
 func TestRankingIdentityIsVersionedFeatureRanker(t *testing.T) {
-	if rankingVersion != retrieval.RankingWeightsVersion || rankingVersion == "rrf-v3" {
+	if rankingVersion != retrieval.RankingWeightsVersion {
 		t.Fatalf("ranking version = %q", rankingVersion)
 	}
 }

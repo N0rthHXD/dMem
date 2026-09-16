@@ -1,7 +1,8 @@
 # ADR 0024：独立权威 revision relation
 
-- 状态：accepted
+- 状态：superseded（被 [0035](0035-memory-retrieval-v4.md) 取代：`related_to`/`mentions` 关系类型移除，revision relation 保留 `supports`/`contradicts`/`supersedes`/`derived_from`）
 - 日期：2026-08-25
+- 关联：被 [0035](0035-memory-retrieval-v4.md) 取代
 
 ## 决策
 

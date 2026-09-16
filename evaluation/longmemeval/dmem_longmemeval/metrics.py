@@ -12,6 +12,8 @@ from typing import Sequence
 
 import numpy as np
 
+METRIC_SCHEMA_VERSION = "longmemeval-retrieval-metrics-v2"
+
 
 def dcg(relevances: Sequence[float], k: int) -> float:
     """Discounted Cumulative Gain at k (upstream formula)."""
@@ -46,8 +48,8 @@ def evaluate_retrieval(
     correct_docs: set[str],
     corpus_ids: Sequence[str],
     k: int = 10,
-) -> tuple[float, float, float]:
-    """Return (recall_any, recall_all, ndcg) at cutoff k.
+) -> tuple[float, float, float, float]:
+    """Return (recall_any, recall_all, ndcg, MRR) at cutoff k.
 
     ``rankings`` is a list of corpus indices ordered by retrieval score
     descending. ``correct_docs`` is the set of relevant corpus IDs.
@@ -57,7 +59,12 @@ def evaluate_retrieval(
     recall_any = float(any(doc in recalled for doc in correct_docs))
     recall_all = float(all(doc in recalled for doc in correct_docs))
     ndcg_score = ndcg(rankings, correct_docs, corpus_ids, k)
-    return recall_any, recall_all, ndcg_score
+    reciprocal_rank = 0.0
+    for rank, index in enumerate(rankings[:k], 1):
+        if corpus_ids[index] in correct_docs:
+            reciprocal_rank = 1.0 / rank
+            break
+    return recall_any, recall_all, ndcg_score, reciprocal_rank
 
 
 def evaluate_retrieval_turn2session(
@@ -108,7 +115,7 @@ def aggregate_metrics(
     result: dict[str, dict[str, float]] = {}
     if not per_case:
         return result
-    metric_names = ["recall_any", "recall_all", "ndcg"]
+    metric_names = ["recall_any", "recall_all", "ndcg", "mrr"]
     for k in cutoffs:
         key = f"@{k}"
         result[key] = {}

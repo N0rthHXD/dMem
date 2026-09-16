@@ -133,3 +133,49 @@ def test_recall_cases_run_in_parallel_and_isolate_failure(tmp_path, monkeypatch)
 
     assert checkpoint.load_retrieval_qids() == {"completed"}
     assert checkpoint.load_failure_records()[0]["question_id"] == "failed"
+
+
+def test_recall_maps_all_evidence_sessions_not_only_first(tmp_path):
+    runner, checkpoint = make_runner(tmp_path)
+    runner.client = SimpleNamespace(recall=lambda **_kwargs: {
+        "execution": {},
+        "context": {"items": [{
+            "memory_id": "memory",
+            "display_content": "combined",
+            "evidence": [{"event_id": "event-a"}, {"event_id": "event-b"}],
+        }]},
+    })
+    case = SimpleNamespace(
+        question_id="q", question="question", question_type="multi-session",
+        question_date=__import__("datetime").datetime(2024, 1, 3),
+        haystack_session_ids=["session-a", "session-b"],
+        haystack_dates=[__import__("datetime").datetime(2024, 1, 1), __import__("datetime").datetime(2024, 1, 2)],
+        answer_session_ids=["session-a", "session-b"], is_abstention=False,
+    )
+    ingestion = {"q": [
+        {"event_id": "event-a", "session_id": "session-a", "has_answer": True},
+        {"event_id": "event-b", "session_id": "session-b", "has_answer": True},
+    ]}
+
+    runner._recall_case(case, "task", ingestion)
+
+    result = checkpoint.load_retrieval_records()["q"]
+    assert result["metric_schema"] == "longmemeval-retrieval-metrics-v2"
+    assert result["ranked_session_ids"] == ["session-a", "session-b"]
+    assert result["ranked_items"][0]["session_ids"] == ["session-a", "session-b"]
+
+
+def test_recall_phase_uses_shared_corpus_ingestion_records(tmp_path, monkeypatch):
+    runner, _ = make_runner(tmp_path)
+    case = make_case("shared")
+    shared = {"shared": [{"event_id": "event", "session_id": "session"}]}
+    observed = []
+    monkeypatch.setattr(
+        runner,
+        "_recall_case",
+        lambda _case, _task, records: observed.append(records),
+    )
+
+    runner._recall_phase([case], {"shared": "task"}, shared)
+
+    assert observed == [shared]

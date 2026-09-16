@@ -185,11 +185,10 @@ var predicatePhraseMap = []struct {
 }{
 	{"participates in", "participates_in"}, {"participate in", "participates_in"},
 	{"works on", "works_on"}, {"worked on", "works_on"},
-	{"uses database", "uses_database"}, {"use database", "uses_database"}, {"database is", "uses_database"},
+	{"uses database", "depends_on"}, {"use database", "depends_on"}, {"database is", "depends_on"},
 	{"owned by", "owned_by"}, {"owns", "owned_by"},
-	{"located in", "located_in"}, {"based in", "located_in"}, {"lives in", "located_in"},
+	{"located in", "located_at"}, {"based in", "located_at"}, {"lives in", "located_at"},
 	{"depends on", "depends_on"},
-	{"married to", "married_to"},
 }
 
 // BuildQueryPlan deterministically analyzes a query against a reference time.

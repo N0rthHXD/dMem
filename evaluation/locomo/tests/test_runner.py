@@ -375,3 +375,83 @@ def test_degraded_recall_raises_when_fail_on_degraded(tmp_path):
         assert "graph_unavailable" in str(exc)
     else:
         raise AssertionError("fail_on_degraded must reject degraded recall responses")
+
+
+def test_recall_request_omits_obsolete_stale_aggregate_field():
+    from dmem_locomo.api import DMemClient
+
+    client = DMemClient.__new__(DMemClient)
+    captured = {}
+
+    def fake_request(method, path, *, json=None, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = json
+        return {}
+
+    client._request = fake_request
+    client.recall(
+        query="where did I work",
+        space_ids=["space-1"],
+        mode="hybrid",
+        capabilities_override=["semantic", "keyword"],
+        graph_policy="off",
+        disable_diversification=True,
+    )
+    assert captured["path"] == "/v1/recall"
+    body = captured["json"]
+    assert "exclude_stale_aggregates" not in body
+    assert body["include_evidence"] is True
+    assert body["debug"] == {
+        "capabilities": ["semantic", "keyword"],
+        "graph_policy": "off",
+        "disable_diversification": True,
+    }
+
+
+def test_summarize_aggregates_duplicate_and_judge_metrics(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from dmem_locomo import cli
+
+    conv = make_conversation()
+    qa = conv.qa[0]
+    monkeypatch.setattr(cli, "load_dataset", lambda path: ([conv], "sha"))
+
+    class FakeCheckpoint:
+        def __init__(self, output):
+            self.output = output
+
+        def read_manifest(self):
+            return {"metric_schema": cli.METRIC_SCHEMA_VERSION, "cutoffs": [1]}
+
+        def load_retrieval_records(self):
+            return {
+                qa.qa_id: {
+                    "qa_id": qa.qa_id,
+                    "ranked_dia_ids": ["D1:1"],
+                    "ranked_memory_ids": ["m1"],
+                    "gold_memory_ids": ["m1"],
+                    "duplicate_rate": 0.5,
+                    "unmapped_rate": 0.0,
+                    "extraction": {"gold_total": 1, "gold_indexed": 1},
+                }
+            }
+
+        def load_generation_records(self):
+            return {}
+
+        def load_judge_records(self):
+            return {qa.qa_id: {"label": True, "category": 1}}
+
+        def load_ingested_sample_ids(self):
+            return {conv.sample_id}
+
+        def load_failure_records(self):
+            return []
+
+        def write_summary(self, summary):
+            self.summary = summary
+
+    monkeypatch.setattr(cli, "Checkpoint", FakeCheckpoint)
+    cli.cmd_summarize(SimpleNamespace(dataset="unused", output=str(tmp_path)))

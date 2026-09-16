@@ -44,8 +44,11 @@ state.
 
 `GET /v1/health` requires no caller header. It reports readiness, write/query
 availability, storage and schema state, queue depth, disk pressure, processor
-identity, and FTS, semantic, entity, relation, feedback, and aggregate state.
-Treat authority failures differently from derived-index failures:
+identity, FTS, semantic, entity, relation, graph, feedback, and aggregate state,
+plus a `decision` block with the effective identity, generation, and state of
+consolidation, quality and duplicate projections, semantic calibration, graph
+scoring, the feature ranker, context selection, and feedback aggregation. Treat
+authority failures differently from derived-index failures:
 
 - Stop writes and preserve the data directory when SQLite integrity, schema, or
   authority checks fail.

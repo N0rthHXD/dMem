@@ -71,6 +71,8 @@ def generate_answers(
     cp.assert_phase_compatible({
         "answer_model": model,
         "generation_prompt": GENERATION_PROMPT_VERSION,
+        "generation_temperature": 0,
+        "generation_max_tokens": gen_length,
     })
     retrieval_records = cp.load_retrieval_records()
     done = cp.load_generation_qids()
@@ -148,6 +150,8 @@ def generate_answers(
     manifest = cp.read_manifest() or {}
     manifest["answer_model"] = model
     manifest["generation_prompt"] = GENERATION_PROMPT_VERSION
+    manifest["generation_temperature"] = 0
+    manifest["generation_max_tokens"] = gen_length
     manifest["answer_base_url"] = base_url or ""
     cp.write_manifest(manifest)
 

@@ -24,33 +24,53 @@ orchestrate raw events, revisions, and lifecycle endpoints separately.
 | Operation | Behavior |
 | --- | --- |
 | `POST /v1/remember` | Atomically creates a manual source event, memory, initial immutable revision, evidence, active projection, audit data, and required index work. |
-| `POST /v1/recall` | Searches one or more spaces with a result-count and character budget. Defaults to ancestor inclusion, all three retrieval channels, active/contested states, 10 results, and 12,000 characters. |
+| `POST /v1/recall` | Searches one or more spaces with a result-count and context-token budget. Defaults to ancestor inclusion, keyword plus semantic primary recall with gated graph features, active/contested states, 20 results, and a 4,000-token context budget. |
 | `POST /v1/memories/{memory_id}/feedback` | Appends feedback to the memory's current revision and can request a corrective evolution proposal. |
 | `POST /v1/memories/{memory_id}/forget` | Logically deletes the memory, removes it from recall, and retains authority and audit history. |
 
-`remember` defaults `memory_type` to `fact`, `sensitivity` to `normal`,
-`source_name` to the caller, and `occurred_at` to the current time. Supported
-memory types are `fact`, `preference`, `constraint`, `decision`, `task`,
-`event`, `project_context`, and `agent_experience`.
+`remember` defaults `kind` to `fact`, `sensitivity` to `normal`, `source_name`
+to the caller, and `occurred_at` to the current time. Supported memory kinds are
+`fact`, `event`, `preference`, `plan`, `procedure`, `scene`, `topic`, and
+`timeline`.
 
 `recall` accepts natural-language or ordinary keyword text, not SQLite FTS5
-expressions. Keyword retrieval extracts English content words and Chinese trigram
-fragments, then combines them as literal alternatives. Requests select explicit
-`channels` from `keyword`, `semantic`, and `graph` (default: all three); there is
-no separate entity or relation channel — entity resolution is query understanding,
-and entity facts plus memory relations are internal graph signals. Semantic
-execution requires a configured embedding provider and a usable semantic index.
-Entity mentions inside a natural-language query are resolved deterministically
-(alias longest-match) before retrieval, and the graph channel can add candidates
-through direct mentions, one-hop entity facts, bounded two-hop paths, and memory
-relations. Responses state the requested and executed channels, degradation
-reasons, ranking/index versions, resolved entities, graph signals/facts/paths,
-cursor, truncation, and character use. Results are revalidated against
-scope, current revision, state, and valid time before return.
+expressions; the request expresses intent (`intent`), a reference time, a result
+limit, and a context-token budget. Keyword and semantic are independent primary
+recall signals; entity resolution is query understanding, and entity facts plus
+memory relations are internal graph signals, not an independent channel. The
+query plan selects graph `off`, `features_only`, `direct`, or `bounded_path`;
+production defaults to keyword plus semantic with graph `features_only` when the
+graph is ready. Semantic execution requires a configured embedding provider and
+a usable semantic index. Entity mentions inside a natural-language query are
+resolved deterministically (alias longest-match) before retrieval, and an
+unambiguous resolution can add candidates through direct mentions or a bounded
+typed path.
 
-Feedback types are `useful`, `irrelevant`, `correct`, `supplement`, and
-`contest`. A proposal request is accepted only for a corrective type and must
-include `source_event_id` and `proposed_content`.
+Explicit channels are an evaluation/debug-only override: set
+`debug.capabilities` to `["keyword"]`, `["semantic"]`, or `["graph"]`, plus the
+optional `debug.graph_policy`, `debug.disable_diversification`, and
+`debug.include_stale_aggregates` overrides. Stale aggregates are otherwise
+excluded from recall.
+Responses state the requested and executed capabilities, degradation reasons,
+ranking/index/context/feedback identities, resolved entities, graph
+signals/facts/paths, cursor, truncation, and character use. `explain: true`
+returns per-result feature contributions, graph paths, evidence, and selection
+or rejection reasons under the same scope, policy, and sensitivity rules as
+normal recall. Results are revalidated against scope, current revision, state,
+and valid time before return.
+
+Feedback is separated by purpose: `memory_quality_feedback`,
+`retrieval_feedback`, and `answer_feedback`. Feedback types are `useful`,
+`irrelevant`, `correct`, `supplement`, and `contest`. A proposal request is
+accepted only for a corrective type and must include `source_event_id` and
+`proposed_content`. Retrieval feedback stores privacy-preserving decision
+context (query hash and type, rank, selection state, matched signal types) rather
+than query text.
+
+Aggregate resource listings omit stale aggregates by default. Use
+`freshness=stale` to select stale records or `exclude_stale=false` to include
+both freshness states; recall remains stricter and requires
+`debug.include_stale_aggregates=true`.
 
 ## Resource API
 

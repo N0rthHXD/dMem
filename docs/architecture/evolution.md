@@ -15,23 +15,26 @@ entity merge route is unsupported.
 ## Relations
 
 Relations are independent authority between concrete revisions. Supported types
-are `supports`, `contradicts`, `supersedes`, `derived_from`, and `related_to`.
-Entity mentions are separate authority. Relation assertions require evidence or explicit human confirmation, reject
-self-relations, and enforce endpoint scope. Public relation queries follow at
-most one hop; the graph retrieval channel additionally runs bounded two-hop
-entity-fact paths behind explicit predicate intent (ADR 0033). Historical
-endpoints can explain history but do not make stale revision text a
-current result.
+are `supports`, `contradicts`, `supersedes`, and `derived_from`. Semantic
+similarity is a derived retrieval feature, not a stored relation type. Entity
+mentions are separate authority. Relation assertions require evidence or explicit
+human confirmation, reject self-relations, and enforce endpoint scope. Public
+relation queries follow at most one hop; gated graph feature calculation additionally
+runs bounded typed two-hop entity-fact paths behind explicit predicate intent
+(ADR 0035). Historical endpoints can explain history but do not make stale
+revision text a current result.
 
 ## Entity Facts
 
 Entity facts (`entity_facts`) are distinct from revision-level relations: they
 describe typed relationships among resolved entities, such as
-`Alice --participates_in--> Alpha` or `Alpha --uses_database--> PostgreSQL`.
+`Alice --participates_in--> Alpha` or `Alice --works_for--> Acme`.
 A fact has a subject entity, a controlled predicate, and either an object entity
 or a typed literal (exactly one), plus source memory/revision provenance,
-confidence, state, and valid time. Predicates come from a controlled registry
-(`participates_in`, `uses_database`, `owned_by`, `located_in`, `depends_on`).
+confidence, state, and valid time. Predicates come from the closed typed
+registry in `internal/domain/graph_predicates.go` (for example
+`participates_in`, `works_for`, `owned_by`, `located_at`, `depends_on`); free-form
+provider predicates are rejected.
 
 Facts are append-only authority: confirming a newer fact supersedes older active
 facts with the same subject and predicate without deleting their history, so a

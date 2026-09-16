@@ -165,7 +165,15 @@ func (h *Handler) aggregatesList(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, 422, "invalid_request", "invalid aggregate filter", requestID, "", false, nil)
 		return
 	}
-	exclude, _ := strconv.ParseBool(r.URL.Query().Get("exclude_stale"))
+	exclude := freshness != "stale"
+	if raw := r.URL.Query().Get("exclude_stale"); raw != "" {
+		var err error
+		exclude, err = strconv.ParseBool(raw)
+		if err != nil {
+			h.writeError(w, 422, "invalid_request", "exclude_stale must be a boolean", requestID, "", false, nil)
+			return
+		}
+	}
 	result, err := h.repository.ListAggregates(r.Context(), storage.AggregateFilter{SpaceID: space, AggregateKind: r.URL.Query().Get("aggregate_kind"), Freshness: r.URL.Query().Get("freshness"), ExcludeStale: exclude, Cursor: cursor, Limit: limit})
 	if err != nil {
 		h.repositoryError(w, err, requestID)

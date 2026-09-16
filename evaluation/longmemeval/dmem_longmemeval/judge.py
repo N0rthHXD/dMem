@@ -18,6 +18,8 @@ from .checkpoint import Checkpoint
 from .dataset import load_dataset
 from .progress import tqdm
 
+JUDGE_PROMPT_VERSION = "longmemeval-upstream-judge-v1"
+
 def get_judge_prompt(
     task: str,
     question: str,
@@ -114,6 +116,12 @@ def judge_answers(
         raise ValueError("workers must be a positive integer")
     cases, _ = load_dataset(dataset_path)
     cp = Checkpoint(output_dir)
+    cp.assert_phase_compatible({
+        "judge_model": model,
+        "judge_prompt": JUDGE_PROMPT_VERSION,
+        "judge_temperature": 0,
+        "judge_max_tokens": 10,
+    })
     generation_records = cp.load_generation_records()
     done = cp.load_judge_qids()
 
@@ -153,6 +161,7 @@ def judge_answers(
             max_tokens=10,
         )
         eval_response = completion.choices[0].message.content.strip()
+        usage = completion.usage
         label = "yes" in eval_response.lower()
         return (
             {
@@ -160,6 +169,9 @@ def judge_answers(
                 "model": model,
                 "label": label,
                 "raw_response": eval_response,
+                "prompt_version": JUDGE_PROMPT_VERSION,
+                "prompt_tokens": usage.prompt_tokens if usage else 0,
+                "completion_tokens": usage.completion_tokens if usage else 0,
             },
             1 if label else 0,
         )
@@ -213,5 +225,12 @@ def judge_answers(
 
     existing = cp.read_manifest() or {}
     existing["qa"] = summary
+    existing.update({
+        "judge_model": model,
+        "judge_base_url": base_url or "",
+        "judge_prompt": JUDGE_PROMPT_VERSION,
+        "judge_temperature": 0,
+        "judge_max_tokens": 10,
+    })
     cp.write_manifest(existing)
     return summary

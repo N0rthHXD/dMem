@@ -400,3 +400,25 @@ func TestResultBudgetIsHardCapNotTarget(t *testing.T) {
 		t.Fatalf("result cap = %d items stop=%q", len(output.Items), output.StopReason)
 	}
 }
+
+func TestSelectContextFixedCutoffPreservesRankOrderAndBudgets(t *testing.T) {
+	candidates := []domain.ContextCandidate{
+		selCandidate("m1", "r1", 0.9, func(c *domain.ContextCandidate) { c.PrimaryEvidence = []string{"e1"}; c.Rank = 1 }),
+		selCandidate("m2", "r2", 0.8, func(c *domain.ContextCandidate) { c.PrimaryEvidence = []string{"e2"}; c.Rank = 2 }),
+		selCandidate("m3", "r3", 0.7, func(c *domain.ContextCandidate) { c.PrimaryEvidence = []string{"e3"}; c.Rank = 3 }),
+	}
+	output := SelectContextFixedCutoff(SelectInput{QuestionType: QuestionExploratory, Budget: domain.ContextBudget{MaxResults: 2, MaxTokens: 100000, MaxChars: 100000, MaxSources: 100}, Candidates: candidates})
+	if got := selectedMemoryIDs(output.Items); !sameStringSet(got, []string{"m1", "m2"}) {
+		t.Fatalf("fixed-cutoff order = %v, want [m1 m2]", got)
+	}
+	if output.StopReason != StopReasonResultBudget {
+		t.Fatalf("fixed-cutoff stop reason = %q", output.StopReason)
+	}
+	if output.Policy.Version == PolicyForQuestionType(QuestionExploratory).Version {
+		t.Fatal("fixed-cutoff selection policy is not versioned distinctly")
+	}
+	mmr := SelectContext(SelectInput{QuestionType: QuestionExploratory, Budget: selectionBudget(), Candidates: candidates})
+	if mmr.Identity == output.Identity {
+		t.Fatal("fixed-cutoff and MMR selection identities must differ")
+	}
+}

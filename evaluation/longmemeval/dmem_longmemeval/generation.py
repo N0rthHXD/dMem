@@ -36,6 +36,7 @@ PROMPT_COT = (
     "Question: {}\n"
     "Answer (step by step):"
 )
+GENERATION_PROMPT_VERSION = "longmemeval-upstream-generation-v1"
 
 
 def generate_answers(
@@ -55,6 +56,12 @@ def generate_answers(
         raise ValueError("workers must be a positive integer")
     cases, _ = load_dataset(dataset_path)
     cp = Checkpoint(output_dir)
+    cp.assert_phase_compatible({
+        "answer_model": model,
+        "generation_prompt": GENERATION_PROMPT_VERSION,
+        "generation_temperature": 0,
+        "generation_max_tokens": gen_length,
+    })
     retrieval_records = cp.load_retrieval_records()
     done = cp.load_generation_qids()
 
@@ -102,6 +109,7 @@ def generate_answers(
                 "hypothesis": answer,
                 "prompt_tokens": pt,
                 "completion_tokens": ct,
+                "prompt_version": GENERATION_PROMPT_VERSION,
             },
             answer,
             pt + ct,
@@ -137,5 +145,15 @@ def generate_answers(
 
     if first_error is not None:
         raise first_error
+
+    manifest = cp.read_manifest() or {}
+    manifest.update({
+        "answer_model": model,
+        "answer_base_url": base_url or "",
+        "generation_prompt": GENERATION_PROMPT_VERSION,
+        "generation_temperature": 0,
+        "generation_max_tokens": gen_length,
+    })
+    cp.write_manifest(manifest)
 
     return count

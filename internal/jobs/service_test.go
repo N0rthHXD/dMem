@@ -902,3 +902,27 @@ func TestServiceAcceptsFullyStructuredCandidateFields(t *testing.T) {
 		t.Fatalf("structured candidate was not published: %v", item.job.ResultCode)
 	}
 }
+
+func TestProcessingAllowsOnlyStructuredExtractionKinds(t *testing.T) {
+	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetProcessing(ProcessingConfig{Enabled: true, ProcessorIdentity: "processor/test", ProcessingVersion: "v1"})
+	runtime := service.currentProcessing()
+	if runtime == nil {
+		t.Fatal("processing runtime was not configured")
+	}
+	allowed := runtime.preparation.AllowedMemoryTypes
+	if len(allowed) == 0 {
+		t.Fatal("processing configured no allowed memory types")
+	}
+	for _, kind := range allowed {
+		if !domain.MemoryKind(kind).Valid() {
+			t.Errorf("processing allows obsolete memory kind %q", kind)
+		}
+		if domain.ValidAggregateKind(kind) {
+			t.Errorf("processing allows aggregate-only memory kind %q", kind)
+		}
+	}
+}

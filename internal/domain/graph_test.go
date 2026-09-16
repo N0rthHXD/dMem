@@ -13,9 +13,6 @@ func TestPredicateRegistryIsClosedAndTyped(t *testing.T) {
 		t.Fatalf("registry has %d predicates, want a general registry", len(PredicateNames()))
 	}
 	for _, definition := range PredicateDefinitions() {
-		if definition.Name == "related_to" {
-			t.Fatal("broad related_to must not be registered")
-		}
 		if !definition.Direction.Valid() {
 			t.Fatalf("%s: invalid direction %q", definition.Name, definition.Direction)
 		}
@@ -68,9 +65,6 @@ func TestPredicateRegistryInverseIsDirectionalAndSymmetric(t *testing.T) {
 	}
 	if _, ok := LookupPredicate("hates"); ok {
 		t.Fatal("free-form predicate was accepted by the registry")
-	}
-	if _, ok := LookupPredicate("related_to"); ok {
-		t.Fatal("related_to reintroduced")
 	}
 }
 

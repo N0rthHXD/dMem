@@ -48,3 +48,16 @@ def test_failure_records_are_append_only_and_do_not_complete_ingestion(tmp_path)
         "error": "provider timeout",
     }]
     assert checkpoint.load_ingested_qids() == set()
+
+
+def test_checkpoint_compatibility_has_no_legacy_missing_key_exception(tmp_path):
+    checkpoint = Checkpoint(tmp_path)
+    checkpoint.write_manifest({"dataset_sha": "sha"})
+
+    compatible, reason = checkpoint.is_compatible({
+        "dataset_sha": "sha",
+        "invalid_evidence_reference_retries": 1,
+    })
+
+    assert compatible is False
+    assert "invalid_evidence_reference_retries" in reason

@@ -964,8 +964,8 @@ paths:
         - $ref: '#/components/parameters/callerId'
         - { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: aggregate_kind, in: query, schema: { $ref: '#/components/schemas/AggregateKind' } }
-        - { name: freshness, in: query, schema: { type: string, enum: [fresh, stale] } }
-        - { name: exclude_stale, in: query, schema: { type: boolean, default: false } }
+        - { name: freshness, in: query, description: Selecting stale explicitly includes stale aggregates., schema: { type: string, enum: [fresh, stale] } }
+        - { name: exclude_stale, in: query, description: Stale aggregates are omitted unless freshness=stale or this is explicitly false., schema: { type: boolean, default: true } }
         - $ref: '#/components/parameters/limit'
         - $ref: '#/components/parameters/cursor'
       responses:
@@ -1058,7 +1058,6 @@ components:
         include_evidence: { type: boolean, default: false }
         explain: { type: boolean, default: false }
         cursor: { type: string }
-        exclude_stale_aggregates: { type: boolean, default: true, description: 'Stale aggregates are excluded by default. Setting false requires debug mode for explicit inclusion.' }
     RecallIntent:
       type: string
       enum: [auto, lookup, temporal, entity, relational, multi_hop, procedural, exploratory, verification]
@@ -1074,6 +1073,16 @@ components:
           uniqueItems: true
           items: { type: string, enum: [keyword, semantic, graph] }
           description: Explicit retrieval capability override for evaluation and debugging only.
+        graph_policy:
+          type: string
+          enum: [off, features_only, direct, bounded_path]
+          description: Graph policy override for evaluation and debugging only.
+        disable_diversification:
+          type: boolean
+          description: Fixed-cutoff selection override for evaluation and debugging only.
+        include_stale_aggregates:
+          type: boolean
+          description: Include stale aggregates with stale reasons and provenance for debugging. They are excluded by default.
     MemoryFeedbackRequest:
       type: object
       additionalProperties: false
@@ -1404,7 +1413,7 @@ components:
     Sensitivity: { type: string, enum: [normal, sensitive] }
     EntityProposalKind: { type: string, enum: [entity, alias, mention] }
     RelationType: { type: string, enum: [supports, contradicts, supersedes, derived_from] }
-    Predicate: { type: string, enum: [created_by, depends_on, has_participant_count, has_status, is_active, located_at, member_of, owned_by, participates_in] }
+    Predicate: { type: string, enum: [born_in, created, created_by, depends_on, derived_from, dislikes, employs, has_member, has_participant, has_participant_count, has_status, is_active, leads, located_at, manages, member_of, occurred_at, occurred_during, owned_by, owns, participates_in, plan_targets, prefers, reports_to, required_by, same_as, works_for, works_on] }
     EntityFact:
       type: object
       additionalProperties: false
@@ -2118,11 +2127,13 @@ components:
     RecallExplanation:
       type: object
       additionalProperties: false
-      required: [matched_signals, selection_reason]
+      required: [matched_signals, selection_reason, context_selection]
       properties:
         matched_signals: { type: array, uniqueItems: true, items: { type: string, enum: [keyword, semantic, graph] } }
         selection_reason: { type: string }
         features: { type: object, additionalProperties: { type: number } }
+        feature_contributions: { type: object, additionalProperties: { type: number } }
+        context_selection: { $ref: '#/components/schemas/ContextSelectionExplanation' }
         graph_score: { type: number }
         semantic_raw_score: { type: number }
         semantic_percentile: { type: number }
@@ -2142,6 +2153,22 @@ components:
         keyword_matched_fields: { type: array, uniqueItems: true, items: { type: string, enum: [content] } }
         keyword_exact_match: { type: boolean }
         keyword_term_coverage: { type: number, minimum: 0, maximum: 1 }
+    ContextSelectionExplanation:
+      type: object
+      additionalProperties: false
+      required: [utility, relevance, evidence_coverage, source_coverage, entity_coverage, session_coverage, redundancy, context_cost, collapsed_members, exact_primary, representative]
+      properties:
+        utility: { type: number }
+        relevance: { type: number }
+        evidence_coverage: { type: number }
+        source_coverage: { type: number }
+        entity_coverage: { type: number }
+        session_coverage: { type: number }
+        redundancy: { type: number }
+        context_cost: { type: number }
+        collapsed_members: { type: integer, minimum: 0 }
+        exact_primary: { type: boolean }
+        representative: { type: boolean }
     RankContribution:
       type: object
       additionalProperties: false
@@ -2375,6 +2402,29 @@ components:
         oldest_job_age_seconds: { type: integer, minimum: 0 }
         disk_pressure: { type: string, enum: [normal, soft, hard] }
         configuration_identity: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        decision: { $ref: '#/components/schemas/DecisionHealth' }
+    DecisionIdentity:
+      type: object
+      additionalProperties: false
+      required: [name, identity, generation, state]
+      properties:
+        name: { type: string }
+        identity: { type: string }
+        generation: { type: integer, minimum: 0 }
+        state: { type: string }
+    DecisionHealth:
+      type: object
+      additionalProperties: false
+      required: [consolidation, quality, duplicate, semantic_calibration, graph, ranker, context, feedback]
+      properties:
+        consolidation: { $ref: '#/components/schemas/DecisionIdentity' }
+        quality: { $ref: '#/components/schemas/DecisionIdentity' }
+        duplicate: { $ref: '#/components/schemas/DecisionIdentity' }
+        semantic_calibration: { $ref: '#/components/schemas/DecisionIdentity' }
+        graph: { $ref: '#/components/schemas/DecisionIdentity' }
+        ranker: { $ref: '#/components/schemas/DecisionIdentity' }
+        context: { $ref: '#/components/schemas/DecisionIdentity' }
+        feedback: { $ref: '#/components/schemas/DecisionIdentity' }
     ReloadConfigurationRequest:
       type: object
       additionalProperties: false

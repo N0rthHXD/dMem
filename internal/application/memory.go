@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -67,6 +68,8 @@ type RecallQuery struct {
 	Explain                bool
 	ExcludeStaleAggregates bool
 	Cursor                 string
+	GraphPolicy            string
+	SkipDiversification    bool
 }
 
 type FeedbackCommand struct {
@@ -144,7 +147,8 @@ func (s *Service) Recall(ctx context.Context, query RecallQuery) (domain.SearchR
 		Limit: query.Limit, MaxChars: query.MaxChars, MaxContextTokens: query.MaxContextTokens,
 		IncludeEvidence:        query.IncludeEvidence,
 		ExcludeStaleAggregates: query.ExcludeStaleAggregates, Explain: query.Explain, Cursor: query.Cursor,
-		Intent: string(query.Intent),
+		Intent: string(query.Intent), SkipDiversification: query.SkipDiversification,
+		GraphPolicy: retrieval.GraphPolicy(query.GraphPolicy),
 	})
 }
 
@@ -211,9 +215,6 @@ func validateRecall(query RecallQuery) error {
 	if !query.Intent.Valid() {
 		return errors.New("recall intent is invalid")
 	}
-	if len(query.Channels) == 0 {
-		return errors.New("recall channels must contain at least one channel")
-	}
 	for _, channel := range query.Channels {
 		if channel != "keyword" && channel != "semantic" && channel != "graph" {
 			return errors.New("recall channels is invalid")
@@ -233,6 +234,14 @@ func validateRecall(query RecallQuery) error {
 	if query.ReferenceTimeSet {
 		if _, err := time.Parse(time.RFC3339, query.ReferenceTime); err != nil {
 			return errors.New("reference_time must be RFC3339")
+		}
+	}
+	if query.GraphPolicy != "" {
+		switch retrieval.GraphPolicy(query.GraphPolicy) {
+		case retrieval.GraphOff, retrieval.GraphFeaturesOnly, retrieval.GraphDirect:
+		case retrieval.GraphBoundedPath:
+		default:
+			return errors.New("recall graph_policy is invalid")
 		}
 	}
 	return nil

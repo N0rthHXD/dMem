@@ -73,20 +73,33 @@ type RankInput struct {
 // RankOutput preserves every score contribution so explain output can report
 // why a candidate ranked where it did.
 type RankOutput struct {
-	Primary           float64 `json:"primary"`
-	GraphBoost        float64 `json:"graph_boost"`
-	GraphOnly         float64 `json:"graph_only"`
-	Penalty           float64 `json:"penalty"`
-	Feedback          float64 `json:"feedback"`
-	Final             float64 `json:"final"`
-	GraphOnlyAdmitted bool    `json:"graph_only_admitted"`
+	Primary              float64            `json:"primary"`
+	GraphBoost           float64            `json:"graph_boost"`
+	GraphOnly            float64            `json:"graph_only"`
+	Penalty              float64            `json:"penalty"`
+	Feedback             float64            `json:"feedback"`
+	Final                float64            `json:"final"`
+	GraphOnlyAdmitted    bool               `json:"graph_only_admitted"`
+	FeatureContributions map[string]float64 `json:"feature_contributions,omitempty"`
 }
 
 // Score applies the versioned deterministic formula. A candidate never receives
 // both graph_only and graph_boost.
 func Score(weights Weights, input RankInput) RankOutput {
 	features := input.Features
-	var output RankOutput
+	output := RankOutput{FeatureContributions: map[string]float64{}}
+	addContribution(output.FeatureContributions, string(FeatureSemantic), weights.Semantic, features.Semantic)
+	addContribution(output.FeatureContributions, string(FeatureKeyword), weights.Keyword, features.Keyword)
+	addContribution(output.FeatureContributions, string(FeatureExact), weights.Exact, features.Exact)
+	addContribution(output.FeatureContributions, string(FeatureTemporal), weights.Temporal, features.Temporal)
+	addContribution(output.FeatureContributions, string(FeatureQuality), weights.Quality, features.Quality)
+	addContribution(output.FeatureContributions, string(FeatureAgreement), weights.Agreement, features.Agreement)
+	addContribution(output.FeatureContributions, string(FeatureDuplicateRisk), -0.15, features.DuplicateRisk)
+	addContribution(output.FeatureContributions, string(FeatureOverbreadth), -0.10, features.Overbreadth)
+	addContribution(output.FeatureContributions, string(FeatureStalePenalty), -0.10, features.StalePenalty)
+	if features.Feedback != nil {
+		output.FeatureContributions[string(FeatureFeedback)] = signed(features.Feedback)
+	}
 	output.Primary = weights.weighted(features, false)
 	output.Penalty = 0.15*value(features.DuplicateRisk) +
 		0.10*value(features.Overbreadth) +
@@ -99,6 +112,7 @@ func Score(weights Weights, input RankInput) RankOutput {
 			return output
 		}
 		output.GraphOnlyAdmitted = true
+		output.FeatureContributions[string(FeatureGraph)] = weights.GraphOnlyGraph * Clamp01(graph)
 		output.GraphOnly = weights.GraphOnlyGraph*Clamp01(graph) +
 			weights.GraphOnlyExact*value(features.Exact) +
 			weights.GraphOnlyTemporal*value(features.Temporal) +
@@ -115,6 +129,7 @@ func Score(weights Weights, input RankInput) RankOutput {
 				weights.GraphBoostPrimaryCap*output.Primary,
 				weights.GraphBoostGraphCap*Clamp01(graph),
 			)
+			output.FeatureContributions[string(FeatureGraph)] = output.GraphBoost
 		}
 	}
 	output.Final = output.Primary + output.GraphBoost + output.Feedback - output.Penalty
@@ -122,6 +137,12 @@ func Score(weights Weights, input RankInput) RankOutput {
 		output.Final = 0
 	}
 	return output
+}
+
+func addContribution(result map[string]float64, name string, weight float64, feature *float64) {
+	if feature != nil {
+		result[name] = weight * value(feature)
+	}
 }
 
 func (w Weights) weighted(features FeatureVector, graphOnly bool) float64 {

@@ -16,6 +16,7 @@ The runner never imports or starts the daemon; it is a pure HTTP client.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sys
 import threading
@@ -28,7 +29,7 @@ from typing import Any
 from .api import DMemClient, DMemError
 from .checkpoint import Checkpoint
 from .dataset import Case
-from .metrics import aggregate_metrics, evaluate_retrieval
+from .metrics import METRIC_SCHEMA_VERSION, aggregate_metrics, evaluate_retrieval
 from .progress import tqdm
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,10 @@ class RunConfig:
     fail_on_degraded: bool = False
     ingestion_workers: int = 1
     retrieval_workers: int = 1
+    corpus_dir: str | None = None
+    capabilities_override: list[str] | None = None
+    graph_policy: str | None = None
+    disable_diversification: bool = False
 
 
 def stable_key(*parts: str) -> str:
@@ -119,6 +124,7 @@ class Runner:
     def run(self, cases: list[Case]) -> dict[str, Any]:
         manifest: dict[str, Any] = {
             "format_version": RESULT_VERSION,
+            "metric_schema": METRIC_SCHEMA_VERSION,
             "run_id": self.config.run_id,
             "dataset_sha": self.config.dataset_sha,
             "confirmation_policy": self.config.confirmation_policy,
@@ -131,6 +137,9 @@ class Runner:
             "max_chars": self.config.max_chars,
             "cutoffs": self.config.cutoffs,
             "answer_cutoff": self.config.answer_cutoff,
+            "capabilities_override": self.config.capabilities_override,
+            "graph_policy": self.config.graph_policy,
+            "disable_diversification": self.config.disable_diversification,
             "ingestion_workers": self.config.ingestion_workers,
             "retrieval_workers": self.config.retrieval_workers,
             "socket_path": self.config.socket_path,
@@ -139,27 +148,83 @@ class Runner:
         }
         self.cp.write_manifest(manifest)
 
-        user_id, project_id = self._bootstrap_namespace()
-
-        self._task_cache: dict[str, str] = {}
-        for s in self.client.list_spaces(
-            parent_space_id=project_id, space_type="task"
-        ):
-            ext = s.get("external_id", "")
-            if ext.startswith("q:"):
-                qid = ext[2:]
-                self._task_cache[qid] = s["space_id"]
-
-        task_map = self._ingest_phase(cases, project_id)
+        if self.config.corpus_dir:
+            task_map, ingestion_records = self._load_corpus(cases)
+            corpus_manifest = Checkpoint(self.config.corpus_dir).read_manifest() or {}
+            manifest["corpus_id"] = corpus_manifest.get("corpus_id")
+            manifest["source_ingestion_run_id"] = corpus_manifest.get("run_id")
+            self.cp.write_manifest(manifest)
+        else:
+            user_id, project_id = self._bootstrap_namespace()
+            self._task_cache = {}
+            for s in self.client.list_spaces(parent_space_id=project_id, space_type="task"):
+                ext = s.get("external_id", "")
+                if ext.startswith("q:"):
+                    self._task_cache[ext[2:]] = s["space_id"]
+            task_map = self._ingest_phase(cases, project_id)
+            ingestion_records = self.cp.load_ingestion_records()
 
         if self.config.retrieval_mode in ("semantic", "hybrid"):
-            self._semantic_barrier()
+            if self.config.corpus_dir:
+                self.client.wait_for_semantic_ready(
+                    poll_interval=self.config.job_poll_interval,
+                    timeout=self.config.job_timeout,
+                )
+            else:
+                self._semantic_barrier()
 
-        self._recall_phase(cases, task_map)
+        self._recall_phase(cases, task_map, ingestion_records)
 
         summary = self._summarize(cases)
         self.cp.write_summary(summary)
         return summary
+
+    def ingest_corpus(self, cases: list[Case]) -> dict[str, Any]:
+        user_id, project_id = self._bootstrap_namespace()
+        self._task_cache = {}
+        manifest = {
+            "format_version": RESULT_VERSION, "run_type": "corpus",
+            "corpus_id": self.config.run_id, "run_id": self.config.run_id,
+            "dataset_sha": self.config.dataset_sha,
+            "confirmation_policy": self.config.confirmation_policy,
+            "invalid_evidence_reference_retries": self.config.invalid_evidence_reference_retries,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.cp.write_manifest(manifest)
+        self._ingest_phase(cases, project_id)
+        complete = {case.question_id for case in cases} <= self.cp.load_ingested_qids()
+        summary = {"complete": complete, "ingestion": self._summarize_ingestion(cases, {"ingestion": set(), "retrieval": set()})}
+        self.cp.write_summary(summary)
+        return summary
+
+    def build_indexes(self) -> dict[str, Any]:
+        self._semantic_barrier()
+        manifest = self.cp.read_manifest() or {}
+        manifest["embedding_state"] = "ready"
+        manifest["embedding_built_at"] = datetime.now(timezone.utc).isoformat()
+        self.cp.write_manifest(manifest)
+        return manifest
+
+    def _load_corpus(self, cases: list[Case]) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
+        source = Checkpoint(self.config.corpus_dir or "")
+        manifest = source.read_manifest() or {}
+        if manifest.get("run_type") != "corpus":
+            raise ValueError("corpus manifest is missing or is not a corpus run")
+        if manifest.get("dataset_sha") != self.config.dataset_sha:
+            raise ValueError("corpus dataset SHA does not match evaluation dataset")
+        if self.config.retrieval_mode in ("semantic", "hybrid") and manifest.get("embedding_state") != "ready":
+            raise ValueError("semantic index is not ready; run the embeddings stage first")
+        records = source.load_ingestion_records()
+        expected = {case.question_id for case in cases}
+        if not expected <= source.load_ingested_qids():
+            raise ValueError("corpus ingestion is incomplete")
+        tasks = {}
+        for qid in expected:
+            complete = next((record for record in records[qid] if record.get("record_type") == "case_complete"), None)
+            if not complete:
+                raise ValueError(f"corpus has no task space for {qid}")
+            tasks[qid] = complete["task_space_id"]
+        return tasks, records
 
     # ------------------------------------------------------------------
     # namespace
@@ -686,10 +751,11 @@ class Runner:
     # ------------------------------------------------------------------
 
     def _recall_phase(
-        self, cases: list[Case], task_map: dict[str, str]
+        self, cases: list[Case], task_map: dict[str, str],
+        ingestion_records: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         done = self.cp.load_retrieval_qids()
-        ingestion_records = self.cp.load_ingestion_records()
+        ingestion_records = ingestion_records or self.cp.load_ingestion_records()
         todo = [
             case for case in cases
             if case.question_id in task_map and case.question_id not in done
@@ -735,6 +801,7 @@ class Runner:
             if rec.get("event_id"):
                 event_labels[rec["event_id"]] = rec
 
+        recall_started = time.perf_counter()
         response = self.client.recall(
             query=case.question,
             space_ids=[task_space_id],
@@ -744,8 +811,12 @@ class Runner:
             limit=self.config.limit,
             max_context_tokens=self.config.max_chars,
             include_evidence=True,
-            exclude_stale_aggregates=True,
+            capabilities_override=self.config.capabilities_override,
+            graph_policy=self.config.graph_policy,
+            disable_diversification=self.config.disable_diversification,
         )
+        recall_latency_ms = (time.perf_counter() - recall_started) * 1000
+        response_bytes = len(json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode())
         execution = response.get("execution") or {}
         items = (response.get("context") or {}).get("items") or []
 
@@ -756,33 +827,35 @@ class Runner:
         seen_sessions: set[str] = set()
         unmapped_count = 0
 
+        item_sessions: list[list[str]] = []
         for item in items:
             evidence_list = item.get("evidence") or []
-            mapped_session: str | None = None
+            mapped_sessions: list[str] = []
             for ev in evidence_list:
                 ev_id = ev.get("event_id", "")
                 if ev_id in event_labels:
-                    mapped_session = event_labels[ev_id]["session_id"]
-                    break
-
-            if mapped_session is None:
+                    session_id = event_labels[ev_id]["session_id"]
+                    if session_id not in mapped_sessions:
+                        mapped_sessions.append(session_id)
+            item_sessions.append(mapped_sessions)
+            if not mapped_sessions:
                 unmapped_count += 1
                 continue
-            if mapped_session in seen_sessions:
-                continue
-            seen_sessions.add(mapped_session)
-            if mapped_session in corpus_ids:
-                session_rank_indices.append(corpus_ids.index(mapped_session))
+            for mapped_session in mapped_sessions:
+                if mapped_session not in seen_sessions and mapped_session in corpus_ids:
+                    seen_sessions.add(mapped_session)
+                    session_rank_indices.append(corpus_ids.index(mapped_session))
 
         metrics: dict[str, dict[str, float]] = {}
         for k in self.config.cutoffs:
-            recall_any, recall_all, ndcg_score = evaluate_retrieval(
+            recall_any, recall_all, ndcg_score, mrr = evaluate_retrieval(
                 session_rank_indices, correct_docs, corpus_ids, k=k
             )
             metrics[f"@{k}"] = {
                 "recall_any": recall_any,
                 "recall_all": recall_all,
                 "ndcg": ndcg_score,
+                "mrr": mrr,
             }
 
         relevant_events = [
@@ -800,24 +873,28 @@ class Runner:
             evidence_coverage = covered / len(relevant_events)
 
         ranked_items: list[dict[str, Any]] = []
-        for item in items:
+        for item, mapped_sessions in zip(items, item_sessions):
             content = item.get("display_content", "")
-            ms: str | None = None
-            for ev in item.get("evidence") or []:
-                ev_id = ev.get("event_id", "")
-                if ev_id in event_labels:
-                    ms = event_labels[ev_id]["session_id"]
-                    break
+            ms = mapped_sessions[0] if mapped_sessions else None
             sd: str | None = None
             if ms and ms in corpus_ids:
                 sd = to_rfc3339(case.haystack_dates[corpus_ids.index(ms)])
             ranked_items.append(
-                {"content": content, "session_id": ms, "session_date": sd}
+                {
+                    "content": content, "memory_id": item.get("memory_id"),
+                    "session_id": ms, "session_ids": mapped_sessions,
+                    "session_date": sd,
+                    "matched_channels": (item.get("explanation") or {}).get("matched_signals") or [],
+                    "report": {"signal_family": (item.get("explanation") or {}).get("matched_signals") or []},
+                }
             )
 
         record: dict[str, Any] = {
+            "metric_schema": METRIC_SCHEMA_VERSION,
             "question_id": case.question_id,
             "ranked_items": ranked_items[: self.config.answer_cutoff],
+            "ranked_session_ids": [corpus_ids[index] for index in session_rank_indices],
+            "answer_session_ids": case.answer_session_ids,
             "question_type": case.question_type,
             "is_abstention": case.is_abstention,
             "requested_channels": execution.get("requested_capabilities"),
@@ -825,6 +902,9 @@ class Runner:
             "degraded": execution.get("degraded", False),
             "degradation_reasons": execution.get("degradation_reasons", []),
             "num_results": len(items),
+            "recall_latency_ms": recall_latency_ms,
+            "response_bytes": response_bytes,
+            "duplicate_rate": (len([sid for sessions in item_sessions for sid in sessions]) - len(seen_sessions)) / max(1, len([sid for sessions in item_sessions for sid in sessions])),
             "unmapped_count": unmapped_count,
             "session_rank_indices": session_rank_indices,
             "metrics": metrics,

@@ -122,7 +122,7 @@ func (s *Service) SetProcessing(cfg ProcessingConfig) {
 		processingVersion:     cfg.ProcessingVersion,
 		preparation: storage.ProcessingPreparationParams{
 			ProcessorIdentity:      identity,
-			AllowedMemoryTypes:     []string{"fact", "preference", "constraint", "decision", "task", "event", "project_context", "agent_experience"},
+			AllowedMemoryTypes:     []string{"fact", "preference", "plan", "procedure", "event"},
 			MaxCandidates:          20,
 			MaxCandidateChars:      maxContentChars,
 			MaxTotalCandidateChars: max(cfg.MaxTotalCandidateChars, maxContentChars),

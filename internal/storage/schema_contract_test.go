@@ -840,18 +840,20 @@ func TestCurrentSchemaPredicateSnapshot(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	rows, err := store.reader.Query(`SELECT predicate FROM predicates ORDER BY predicate`)
+	rows, err := store.reader.Query(`SELECT predicate,description FROM predicates ORDER BY predicate`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	var got []string
+	descriptions := map[string]string{}
 	for rows.Next() {
-		var predicate string
-		if err := rows.Scan(&predicate); err != nil {
+		var predicate, description string
+		if err := rows.Scan(&predicate, &description); err != nil {
 			t.Fatal(err)
 		}
 		got = append(got, predicate)
+		descriptions[predicate] = description
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
@@ -859,6 +861,11 @@ func TestCurrentSchemaPredicateSnapshot(t *testing.T) {
 	want := domain.PredicateNames()
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("schema predicates = %v, want %v", got, want)
+	}
+	for _, definition := range domain.PredicateDefinitions() {
+		if descriptions[definition.Name] != definition.Description {
+			t.Fatalf("schema predicate %q description = %q, want %q", definition.Name, descriptions[definition.Name], definition.Description)
+		}
 	}
 }
 
@@ -913,12 +920,12 @@ func TestTypedGraphAuthorityAndBroadRelationRemoval(t *testing.T) {
 	if _, err := store.writer.Exec(relation, sourceSpace, "supports"); err != nil {
 		t.Fatalf("typed relation insert rejected: %v", err)
 	}
-	if _, err := store.writer.Exec(relation, sourceSpace, "related_to"); err == nil {
-		t.Fatal("memory_relations accepted removed broad related_to authority")
+	if _, err := store.writer.Exec(relation, sourceSpace, "free_association"); err == nil {
+		t.Fatal("memory_relations accepted an unregistered relation type")
 	}
 	proposal := `INSERT INTO relation_proposals(proposal_id, event_id, space_id, relation_type, source_memory_id, source_revision_id, target_memory_id, target_revision_id, evidence_json, processor_identity, processing_version, specification_hash, created_at) VALUES ('proposal-broad', 'event-relation-source', ?, ?, 'memory-relation-source', 'revision-relation-source', 'memory-relation-target', 'revision-relation-target', '[]', 'processor', 'v1', 'spec', 'now')`
-	if _, err := store.writer.Exec(proposal, sourceSpace, "related_to"); err == nil {
-		t.Fatal("relation_proposals accepted removed broad related_to authority")
+	if _, err := store.writer.Exec(proposal, sourceSpace, "free_association"); err == nil {
+		t.Fatal("relation_proposals accepted an unregistered relation type")
 	}
 }
 

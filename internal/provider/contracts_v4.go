@@ -280,6 +280,12 @@ func normalizeOptionalTime(wire *timeProposalWire) (*TimeProposal, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Authority requires a strictly ordered window (end > start). A provider
+	// proposal whose start and end coincide is an instant, so collapse it to a
+	// single bound that downstream temporal matching already treats as a point.
+	if normalized.Start != nil && normalized.End != nil && normalized.End.Equal(*normalized.Start) {
+		normalized.End = nil
+	}
 	return &normalized, nil
 }
 
@@ -397,8 +403,8 @@ type TypedGraphFact struct {
 	ValidTime         *TimeProposal
 }
 
-// TypedGraphRelation is a revision relation. Broad related_to is not a valid
-// relation type.
+// TypedGraphRelation is a revision relation. Broad similarity relations are not
+// a valid relation type.
 type TypedGraphRelation struct {
 	RelationType     string
 	TargetMemoryID   string

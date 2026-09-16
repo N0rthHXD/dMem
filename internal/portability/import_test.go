@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -410,12 +411,75 @@ func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) 
 	if status.State != "succeeded" || status.CommittedObjects != status.TotalObjects {
 		t.Fatalf("fresh import status = %+v, error = %v", status, err)
 	}
-	if err := fresh.repo.RebuildFTS(context.Background()); err != nil {
+	enqueued := map[string]bool{}
+	rows, err := fresh.writer.Query(`SELECT DISTINCT job_type FROM jobs`)
+	if err != nil {
 		t.Fatal(err)
+	}
+	for rows.Next() {
+		var jobType string
+		if err := rows.Scan(&jobType); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		enqueued[jobType] = true
+	}
+	rows.Close()
+	for _, jobType := range []string{"rebuild_fts", "rebuild_semantic", "rebuild_entity_index", "rebuild_relation_index", "rebuild_feedback_aggregates", "rebuild_quality", "rebuild_duplicates", "rebuild_graph_index"} {
+		if !enqueued[jobType] {
+			t.Fatalf("import did not schedule derived rebuild %q", jobType)
+		}
+	}
+	rebuilds := map[string]func(context.Context) error{
+		"fts": fresh.repo.RebuildFTS, "entity": fresh.repo.RebuildEntityIndex,
+		"relation": fresh.repo.RebuildRelationIndex, "feedback": fresh.repo.RebuildFeedbackAggregates,
+		"quality": fresh.repo.RebuildQuality, "duplicates": fresh.repo.RebuildDuplicates,
+		"graph": fresh.repo.RebuildGraphIndex,
+	}
+	for name, rebuild := range rebuilds {
+		if err := rebuild(context.Background()); err != nil {
+			t.Fatalf("rebuild %s: %v", name, err)
+		}
+	}
+	projection, err := fresh.repo.ProjectionHealth(context.Background())
+	if err != nil || projection.State != "ready" || projection.QualityGeneration < 1 || projection.DuplicateGeneration < 1 {
+		t.Fatalf("projection health after import rebuild = %+v, %v", projection, err)
+	}
+	if state, _ := fresh.repo.GraphIndexHealth(context.Background()); state != "ready" {
+		t.Fatalf("graph index state after import rebuild = %q", state)
+	}
+	fresh.repo.SetRetrievalCalibration(retrieval.DefaultWeights(), retrieval.DefaultCalibration(), retrieval.GraphDirect, 0.5, 0.5, 0)
+	var eventType, precision, speaker, language string
+	var subjects, objects, facts, factEvidence, factStates int
+	if err := fresh.writer.QueryRow(`SELECT event_type,time_precision,source_speaker,language,
+		(SELECT count(*) FROM revision_subject_entities),(SELECT count(*) FROM revision_object_entities),
+		(SELECT count(*) FROM entity_facts),(SELECT count(*) FROM entity_fact_evidence),(SELECT count(*) FROM entity_fact_state_events)
+		FROM memory_revisions WHERE display_content='alpha'`).Scan(&eventType, &precision, &speaker, &language, &subjects, &objects, &facts, &factEvidence, &factStates); err != nil {
+		t.Fatal(err)
+	}
+	if eventType != "meeting" || precision != "exact" || speaker != "alice" || language != "en" || subjects != 1 || objects != 1 || facts != 1 || factEvidence != 1 || factStates != 1 {
+		t.Fatalf("structured authority not preserved: %q/%q/%q/%q links=%d/%d facts=%d/%d/%d", eventType, precision, speaker, language, subjects, objects, facts, factEvidence, factStates)
 	}
 	result, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000})
 	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.CurrentRevision.DisplayContent != "alpha" {
 		t.Fatalf("imported memory retrieval = %+v, error = %v", result, err)
+	}
+	graphResult, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "Alice", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"graph"}, GraphPolicy: retrieval.GraphDirect, Limit: 10, MaxChars: 1000})
+	if err != nil || len(graphResult.Results) != 1 || graphResult.Results[0].Memory.CurrentRevision.DisplayContent != "alpha" {
+		t.Fatalf("imported graph retrieval = %+v, error = %v", graphResult, err)
+	}
+	for name, rebuild := range rebuilds {
+		if err := rebuild(context.Background()); err != nil {
+			t.Fatalf("repeat rebuild %s: %v", name, err)
+		}
+	}
+	repeat, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000})
+	if err != nil || len(repeat.Results) != 1 || repeat.Results[0].Memory.CurrentRevision.RevisionID != result.Results[0].Memory.CurrentRevision.RevisionID {
+		t.Fatalf("rebuilt retrieval is not equivalent: %+v, %v", repeat, err)
+	}
+	repeatGraph, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "Alice", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"graph"}, GraphPolicy: retrieval.GraphDirect, Limit: 10, MaxChars: 1000})
+	if err != nil || len(repeatGraph.Results) != 1 || repeatGraph.Results[0].Memory.CurrentRevision.RevisionID != graphResult.Results[0].Memory.CurrentRevision.RevisionID {
+		t.Fatalf("rebuilt graph retrieval is not equivalent: %+v, %v", repeatGraph, err)
 	}
 	var mappings, provenance, importedMemories int
 	if err := fresh.writer.QueryRow(`SELECT (SELECT count(*) FROM import_object_mappings),(SELECT count(*) FROM imported_provenance),(SELECT count(*) FROM memories)`).Scan(&mappings, &provenance, &importedMemories); err != nil {

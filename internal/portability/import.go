@@ -196,9 +196,15 @@ func (i *Importer) DryRun(ctx context.Context, directory string, request ImportR
 			}
 		}
 	}
+	proposalFacts := map[string]bool{}
+	for _, item := range items {
+		if item.ObjectType == "entity_fact" && referencesProposal(item.record.Data, proposalMemories, proposalRevisions, nil) {
+			proposalFacts[item.SourceID] = true
+		}
+	}
 	for n := range items {
 		rewriteReferences(items[n].record.Data, local)
-		if items[n].Action == "import" && referencesProposal(items[n].record.Data, proposalMemories, proposalRevisions) {
+		if items[n].Action == "import" && referencesProposal(items[n].record.Data, proposalMemories, proposalRevisions, proposalFacts) {
 			items[n].Action = "duplicate"
 		}
 		if items[n].ObjectType == "relation" && (text(items[n].record.Data["local_source_revision_id"]) == "" || text(items[n].record.Data["local_target_revision_id"]) == "") {
@@ -294,7 +300,7 @@ type validatedPackage struct {
 
 var importOrder = []string{"spaces.jsonl", "raw_events.jsonl", "memories.jsonl", "revisions.jsonl", "evidence.jsonl", "entities.jsonl", "entity_mentions.jsonl", "relations.jsonl", "conflicts.jsonl", "feedback.jsonl", "aggregate_provenance.jsonl"}
 var memberTypes = map[string]map[string]bool{
-	"spaces.jsonl": {"space": true}, "raw_events.jsonl": {"raw_event": true}, "memories.jsonl": {"memory": true, "memory_state_event": true}, "revisions.jsonl": {"revision": true}, "evidence.jsonl": {"memory_evidence": true, "relation_evidence": true}, "entities.jsonl": {"entity": true, "entity_event": true, "entity_alias": true, "entity_alias_event": true}, "entity_mentions.jsonl": {"entity_mention": true}, "relations.jsonl": {"relation": true, "relation_state_event": true, "external_reference_stub": true}, "conflicts.jsonl": {"conflict_case": true, "conflict_participant": true, "conflict_relation": true, "conflict_resolution": true, "conflict_resolution_ref": true}, "feedback.jsonl": {"feedback_event": true}, "aggregate_provenance.jsonl": {"aggregate_descriptor": true},
+	"spaces.jsonl": {"space": true}, "raw_events.jsonl": {"raw_event": true}, "memories.jsonl": {"memory": true, "memory_state_event": true}, "revisions.jsonl": {"revision": true, "revision_subject_entity": true, "revision_object_entity": true}, "evidence.jsonl": {"memory_evidence": true, "relation_evidence": true, "entity_fact_evidence": true}, "entities.jsonl": {"entity": true, "entity_event": true, "entity_alias": true, "entity_alias_event": true}, "entity_mentions.jsonl": {"entity_mention": true}, "relations.jsonl": {"relation": true, "relation_state_event": true, "entity_fact": true, "entity_fact_state_event": true, "external_reference_stub": true}, "conflicts.jsonl": {"conflict_case": true, "conflict_participant": true, "conflict_relation": true, "conflict_resolution": true, "conflict_resolution_ref": true}, "feedback.jsonl": {"feedback_event": true}, "aggregate_provenance.jsonl": {"aggregate_descriptor": true},
 }
 
 func validatePackage(directory string, limits ImportLimits) (validatedPackage, error) {
@@ -490,6 +496,9 @@ func validateGraph(records map[string][]record, ids map[string]bool) error {
 		}
 	}
 	for _, r := range records["revisions.jsonl"] {
+		if r.ObjectType != "revision" {
+			continue
+		}
 		if !ids["memory\x00"+text(r.Data["memory_id"])] {
 			return fmt.Errorf("%w: revision memory reference", ErrInvalidPackage)
 		}
@@ -535,8 +544,13 @@ func validateGraph(records map[string][]record, ids map[string]bool) error {
 		"entity_alias":            {"entity_id": "entity"},
 		"entity_alias_event":      {"alias_id": "entity_alias"},
 		"entity_mention":          {"entity_id": "entity"},
+		"revision_subject_entity": {"revision_id": "revision", "entity_id": "entity"},
+		"revision_object_entity":  {"revision_id": "revision", "entity_id": "entity"},
 		"relation_evidence":       {"relation_id": "relation"},
 		"relation_state_event":    {"relation_id": "relation"},
+		"entity_fact":             {"space_id": "space", "subject_entity_id": "entity", "source_memory_id": "memory", "source_revision_id": "revision"},
+		"entity_fact_evidence":    {"fact_id": "entity_fact"},
+		"entity_fact_state_event": {"fact_id": "entity_fact"},
 		"conflict_case":           {"space_id": "space"},
 		"conflict_participant":    {"memory_id": "memory", "revision_id": "revision"},
 		"conflict_relation":       {"relation_id": "relation"},
@@ -559,6 +573,11 @@ func validateGraph(records map[string][]record, ids map[string]bool) error {
 					return fmt.Errorf("%w: entity mention endpoint", ErrInvalidPackage)
 				}
 			}
+			if r.ObjectType == "entity_fact" {
+				if object := text(r.Data["object_entity_id"]); object != "" && !ids["entity\x00"+object] {
+					return fmt.Errorf("%w: entity fact object", ErrInvalidPackage)
+				}
+			}
 		}
 	}
 	return nil
@@ -579,7 +598,7 @@ func hashRecord(r record) string {
 	return hex.EncodeToString(s[:])
 }
 func rewriteReferences(data map[string]any, ids map[string]string) {
-	types := map[string]string{"space_id": "space", "parent_space_id": "space", "memory_id": "memory", "source_memory_id": "memory", "target_memory_id": "memory", "revision_id": "revision", "current_revision_id": "revision", "parent_revision_id": "revision", "restored_from_revision_id": "revision", "source_revision_id": "revision", "target_revision_id": "revision", "event_id": "raw_event", "entity_id": "entity", "relation_id": "relation", "alias_id": "entity_alias"}
+	types := map[string]string{"space_id": "space", "parent_space_id": "space", "memory_id": "memory", "source_memory_id": "memory", "target_memory_id": "memory", "revision_id": "revision", "current_revision_id": "revision", "parent_revision_id": "revision", "restored_from_revision_id": "revision", "source_revision_id": "revision", "target_revision_id": "revision", "event_id": "raw_event", "entity_id": "entity", "subject_entity_id": "entity", "object_entity_id": "entity", "relation_id": "relation", "alias_id": "entity_alias", "fact_id": "entity_fact"}
 	for field, typ := range types {
 		if id := text(data[field]); id != "" {
 			if local := ids[typ+"\x00"+id]; local != "" {
@@ -628,7 +647,7 @@ func mapRevisionItem(items []ImportPlanItem, sourceID, localID, action string) {
 		}
 	}
 }
-func referencesProposal(data map[string]any, memories, revisions map[string]bool) bool {
+func referencesProposal(data map[string]any, memories, revisions, facts map[string]bool) bool {
 	for _, field := range []string{"memory_id", "source_memory_id", "target_memory_id"} {
 		if memories[text(data[field])] {
 			return true
@@ -638,6 +657,9 @@ func referencesProposal(data map[string]any, memories, revisions map[string]bool
 		if revisions[text(data[field])] {
 			return true
 		}
+	}
+	if facts[text(data["fact_id"])] {
+		return true
 	}
 	return false
 }
@@ -666,11 +688,27 @@ func orderImportItems(items []ImportPlanItem) []ImportPlanItem {
 		ordered = append(ordered, byMemory[memory.SourceID]...)
 	}
 	for _, item := range remaining {
-		if item.ObjectType != "space" && item.ObjectType != "raw_event" {
+		if item.ObjectType != "space" && item.ObjectType != "raw_event" && !deferredGraphAuthority(item.ObjectType) {
 			ordered = append(ordered, item)
 		}
 	}
+	for _, typ := range []string{"revision_subject_entity", "revision_object_entity", "entity_fact", "entity_fact_evidence", "entity_fact_state_event"} {
+		for _, item := range remaining {
+			if item.ObjectType == typ {
+				ordered = append(ordered, item)
+			}
+		}
+	}
 	return ordered
+}
+
+func deferredGraphAuthority(typ string) bool {
+	switch typ {
+	case "revision_subject_entity", "revision_object_entity", "entity_fact", "entity_fact_evidence", "entity_fact_state_event":
+		return true
+	default:
+		return false
+	}
 }
 func importBatchEnd(items []ImportPlanItem, start, size int) int {
 	end := start + size
@@ -721,6 +759,8 @@ var objectDataFields = map[string]string{
 	"memory":                  "memory_id space_id current_revision_id current_state frozen sensitivity created_at updated_at",
 	"memory_state_event":      "state_event_id memory_id revision_id operation_id from_state to_state from_frozen to_frozen reason created_by created_at",
 	"revision":                "revision_id memory_id parent_revision_id restored_from_revision_id valid_from valid_until confidence kind display_content canonical_content canonical_hash event_type event_time_start event_time_end time_precision time_source source_speaker language sensitivity specificity created_by processing_version processor_identity created_at",
+	"revision_subject_entity": "revision_id entity_order entity_id",
+	"revision_object_entity":  "revision_id entity_order entity_id",
 	"memory_evidence":         "evidence_id revision_id event_id role start_offset end_offset created_at",
 	"entity":                  "entity_id space_id entity_type canonical_name normalized_name normalization_version state sensitivity created_by processing_version created_at updated_at",
 	"entity_event":            "entity_event_id entity_id operation_id event_type from_canonical_name to_canonical_name from_state to_state normalization_version reason created_by created_at",
@@ -730,6 +770,9 @@ var objectDataFields = map[string]string{
 	"relation":                "relation_id space_id relation_type source_memory_id source_revision_id target_memory_id target_revision_id state source confidence specification_hash created_by processing_version created_at updated_at",
 	"relation_evidence":       "evidence_id relation_id evidence_type event_id memory_id revision_id start_offset end_offset note created_by created_at",
 	"relation_state_event":    "state_event_id relation_id operation_id from_state to_state reason created_by created_at",
+	"entity_fact":             "fact_id space_id subject_entity_id predicate object_entity_id object_literal object_literal_type source_memory_id source_revision_id confidence state source specification_hash created_by processing_version valid_from valid_until created_at updated_at",
+	"entity_fact_evidence":    "evidence_id fact_id evidence_type event_id memory_id revision_id start_offset end_offset note created_by created_at",
+	"entity_fact_state_event": "state_event_id fact_id operation_id from_state to_state reason created_by created_at",
 	"external_reference_stub": "object_id object_type referenced_by",
 	"feedback_event":          "feedback_id operation_id caller_id memory_id revision_id feedback_purpose feedback_type reason_code note search_operation_id query_hash query_type entity_ids_json ranking_identity feature_identity context_identity result_rank selection_state matched_signals_json answer_identity created_at",
 	"aggregate_descriptor":    "aggregate_id memory_id aggregate_kind policy_version processing_version sensitivity created_by created_at",

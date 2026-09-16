@@ -1,6 +1,6 @@
 # ADR 0032：知识图谱构建与检索
 
-- 状态：accepted（排名与融合部分被 ADR 0033 修订：三通道 rrf-v3、graph-score-v2、严格 seed 集）
+- 状态：superseded（被 [0035](0035-memory-retrieval-v4.md) 取代：固定 predicate、`related_to` 与排名融合被类型化 predicate registry 和 v4 特征 ranker 取代；图谱构建主体、entity resolution 定位与图信号模型继续有效）
 - 日期：2026-09-08
 
 ## 决策

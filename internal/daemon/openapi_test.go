@@ -632,7 +632,7 @@ func TestOpenAPICurrentPredicateSnapshot(t *testing.T) {
 		}
 		got = append(got, name)
 	}
-	want := []string{"created_by", "depends_on", "has_participant_count", "has_status", "is_active", "located_at", "member_of", "owned_by", "participates_in"}
+	want := domain.PredicateNames()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("OpenAPI predicates = %v, want %v", got, want)
 	}

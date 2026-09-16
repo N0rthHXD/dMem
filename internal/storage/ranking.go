@@ -322,6 +322,7 @@ func (r *Repository) applyExplain(candidate *searchCandidate, result *domain.Sea
 		}
 	}
 	result.RankingFeatures = features
+	result.FeatureContributions = candidate.rankOutput.FeatureContributions
 	if candidate.graphScore > 0 {
 		value := candidate.graphScore
 		result.GraphScore = &value
@@ -545,6 +546,9 @@ func (r *Repository) applyGraphChannel(ctx context.Context, tx *sql.Tx, params S
 		semanticTop = 10
 	}
 	seeds, primary := primarySeeds(candidatePointers(all), weights, semanticTop, 10, 15)
+	if params.telemetry != nil {
+		params.telemetry.graphSeeds = len(seeds)
+	}
 	graphPolicy := graphRecallPolicy{
 		Policy:              effective,
 		MinEntityConfidence: r.minEntityConfidence,

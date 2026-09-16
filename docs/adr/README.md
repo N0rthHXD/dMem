@@ -11,7 +11,7 @@
 | [0007](0007-trusted-agents-first-phase.md) | 第一阶段 Agent 全部可信 |
 | [0008](0008-local-only-default-exposure.md) | 默认仅本地暴露 |
 | [0009](0009-no-autonomous-destructive-memory-updates.md) | 禁止自主破坏性更新 |
-| [0010](0010-hybrid-retrieval-and-context-budget.md) | 混合检索与上下文预算 |
+| [0010](0010-hybrid-retrieval-and-context-budget.md) | 混合检索与上下文预算（被 0035 取代） |
 | [0011](0011-cgo-sqlite-driver.md) | 允许 CGO SQLite 驱动 |
 | [0012](0012-orm-boundaries.md) | 允许 ORM 并限制使用边界 |
 | [0013](0013-local-http-over-unix-socket.md) | HTTP/JSON over Unix Domain Socket |
@@ -21,20 +21,20 @@
 | [0017](0017-independent-review-candidates.md) | 独立候选记忆与人工审核 |
 | [0018](0018-in-process-provider-ports.md) | 进程内强类型 provider 端口 |
 | [0019](0019-go-vector-index.md) | Go 内置可重建向量索引 |
-| [0020](0020-versioned-rrf-ranking.md) | 固定版本 RRF 混合排序与 cursor |
+| [0020](0020-versioned-rrf-ranking.md) | 固定版本 RRF 混合排序与 cursor（被 0035 取代） |
 | [0021](0021-offline-backup-restore.md) | 一致性备份与离线 staging restore |
 | [0022](0022-explicit-openai-compatible-providers.md) | 显式 OpenAI-compatible provider |
 | [0023](0023-entity-identity-and-mentions.md) | 稳定 Entity identity 与 revision-level mention |
-| [0024](0024-authoritative-revision-relations.md) | 独立权威 revision relation |
+| [0024](0024-authoritative-revision-relations.md) | 独立权威 revision relation（被 0035 取代） |
 | [0025](0025-conflict-cases-and-contested-state.md) | Conflict case 与 contested projection 分工 |
 | [0026](0026-distinct-evolution-proposals.md) | 独立 Evolution proposal resource |
-| [0027](0027-feedback-and-ranking-v2.md) | Feedback aggregate v1 与 ranking v2 |
-| [0028](0028-aggregate-memories-and-freshness.md) | 普通 Aggregate memory 与 freshness descriptor（部分被 0035 取代） |
+| [0027](0027-feedback-and-ranking-v2.md) | Feedback aggregate v1 与 ranking v2（被 0035 取代） |
+| [0028](0028-aggregate-memories-and-freshness.md) | 普通 Aggregate memory 与 freshness descriptor（部分决定被 0035 取代） |
 | [0029](0029-logical-format-v1.md) | 确定性 Logical format v1 |
 | [0030](0030-dynamic-provider-configuration.md) | 动态 provider 配置与在线恢复 |
 | [0031](0031-sqlite-vec-vector-storage.md) | sqlite-vec 精确向量存储与检索 |
-| [0032](0032-knowledge-graph-construction-and-retrieval.md) | 知识图谱构建与检索 |
-| [0033](0033-three-channel-retrieval-fusion.md) | 三通道检索融合（rrf-v3） |
+| [0032](0032-knowledge-graph-construction-and-retrieval.md) | 知识图谱构建与检索（被 0035 取代） |
+| [0033](0033-three-channel-retrieval-fusion.md) | 三通道检索融合（被 0035 取代） |
 | [0034](0034-background-integrity-check.md) | 启动时后台执行 SQLite 完整性检查 |
 | [0035](0035-memory-retrieval-v4.md) | 结构化记忆与 v4 检索契约 |
 

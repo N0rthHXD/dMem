@@ -14,43 +14,44 @@ import (
 )
 
 type Health struct {
-	ProcessAlive             bool   `json:"process_alive"`
-	Mode                     string `json:"mode"`
-	OverallStatus            string `json:"overall_status"`
-	Ready                    bool   `json:"ready"`
-	AcceptingWrites          bool   `json:"accepting_writes"`
-	QueryAvailable           bool   `json:"query_available"`
-	StorageState             string `json:"storage_state"`
-	StorageHealthy           bool   `json:"storage_healthy"`
-	StorageWritable          bool   `json:"storage_writable"`
-	StorageIntegrityState    string `json:"storage_integrity_state"`
-	SchemaCompatibility      string `json:"schema_compatibility"`
-	QueueState               string `json:"queue_state"`
-	FTSState                 string `json:"fts_state"`
-	FTSIndexState            string `json:"fts_index_state"`
-	FTSFreshness             string `json:"fts_freshness"`
-	ProcessorState           string `json:"processor_state"`
-	ProcessorIdentity        string `json:"processor_identity"`
-	SemanticState            string `json:"semantic_state"`
-	SemanticIndexState       string `json:"semantic_index_state"`
-	SemanticIndexVersion     int    `json:"semantic_index_version"`
-	EntityIndexState         string `json:"entity_index_state"`
-	EntityIndexVersion       int64  `json:"entity_index_version"`
-	RelationIndexState       string `json:"relation_index_state"`
-	RelationIndexVersion     int64  `json:"relation_index_version"`
-	GraphIndexState          string `json:"graph_index_state"`
-	GraphIndexVersion        int64  `json:"graph_index_version"`
-	FeedbackAggregateState   string `json:"feedback_aggregate_state"`
-	FeedbackAggregateVersion int64  `json:"feedback_aggregate_version"`
-	AggregateState           string `json:"aggregate_state"`
-	AggregateFreshCount      int    `json:"aggregate_fresh_count"`
-	AggregateStaleCount      int    `json:"aggregate_stale_count"`
-	AggregatePendingRebuilds int    `json:"aggregate_pending_rebuilds"`
-	BackupState              string `json:"backup_state"`
-	JobQueueDepth            int    `json:"job_queue_depth"`
-	OldestJobAgeSeconds      int    `json:"oldest_job_age_seconds"`
-	DiskPressure             string `json:"disk_pressure"`
-	ConfigurationIdentity    string `json:"configuration_identity,omitempty"`
+	ProcessAlive             bool                    `json:"process_alive"`
+	Mode                     string                  `json:"mode"`
+	OverallStatus            string                  `json:"overall_status"`
+	Ready                    bool                    `json:"ready"`
+	AcceptingWrites          bool                    `json:"accepting_writes"`
+	QueryAvailable           bool                    `json:"query_available"`
+	StorageState             string                  `json:"storage_state"`
+	StorageHealthy           bool                    `json:"storage_healthy"`
+	StorageWritable          bool                    `json:"storage_writable"`
+	StorageIntegrityState    string                  `json:"storage_integrity_state"`
+	SchemaCompatibility      string                  `json:"schema_compatibility"`
+	QueueState               string                  `json:"queue_state"`
+	FTSState                 string                  `json:"fts_state"`
+	FTSIndexState            string                  `json:"fts_index_state"`
+	FTSFreshness             string                  `json:"fts_freshness"`
+	ProcessorState           string                  `json:"processor_state"`
+	ProcessorIdentity        string                  `json:"processor_identity"`
+	SemanticState            string                  `json:"semantic_state"`
+	SemanticIndexState       string                  `json:"semantic_index_state"`
+	SemanticIndexVersion     int                     `json:"semantic_index_version"`
+	EntityIndexState         string                  `json:"entity_index_state"`
+	EntityIndexVersion       int64                   `json:"entity_index_version"`
+	RelationIndexState       string                  `json:"relation_index_state"`
+	RelationIndexVersion     int64                   `json:"relation_index_version"`
+	GraphIndexState          string                  `json:"graph_index_state"`
+	GraphIndexVersion        int64                   `json:"graph_index_version"`
+	FeedbackAggregateState   string                  `json:"feedback_aggregate_state"`
+	FeedbackAggregateVersion int64                   `json:"feedback_aggregate_version"`
+	AggregateState           string                  `json:"aggregate_state"`
+	AggregateFreshCount      int                     `json:"aggregate_fresh_count"`
+	AggregateStaleCount      int                     `json:"aggregate_stale_count"`
+	AggregatePendingRebuilds int                     `json:"aggregate_pending_rebuilds"`
+	BackupState              string                  `json:"backup_state"`
+	JobQueueDepth            int                     `json:"job_queue_depth"`
+	OldestJobAgeSeconds      int                     `json:"oldest_job_age_seconds"`
+	DiskPressure             string                  `json:"disk_pressure"`
+	ConfigurationIdentity    string                  `json:"configuration_identity,omitempty"`
+	Decision                 *storage.DecisionHealth `json:"decision,omitempty"`
 }
 
 type Handler struct {
@@ -246,6 +247,11 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	} else if diskPressure != "normal" {
 		backupState = "degraded"
 	}
+	var decision *storage.DecisionHealth
+	if h.repository != nil {
+		value := h.repository.DecisionHealth(r.Context())
+		decision = &value
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(Health{
 		ProcessAlive:             true,
@@ -285,6 +291,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		OldestJobAgeSeconds:      oldestAge,
 		DiskPressure:             diskPressure,
 		ConfigurationIdentity:    configurationIdentity,
+		Decision:                 decision,
 	})
 }
 

@@ -496,6 +496,12 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 	if _, err := tx.ExecContext(ctx, `UPDATE relation_index_metadata SET active_version=active_version+1,generation=generation+1,state='ready',source_relation_count=(SELECT count(*) FROM memory_relations),updated_at=? WHERE singleton=1`, nowText); err != nil {
 		return 0, 0, err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projection_metadata SET state='rebuilding', updated_at=? WHERE singleton=1`, nowText); err != nil {
+		return 0, 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE graph_index_metadata SET state='rebuilding', updated_at=? WHERE singleton=1`, nowText); err != nil {
+		return 0, 0, err
+	}
 	if _, err := storage.AggregateFeedback(ctx, tx, at, storage.FeedbackAlgorithmVersion, 90, 3, 45); err != nil {
 		return 0, 0, err
 	}
@@ -524,6 +530,15 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 	var maxAttempts int
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(max_attempts),3) FROM jobs`).Scan(&maxAttempts); err != nil {
 		return 0, 0, err
+	}
+	for _, job := range []struct{ jobType, targetID string }{
+		{"rebuild_quality", "memory_quality"},
+		{"rebuild_duplicates", "duplicate_clusters"},
+		{"rebuild_graph_index", "graph_recall"},
+	} {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,created_at) VALUES ('restore-'||?||'-'||lower(hex(randomblob(16))), 'restore-operation-'||lower(hex(randomblob(16))), ?, 'index', ?, 'restore-recovery', 'pending', 100, ?, ?, ?)`, job.jobType, job.jobType, job.targetID, maxAttempts, nowText, nowText); err != nil {
+			return 0, 0, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,created_at) SELECT 'restore-embed-'||lower(hex(randomblob(16))), 'restore-operation-'||lower(hex(randomblob(16))), 'embed_memory','memory_revision',p.revision_id,?,'waiting',100,?,?,? FROM memory_projections p JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state WHERE p.searchable=1 ORDER BY p.memory_id`, semanticIdentity, maxAttempts, nowText, nowText); err != nil {
 		return 0, 0, err

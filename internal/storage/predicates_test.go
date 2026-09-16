@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
 func TestPredicateRegistryFixtureMatchesDomain(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "predicate-registry-v1.json"))
+	data, err := os.ReadFile(filepath.Join("testdata", "predicate-registry-v2.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,18 +21,13 @@ func TestPredicateRegistryFixtureMatchesDomain(t *testing.T) {
 		t.Fatalf("fixture is not a registry: %v", err)
 	}
 	live := domain.PredicateDefinitions()
-	if len(fixture) != len(live) {
-		t.Fatalf("fixture predicates=%d live=%d", len(fixture), len(live))
-	}
-	for i := range live {
-		if fixture[i].Name != live[i].Name {
-			t.Fatalf("fixture predicate %d = %q, live %q", i, fixture[i].Name, live[i].Name)
-		}
+	if !reflect.DeepEqual(fixture, live) {
+		t.Fatalf("predicate fixture does not match %s", domain.PredicateRegistryVersion)
 	}
 }
 
 func TestPredicateRegistryFixtureCoversGeneralDomains(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "predicate-registry-v1.json"))
+	data, err := os.ReadFile(filepath.Join("testdata", "predicate-registry-v2.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,9 +44,6 @@ func TestPredicateRegistryFixtureCoversGeneralDomains(t *testing.T) {
 	for _, definition := range fixture {
 		if _, ok := required[definition.Name]; ok {
 			required[definition.Name] = true
-		}
-		if definition.Name == "related_to" {
-			t.Fatal("related_to must not appear in the registry fixture")
 		}
 	}
 	for name, found := range required {
@@ -73,7 +66,7 @@ func TestStoragePersistsClosedPredicateRegistry(t *testing.T) {
 	if err != nil || definition.Inverse != "has_member" || !definition.AllowsPathPosition(domain.PredicatePathFirst) {
 		t.Fatalf("loaded member_of = %+v err=%v", definition, err)
 	}
-	if _, err := r.predicateDefinition(ctx, r.store.reader, "related_to"); err == nil {
+	if _, err := r.predicateDefinition(ctx, r.store.reader, "free_association"); err == nil {
 		t.Fatal("free-form predicate accepted by storage")
 	}
 }

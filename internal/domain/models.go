@@ -705,6 +705,7 @@ type SearchResult struct {
 	KeywordMatchedFields        []string           `json:"keyword_matched_fields,omitempty"`
 	KeywordExactMatch           bool               `json:"keyword_exact_match,omitempty"`
 	KeywordTermCoverage         *float64           `json:"keyword_term_coverage,omitempty"`
+	FeatureContributions        map[string]float64 `json:"feature_contributions,omitempty"`
 }
 
 type RankContribution struct {
@@ -775,7 +776,10 @@ func (i RecallIntent) Valid() bool {
 // callers express intent and budget; explicit capability overrides exist only
 // for evaluation and debugging.
 type RecallDebugOverrides struct {
-	Capabilities []string `json:"capabilities,omitempty"`
+	Capabilities           []string `json:"capabilities,omitempty"`
+	GraphPolicy            string   `json:"graph_policy,omitempty"`
+	DisableDiversification bool     `json:"disable_diversification,omitempty"`
+	IncludeStaleAggregates bool     `json:"include_stale_aggregates,omitempty"`
 }
 
 type RecallRequest struct {
@@ -793,28 +797,30 @@ type RecallRequest struct {
 }
 
 type RecallExplanation struct {
-	MatchedSignals              []string           `json:"matched_signals"`
-	SelectionReason             string             `json:"selection_reason"`
-	Features                    map[string]float64 `json:"features,omitempty"`
-	GraphScore                  *float64           `json:"graph_score,omitempty"`
-	SemanticRawScore            *float64           `json:"semantic_raw_score,omitempty"`
-	SemanticPercentile          *float64           `json:"semantic_percentile,omitempty"`
-	SemanticRejectionReason     string             `json:"semantic_rejection_reason,omitempty"`
-	SemanticCalibrationIdentity string             `json:"semantic_calibration_identity,omitempty"`
-	TemporalPrecision           string             `json:"temporal_precision,omitempty"`
-	TemporalSourceWording       string             `json:"temporal_source_wording,omitempty"`
-	TemporalTimeSource          string             `json:"temporal_time_source,omitempty"`
-	QueryTimeStart              *time.Time         `json:"query_time_start,omitempty"`
-	QueryTimeEnd                *time.Time         `json:"query_time_end,omitempty"`
-	ReferenceTimeAnchor         *time.Time         `json:"reference_time_anchor,omitempty"`
-	RankContribution            RankContribution   `json:"rank_contribution"`
-	GraphSignals                []GraphSignal      `json:"graph_signals,omitempty"`
-	GraphFacts                  []EntityFact       `json:"graph_facts,omitempty"`
-	GraphPaths                  []GraphPath        `json:"graph_paths,omitempty"`
-	KeywordRawBM25              *float64           `json:"keyword_raw_bm25,omitempty"`
-	KeywordMatchedFields        []string           `json:"keyword_matched_fields,omitempty"`
-	KeywordExactMatch           bool               `json:"keyword_exact_match,omitempty"`
-	KeywordTermCoverage         *float64           `json:"keyword_term_coverage,omitempty"`
+	MatchedSignals              []string                    `json:"matched_signals"`
+	SelectionReason             string                      `json:"selection_reason"`
+	Features                    map[string]float64          `json:"features,omitempty"`
+	FeatureContributions        map[string]float64          `json:"feature_contributions,omitempty"`
+	ContextSelection            ContextSelectionExplanation `json:"context_selection"`
+	GraphScore                  *float64                    `json:"graph_score,omitempty"`
+	SemanticRawScore            *float64                    `json:"semantic_raw_score,omitempty"`
+	SemanticPercentile          *float64                    `json:"semantic_percentile,omitempty"`
+	SemanticRejectionReason     string                      `json:"semantic_rejection_reason,omitempty"`
+	SemanticCalibrationIdentity string                      `json:"semantic_calibration_identity,omitempty"`
+	TemporalPrecision           string                      `json:"temporal_precision,omitempty"`
+	TemporalSourceWording       string                      `json:"temporal_source_wording,omitempty"`
+	TemporalTimeSource          string                      `json:"temporal_time_source,omitempty"`
+	QueryTimeStart              *time.Time                  `json:"query_time_start,omitempty"`
+	QueryTimeEnd                *time.Time                  `json:"query_time_end,omitempty"`
+	ReferenceTimeAnchor         *time.Time                  `json:"reference_time_anchor,omitempty"`
+	RankContribution            RankContribution            `json:"rank_contribution"`
+	GraphSignals                []GraphSignal               `json:"graph_signals,omitempty"`
+	GraphFacts                  []EntityFact                `json:"graph_facts,omitempty"`
+	GraphPaths                  []GraphPath                 `json:"graph_paths,omitempty"`
+	KeywordRawBM25              *float64                    `json:"keyword_raw_bm25,omitempty"`
+	KeywordMatchedFields        []string                    `json:"keyword_matched_fields,omitempty"`
+	KeywordExactMatch           bool                        `json:"keyword_exact_match,omitempty"`
+	KeywordTermCoverage         *float64                    `json:"keyword_term_coverage,omitempty"`
 }
 
 type ContextItem struct {

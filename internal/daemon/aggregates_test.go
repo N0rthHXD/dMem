@@ -90,10 +90,19 @@ func TestAggregateDaemonBuildConfirmProvenanceStaleAndHealth(t *testing.T) {
 	if !result.AggregateStale || len(result.StaleReasons) == 0 {
 		t.Fatalf("stale aggregate=%+v", result)
 	}
-	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates?space_id="+url.QueryEscape(space.SpaceID)+"&exclude_stale=true", "", nil)
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates?space_id="+url.QueryEscape(space.SpaceID), "", nil)
 	decodeResponse(t, response, &aggregates)
 	if len(aggregates.Items) != 0 {
-		t.Fatalf("excluded stale=%+v", aggregates)
+		t.Fatalf("default listing included stale aggregate=%+v", aggregates)
+	}
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates?space_id="+url.QueryEscape(space.SpaceID)+"&exclude_stale=false", "", nil)
+	decodeResponse(t, response, &aggregates)
+	if len(aggregates.Items) != 1 || !aggregates.Items[0].AggregateStale {
+		t.Fatalf("explicit stale listing=%+v", aggregates)
+	}
+	response = requestJSON(t, client, http.MethodGet, "/v1/aggregates?space_id="+url.QueryEscape(space.SpaceID)+"&exclude_stale=invalid", "", nil)
+	if response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid exclude_stale status=%d, want %d", response.StatusCode, http.StatusUnprocessableEntity)
 	}
 	response = requestJSON(t, client, http.MethodGet, "/v1/health", "", nil)
 	var health api.Health

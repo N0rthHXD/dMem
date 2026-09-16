@@ -58,7 +58,7 @@ func seedAuthority(t *testing.T, db *sql.DB) {
 		`INSERT INTO raw_contents(content_id,content_kind,content_text,media_type,content_hash,size_bytes,created_at) VALUES ('content-a','text','source','text/plain','hash',6,'2026-08-25T10:00:00Z')`,
 		`INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,caller_id,occurred_at,received_at,created_at) VALUES ('event-a','op-a','` + taskSpace + `','content-a','manual','test','caller','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-a','` + taskSpace + `','revision-a','active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
-		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-a','memory-a','fact','alpha','alpha','hash-a',0.9,0.5,'test','v1','2026-08-25T10:00:00Z')`,
+		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,event_type,event_time_start,event_time_end,time_precision,time_source,source_speaker,language,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-a','memory-a','event','alpha','alpha','hash-a','meeting','2026-08-25T09:00:00Z','2026-08-25T10:00:00Z','exact','statement','alice','en',0.9,0.5,'test','v1','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memory_state_events VALUES ('state-a','memory-a','revision-a','op-a',NULL,'active',NULL,0,'created','test','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memory_evidence(evidence_id,revision_id,event_id,role,created_at) VALUES ('evidence-a','revision-a','event-a','direct','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-sensitive','` + taskSpace + `','revision-sensitive','active','sensitive','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
@@ -66,6 +66,14 @@ func seedAuthority(t *testing.T, db *sql.DB) {
 		`INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,sensitivity,created_at,updated_at) VALUES ('memory-external','` + otherSpace + `','revision-external','active','normal','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,confidence,specificity,created_by,processing_version,created_at) VALUES ('revision-external','memory-external','fact','outside','outside','hash-o',0.9,0.5,'test','v1','2026-08-25T10:00:00Z')`,
 		`INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES ('relation-a','` + taskSpace + `','supports','memory-a','revision-a','memory-external','revision-external','human_confirmation','spec','test','v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entities(entity_id,space_id,entity_type,canonical_name,normalized_name,normalization_version,state,created_by,processing_version,created_at,updated_at) VALUES ('entity-alice','` + taskSpace + `','person','Alice','alice','v1','active','test','v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entities(entity_id,space_id,entity_type,canonical_name,normalized_name,normalization_version,state,created_by,processing_version,created_at,updated_at) VALUES ('entity-project','` + taskSpace + `','project','Project Alpha','project alpha','v1','active','test','v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entity_aliases(alias_id,entity_id,alias,normalized_alias,normalization_version,source,state,created_by,created_at,updated_at) VALUES ('z-alias-alice','entity-alice','Alice','alice','v1','human_confirmation','active','test','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO revision_subject_entities(revision_id,entity_order,entity_id) VALUES ('revision-a',0,'entity-alice')`,
+		`INSERT INTO revision_object_entities(revision_id,entity_order,entity_id) VALUES ('revision-a',0,'entity-project')`,
+		`INSERT INTO entity_facts(fact_id,space_id,subject_entity_id,predicate,object_entity_id,source_memory_id,source_revision_id,confidence,state,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES ('fact-a','` + taskSpace + `','entity-alice','participates_in','entity-project','memory-a','revision-a',0.9,'active','human_confirmation','fact-spec','test','v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entity_fact_evidence(evidence_id,fact_id,evidence_type,created_by,created_at) VALUES ('fact-evidence-a','fact-a','human_confirmation','test','2026-08-25T10:00:00Z')`,
+		`INSERT INTO entity_fact_state_events(state_event_id,fact_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES ('fact-state-a','fact-a','op-a',NULL,'active','confirmed','test','2026-08-25T10:00:00Z')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -88,7 +96,7 @@ func TestExportDryRunClosureCountsSensitivityAndExternalRefs(t *testing.T) {
 	if !reflect.DeepEqual(plan.SpaceIDs, []string{rootSpace, taskSpace}) {
 		t.Fatalf("spaces = %v", plan.SpaceIDs)
 	}
-	for member, want := range map[string]int{"spaces.jsonl": 2, "raw_events.jsonl": 1, "memories.jsonl": 2, "revisions.jsonl": 1, "evidence.jsonl": 1, "relations.jsonl": 2} {
+	for member, want := range map[string]int{"spaces.jsonl": 2, "raw_events.jsonl": 1, "memories.jsonl": 2, "revisions.jsonl": 3, "evidence.jsonl": 2, "entities.jsonl": 3, "relations.jsonl": 4} {
 		if got := plan.ObjectCounts[member]; got != want {
 			t.Errorf("%s count = %d, want %d", member, got, want)
 		}
@@ -208,15 +216,15 @@ func TestExportConcurrentWritesUseOneSnapshot(t *testing.T) {
 	if err := <-failures; err != nil {
 		t.Fatal(err)
 	}
-	if plan.ObjectCounts["revisions.jsonl"] != 1 {
-		t.Fatalf("snapshot revisions = %d, want 1", plan.ObjectCounts["revisions.jsonl"])
+	if plan.ObjectCounts["revisions.jsonl"] != 3 {
+		t.Fatalf("snapshot revision authority = %d, want 3", plan.ObjectCounts["revisions.jsonl"])
 	}
 	after, err := NewExporter(database.repo).DryRun(context.Background(), request())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.ObjectCounts["revisions.jsonl"] != 2 {
-		t.Fatalf("post-write revisions = %d, want 2", after.ObjectCounts["revisions.jsonl"])
+	if after.ObjectCounts["revisions.jsonl"] != 4 {
+		t.Fatalf("post-write revision authority = %d, want 4", after.ObjectCounts["revisions.jsonl"])
 	}
 }
 

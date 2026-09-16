@@ -44,16 +44,21 @@ class Checkpoint:
         manifest = self.read_manifest()
         if manifest is None:
             return True, "no existing manifest"
-        for key in (
-            "dataset_sha", "run_id", "confirmation_policy", "retrieval_mode", "limit",
-            "max_chars", "cutoffs", "answer_cutoff",
-            "invalid_evidence_reference_retries",
-        ):
-            if key == "invalid_evidence_reference_retries" and key not in manifest:
-                continue
-            if manifest.get(key) != config.get(key):
+        for key, value in config.items():
+            if manifest.get(key) != value:
                 return False, f"config mismatch on {key}"
         return True, "compatible"
+
+    def assert_phase_compatible(self, expected: dict[str, Any]) -> None:
+        manifest = self.read_manifest()
+        if manifest is None:
+            return
+        for key, value in expected.items():
+            recorded = manifest.get(key)
+            if recorded is not None and recorded != value:
+                raise ValueError(
+                    f"{key} mismatch: checkpoint has {recorded!r}, current run uses {value!r}"
+                )
 
     # -- append --
 

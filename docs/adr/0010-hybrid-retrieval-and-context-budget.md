@@ -1,6 +1,7 @@
 # ADR 0010：混合检索与上下文预算
 
-- 状态：accepted
+- 状态：superseded（被 [0035](0035-memory-retrieval-v4.md) 取代）
+- 关联：当前检索、排序与上下文预算契约见 [0035](0035-memory-retrieval-v4.md)
 
 ## 背景
 

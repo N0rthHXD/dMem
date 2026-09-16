@@ -71,9 +71,9 @@ type IdentityVersion struct {
 // ActiveGeneration is the identity currently bound to a pipeline stage. Cursors
 // and checkpoints compare this generation before accepting a stored payload.
 type ActiveGeneration struct {
-	Scope        GenerationScope `json:"scope"`
-	Kind         IdentityKind    `json:"identity_kind"`
-	Identity     string          `json:"identity"`
-	Generation   int64           `json:"generation"`
-	UpdatedAt    string          `json:"updated_at"`
+	Scope      GenerationScope `json:"scope"`
+	Kind       IdentityKind    `json:"identity_kind"`
+	Identity   string          `json:"identity"`
+	Generation int64           `json:"generation"`
+	UpdatedAt  string          `json:"updated_at"`
 }

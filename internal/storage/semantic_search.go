@@ -24,9 +24,10 @@ import (
 type hybridCandidate = searchCandidate
 
 // searchSemanticHybrid executes the semantic channel (plus keyword and graph
-// when requested) and performs three-channel RRF v3 fusion. Requested
-// channels that are unavailable are dropped with an explicit degradation
-// reason; a request whose executed set becomes empty fails.
+// when requested) and unions candidates for the versioned deterministic
+// feature ranker. Requested channels that are unavailable are dropped with an
+// explicit degradation reason; a request whose executed set becomes empty
+// fails.
 func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
 	if params.ReferenceTime == "" {
 		params.ReferenceTime = formatTime(r.runtime.Now())
@@ -156,6 +157,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	response := semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, metadata)
 	recallLimit := max(100, params.Limit*10)
 	all := map[string]*hybridCandidate{}
+	keywordStart := time.Now()
 	if hasChannel(executed, ChannelKeyword) {
 		keyword, err := r.keywordRecall(ctx, tx, params, spaces, recallLimit)
 		if err != nil {
@@ -207,6 +209,8 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
+	params.telemetry.markPhase("keyword", keywordStart)
+	semanticStart := time.Now()
 	semantic, err := r.semanticVectorRecallWindow(ctx, tx, params, spaces, runtime.PolicyGeneration, runtime.CompatibilityIdentity, len(queryVector), queryBlob, recallLimit)
 	if err != nil {
 		if hasChannel(params.Channels, ChannelKeyword) {
@@ -236,11 +240,14 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	}
 	calibrateKeywordScores(candidatePointers(all))
 	calibrateSemanticScores(r.semanticCalibrationValue(), candidatePointers(all), params.Plan.QuestionType)
+	params.telemetry.markPhase("semantic", semanticStart)
 	pruneRejectedCandidates(all)
+	graphStart := time.Now()
 	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, true, recallLimit)
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
+	params.telemetry.markPhase("graph", graphStart)
 	usageScores, err := r.FeedbackUsageScores(ctx, tx, hybridRevisionKeys(all), metadata.feedbackAggregateVersion, searchQueryHash(params))
 	if err != nil {
 		return domain.SearchResponse{}, err
@@ -249,9 +256,19 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	if err := hydrateRankingProjections(ctx, tx, list); err != nil {
 		return domain.SearchResponse{}, err
 	}
+	recordCandidateTelemetry(params, all)
+	temporalBefore := len(list)
 	list = applyTemporalFilter(list, params.QueryTime, params.Plan.QuestionType)
+	if removed := temporalBefore - len(list); removed > 0 {
+		for i := 0; i < removed; i++ {
+			params.telemetry.addGate("temporal_filter")
+		}
+	}
+	rankStart := time.Now()
 	r.rankCandidates(list, params, usageScores)
 	list = admittedRankedCandidates(list)
+	params.telemetry.markPhase("ranking", rankStart)
+	recordGraphAdmissionTelemetry(params, list)
 	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity())
 	response.RankingIdentity = identities.Ranking
 	response.ContextIdentity = identities.Context
@@ -450,15 +467,13 @@ func semanticSearchResponse(params SearchParams, executed []string, reasons []st
 	return response
 }
 
-// semanticKeywordFallback re-dispatches the request without the semantic
-// channel while preserving the requested channel set for cursor identity.
-// The inner response already carries the accurate executed channel set, so
-// only the outer degradation reasons are merged in.
+// semanticKeywordFallback executes available local recall without recursively
+// finalizing context or telemetry.
 func (r *Repository) semanticKeywordFallback(ctx context.Context, params SearchParams, semanticVersion int, reasons []string) (domain.SearchResponse, error) {
 	keywordParams := params
 	keywordParams.EffectiveChannels = channelsWithout(params.EffectiveChannels, ChannelSemantic)
 	keywordParams.SemanticVersion = semanticVersion
-	result, err := r.SearchMemories(ctx, keywordParams)
+	result, err := r.searchKeywordGraph(ctx, keywordParams)
 	if err != nil {
 		return result, err
 	}

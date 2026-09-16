@@ -13,8 +13,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
-// Retrieval is channel-based: a request selects any subset of the three
-// top-level channels instead of a coarse execution mode.
+// Capability selection is available only through recall debug overrides.
 var validChannels = map[string]bool{"keyword": true, "semantic": true, "graph": true}
 
 func (h *Handler) rebuildFTS(w http.ResponseWriter, r *http.Request) {

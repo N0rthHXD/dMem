@@ -10,8 +10,9 @@ and index metadata.
 Raw events are committed before optional automatic processing. Memories have a
 stable logical ID, immutable revisions, append-only state events, evidence, and
 a current projection. FTS rows, embeddings, semantic corpus metadata,
-entity/relation/graph index metadata, feedback aggregates, and aggregate freshness are derived and
-rebuildable. Derived data must never overwrite authority.
+entity/relation/graph index metadata, feedback aggregates, and aggregate
+freshness are derived and rebuildable. Derived data must never overwrite
+authority.
 
 A confirmed memory revision is the stable input for knowledge-graph extraction;
 the raw event remains provenance/evidence. Extraction produces entity, alias,
@@ -112,14 +113,36 @@ plan selects graph `off`, `features_only`, `direct`, or `bounded_path`; graph
 uses only ready compatible snapshots and calibrated primary seeds. A versioned
 deterministic feature ranker preserves raw and calibrated scores, applies a
 capped graph boost, and uses a separate admission formula for graph-only
-candidates. Explicit channel overrides are limited to evaluation and debugging.
+candidates. Explicit capability overrides are limited to evaluation and
+debugging.
 
 Cursors bind the authority corpus generation, live semantic corpus generation,
 and relevant ranking/index versions and generations. A generation change
 invalidates an old cursor rather than continuing over changed membership. Before a
 result is returned, dMem rechecks its space, current revision, lifecycle state,
-valid time, and result/character budgets. Responses report degraded channels
-instead of silently claiming full retrieval.
+valid time, and result/token/character budgets. Responses report degraded
+capabilities instead of silently claiming full retrieval.
+
+## Observability And Decisions
+
+Every recall operation records one bounded, content-free decision telemetry row:
+query-plan type and identity, requested and executed capabilities, per-source
+candidate counts, gate rejections, score summaries, graph seed/edge/path/
+promotion counts, duplicate clusters, context token and character budgets,
+ranking/context/feedback identities, degradation reasons, and per-phase latency.
+Telemetry never records query text, memory prose, evidence spans, or provider
+payloads.
+
+Explain mode returns per-result feature contributions, graph paths, evidence,
+selection and rejection reasons. It enforces the same scope, policy, and
+sensitivity rules as normal recall: it cannot expose a denied space, sensitive
+content, or hidden evidence, and rejected context candidates are returned as
+bounded id/reason records only.
+
+`GET /v1/health` reports the effective identity and state of every decision
+stage: consolidation, quality and duplicate projections, semantic calibration,
+graph scoring, the feature ranker, context selection, and feedback aggregation,
+in addition to FTS, semantic, entity, relation, and aggregate health.
 
 See [evolution](evolution.md) for reviewed entity/relation/conflict changes and
 [feedback and aggregation](feedback-and-aggregation.md) for ranking feedback and

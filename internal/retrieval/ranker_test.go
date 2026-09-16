@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -183,7 +184,7 @@ func TestScoreIsDeterministic(t *testing.T) {
 	input := RankInput{Features: features, GraphAdmitted: true}
 	first := Score(weights, input)
 	second := Score(weights, input)
-	if first != second {
+	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("score not deterministic: %+v vs %+v", first, second)
 	}
 }

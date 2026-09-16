@@ -285,6 +285,16 @@ func (e *Exporter) plan(ctx context.Context, request Request) (Plan, error) {
 		entityIDs[id] = true
 		objects["entities.jsonl"] = append(objects["entities.jsonl"], makeRecord("entity", id, row))
 	}
+	for _, spec := range []struct{ typ, query string }{
+		{"revision_subject_entity", `SELECT * FROM revision_subject_entities ORDER BY revision_id,entity_order`},
+		{"revision_object_entity", `SELECT * FROM revision_object_entities ORDER BY revision_id,entity_order`},
+	} {
+		if err := collectFiltered(ctx, tx, &objects, "revisions.jsonl", spec.typ, "revision_id", spec.query, func(r map[string]any) bool {
+			return revisionIDs[text(r["revision_id"])] && entityIDs[text(r["entity_id"])]
+		}); err != nil {
+			return Plan{}, err
+		}
+	}
 	mentions, err := queryMaps(ctx, tx, `SELECT * FROM entity_mentions ORDER BY mention_id`)
 	if err != nil {
 		return Plan{}, err
@@ -335,6 +345,22 @@ func (e *Exporter) plan(ctx context.Context, request Request) (Plan, error) {
 	if err := collectFiltered(ctx, tx, &objects, "relations.jsonl", "relation_state_event", "state_event_id", `SELECT * FROM relation_state_events ORDER BY state_event_id`, func(r map[string]any) bool { return relationIDs[text(r["relation_id"])] }); err != nil {
 		return Plan{}, err
 	}
+	factIDs := map[string]bool{}
+	facts, err := queryMaps(ctx, tx, `SELECT * FROM entity_facts ORDER BY fact_id`)
+	if err != nil {
+		return Plan{}, err
+	}
+	for _, row := range facts {
+		objectEntityID := text(row["object_entity_id"])
+		if revisionIDs[text(row["source_revision_id"])] && entityIDs[text(row["subject_entity_id"])] && (objectEntityID == "" || entityIDs[objectEntityID]) {
+			id := text(row["fact_id"])
+			factIDs[id] = true
+			objects["relations.jsonl"] = append(objects["relations.jsonl"], makeRecord("entity_fact", id, row))
+		}
+	}
+	if err := collectFiltered(ctx, tx, &objects, "relations.jsonl", "entity_fact_state_event", "state_event_id", `SELECT * FROM entity_fact_state_events ORDER BY state_event_id`, func(r map[string]any) bool { return factIDs[text(r["fact_id"])] }); err != nil {
+		return Plan{}, err
+	}
 	relationEvidence, err := queryMaps(ctx, tx, `SELECT * FROM relation_evidence ORDER BY evidence_id`)
 	if err != nil {
 		return Plan{}, err
@@ -350,6 +376,19 @@ func (e *Exporter) plan(ctx context.Context, request Request) (Plan, error) {
 			external = append(external, ExternalReference{"revision", revisionID, text(row["evidence_id"])})
 		}
 		objects["evidence.jsonl"] = append(objects["evidence.jsonl"], makeRecord("relation_evidence", text(row["evidence_id"]), row))
+	}
+	factEvidence, err := queryMaps(ctx, tx, `SELECT * FROM entity_fact_evidence ORDER BY evidence_id`)
+	if err != nil {
+		return Plan{}, err
+	}
+	for _, row := range factEvidence {
+		if !factIDs[text(row["fact_id"])] {
+			continue
+		}
+		if eventID := text(row["event_id"]); eventID != "" {
+			eventIDs[eventID] = true
+		}
+		objects["evidence.jsonl"] = append(objects["evidence.jsonl"], makeRecord("entity_fact_evidence", text(row["evidence_id"]), row))
 	}
 	for _, row := range rawRows {
 		if eventIDs[text(row["event_id"])] {

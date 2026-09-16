@@ -236,6 +236,7 @@ func (r *Repository) FinishImport(ctx context.Context, operationID string, gener
 		{"rebuild_feedback_aggregates", "feedback_aggregates", FeedbackAlgorithmVersion, "pending"},
 		{"rebuild_quality", "memory_quality", r.processingVersion, "pending"},
 		{"rebuild_duplicates", "duplicate_clusters", r.processingVersion, "pending"},
+		{"rebuild_graph_index", graphIndexName, r.processingVersion, "pending"},
 	} {
 		id := stableImportID("job", operationID, job.typ)
 		_, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,created_at) VALUES (?,?,?,'index',?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, operationID, job.typ, job.target, job.version, job.state, r.maxAttempts, now, now)
@@ -329,6 +330,12 @@ func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targ
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO memory_projections(memory_id,revision_id,space_id,memory_type,current_state,searchable,display_content,content_hash,valid_from,valid_until,updated_at) SELECT m.memory_id,r.revision_id,m.space_id,r.kind,m.current_state,m.current_state IN ('active','contested'),r.display_content,r.canonical_hash,r.valid_from,r.valid_until,? FROM memories m JOIN memory_revisions r ON r.revision_id=m.current_revision_id WHERE m.memory_id=? AND m.current_revision_id=? ON CONFLICT(memory_id) DO UPDATE SET revision_id=excluded.revision_id,space_id=excluded.space_id,memory_type=excluded.memory_type,current_state=excluded.current_state,searchable=excluded.searchable,display_content=excluded.display_content,content_hash=excluded.content_hash,embedding_state='stale',valid_from=excluded.valid_from,valid_until=excluded.valid_until,updated_at=excluded.updated_at`, now, local("memory_id"), o.LocalID)
 		return err
+	case "revision_subject_entity":
+		_, err := tx.ExecContext(ctx, `INSERT INTO revision_subject_entities(revision_id,entity_order,entity_id) VALUES (?,?,?)`, local("revision_id"), s("entity_order"), local("entity_id"))
+		return err
+	case "revision_object_entity":
+		_, err := tx.ExecContext(ctx, `INSERT INTO revision_object_entities(revision_id,entity_order,entity_id) VALUES (?,?,?)`, local("revision_id"), s("entity_order"), local("entity_id"))
+		return err
 	case "memory_state_event":
 		_, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("memory_id"), local("revision_id"), operationID, s("from_state"), s("to_state"), s("from_frozen"), s("to_frozen"), s("reason"), "import", s("created_at"))
 		return err
@@ -365,6 +372,15 @@ func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targ
 		return err
 	case "relation_state_event":
 		_, err := tx.ExecContext(ctx, `INSERT INTO relation_state_events(state_event_id,relation_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)`, o.LocalID, local("relation_id"), operationID, s("from_state"), s("to_state"), s("reason"), "import", s("created_at"))
+		return err
+	case "entity_fact":
+		_, err := tx.ExecContext(ctx, `INSERT INTO entity_facts(fact_id,space_id,subject_entity_id,predicate,object_entity_id,object_literal,object_literal_type,source_memory_id,source_revision_id,confidence,state,source,specification_hash,created_by,processing_version,valid_from,valid_until,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, targetSpace, local("subject_entity_id"), s("predicate"), local("object_entity_id"), s("object_literal"), s("object_literal_type"), local("source_memory_id"), local("source_revision_id"), s("confidence"), s("state"), "import", s("specification_hash"), "import", s("processing_version"), s("valid_from"), s("valid_until"), s("created_at"), s("updated_at"))
+		return err
+	case "entity_fact_evidence":
+		_, err := tx.ExecContext(ctx, `INSERT INTO entity_fact_evidence(evidence_id,fact_id,evidence_type,event_id,memory_id,revision_id,start_offset,end_offset,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("fact_id"), s("evidence_type"), local("event_id"), local("memory_id"), local("revision_id"), s("start_offset"), s("end_offset"), s("note"), "import", s("created_at"))
+		return err
+	case "entity_fact_state_event":
+		_, err := tx.ExecContext(ctx, `INSERT INTO entity_fact_state_events(state_event_id,fact_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)`, o.LocalID, local("fact_id"), operationID, s("from_state"), s("to_state"), s("reason"), "import", s("created_at"))
 		return err
 	case "aggregate_descriptor":
 		_, err := tx.ExecContext(ctx, `INSERT INTO aggregate_descriptors(aggregate_id,memory_id,aggregate_kind,policy_version,processing_version,sensitivity,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)`, o.LocalID, local("memory_id"), s("aggregate_kind"), s("policy_version"), s("processing_version"), s("sensitivity"), "import", s("created_at"))

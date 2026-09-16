@@ -283,7 +283,9 @@ class DMemClient:
         limit: int = 100,
         max_context_tokens: int = 100000,
         include_evidence: bool = True,
-        exclude_stale_aggregates: bool = True,
+        capabilities_override: list[str] | None = None,
+        graph_policy: str | None = None,
+        disable_diversification: bool = False,
     ) -> dict[str, Any]:
         capabilities = {
             "keyword": ["keyword"],
@@ -291,6 +293,8 @@ class DMemClient:
             "graph": ["graph"],
             "hybrid": None,
         }[mode]
+        if capabilities_override is not None:
+            capabilities = list(capabilities_override)
         body: dict[str, Any] = {
             "query": query,
             "space_ids": space_ids,
@@ -299,12 +303,18 @@ class DMemClient:
             "max_results": limit,
             "max_context_tokens": max_context_tokens,
             "include_evidence": include_evidence,
-            "exclude_stale_aggregates": exclude_stale_aggregates,
         }
         if reference_time is not None:
             body["reference_time"] = reference_time
+        debug: dict[str, Any] = {}
         if capabilities is not None:
-            body["debug"] = {"capabilities": capabilities}
+            debug["capabilities"] = capabilities
+        if graph_policy is not None:
+            debug["graph_policy"] = graph_policy
+        if disable_diversification:
+            debug["disable_diversification"] = True
+        if debug:
+            body["debug"] = debug
         return self._request("POST", "/v1/recall", json=body)
 
     # ------------------------------------------------------------------

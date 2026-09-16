@@ -14,9 +14,13 @@ import (
 // consume context slots under hard budgets. Raw results stay on the response
 // for policy-safe explain/debug use only.
 func (r *Repository) applyContextSelection(ctx context.Context, params SearchParams, response *domain.SearchResponse) error {
+	mode := "mmr"
+	if params.SkipDiversification {
+		mode = "fixed_cutoff"
+	}
 	if len(response.Results) == 0 {
 		policy := retrieval.PolicyForQuestionType(retrieval.QuestionType(params.Plan.QuestionType))
-		response.ContextSelectionIdentity = retrieval.ContextSelectionVersion + ":policy=" + policy.Identity()
+		response.ContextSelectionIdentity = retrieval.ContextSelectionVersion + ":policy=" + policy.Identity() + ":mode=" + mode
 		response.Context = domain.ContextPackage{Items: []domain.ContextItem{}}
 		return nil
 	}
@@ -26,8 +30,14 @@ func (r *Repository) applyContextSelection(ctx context.Context, params SearchPar
 		MaxTokens: params.MaxContextTokens, MaxChars: params.MaxChars,
 		MaxResults: params.Limit, MaxSources: params.MaxSources, MaxSensitive: params.MaxSensitive,
 	}
-	selection := retrieval.SelectContext(retrieval.SelectInput{QuestionType: retrieval.QuestionType(params.Plan.QuestionType), Budget: budget, Candidates: candidates})
-	response.ContextSelectionIdentity = retrieval.ContextSelectionVersion + ":policy=" + policy.Identity() + ":tokens=" + domain.ContextTokenFormatVersion
+	input := retrieval.SelectInput{QuestionType: retrieval.QuestionType(params.Plan.QuestionType), Budget: budget, Candidates: candidates}
+	var selection retrieval.SelectOutput
+	if params.SkipDiversification {
+		selection = retrieval.SelectContextFixedCutoff(input)
+	} else {
+		selection = retrieval.SelectContext(input)
+	}
+	response.ContextSelectionIdentity = retrieval.ContextSelectionVersion + ":policy=" + policy.Identity() + ":tokens=" + domain.ContextTokenFormatVersion + ":mode=" + mode
 	items := make([]domain.ContextItem, 0, len(selection.Items))
 	for _, selected := range selection.Items {
 		result, ok := index[selected.MemoryID+"\x00"+selected.RevisionID]
@@ -40,6 +50,12 @@ func (r *Repository) applyContextSelection(ctx context.Context, params SearchPar
 		Items: items, TokensUsed: selection.Accounting.TokensUsed,
 		CharsUsed: selection.Accounting.CharsUsed, Accounting: selection.Accounting,
 		Truncated: response.Truncated,
+	}
+	if params.telemetry != nil {
+		params.telemetry.rejected = selection.Rejected
+		for _, rejected := range selection.Rejected {
+			params.telemetry.addGate(rejected.Reason)
+		}
 	}
 	if params.Explain {
 		response.Context.Rejected = selection.Rejected
@@ -120,7 +136,8 @@ func (r *Repository) selectedContextItem(selected domain.SelectedContextItem, re
 	if params.Explain {
 		item.Explanation = &domain.RecallExplanation{
 			MatchedSignals: append([]string(nil), result.MatchedChannels...), SelectionReason: result.SelectionReason,
-			Features: result.RankingFeatures, GraphScore: result.GraphScore,
+			Features: result.RankingFeatures, FeatureContributions: result.FeatureContributions,
+			ContextSelection: selected.Explanation, GraphScore: result.GraphScore,
 			SemanticRawScore: result.SemanticRawScore, SemanticPercentile: result.SemanticPercentile,
 			SemanticRejectionReason: result.SemanticRejectionReason, SemanticCalibrationIdentity: result.SemanticCalibrationIdentity,
 			TemporalPrecision: result.TemporalPrecision, TemporalSourceWording: result.TemporalSourceWording,

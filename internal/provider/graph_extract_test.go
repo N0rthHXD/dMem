@@ -52,7 +52,7 @@ func TestGraphExtractRejectsInvalidTypedOutput(t *testing.T) {
 		{"bad predicate", `{"entities":[{"local_id":"e0","canonical_name":"Alice","entity_type":"person","aliases":[],"confidence":0.9}],"facts":[{"subject_local_id":"e0","predicate":"hates","object_local_id":"e0","confidence":0.9}]}`, "invalid_fact_predicate"},
 		{"NaN confidence", `{"entities":[{"local_id":"e0","canonical_name":"Alice","entity_type":"person","aliases":[],"confidence":1.5}]}`, "malformed_graph_extract_output"},
 		{"unknown relation target", `{"relations":[{"relation_type":"supports","target_memory_id":"missing","target_revision_id":"revision-a","confidence":0.8}]}`, "unknown_relation_target"},
-		{"broad relation", `{"relations":[{"relation_type":"related_to","target_memory_id":"memory-a","target_revision_id":"revision-a","confidence":0.8}]}`, "malformed_graph_extract_output"},
+		{"free-form relation", `{"relations":[{"relation_type":"free_association","target_memory_id":"memory-a","target_revision_id":"revision-a","confidence":0.8}]}`, "malformed_graph_extract_output"},
 		{"unknown event type", `{"events":[{"local_id":"x0","event_type":"party","participant_local_ids":[],"place_local_id":"","time":null,"confidence":0.8}]}`, "invalid_event_type"},
 	}
 	for _, test := range tests {

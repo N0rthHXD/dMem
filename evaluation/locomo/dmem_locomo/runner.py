@@ -75,6 +75,9 @@ class RunConfig:
     retrieval_workers: int = 1
     corpus_dir: str | None = None
     dataset_subset: list[str] = field(default_factory=list)
+    capabilities_override: list[str] | None = None
+    graph_policy: str | None = None
+    disable_diversification: bool = False
 
 
 def stable_key(*parts: str) -> str:
@@ -198,6 +201,9 @@ class Runner:
                 self.config.invalid_evidence_reference_retries
             ),
             "retrieval_mode": self.config.retrieval_mode,
+            "capabilities_override": self.config.capabilities_override,
+            "graph_policy": self.config.graph_policy,
+            "disable_diversification": self.config.disable_diversification,
             "limit": self.config.limit,
             "max_chars": self.config.max_chars,
             "cutoffs": self.config.cutoffs,
@@ -889,7 +895,9 @@ class Runner:
             limit=self.config.limit,
             max_context_tokens=self.config.max_chars,
             include_evidence=True,
-            exclude_stale_aggregates=True,
+            capabilities_override=self.config.capabilities_override,
+            graph_policy=self.config.graph_policy,
+            disable_diversification=self.config.disable_diversification,
         )
         recall_latency_ms = (time.perf_counter() - recall_started) * 1000
         response_bytes = len(

@@ -5,7 +5,7 @@
 #
 # API keys are never stored in this file. Instead, ``api_key_env`` names the
 # environment variable to read at runtime:
-#   export OPENAI_API_KEY=sk-...
+#   export DMEM_PROVIDER_KEY=...
 
 config_version = 1
 
@@ -39,7 +39,7 @@ workers = 4
 # Leave model empty to skip the generate phase.
 model = "gpt-4o-mini-2024-07-18"
 base_url = ""  # empty = OpenAI default (https://api.openai.com/v1)
-api_key_env = "OPENAI_API_KEY"
+api_key_env = "DMEM_PROVIDER_KEY"
 answer_cutoff = 30  # top-k retrieval results fed to the answer model
 gen_length = 500
 cot = false  # set true for chain-of-thought answer generation
@@ -49,5 +49,5 @@ workers = 4
 # OpenAI-compatible model for QA judging with official LongMemEval prompts.
 model = "gpt-4o-2024-08-06"
 base_url = ""
-api_key_env = "OPENAI_API_KEY"
+api_key_env = "DMEM_PROVIDER_KEY"
 workers = 4

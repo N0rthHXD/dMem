@@ -33,7 +33,7 @@ schema-check: schema
 		$(MAKE) --no-print-directory schema-init CONFIG="$$config"
 
 restore-drill:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/maintenance -run '^Test(BackupRestoreDrill|ManifestInventoriesAuthority|RestoreFencesRunningWork|RestoreRebuildsDerivedHealthFromAuthority)$$' -count=1
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/maintenance -run '^Test(BackupRestoreDrill|ManifestInventoriesAuthority|RestoreFencesRunningWork|RestoreRebuildsDerivedHealthFromAuthority|RecoveryDrillsFenceInterruptedWork|RecoverySchedulesProjectionAndGraphRebuilds)$$' -count=1
 
 portability-drill:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval$$' -count=1 -v
@@ -42,12 +42,13 @@ quality:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalQuality|SearchQuality|FeedbackPoisoningSingleCaller)' -count=1 -v
 
 performance:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalPerformance|SearchPerformance)' -count=1 -v
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalPerformance|SearchPerformance|DecisionScaleGates|GraphTraversalFanOutIsBounded)' -count=1 -v
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestPortabilityPerformanceAtTargetScale$$' -count=1 -v
 
 offline-default:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestProvidersDisabledByDefault$$' -count=1
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/provider -run '^TestDisabledDoesNotResolveSecretOrUseHTTP$$' -count=1
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/provider -run '^Test(DisabledDoesNotResolveSecretOrUseHTTP|PolicyRejectsBeforeSecretAndNetwork|EmbeddingPolicyRejectsBeforeSecretAndNetwork)$$' -count=1
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/daemon -run '^TestProviderDisabledOperationPreservesCoreAndDegradesSafely$$' -count=1
 
 config-check:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestExampleConfigValidates$$' -count=1

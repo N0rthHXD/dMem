@@ -1324,7 +1324,7 @@ CREATE TRIGGER import_space_mappings_no_delete BEFORE DELETE ON import_space_map
 CREATE TABLE import_object_mappings (
     mapping_id TEXT PRIMARY KEY,
     source_id TEXT NOT NULL REFERENCES import_sources(source_id) ON DELETE RESTRICT,
-    source_object_type TEXT NOT NULL CHECK (source_object_type IN ('space', 'raw_content', 'raw_event', 'memory', 'revision', 'memory_evidence', 'memory_state_event', 'entity', 'entity_event', 'entity_alias', 'entity_alias_event', 'entity_mention', 'relation', 'relation_evidence', 'relation_state_event', 'conflict_case', 'conflict_participant', 'conflict_relation', 'conflict_resolution', 'conflict_resolution_ref', 'feedback_event', 'aggregate_descriptor')),
+    source_object_type TEXT NOT NULL CHECK (source_object_type IN ('space', 'raw_content', 'raw_event', 'memory', 'revision', 'revision_subject_entity', 'revision_object_entity', 'memory_evidence', 'memory_state_event', 'entity', 'entity_event', 'entity_alias', 'entity_alias_event', 'entity_mention', 'relation', 'relation_evidence', 'relation_state_event', 'entity_fact', 'entity_fact_evidence', 'entity_fact_state_event', 'conflict_case', 'conflict_participant', 'conflict_relation', 'conflict_resolution', 'conflict_resolution_ref', 'feedback_event', 'aggregate_descriptor')),
     source_object_id TEXT NOT NULL,
     export_id TEXT NOT NULL,
     local_object_id TEXT NOT NULL,
@@ -1696,15 +1696,34 @@ CREATE TABLE predicates (
 ) STRICT;
 
 INSERT INTO predicates(predicate, description, created_at) VALUES
-    ('created_by', 'entity was created by a person or organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('depends_on', 'entity depends on another entity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('has_participant_count', 'event has a participant count', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('has_status', 'entity has a status', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('is_active', 'entity has an active state', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('located_at', 'entity is located at a place', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('member_of', 'entity is a member of an organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('owned_by', 'entity is owned by a person or organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    ('participates_in', 'entity participates in a project or activity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+    ('born_in', 'a person was born in a place', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('created', 'an actor created a work', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('created_by', 'a work or event was created by an actor', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('depends_on', 'a work depends on another work', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('derived_from', 'a work is derived from another work', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('dislikes', 'a person states a dislike for something', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('employs', 'an organization employs a person', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('has_member', 'an organization has a member', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('has_participant', 'an event or project has an actor participant', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('has_participant_count', 'an event has a participant count literal', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('has_status', 'an entity has a status literal', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('is_active', 'an entity active-state literal', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('leads', 'a person leads an organization or project', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('located_at', 'an entity is located at a place', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('manages', 'a person manages another person', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('member_of', 'an actor is a member of an organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('occurred_at', 'an event occurred at a place', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('occurred_during', 'an event occurred during a time literal', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('owned_by', 'a work is owned by an actor', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('owns', 'an actor owns a work', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('participates_in', 'an actor participates in an event, project, or concept', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('plan_targets', 'a plan targets an entity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('prefers', 'a person states a preference for something', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('reports_to', 'a person reports to another person', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('required_by', 'a work is required by another work', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('same_as', 'two mentions refer to the same identity', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('works_for', 'a person works for an organization', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    ('works_on', 'an actor works on a work', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 CREATE TABLE entity_facts (
     fact_id TEXT PRIMARY KEY,

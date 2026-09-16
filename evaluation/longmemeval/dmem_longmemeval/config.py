@@ -46,7 +46,7 @@ class RetrievalConfig:
 class AnswerConfig:
     model: str = ""
     base_url: str = ""
-    api_key_env: str = "OPENAI_API_KEY"
+    api_key_env: str = "DMEM_PROVIDER_KEY"
     answer_cutoff: int = 30
     gen_length: int = 500
     cot: bool = False
@@ -57,7 +57,7 @@ class AnswerConfig:
 class JudgeConfig:
     model: str = ""
     base_url: str = ""
-    api_key_env: str = "OPENAI_API_KEY"
+    api_key_env: str = "DMEM_PROVIDER_KEY"
     workers: int = 1
 
 
@@ -113,7 +113,7 @@ def load_config(path: str | Path | None) -> EvalConfig:
         a = data["answer"]
         cfg.answer.model = a.get("model", "")
         cfg.answer.base_url = a.get("base_url", "")
-        cfg.answer.api_key_env = a.get("api_key_env", "OPENAI_API_KEY")
+        cfg.answer.api_key_env = a.get("api_key_env", "DMEM_PROVIDER_KEY")
         cfg.answer.answer_cutoff = a.get("answer_cutoff", 30)
         cfg.answer.gen_length = a.get("gen_length", 500)
         cfg.answer.cot = a.get("cot", False)
@@ -123,7 +123,7 @@ def load_config(path: str | Path | None) -> EvalConfig:
         j = data["judge"]
         cfg.judge.model = j.get("model", "")
         cfg.judge.base_url = j.get("base_url", "")
-        cfg.judge.api_key_env = j.get("api_key_env", "OPENAI_API_KEY")
+        cfg.judge.api_key_env = j.get("api_key_env", "DMEM_PROVIDER_KEY")
         cfg.judge.workers = j.get("workers", 1)
 
     _validate(cfg)

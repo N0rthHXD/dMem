@@ -166,3 +166,35 @@ def test_case_isolation_does_not_swallow_keyboard_interrupt(tmp_path, monkeypatc
 
     with pytest.raises(KeyboardInterrupt):
         runner._ingest_phase([case], "project")
+
+
+def test_recall_request_omits_obsolete_stale_aggregate_field():
+    from dmem_longmemeval.api import DMemClient
+
+    client = DMemClient.__new__(DMemClient)
+    captured = {}
+
+    def fake_request(method, path, *, json=None, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = json
+        return {}
+
+    client._request = fake_request
+    client.recall(
+        query="where did I work",
+        space_ids=["space-1"],
+        mode="hybrid",
+        capabilities_override=["semantic", "keyword"],
+        graph_policy="off",
+        disable_diversification=True,
+    )
+    assert captured["path"] == "/v1/recall"
+    body = captured["json"]
+    assert "exclude_stale_aggregates" not in body
+    assert body["include_evidence"] is True
+    assert body["debug"] == {
+        "capabilities": ["semantic", "keyword"],
+        "graph_policy": "off",
+        "disable_diversification": True,
+    }

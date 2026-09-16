@@ -28,3 +28,13 @@ func TestValidateRecallUsesReplacementMemoryKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRecallDoesNotRequireDebugCapabilities(t *testing.T) {
+	query := RecallQuery{
+		Query: "query", SpaceIDs: []string{"space"}, Intent: domain.RecallIntentAuto,
+		Limit: 10, MaxChars: 1000, MaxContextTokens: 1000,
+	}
+	if err := validateRecall(query); err != nil {
+		t.Fatalf("production recall without debug capabilities rejected: %v", err)
+	}
+}

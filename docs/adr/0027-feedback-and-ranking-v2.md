@@ -1,7 +1,8 @@
 # ADR 0027：Feedback aggregate v1 与 ranking v2
 
-- 状态：accepted（通道枚举与 mode 映射部分被 ADR 0033 取代）
+- 状态：superseded（被 [0035](0035-memory-retrieval-v4.md) 取代：ranking v2 与通道枚举由 v4 确定性特征 ranker 和显式 feedback purpose 取代；feedback aggregate 单一共享定义继续有效）
 - 日期：2026-08-25
+- 关联：被 [0035](0035-memory-retrieval-v4.md) 取代
 
 ## 决策
 

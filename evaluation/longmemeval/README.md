@@ -64,7 +64,7 @@ by `api_key_env`.
 ```sh
 cp evaluation/longmemeval/eval_config.example.toml eval_config.toml
 # Edit eval_config.toml for your environment
-export OPENAI_API_KEY=sk-...
+export DMEM_PROVIDER_KEY=...
 ```
 
 The config file defines:
@@ -261,6 +261,7 @@ Retrieval metrics follow the upstream `eval_utils.py` formulas exactly:
 - **recall_any@k**: at least one relevant session in the top-k retrieved sessions
 - **recall_all@k**: all relevant sessions in the top-k
 - **ndcg@k**: binary-relevance nDCG
+- **mrr@k**: reciprocal rank of the first relevant session within top-k
 
 Macro-averages exclude:
 - Abstention questions (`_abs` suffix)
@@ -270,6 +271,78 @@ Macro-averages exclude:
 Default cutoffs: `1, 3, 5, 10, 30, 50`.
 
 Evidence coverage and unmapped-result counts are also reported per case.
+
+### Fresh Corpus And Repetitions
+
+Every ablation cell must be evaluated on one immutable dataset SHA with a fresh
+daemon workspace and fixed generation/judge parameters, and end-to-end runs must
+be repeated at least three times. A changed dataset SHA, corpus, metric schema,
+or algorithm identity requires a new output directory; do not compare cells with
+different query coverage, and never reuse an output directory across cells or
+repetitions.
+
+### Ablation Matrix
+
+The fixed retrieval matrix maps to the debug override contract:
+
+| Cell | Semantic | Keyword | Graph features | Graph candidates | Diversification |
+| --- | --- | --- | --- | --- | --- |
+| `S` | yes | no | no | no | no |
+| `SK` | yes | yes | no | no | no |
+| `SKF` | yes | yes | yes | no | no |
+| `SKD` | yes | yes | yes | direct/fact | no |
+| `SKP` | yes | yes | yes | bounded path | no |
+| `SKPM` | yes | yes | yes | bounded path | MMR |
+
+Graph-family reports further isolate `direct_entity_mention`,
+`exact_predicate_fact`, `one_hop_fact`, `two_hop_path`, and `memory_relation`
+from per-result telemetry. Run the executable matrix against one newly ingested
+shared corpus:
+
+```sh
+./evaluation/longmemeval/run_ablation_matrix.sh \
+  --dataset /path/to/longmemeval_s_cleaned.json \
+  --eval-config /path/to/eval_config.toml \
+  --daemon-config /path/to/dmemd-embedding.toml \
+  --output-root /path/to/results/longmemeval-ablation \
+  --repetitions 3
+```
+
+The script maps each cell to `--capabilities`, `--graph-policy`, and
+`--disable-diversification`, creates the corpus and semantic index once, and
+runs retrieval, answer generation, and judging for every repetition. It reports
+with `ablation_report.py --check`, so the matrix fails closed with the failed
+gate names when the promotion gates do not pass.
+
+### Reproducible Report
+
+`ablation_report.py` requires all six cells, at least three end-to-end
+repetitions per cell, and each run's `manifest.json`, `retrieval.jsonl`,
+`generation.jsonl`, and `judge.jsonl`. It rejects differing question coverage,
+corpus/dataset identities, generation identities, or judge identities. The
+report contains run-level means/sample standard deviations and
+candidate-minus-`S` percentile bootstrap CIs paired by question ID after
+averaging repetitions, plus query-type/evidence-count buckets, graph-family
+promotion precision/harm, duplicates, recall latency, serialized response bytes,
+and generation/judge token use.
+
+```sh
+~/miniforge3/envs/agent/bin/python evaluation/longmemeval/ablation_report.py \
+  --output results/longmemeval/ablation-report.json \
+  S@r1=results/S-r1 S@r2=results/S-r2 S@r3=results/S-r3 \
+  SK@r1=results/SK-r1 SK@r2=results/SK-r2 SK@r3=results/SK-r3 \
+  SKF@r1=results/SKF-r1 SKF@r2=results/SKF-r2 SKF@r3=results/SKF-r3 \
+  SKD@r1=results/SKD-r1 SKD@r2=results/SKD-r2 SKD@r3=results/SKD-r3 \
+  SKP@r1=results/SKP-r1 SKP@r2=results/SKP-r2 SKP@r3=results/SKP-r3 \
+  SKPM@r1=results/SKPM-r1 SKPM@r2=results/SKPM-r2 SKPM@r3=results/SKPM-r3
+```
+
+Response bytes are a storage proxy, not database growth. Priced provider cost
+and safety results are used only when present in source records; they are never
+estimated. The safety gate fails closed when safety was not measured. The full
+promotion gate also enforces no more than 0.5-point Recall@1/MRR regression,
+at least 50% graph-promoted top-10 precision, positive intended query-type gain
+without larger aggregate harm, and at least 50% duplicate-rate reduction.
 
 ## Output Files
 

@@ -1034,3 +1034,65 @@ The optimization is complete when:
 - Evaluation metrics are correct, stage-specific, and reproducible.
 - Fixed quality, safety, recovery, performance, and end-to-end benchmark gates
   pass on a fresh data directory.
+
+## Completion Record
+
+Recorded at the end of Phase 7. The authoritative task-level record, including
+raw gate output, is the Final Completion Record in
+[`specs/002-memory-retrieval-optimization/tasks.md`](../../specs/002-memory-retrieval-optimization/tasks.md).
+
+### Accepted Algorithm Identities
+
+| Stage | Identity |
+| --- | --- |
+| Schema | `schema-v1` (`schema_version = 1`) |
+| Processing | processor `builtin-noop-v1` under provider contract `processing-structured-v1` |
+| Consolidation | `consolidation-v1` (hash on, cosines 0.90/0.94, 32 candidates) |
+| Embedding document/query | `embedding-document-v2` / `embedding-query-v1` over `canonical-document-v1` |
+| Semantic calibration | `semantic-calibration-v1` (floor 0.35, margin 0.08) |
+| Keyword compiler | `keyword-compiler-v2` |
+| Predicate registry | `predicate-registry-v2` |
+| Graph extraction/scoring | `graph-typed-v1` / `graph-scoring-v3`; `auto-review-v1`, `entity-graph-statistics-v2` |
+| Query plan / temporal | `query-plan-v2` / `temporal-features-v1` |
+| Ranking features/weights | `ranking-features-v1` / `ranking-weights-v1` |
+| Context selection | `context-selection-v2` / `context-tokens-v1` |
+| Feedback | `v2` (90d window, minimum support 3, half-life 45d) |
+| Evaluation metric | `locomo-retrieval-metrics-v2`, `longmemeval-retrieval-metrics-v2` |
+
+### Accepted Evidence
+
+No end-to-end LoCoMo or LongMemEval provider run is committed. Accepted
+evidence is the deterministic quality and performance gates plus the versioned
+calibration report `evaluation/calibration/records/calibration-report-v1.json`.
+Its holdout paired interval `[0.0, 0.0]` does not exclude zero, so calibrated
+promotion is rejected and the deterministic default weights above remain
+authoritative. Reproducible external benchmark commands, shared-corpus rules,
+and required identities are documented in `evaluation/locomo/README.md` and
+`evaluation/longmemeval/README.md`; benchmark test-set labels remain
+holdout-only and never enter runtime feedback or weight fitting.
+
+### Capacity Bounds
+
+Consolidation accepts at most 32 candidates. Structured extraction is bounded at
+32 candidates, 4096 content characters, 100 evidence spans, and 64 entity
+references per event. Graph items are bounded at 256, with seeds limited to the
+calibrated semantic top 10 plus keyword top 10 deduplicated to at most 15
+revisions, at most two hops, and hub-penalized bounded fan-out. Context is
+bounded at 4000 tokens, 16000 characters, and 20 results, with semantic
+candidates capped by the query plan and context budget. Feedback priors are
+capped at 0.001 global and 0.0005 query-conditioned.
+
+### Known Limitations
+
+- Exact cosine search remains the only semantic implementation. The ANN
+  extension point and exact rerank are tested, but ANN is not implemented
+  because measured scale did not require it.
+- The learned reranker is evaluation-only; production uses the deterministic
+  ranker and its fallback.
+- Calibration promotion is not met on the fixed synthetic development set, so
+  weights remain the deterministic defaults rather than fitted values.
+- Providers are disabled by default. Keyword recall, direct memory, query
+  planning, and degraded graph work offline without secrets or network; structured
+  extraction and graph authority require a configured provider.
+- Graph health reports unavailable until a graph index generation exists, and
+  ranking then uses `features_only` or `off` instead of graph candidates.

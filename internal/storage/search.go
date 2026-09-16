@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -19,9 +21,8 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-// Retrieval channels are the only top-level recall sources. Entity resolution
-// is query understanding, and entity facts / memory relations are internal
-// graph signals; neither contributes an independent rank to the fusion.
+// These names identify internal recall capabilities and debug overrides. Graph
+// evidence is not an independent production recall channel.
 const (
 	ChannelKeyword  = "keyword"
 	ChannelSemantic = "semantic"
@@ -101,6 +102,8 @@ type SearchParams struct {
 	Plan                   retrieval.QueryPlan
 	QueryTime              retrieval.TimeInterval
 	QueryTimeSet           bool
+	SkipDiversification    bool
+	telemetry              *recallTelemetry
 }
 
 // searchIdentities binds a cursor to every algorithm identity that can change
@@ -213,12 +216,7 @@ type searchCandidate struct {
 
 func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
 	params.Channels = canonicalChannels(params.Channels)
-	if len(params.Channels) == 0 {
-		params.Channels = append([]string{}, retrievalChannelOrder...)
-	}
-	if len(params.EffectiveChannels) == 0 {
-		params.EffectiveChannels = params.Channels
-	} else {
+	if len(params.EffectiveChannels) > 0 {
 		params.EffectiveChannels = canonicalChannels(params.EffectiveChannels)
 	}
 	if params.Cursor != "" && !params.ReferenceTimeSet {
@@ -231,18 +229,36 @@ func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (d
 	if params.ReferenceTime == "" {
 		params.ReferenceTime = formatTime(r.runtime.Now())
 	}
+	params.telemetry = newRecallTelemetry()
+	totalStart := time.Now()
+	planStart := time.Now()
 	params = r.planQuery(ctx, params)
+	params.telemetry.markPhase("query_planning", planStart)
+	if len(params.Channels) == 0 {
+		params.Channels = []string{ChannelKeyword, ChannelSemantic}
+		if params.Plan.GraphPolicy != retrieval.GraphOff {
+			params.Channels = append(params.Channels, ChannelGraph)
+		}
+	}
+	if len(params.EffectiveChannels) == 0 {
+		params.EffectiveChannels = params.Channels
+	}
 	var response domain.SearchResponse
 	var err error
+	recallStart := time.Now()
 	if hasChannel(params.EffectiveChannels, ChannelSemantic) {
 		response, err = r.searchSemanticHybrid(ctx, params)
 	} else {
 		response, err = r.searchKeywordGraph(ctx, params)
 	}
+	params.telemetry.markPhase("recall", recallStart)
 	response.ReferenceTime = params.ReferenceTime
 	if err == nil {
+		selectStart := time.Now()
 		err = r.applyContextSelection(ctx, params, &response)
+		params.telemetry.markPhase("context_selection", selectStart)
 	}
+	params.telemetry.markPhase("total", totalStart)
 	if err == nil && params.OperationID != "" {
 		err = r.recordQueryTelemetry(ctx, params, response)
 	}
@@ -310,6 +326,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	}
 
 	all := map[string]*searchCandidate{}
+	keywordStart := time.Now()
 	if hasChannel(executed, ChannelKeyword) {
 		candidates, keywordErr := r.keywordRecall(ctx, tx, params, spaces, max(100, params.Limit*10))
 		if errors.Is(keywordErr, ErrInvalidSearchQuery) {
@@ -331,10 +348,13 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		}
 	}
 	calibrateKeywordScores(candidatePointers(all))
+	params.telemetry.markPhase("keyword", keywordStart)
+	graphStart := time.Now()
 	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, false, max(100, params.Limit*10))
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
+	params.telemetry.markPhase("graph", graphStart)
 	if len(executed) == 0 {
 		return domain.SearchResponse{}, ErrIndexDegraded
 	}
@@ -346,9 +366,19 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	if err := hydrateRankingProjections(ctx, tx, list); err != nil {
 		return domain.SearchResponse{}, err
 	}
+	recordCandidateTelemetry(params, all)
+	temporalBefore := len(list)
 	list = applyTemporalFilter(list, params.QueryTime, params.Plan.QuestionType)
+	if removed := temporalBefore - len(list); removed > 0 {
+		for i := 0; i < removed; i++ {
+			params.telemetry.addGate("temporal_filter")
+		}
+	}
+	rankStart := time.Now()
 	r.rankCandidates(list, params, usageScores)
 	list = admittedRankedCandidates(list)
+	params.telemetry.markPhase("ranking", rankStart)
+	recordGraphAdmissionTelemetry(params, list)
 	start := 0
 	if after != nil {
 		found := false
@@ -567,7 +597,12 @@ func encodeSearchCursor(hash string, params SearchParams, identities searchIdent
 func decodeSearchCursor(value string) (searchCursor, error) {
 	var cursor searchCursor
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || json.Unmarshal(decoded, &cursor) != nil || cursor.Version != 5 ||
+	if err != nil {
+		return searchCursor{}, ErrInvalidCursor
+	}
+	decoder := json.NewDecoder(bytes.NewReader(decoded))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&cursor) != nil || decoder.Decode(&struct{}{}) != io.EOF || cursor.Version != 5 ||
 		cursor.SchemaIdentity == "" || cursor.QueryHash == "" || cursor.QueryPlanIdentity == "" ||
 		cursor.MembershipIdentity == "" || cursor.RankingIdentity == "" || cursor.GraphIdentity == "" ||
 		cursor.ContextIdentity == "" || cursor.FeedbackIdentity == "" ||

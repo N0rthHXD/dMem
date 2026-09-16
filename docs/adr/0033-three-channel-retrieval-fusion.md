@@ -1,8 +1,8 @@
 # ADR 0033：三通道检索融合（rrf-v3）
 
-- 状态：accepted
+- 状态：superseded（被 [0035](0035-memory-retrieval-v4.md) 取代：三通道 rrf-v3 由独立 keyword/semantic 主召回加门控 graph 特征与版本化特征 ranker 取代）
 - 日期：2026-09-09
-- 关联：取代 ADR 0027 的通道枚举与 API 映射部分；修订 ADR 0032 的排名与融合部分（其构建主体、entity resolution 定位与图信号模型继续有效）
+- 关联：被 [0035](0035-memory-retrieval-v4.md) 取代；其取代 ADR 0027 通道枚举与修订 ADR 0032 排名融合的历史保留
 
 ## 背景
 

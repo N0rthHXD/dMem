@@ -8,10 +8,11 @@
 #   ./evaluate.sh --stage all --dataset DATASET --run-id RUN_ID [options]
 #
 # Options:
-#   --stage STAGE          retrieval|qa|all (default: all)
+#   --stage STAGE          corpus|indexes|retrieval|qa|all (default: all)
 #   --dataset PATH        LongMemEval JSON dataset (required)
 #   --run-id ID           Run identifier (required for retrieval/all)
 #   --output DIR          Result directory (default: <repo>/results/longmemeval/<run-id>)
+#   --corpus-output DIR   Existing shared corpus for indexes/retrieval
 #   --retrieval-mode MODE keyword|semantic|hybrid (default: config/default)
 #   --eval-config PATH    Evaluation TOML (required for QA)
 #   --daemon-config PATH  dmemd TOML (default: $DMEM_CONFIG or ~/.config/dmem/config.toml)
@@ -29,6 +30,7 @@ STAGE="all"
 DATASET=""
 RUN_ID=""
 OUTPUT=""
+CORPUS_OUTPUT=""
 RETRIEVAL_MODE=""
 EVAL_CONFIG="${DMEM_EVAL_CONFIG:-}"
 DAEMON_CONFIG="${DMEM_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml}"
@@ -65,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --dataset) DATASET="$2"; shift 2;;
     --run-id) RUN_ID="$2"; shift 2;;
     --output) OUTPUT="$2"; shift 2;;
+    --corpus-output) CORPUS_OUTPUT="$2"; shift 2;;
     --retrieval-mode) RETRIEVAL_MODE="$2"; shift 2;;
     --eval-config) EVAL_CONFIG="$2"; shift 2;;
     --daemon-config) DAEMON_CONFIG="$2"; shift 2;;
@@ -84,16 +87,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$STAGE" in
-  retrieval|qa|all) ;;
-  *) printf 'error: --stage must be retrieval, qa, or all\n' >&2; exit 1;;
+  corpus|indexes|retrieval|qa|all) ;;
+  *) printf 'error: invalid --stage\n' >&2; exit 1;;
 esac
 
 [[ -n "$DATASET" ]] || { printf 'error: --dataset is required\n' >&2; exit 1; }
 [[ -f "$DATASET" ]] || { printf 'error: dataset not found: %s\n' "$DATASET" >&2; exit 1; }
 
-if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
+if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" || "$STAGE" == "corpus" ]]; then
   [[ -n "$RUN_ID" ]] || { printf 'error: --run-id is required for retrieval\n' >&2; exit 1; }
 fi
+if [[ "$STAGE" == "indexes" && -z "$CORPUS_OUTPUT" ]]; then
+  printf 'error: --corpus-output is required for indexes\n' >&2
+  exit 1
+fi
+if [[ "$STAGE" == "indexes" ]]; then OUTPUT="$CORPUS_OUTPUT"; fi
 
 if [[ -z "$OUTPUT" ]]; then
   [[ -n "$RUN_ID" ]] || {
@@ -114,7 +122,7 @@ if [[ "$STAGE" == "qa" || "$STAGE" == "all" ]]; then
   }
 fi
 
-if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
+if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" || "$STAGE" == "corpus" || "$STAGE" == "indexes" ]]; then
   [[ -f "$DAEMON_CONFIG" ]] || {
     printf 'error: daemon config not found: %s\n' "$DAEMON_CONFIG" >&2
     exit 1
@@ -140,7 +148,11 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   }
 
   install -d "$OUTPUT"
-  TMP_ROOT="$OUTPUT/daemon-workspace"
+  if [[ -n "$CORPUS_OUTPUT" ]]; then
+    TMP_ROOT="$CORPUS_OUTPUT/daemon-workspace"
+  else
+    TMP_ROOT="$OUTPUT/daemon-workspace"
+  fi
   DATA_DIR="$TMP_ROOT/data"
   RUNTIME_DIR="$TMP_ROOT/runtime"
   SOCKET_PATH="$RUNTIME_DIR/dmem.sock"
@@ -148,7 +160,15 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   DAEMON_LOG="$TMP_ROOT/daemon.log"
   trap cleanup EXIT INT TERM
 
-  if [[ "$RESUME" == true ]]; then
+  if [[ -n "$CORPUS_OUTPUT" ]]; then
+    [[ -f "$DATA_DIR/dmem.db" ]] || { printf 'error: shared corpus not found: %s\n' "$CORPUS_OUTPUT" >&2; exit 1; }
+    awk -v data_dir="$DATA_DIR" -v runtime_dir="$RUNTIME_DIR" '
+    /^\[instance\]$/ { found=1; print; print "data_dir = \"" data_dir "\""; print "runtime_dir = \"" runtime_dir "\""; print "database_filename = \"dmem.db\""; print "socket_filename = \"dmem.sock\""; active=1; next }
+    active && /^\[/ { active=0 }
+    !active { print }
+    END { if (!found) exit 1 }
+    ' "$DAEMON_CONFIG" > "$DAEMON_CONFIG_PATH"
+  elif [[ "$RESUME" == true ]]; then
     [[ -f "$DAEMON_CONFIG_PATH" && -f "$DATA_DIR/dmem.db" ]] || {
       printf 'error: resumable daemon workspace not found: %s\n' "$TMP_ROOT" >&2
       exit 1
@@ -182,7 +202,7 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
 
   printf 'validating daemon config\n' >&2
   "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" config validate >/dev/null
-  if [[ "$RESUME" == false ]]; then
+  if [[ "$RESUME" == false && -z "$CORPUS_OUTPUT" ]]; then
     printf 'initializing fresh database\n' >&2
     "$DMEMD_BIN" --config "$DAEMON_CONFIG_PATH" init >/dev/null
   fi
@@ -218,7 +238,18 @@ if [[ "$STAGE" == "retrieval" || "$STAGE" == "all" ]]; then
   )
   [[ "$RESUME" == true ]] && RETRIEVAL_CMD+=(--resume)
   [[ -n "$RETRIEVAL_MODE" ]] && RETRIEVAL_CMD+=(--retrieval-mode "$RETRIEVAL_MODE")
+  [[ -n "$CORPUS_OUTPUT" ]] && RETRIEVAL_CMD+=(--corpus-output "$CORPUS_OUTPUT")
   [[ ${#RETRIEVAL_ARGS[@]} -gt 0 ]] && RETRIEVAL_CMD+=("${RETRIEVAL_ARGS[@]}")
+
+  if [[ "$STAGE" == "corpus" ]]; then
+    RETRIEVAL_CMD=("$PYTHON_BIN" -m dmem_longmemeval)
+    [[ -n "$EVAL_CONFIG" ]] && RETRIEVAL_CMD+=(--config "$EVAL_CONFIG")
+    RETRIEVAL_CMD+=(corpus --dataset "$DATASET" --socket "$SOCKET_PATH" --run-id "$RUN_ID" --output "$OUTPUT")
+  elif [[ "$STAGE" == "indexes" ]]; then
+    RETRIEVAL_CMD=("$PYTHON_BIN" -m dmem_longmemeval)
+    [[ -n "$EVAL_CONFIG" ]] && RETRIEVAL_CMD+=(--config "$EVAL_CONFIG")
+    RETRIEVAL_CMD+=(indexes --dataset "$DATASET" --socket "$SOCKET_PATH" --corpus-output "$CORPUS_OUTPUT")
+  fi
 
   if [[ "$STAGE" == "all" ]]; then
     printf '[1/3] running retrieval stage\n' >&2

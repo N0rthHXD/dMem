@@ -86,6 +86,7 @@ func TestRecallReplacementRequestValidation(t *testing.T) {
 		{"obsolete limit", "limit", 1},
 		{"obsolete character budget", "max_chars", 100},
 		{"obsolete production channels", "channels", []string{"keyword"}},
+		{"obsolete stale aggregate switch", "exclude_stale_aggregates", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -133,11 +134,51 @@ func TestRecallDebugCapabilityOverride(t *testing.T) {
 	}
 	semantic.Body.Close()
 
+	fixed := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "debug", "space_ids": []string{space.SpaceID},
+		"debug": map[string]any{"capabilities": []string{"keyword"}, "disable_diversification": true},
+	})
+	if fixed.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(fixed.Body)
+		fixed.Body.Close()
+		t.Fatalf("fixed-cutoff recall status = %d: %s", fixed.StatusCode, data)
+	}
+	var fixedResult domain.RecallResponse
+	decodeResponse(t, fixed, &fixedResult)
+	if !strings.Contains(fixedResult.Execution.ContextSelectionIdentity, "mode=fixed_cutoff") {
+		t.Fatalf("fixed-cutoff selection identity = %q", fixedResult.Execution.ContextSelectionIdentity)
+	}
+
+	policy := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "debug", "space_ids": []string{space.SpaceID},
+		"debug": map[string]any{"capabilities": []string{"keyword"}, "graph_policy": "features_only"},
+	})
+	if policy.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(policy.Body)
+		policy.Body.Close()
+		t.Fatalf("graph policy override status = %d: %s", policy.StatusCode, data)
+	}
+	policy.Body.Close()
+
+	stale := requestJSON(t, client, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "debug", "space_ids": []string{space.SpaceID},
+		"debug": map[string]any{"capabilities": []string{"keyword"}, "include_stale_aggregates": true},
+	})
+	if stale.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(stale.Body)
+		stale.Body.Close()
+		t.Fatalf("stale aggregate debug override status = %d: %s", stale.StatusCode, data)
+	}
+	stale.Body.Close()
+
 	for name, body := range map[string]map[string]any{
-		"empty capabilities":  {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{}}},
-		"unknown capability":  {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{"temporal"}}},
-		"null capabilities":   {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": nil}},
-		"unknown debug field": {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"features": []string{"semantic"}}},
+		"empty capabilities":   {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{}}},
+		"unknown capability":   {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{"temporal"}}},
+		"null capabilities":    {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": nil}},
+		"unknown debug field":  {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"features": []string{"semantic"}}},
+		"unknown graph policy": {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"graph_policy": "recursive"}},
+		"null graph policy":    {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"graph_policy": nil}},
+		"null stale override":  {"query": "debug", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"include_stale_aggregates": nil}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertSafeError(t, requestJSON(t, client, http.MethodPost, "/v1/recall", "", body), http.StatusUnprocessableEntity, "invalid_request")

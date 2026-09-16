@@ -102,6 +102,11 @@ def cmd_run(args: argparse.Namespace) -> None:
         logger.info("subset run: first %d conversations", len(conversations))
 
     retrieval_mode = args.retrieval_mode or cfg.retrieval.mode
+    capabilities_override = (
+        [value for value in args.capabilities.split(",") if value]
+        if args.capabilities
+        else None
+    )
     confirmation_policy = args.confirmation_policy or cfg.ingestion.confirmation_policy
     invalid_evidence_reference_retries = (
         args.invalid_evidence_reference_retries
@@ -143,6 +148,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         ),
         corpus_dir=args.corpus_output,
         dataset_subset=[c.sample_id for c in conversations],
+        capabilities_override=capabilities_override,
+        graph_policy=args.graph_policy,
+        disable_diversification=args.disable_diversification,
     )
 
     cp = Checkpoint(args.output)
@@ -154,6 +162,9 @@ def cmd_run(args: argparse.Namespace) -> None:
             "confirmation_policy": confirmation_policy,
             "invalid_evidence_reference_retries": invalid_evidence_reference_retries,
             "retrieval_mode": retrieval_mode,
+            "capabilities_override": capabilities_override,
+            "graph_policy": args.graph_policy,
+            "disable_diversification": args.disable_diversification,
             "limit": limit,
             "max_chars": max_chars,
             "cutoffs": cutoffs,
@@ -484,7 +495,6 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 
     if judge_records:
         all_acc = [1 if rec.get("label") else 0 for rec in judge_records.values()]
-        import numpy as np
         type2acc: dict[int, list[int]] = {}
         for rec in judge_records.values():
             type2acc.setdefault(rec.get("category", 0), []).append(
@@ -625,6 +635,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--retrieval-mode", default=None,
         choices=["keyword", "semantic", "graph", "hybrid"],
+    )
+    p.add_argument(
+        "--capabilities", default=None,
+        help="Comma-separated debug capability override (evaluation ablations).",
+    )
+    p.add_argument(
+        "--graph-policy", default=None,
+        choices=["off", "features_only", "direct", "bounded_path"],
+        help="Debug graph policy override (evaluation ablations).",
+    )
+    p.add_argument(
+        "--disable-diversification", action="store_true",
+        help="Use fixed-cutoff context selection instead of MMR (evaluation ablations).",
     )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--max-chars", type=int, default=None)

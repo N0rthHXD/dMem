@@ -1,9 +1,10 @@
 # dMem
 
 dMem is a local, single-user memory daemon for agents and applications. It stores
-versioned memories and their evidence in SQLite, serves HTTP/JSON over a Unix
-domain socket, and supports scoped keyword, semantic, entity, and relation
-retrieval. External processing and embedding providers are disabled by default.
+versioned, structured memories and their evidence in SQLite, serves HTTP/JSON
+over a Unix domain socket, and retrieves scoped keyword and semantic candidates
+with gated typed-graph features. External processing and embedding providers are
+disabled by default.
 
 Schema v1 has no migration path. Databases with an incompatible schema must be
 replaced by a newly initialized data directory.

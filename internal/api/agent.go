@@ -29,27 +29,29 @@ type rememberRequest struct {
 }
 
 type recallRequest struct {
-	Query                  string              `json:"query"`
-	SpaceIDs               []string            `json:"space_ids"`
-	IncludeAncestors       json.RawMessage     `json:"include_ancestors"`
-	MemoryTypes            json.RawMessage     `json:"memory_types"`
-	States                 json.RawMessage     `json:"states"`
-	ReferenceTime          json.RawMessage     `json:"reference_time"`
-	Intent                 json.RawMessage     `json:"intent"`
-	Debug                  *recallDebugRequest `json:"debug"`
-	MaxResults             json.RawMessage     `json:"max_results"`
-	MaxContextTokens       json.RawMessage     `json:"max_context_tokens"`
-	IncludeEvidence        json.RawMessage     `json:"include_evidence"`
-	Explain                json.RawMessage     `json:"explain"`
-	Cursor                 json.RawMessage     `json:"cursor"`
-	ExcludeStaleAggregates json.RawMessage     `json:"exclude_stale_aggregates"`
+	Query            string              `json:"query"`
+	SpaceIDs         []string            `json:"space_ids"`
+	IncludeAncestors json.RawMessage     `json:"include_ancestors"`
+	MemoryTypes      json.RawMessage     `json:"memory_types"`
+	States           json.RawMessage     `json:"states"`
+	ReferenceTime    json.RawMessage     `json:"reference_time"`
+	Intent           json.RawMessage     `json:"intent"`
+	Debug            *recallDebugRequest `json:"debug"`
+	MaxResults       json.RawMessage     `json:"max_results"`
+	MaxContextTokens json.RawMessage     `json:"max_context_tokens"`
+	IncludeEvidence  json.RawMessage     `json:"include_evidence"`
+	Explain          json.RawMessage     `json:"explain"`
+	Cursor           json.RawMessage     `json:"cursor"`
 }
 
 // recallDebugRequest is the evaluation/debug-only contract. Production
 // callers express intent and budget; explicit capability overrides exist only
 // for evaluation and debugging.
 type recallDebugRequest struct {
-	Capabilities json.RawMessage `json:"capabilities"`
+	Capabilities           json.RawMessage `json:"capabilities"`
+	GraphPolicy            json.RawMessage `json:"graph_policy"`
+	DisableDiversification json.RawMessage `json:"disable_diversification"`
+	IncludeStaleAggregates json.RawMessage `json:"include_stale_aggregates"`
 }
 
 type memoryFeedbackRequest struct {
@@ -235,7 +237,7 @@ func appIdentity(caller, key, requestID, method, route string, request any) appl
 }
 
 func recallQuery(request recallRequest) (application.RecallQuery, error) {
-	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Channels: []string{"keyword", "semantic", "graph"}, Limit: 20, MaxContextTokens: 4000, MaxChars: 16000, ExcludeStaleAggregates: true}
+	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Limit: 20, MaxContextTokens: 4000, MaxChars: 16000, ExcludeStaleAggregates: true}
 	seenSpaces := map[string]bool{}
 	for _, id := range request.SpaceIDs {
 		if !validUUID(id) {
@@ -282,6 +284,23 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 			return application.RecallQuery{}, errors.New("debug.capabilities is invalid")
 		}
 	}
+	if request.Debug != nil && request.Debug.GraphPolicy != nil {
+		if isNull(request.Debug.GraphPolicy) || json.Unmarshal(request.Debug.GraphPolicy, &query.GraphPolicy) != nil {
+			return application.RecallQuery{}, errors.New("debug.graph_policy is invalid")
+		}
+	}
+	if request.Debug != nil && request.Debug.DisableDiversification != nil {
+		if isNull(request.Debug.DisableDiversification) || json.Unmarshal(request.Debug.DisableDiversification, &query.SkipDiversification) != nil {
+			return application.RecallQuery{}, errors.New("debug.disable_diversification is invalid")
+		}
+	}
+	if request.Debug != nil && request.Debug.IncludeStaleAggregates != nil {
+		var include bool
+		if isNull(request.Debug.IncludeStaleAggregates) || json.Unmarshal(request.Debug.IncludeStaleAggregates, &include) != nil {
+			return application.RecallQuery{}, errors.New("debug.include_stale_aggregates must be a boolean")
+		}
+		query.ExcludeStaleAggregates = !include
+	}
 	if err := decodeRange(request.MaxResults, &query.Limit, 1, 1000, "max_results"); err != nil {
 		return application.RecallQuery{}, err
 	}
@@ -297,16 +316,6 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 	}
 	if request.Cursor != nil && (isNull(request.Cursor) || json.Unmarshal(request.Cursor, &query.Cursor) != nil) {
 		return application.RecallQuery{}, errors.New("cursor must be a string")
-	}
-	if request.ExcludeStaleAggregates != nil {
-		var exclude bool
-		if isNull(request.ExcludeStaleAggregates) || json.Unmarshal(request.ExcludeStaleAggregates, &exclude) != nil {
-			return application.RecallQuery{}, errors.New("exclude_stale_aggregates must be a boolean")
-		}
-		if !exclude && request.Debug == nil {
-			return application.RecallQuery{}, errors.New("including stale aggregates requires debug")
-		}
-		query.ExcludeStaleAggregates = exclude
 	}
 	query.States = sortedUnique(query.States)
 	query.MemoryTypes = sortedUnique(query.MemoryTypes)

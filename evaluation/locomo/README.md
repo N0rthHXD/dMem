@@ -67,7 +67,7 @@ by `api_key_env`.
 ```sh
 cp evaluation/locomo/eval_config.example.toml eval_config.toml
 # Edit eval_config.toml for your environment
-export OPENAI_API_KEY=sk-...
+export DMEM_PROVIDER_KEY=...
 ```
 
 | Section | Key | Description |
@@ -262,44 +262,63 @@ and `degradation_counts` in `manifest.json`, plus per-result report fields
 Use `summarize` (which recomputes metrics from raw records and refuses a metric
 schema mismatch) to produce the immutable baseline records.
 
-The immutable Phase 0 pre-replacement capture is
-`baselines/locomo-phase0-rrf-v3.json`. It was recorded on 2026-09-14 from all 10
-conversations and 1,986 questions with no retrieval failures or degraded
-responses. All modes use dataset SHA
-`79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
-and shared corpus `ingestion.jsonl` SHA
-`a4225c775f1e6f2c91e332a17b4db1731b07065e3d052e587fcf81863d792165`.
-The daemon build identity is
-`9723af424262df7731b41298b6e7c6022e3769575894813b2ffe61cb940f3bec`,
-the historical ranking identity is `rrf-v3`, the FTS version is `1`, and the graph
-version is `4046`. Exact per-run semantic versions and checkpoint SHA-256
-values are retained in the capture file.
+### Fixed Ablation Matrix
 
-The four run IDs are `phase0-current-keyword-v1`,
-`phase0-current-semantic-v1`, `phase0-current-graph-v1`, and
-`phase0-current-hybrid-v1`. Each command used `--fail-on-degraded`; the exact
-retrieval command was the following, with `$mode` replaced by each mode:
+Comparisons use the fixed ablation matrix. Each cell selects a retrieval
+configuration through the evaluation-only `debug` overrides; every cell is run
+against the identical fresh shared corpus, and generation/judge parameters are
+held constant.
+
+| Cell | Semantic | Keyword | Graph features | Graph candidates | Diversification |
+| --- | --- | --- | --- | --- | --- |
+| `S` | yes | no | no | no | no |
+| `SK` | yes | yes | no | no | no |
+| `SKF` | yes | yes | yes | no | no |
+| `SKD` | yes | yes | yes | direct/fact | no |
+| `SKP` | yes | yes | yes | bounded path | no |
+| `SKPM` | yes | yes | yes | bounded path | MMR |
+
+Graph-family ablations additionally isolate `direct_entity_mention`,
+`exact_predicate_fact`, `one_hop_fact`, `two_hop_path`, and `memory_relation`
+so a result can be attributed to one graph family rather than "graph on/off".
+
+Run the whole matrix with at least three end-to-end repetitions on one fresh
+shared corpus:
 
 ```sh
-./evaluation/locomo/evaluate.sh --stage retrieval \
-  --dataset /home/ut005426@uos/data/locomo/locomo10.json \
-  --run-id "phase0-current-$mode-v1" \
-  --output "/home/ut005426@uos/data/locomo/results/phase0-current-$mode-v1" \
-  --corpus-output /home/ut005426@uos/data/locomo/results/full-keyword-001 \
-  --retrieval-mode "$mode" \
-  --eval-config /home/ut005426@uos/data/locomo/eval_config.locomo-full.toml \
-  --daemon-config /home/ut005426@uos/data/locomo/dmemd.locomo-full.toml \
-  --dmemd /tmp/opencode/dmemd-phase0 \
-  --python /home/ut005426@uos/miniforge3/envs/agent/bin/python \
-  -- --fail-on-degraded
+./evaluation/locomo/run_ablation_matrix.sh \
+  --dataset /path/to/locomo10.json \
+  --eval-config /path/to/eval_config.toml \
+  --daemon-config /path/to/dmemd-embedding.toml \
+  --output-root /path/to/results/ablation \
+  --repetitions 3
 ```
 
-The capture uses unique-evidence coverage@10 as `recall` and unique-evidence
-nDCG@10 as `ranking`. Per-request daemon allocation and provider pricing are
-not exposed, so the recorded `allocation` is the mean serialized response-byte
-proxy and `provider_cost` is the query-embedding request-count proxy. These
-definitions are embedded in the capture and must not be compared with a future
-capture that uses different measurement units.
+The script runs retrieval, generation, and judging for every cell/repetition,
+then writes `ablation-report.json`. It invokes `ablation_report.py --check`, so
+the matrix fails closed with the failed gate names when the promotion gates do
+not pass. The report command requires all six cells,
+at least three repetitions per cell, retrieval/generation/judge checkpoints,
+identical query IDs, one corpus ID and dataset SHA, and fixed generation/judge
+model, prompt, temperature, and token-limit identities. `CELL@RUN=DIR` may be
+used to report completed runs; retrieval-only checkpoints are rejected.
+
+The report uses unique-evidence coverage@10 as `recall`, recall-any@1 as
+`recall_at_1`, nDCG@10 as `ranking`, and MRR@10 as `mrr`. It reports run-level
+means/sample standard deviations and candidate-minus-`S` percentile bootstrap
+CIs paired by query ID after averaging each query across repetitions. It also
+reports category and evidence-count buckets, graph-family promotion
+precision/harm, duplicate rate, recall latency, serialized response bytes, and
+generation/judge prompt and completion tokens.
+
+Serialized response bytes are a storage/allocation proxy, not database growth.
+Provider requests, priced provider cost, and safety violations are emitted only
+when present in source records; unavailable values remain zero and
+`safety_measured=false`. The safety promotion gate fails closed when no safety
+measurement is present. A promotion passes only when Recall@1 and MRR regression
+are each at most 0.5 points, graph-promoted top-10 precision is at least 50%, an
+intended category gain exceeds aggregate harm, duplicate rate falls by at least
+50%, and safety does not regress.
 
 ## Metrics
 

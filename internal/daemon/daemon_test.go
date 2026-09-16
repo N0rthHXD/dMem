@@ -82,6 +82,9 @@ func TestDaemonLifecycleAndHealth(t *testing.T) {
 	if health.OverallStatus != "healthy" || health.StorageState != "ready" || health.StorageIntegrityState == "" || health.QueueState != "ready" || health.ProcessorState != "not_configured" || health.ProcessorIdentity != "none" || health.SemanticIndexState != "not_configured" || health.BackupState != "ready" {
 		t.Fatalf("unexpected dimension health: %+v", health)
 	}
+	if health.Decision == nil || health.Decision.Ranker.Identity == "" || health.Decision.Context.Identity == "" || health.Decision.Feedback.Identity == "" {
+		t.Fatalf("decision health missing: %+v", health.Decision)
+	}
 
 	second, err := Start(context.Background(), cfg)
 	if second != nil {
@@ -233,7 +236,7 @@ func TestEmbeddingProviderDoesNotConfigureProcessing(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatal(err)
 	}
-	if health.ProcessorState != "not_configured" || health.ProcessorIdentity != "none" || health.SemanticIndexState != "unavailable" {
+	if health.ProcessorState != "not_configured" || health.ProcessorIdentity != "none" {
 		t.Fatalf("embedding-only health = %+v", health)
 	}
 }

@@ -2,10 +2,11 @@
 
 dMem is a local Linux daemon backed by SQLite. Its current product surface
 includes direct memory operations, raw-event processing and review, scoped
-multi-channel retrieval (keyword, semantic, graph), entities, entity facts, and
-relations, explicit conflict evolution,
-feedback-derived ranking, reviewed aggregates, backup and restore, and a Go
-library for logical import and export.
+keyword and semantic primary recall with gated typed-graph features and budgeted
+context selection, entities, entity facts, and relations, explicit conflict
+evolution, feedback-derived ranking, reviewed scene/topic/timeline aggregates,
+decision telemetry and explain output, backup and restore, and a Go library for
+logical import and export.
 
 Schema v1 has no migration path. When the executable schema changes, initialize
 a new data directory instead of reusing an incompatible database.
@@ -24,13 +25,16 @@ a new data directory instead of reusing an incompatible database.
 - [Entities, relations, conflicts, and evolution](architecture/evolution.md):
   reviewed changes, entity facts, and conflict resolution.
 - [Feedback, ranking, and aggregation](architecture/feedback-and-aggregation.md):
-  append-only feedback, ranking signals, and reviewed scene/topic memories.
+  append-only feedback, ranking signals, decision telemetry, and reviewed
+  scene/topic/timeline memories.
 - [Logical portability](storage/logical-portability.md): Format v1 export/import
   library and its consistency boundary.
 - [Operations](operations/runbook.md): configuration, health, backup, restore,
   rebuilds, and failure handling.
 - [Testing](development/testing-and-evaluation.md): current build profile and
   executable checks.
+- [LoCoMo](../evaluation/locomo/README.md): shared-corpus retrieval benchmark,
+  fixed ablation matrix, and reproducible end-to-end reports.
 - [LongMemEval](../evaluation/longmemeval/README.md): external retrieval benchmark
   workflow and metric semantics.
 
