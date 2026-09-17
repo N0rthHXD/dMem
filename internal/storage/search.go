@@ -414,10 +414,56 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 			return domain.SearchResponse{}, ErrInvalidCursor
 		}
 	}
+	if err := r.finalizeRankedCandidates(ctx, tx, params, spaces, &response, list, start, identities, hash); err != nil {
+		return domain.SearchResponse{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.SearchResponse{}, err
+	}
+	return response, nil
+}
 
-	var lastInspected *searchCandidate
-	windowFull := false
+// searchCandidateCurrent re-verifies a recalled candidate against the
+// authoritative current revision. Keyword candidates carry the canonical
+// document retained at recall time; semantic candidates carry the projection
+// content hash and must still match the live searchable projection.
+func searchCandidateCurrent(ctx context.Context, db rowQuerier, memory domain.Memory, candidate searchCandidate, spaces []string, params SearchParams) (bool, error) {
+	if memory.CurrentRevision.RevisionID != candidate.revisionID {
+		return false, nil
+	}
+	if candidate.ftsContent != "" {
+		if memory.CurrentRevision.DisplayContent != candidate.projectionContent {
+			return false, nil
+		}
+		if canonicalStructuredDocument(memory.CurrentRevision) != candidate.ftsContent {
+			return false, nil
+		}
+	}
+	if candidate.semanticRank > 0 {
+		var projectionHash string
+		if err := db.QueryRowContext(ctx, `SELECT content_hash FROM memory_projections WHERE memory_id=? AND revision_id=? AND searchable=1`, candidate.memoryID, candidate.revisionID).Scan(&projectionHash); err != nil {
+			return false, nil
+		}
+		if projectionHash != candidate.contentHash {
+			return false, nil
+		}
+	}
+	return searchMemoryCurrent(memory, spaces, params), nil
+}
+
+// finalizeRankedCandidates materializes the ranked window from start into
+// response.Results. It re-reads authoritative current state for every candidate,
+// deduplicates by memory, derives matched channels and selection reason from the
+// candidate's channel fields, attaches conflict references and explain payloads,
+// and emits the continuation cursor when the window filled.
+func (r *Repository) finalizeRankedCandidates(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, response *domain.SearchResponse, list []*searchCandidate, start int, identities searchIdentities, hash string) error {
+	response.RankingIdentity = identities.Ranking
+	response.ContextIdentity = identities.Context
+	response.FeedbackIdentity = identities.Feedback
+	response.QueryPlanIdentity = params.Plan.Identity()
 	returned := make(map[string]struct{})
+	var last *searchCandidate
+	windowFull := false
 	window := selectionWindow(params.Limit)
 	for i := start; i < len(list); i++ {
 		candidate := list[i]
@@ -426,44 +472,55 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		}
 		memory, err := getMemory(ctx, tx, candidate.memoryID, false)
 		if errors.Is(err, ErrNotFound) {
-			lastInspected = candidate
 			continue
 		}
 		if err != nil {
-			return domain.SearchResponse{}, err
+			return err
 		}
-		if !searchCandidateCurrent(memory, *candidate, spaces, params) {
-			lastInspected = candidate
+		current, err := searchCandidateCurrent(ctx, tx, memory, *candidate, spaces, params)
+		if err != nil {
+			return err
+		}
+		if !current {
 			continue
 		}
-		lastInspected = candidate
-		channels := make([]string, 0, 2)
-		var relevance *float64
+		channels := make([]string, 0, 3)
 		reason := ""
+		var keywordRelevance, semanticScore *float64
 		if candidate.keywordRank > 0 {
 			channels = append(channels, ChannelKeyword)
 			value := candidate.keywordScore
-			relevance = &value
+			keywordRelevance = &value
 			reason = "keyword_match"
+		}
+		if candidate.semanticRank > 0 && !candidate.semanticRejected {
+			channels = append(channels, ChannelSemantic)
+			value := candidate.semanticScore
+			semanticScore = &value
+			if reason == "" {
+				reason = "semantic_match"
+			}
 		}
 		if candidate.graphRank > 0 {
 			channels = append(channels, ChannelGraph)
 			if reason == "" {
 				reason = "graph_match"
-			} else {
-				reason = "channel_fusion"
 			}
+		}
+		if len(channels) >= 2 {
+			reason = "channel_fusion"
 		}
 		refs, err := conflictRefs(ctx, tx, memory.MemoryID, memory.CurrentRevision.RevisionID)
 		if err != nil {
-			return domain.SearchResponse{}, err
+			return err
 		}
-		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: relevance, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate), ProtectedPrimary: candidate.protected}
+		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keywordRelevance, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate), ProtectedPrimary: candidate.protected}
 		if params.Explain {
 			r.applyExplain(candidate, &searchResult, params)
 		}
 		response.Results = append(response.Results, searchResult)
 		returned[memory.MemoryID] = struct{}{}
+		last = candidate
 		if len(response.Results) >= window {
 			windowFull = true
 			break
@@ -471,30 +528,12 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	}
 	// A full ranked window may have more candidates behind the bounded recall,
 	// so it always yields a continuation cursor anchored at the window tail.
-	if windowFull && lastInspected != nil {
+	if windowFull && last != nil {
 		response.Truncated = true
-		next := encodeSearchCursor(hash, params, identities, *lastInspected)
+		next := encodeSearchCursor(hash, params, identities, *last)
 		response.NextCursor = &next
 	}
-	if err := tx.Commit(); err != nil {
-		return domain.SearchResponse{}, err
-	}
-	return response, nil
-}
-
-func searchCandidateCurrent(memory domain.Memory, candidate searchCandidate, spaces []string, params SearchParams) bool {
-	if memory.CurrentRevision.RevisionID != candidate.revisionID {
-		return false
-	}
-	if candidate.ftsContent != "" {
-		if memory.CurrentRevision.DisplayContent != candidate.projectionContent {
-			return false
-		}
-		if canonicalStructuredDocument(memory.CurrentRevision) != candidate.ftsContent {
-			return false
-		}
-	}
-	return searchMemoryCurrent(memory, spaces, params)
+	return nil
 }
 
 func searchScope(ctx context.Context, tx *sql.Tx, starts []string, ancestors bool) ([]string, error) {

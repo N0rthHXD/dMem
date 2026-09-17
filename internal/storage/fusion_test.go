@@ -225,6 +225,49 @@ func TestProtectedPrimaryDoesNotOverrideStrongerPrimary(t *testing.T) {
 	}
 }
 
+// TestRankedFinalizerChannelRulesAreConsistentAcrossPaths pins the unified
+// finalizer contract: matched channels and selection reason derive only from the
+// candidate's channel fields, so the same corpus yields the same rule table on
+// the keyword-only, semantic-only, and hybrid paths.
+func TestRankedFinalizerChannelRulesAreConsistentAcrossPaths(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	configureSemanticTest(t, repository, &semanticTestProvider{})
+	memory := createMemoryWithContent(t, repository, "finalizer-both", "automobile finalizetoken")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	keyword, err := repository.SearchMemories(context.Background(), SearchParams{Query: "finalizetoken", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 5, MaxChars: 1000})
+	if err != nil || len(keyword.Results) != 1 || keyword.Results[0].Memory.MemoryID != memory.MemoryID {
+		t.Fatalf("keyword path = %+v, %v", keyword, err)
+	}
+	keywordResult := keyword.Results[0]
+	assertChannels(t, keywordResult.MatchedChannels, "keyword")
+	if keywordResult.SelectionReason != "keyword_match" || keywordResult.KeywordRelevance == nil || keywordResult.SemanticScore != nil || keywordResult.RankContribution.Final <= 0 {
+		t.Fatalf("keyword finalize rules = %+v", keywordResult)
+	}
+
+	semantic, err := repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"semantic"}, Limit: 5, MaxChars: 1000})
+	if err != nil || len(semantic.Results) != 1 || semantic.Results[0].Memory.MemoryID != memory.MemoryID {
+		t.Fatalf("semantic path = %+v, %v", semantic, err)
+	}
+	semanticResult := semantic.Results[0]
+	assertChannels(t, semanticResult.MatchedChannels, "semantic")
+	if semanticResult.SelectionReason != "semantic_match" || semanticResult.SemanticScore == nil || semanticResult.KeywordRelevance != nil || semanticResult.RankContribution.Final <= 0 {
+		t.Fatalf("semantic finalize rules = %+v", semanticResult)
+	}
+
+	hybrid, err := repository.SearchMemories(context.Background(), SearchParams{Query: "car finalizetoken", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "semantic"}, Limit: 5, MaxChars: 1000})
+	if err != nil || len(hybrid.Results) != 1 || hybrid.Results[0].Memory.MemoryID != memory.MemoryID {
+		t.Fatalf("hybrid path = %+v, %v", hybrid, err)
+	}
+	hybridResult := hybrid.Results[0]
+	assertChannels(t, hybridResult.MatchedChannels, "keyword", "semantic")
+	if hybridResult.SelectionReason != "channel_fusion" || hybridResult.KeywordRelevance == nil || hybridResult.SemanticScore == nil || hybridResult.RankContribution.Final <= 0 {
+		t.Fatalf("hybrid finalize rules = %+v", hybridResult)
+	}
+}
+
 func TestExplainSelectionReasonsRemainStable(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	configureSemanticTest(t, repository, &semanticTestProvider{})
