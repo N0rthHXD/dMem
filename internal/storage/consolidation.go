@@ -615,8 +615,8 @@ func (r *Repository) insertConsolidationEvolution(ctx context.Context, tx *sql.T
 	}
 	params := CreateEvolutionProposalParams{
 		EventID: candidate.EventID, SpaceID: candidate.SpaceID, Action: action,
-		ProposedContent: &revision.DisplayContent, ValidFrom: candidate.ValidFrom, ValidUntil: candidate.ValidUntil,
-		MemoryType: stringPointer(string(revision.Kind)), Sensitivity: candidate.Sensitivity,
+		ProposedContent: &revision.DisplayContent, ValidFrom: timePointerText(revision.ValidFrom), ValidUntil: timePointerText(revision.ValidUntil),
+		MemoryType: stringPointer(string(revision.Kind)), Sensitivity: revision.Sensitivity,
 		ProcessorIdentity: candidate.ProcessorIdentity, ProviderIdentity: candidate.ProviderIdentity, ModelIdentity: candidate.ModelIdentity,
 		ProcessingVersion: candidate.ProcessingVersion,
 		RelationSpecs:     []byte("[]"), MentionSpecs: []byte("[]"),

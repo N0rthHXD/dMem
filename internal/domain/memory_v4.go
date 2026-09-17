@@ -112,8 +112,8 @@ func (e RevisionEvidence) Valid() bool {
 
 // MemoryRevision is immutable revision authority with normalized retrieval fields.
 type MemoryRevision struct {
-	RevisionID             string             `json:"revision_id"`
-	MemoryID               string             `json:"memory_id"`
+	RevisionID             string             `json:"revision_id,omitempty"`
+	MemoryID               string             `json:"memory_id,omitempty"`
 	ParentRevisionID       *string            `json:"parent_revision_id,omitempty"`
 	RestoredFromRevisionID *string            `json:"restored_from_revision_id,omitempty"`
 	Kind                   MemoryKind         `json:"kind"`
@@ -136,10 +136,10 @@ type MemoryRevision struct {
 	Specificity            float64            `json:"specificity"`
 	Confidence             float64            `json:"confidence"`
 	Evidence               []RevisionEvidence `json:"evidence"`
-	CreatedBy              string             `json:"created_by"`
-	ProcessingVersion      string             `json:"processing_version"`
+	CreatedBy              string             `json:"created_by,omitempty"`
+	ProcessingVersion      string             `json:"processing_version,omitempty"`
 	ProcessorIdentity      string             `json:"processor_identity,omitempty"`
-	CreatedAt              string             `json:"created_at"`
+	CreatedAt              string             `json:"created_at,omitempty"`
 }
 
 var (

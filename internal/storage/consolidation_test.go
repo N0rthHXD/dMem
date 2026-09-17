@@ -256,10 +256,8 @@ func confirmStructuredMemory(t *testing.T, repository *Repository, key, content 
 		Evidence: []domain.RevisionEvidence{{EvidenceID: "ev-" + key, EventID: "event-1", Role: domain.EvidenceRoleDirect}},
 	}
 	params := candidateParams()
-	params.Content = content
-	params.MemoryType = "fact"
+	params.Revision = structured
 	params.Evidence = directEvidence("event-1")
-	params.StructuredRevision = &structured
 	candidate, duplicate, err := repository.CreateCandidate(context.Background(), params)
 	if err != nil || duplicate {
 		t.Fatalf("CreateCandidate(%s) = %+v dup=%t err=%v", key, candidate, duplicate, err)
@@ -277,8 +275,8 @@ func TestConsolidationConfirmAttachesEvidenceWithoutNewMemory(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	base := createTestMemory(t, repository, "attach-base")
 	params := candidateParams()
-	params.Content = base.CurrentRevision.DisplayContent
-	params.MemoryType = "fact"
+	params.Revision.DisplayContent = base.CurrentRevision.DisplayContent
+	params.Revision.CanonicalContent = base.CurrentRevision.DisplayContent
 	params.Evidence = directEvidence("event-2")
 	candidate, _, err := repository.CreateCandidate(context.Background(), params)
 	if err != nil {
@@ -327,10 +325,8 @@ func TestConsolidationConfirmRefineCreatesEvolutionProposal(t *testing.T) {
 	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	base := confirmStructuredMemory(t, repository, "refine-base", "alice account role", []string{"alice"}, map[string]string{"role": "manager"}, &from, nil)
 	params := candidateParams()
-	params.Content = "alice account role"
-	params.MemoryType = "fact"
 	params.Evidence = directEvidence("event-2")
-	params.StructuredRevision = &domain.MemoryRevision{
+	params.Revision = domain.MemoryRevision{
 		Kind: domain.MemoryKindFact, DisplayContent: "alice account role", CanonicalContent: "alice account role",
 		SubjectEntityIDs: []string{"alice"}, Attributes: map[string]string{"role": "engineer"},
 		Confidence: 0.9, Sensitivity: "normal",

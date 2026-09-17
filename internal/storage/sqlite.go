@@ -253,7 +253,6 @@ func verifySchema(ctx context.Context, db *sql.DB) error {
 		"aggregate_proposal_reviews",
 		"aggregate_proposals",
 		"candidate_evidence",
-		"candidate_related_memories",
 		"candidate_reviews",
 		"candidates",
 		"capability_states",

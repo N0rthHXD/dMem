@@ -248,13 +248,7 @@ type Candidate struct {
 	CandidateID         string             `json:"candidate_id"`
 	EventID             string             `json:"event_id"`
 	SpaceID             string             `json:"space_id"`
-	MemoryType          string             `json:"memory_type"`
-	Content             string             `json:"content"`
-	ValidFrom           *string            `json:"valid_from,omitempty"`
-	ValidUntil          *string            `json:"valid_until,omitempty"`
-	Confidence          *float64           `json:"confidence,omitempty"`
-	Sensitivity         string             `json:"sensitivity"`
-	SuggestionKind      string             `json:"suggestion_kind"`
+	Revision            MemoryRevision     `json:"revision"`
 	ProcessorIdentity   string             `json:"processor_identity"`
 	ProviderIdentity    *string            `json:"provider_identity,omitempty"`
 	ModelIdentity       *string            `json:"model_identity,omitempty"`
@@ -264,7 +258,6 @@ type Candidate struct {
 	ConfirmedMemoryID   *string            `json:"confirmed_memory_id,omitempty"`
 	ConfirmedRevisionID *string            `json:"confirmed_revision_id,omitempty"`
 	Evidence            []RevisionEvidence `json:"evidence"`
-	RelatedMemoryIDs    []string           `json:"related_memory_ids"`
 	Reviews             []CandidateReview  `json:"reviews"`
 	CreatedAt           string             `json:"created_at"`
 	ReviewedAt          *string            `json:"reviewed_at,omitempty"`

@@ -75,7 +75,7 @@ func TestGraphExtractionNotScheduledWhenDisabled(t *testing.T) {
 func TestUnconfirmedCandidateDoesNotWriteGraphAuthority(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	enableGraphExtraction(r)
-	candidate := CreateCandidateParams{EventID: "event-1", SpaceID: "space-1", MemoryType: "fact", Content: "Alice uses PostgreSQL", Sensitivity: "normal", SuggestionKind: "new", ProcessorIdentity: "p", ProcessingVersion: "v", Evidence: directEvidence("event-1")}
+	candidate := CreateCandidateParams{EventID: "event-1", SpaceID: "space-1", ProcessorIdentity: "p", ProcessingVersion: "v", Evidence: directEvidence("event-1"), Revision: domain.MemoryRevision{Kind: domain.MemoryKindFact, DisplayContent: "Alice uses PostgreSQL", CanonicalContent: "Alice uses PostgreSQL", Sensitivity: "normal", Confidence: 0.9, Evidence: []domain.RevisionEvidence{{EvidenceID: "graph-evidence", EventID: "event-1", Role: domain.EvidenceRoleDirect}}}}
 	created, _, err := r.CreateCandidate(context.Background(), candidate)
 	if err != nil {
 		t.Fatal(err)

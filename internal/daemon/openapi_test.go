@@ -569,9 +569,9 @@ func TestOpenAPIReplacementMemoryKindContract(t *testing.T) {
 		t.Errorf("MemoryKind enum = %v, want exactly %v", kind.Value.Enum, replacement)
 	}
 	candidate := doc.Components.Schemas["Candidate"].Value
-	memoryType := candidate.Properties["memory_type"]
-	if memoryType == nil || !strings.HasSuffix(memoryType.Ref, "/MemoryKind") {
-		t.Errorf("Candidate.memory_type does not reference MemoryKind: %+v", memoryType)
+	revision := candidate.Properties["revision"]
+	if revision == nil || !strings.HasSuffix(revision.Ref, "/MemoryRevision") {
+		t.Errorf("Candidate.revision does not reference MemoryRevision: %+v", revision)
 	}
 	parameters := doc.Paths.Map()["/candidates"].Get.Parameters
 	found := false

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"testing"
@@ -88,7 +89,15 @@ func TestCandidateReviewAPIConfirmRejectAndReplay(t *testing.T) {
 func seedCandidateAPI(t *testing.T, db *sql.DB, candidateID, evidenceID, eventID, spaceID, content, specificationHash string) {
 	t.Helper()
 	createdAt := "2026-08-21T12:00:00Z"
-	if _, err := db.Exec(`INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, content, content_hash, confidence, sensitivity, suggestion_kind, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'fact', ?, 'content-hash', 0.75, 'normal', 'new', 'processor/api', 'api-v1', ?, ?)`, candidateID, eventID, spaceID, content, specificationHash, createdAt); err != nil {
+	revision, err := json.Marshal(domain.MemoryRevision{
+		Kind: domain.MemoryKindFact, DisplayContent: content, CanonicalContent: content,
+		Sensitivity: "normal", Confidence: 0.75,
+		Evidence: []domain.RevisionEvidence{{EvidenceID: evidenceID, EventID: eventID, Role: domain.EvidenceRoleDirect}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, structured_revision_json, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'fact', ?, 'processor/api', 'api-v1', ?, ?)`, candidateID, eventID, spaceID, string(revision), specificationHash, createdAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO candidate_evidence(evidence_id, candidate_id, event_id, created_at) VALUES (?, ?, ?, ?)`, evidenceID, candidateID, eventID, createdAt); err != nil {

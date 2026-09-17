@@ -988,7 +988,7 @@ func TestMemoryKindEnumEnforcement(t *testing.T) {
 
 	space, eventID, _, _ := seedContractAuthority(t, store, "kind-enums")
 	for i, kind := range []string{"fact", "event", "preference", "plan", "procedure", "scene", "topic", "timeline"} {
-		candidate := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, content, content_hash, suggestion_kind, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, ?, 'content', 'hash', 'new', 'processor', 'v1', ?, 'now')`
+		candidate := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, structured_revision_json, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, ?, '{"kind":"fact"}', 'processor', 'v1', ?, 'now')`
 		if _, err := store.writer.Exec(candidate, fmt.Sprintf("candidate-kind-%d", i), eventID, space, kind, fmt.Sprintf("candidate-spec-%d", i)); err != nil {
 			t.Fatalf("candidates rejected replacement kind %q: %v", kind, err)
 		}
@@ -998,13 +998,30 @@ func TestMemoryKindEnumEnforcement(t *testing.T) {
 		}
 	}
 	for i, invalid := range []string{"not-a-kind"} {
-		candidate := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, content, content_hash, suggestion_kind, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, ?, 'content', 'hash', 'new', 'processor', 'v1', ?, 'now')`
+		candidate := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, structured_revision_json, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, ?, '{"kind":"fact"}', 'processor', 'v1', ?, 'now')`
 		if _, err := store.writer.Exec(candidate, fmt.Sprintf("candidate-invalid-%d", i), eventID, space, invalid, fmt.Sprintf("candidate-invalid-spec-%d", i)); err == nil {
 			t.Fatalf("candidates accepted invalid memory_type %q", invalid)
 		}
 		proposal := `INSERT INTO evolution_proposals(proposal_id, event_id, space_id, action, proposed_content, proposed_content_hash, memory_type, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'supplement', 'content', 'hash', ?, 'processor', 'v1', ?, 'now')`
 		if _, err := store.writer.Exec(proposal, fmt.Sprintf("proposal-invalid-%d", i), eventID, space, invalid, fmt.Sprintf("proposal-invalid-spec-%d", i)); err == nil {
 			t.Fatalf("evolution_proposals accepted invalid memory_type %q", invalid)
+		}
+	}
+}
+
+func TestCandidateStructuredRevisionIsRequired(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "candidate-revision.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	space, eventID, _, _ := seedContractAuthority(t, store, "candidate-revision")
+	insert := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, structured_revision_json, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'fact', ?, 'processor', 'v1', ?, 'now')`
+	for i, encoded := range []string{"", "{}"} {
+		if _, err := store.writer.Exec(insert, fmt.Sprintf("candidate-revision-%d", i), eventID, space, encoded, fmt.Sprintf("candidate-revision-spec-%d", i)); err == nil {
+			t.Fatalf("candidates accepted structured revision %q", encoded)
 		}
 	}
 }

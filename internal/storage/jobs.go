@@ -2,9 +2,7 @@ package storage
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -536,6 +534,9 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 			return ErrInvalidEvolutionProposal
 		}
 		params := processingCandidateParams(input, result, proposal)
+		if err := domain.ValidateMemoryRevision(params.Revision); err != nil {
+			return err
+		}
 		if err := requireCandidateSources(ctx, tx, params); err != nil {
 			return err
 		}
@@ -550,12 +551,11 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 		}
 		candidateID := ids[idIndex]
 		idIndex++
-		contentHash := sha256.Sum256([]byte(params.Content))
-		structured, err := encodeStructuredRevision(params.StructuredRevision)
+		structured, err := json.Marshal(params.Revision)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,content,content_hash,structured_revision_json,valid_from,valid_until,confidence,sensitivity,suggestion_kind,processor_identity,provider_identity,model_identity,processing_version,specification_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, candidateID, params.EventID, params.SpaceID, params.MemoryType, params.Content, hex.EncodeToString(contentHash[:]), structured, params.ValidFrom, params.ValidUntil, params.Confidence, params.Sensitivity, params.SuggestionKind, params.ProcessorIdentity, params.ProviderIdentity, params.ModelIdentity, params.ProcessingVersion, hash, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,structured_revision_json,processor_identity,provider_identity,model_identity,processing_version,specification_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, candidateID, params.EventID, params.SpaceID, string(params.Revision.Kind), string(structured), params.ProcessorIdentity, params.ProviderIdentity, params.ModelIdentity, params.ProcessingVersion, hash, now); err != nil {
 			return err
 		}
 		for _, evidence := range params.Evidence {
@@ -563,11 +563,6 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 				return candidateConstraintError(err)
 			}
 			idIndex++
-		}
-		for _, memoryID := range params.RelatedMemoryIDs {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_related_memories(candidate_id,memory_id,created_at) VALUES (?,?,?)`, candidateID, memoryID, now); err != nil {
-				return candidateConstraintError(err)
-			}
 		}
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE jobs SET status='succeeded',processor_identity=?,lease_owner=NULL,lease_until=NULL,result_code=?,result_json=?,last_error_code=NULL,last_error_message=NULL,finished_at=? WHERE job_id=? AND status='running' AND lease_owner=? AND lease_generation=? AND lease_until>?`, input.ProcessorIdentity, string(result.Code), string(encoded), now, claim.Job.JobID, claim.LeaseOwner, claim.LeaseGeneration, now)
@@ -673,8 +668,6 @@ func (r *Repository) requireJobClaim(ctx context.Context, query claimRowQuerier,
 
 func processingCandidateParams(input domain.ProcessingInput, result domain.ProcessingResult, proposal domain.MemoryCandidateProposal) CreateCandidateParams {
 	revision := proposal.Revision
-	validFrom, validUntil := timePointerText(revision.ValidFrom), timePointerText(revision.ValidUntil)
-	confidence := revision.Confidence
 	providerIdentity, modelIdentity := stringPointer(result.ProviderIdentity), stringPointer(result.ModelIdentity)
 	if result.ProviderIdentity == "" {
 		providerIdentity = nil
@@ -688,8 +681,7 @@ func processingCandidateParams(input domain.ProcessingInput, result domain.Proce
 	for i, item := range ordered {
 		evidence[i] = EvidenceParams{EventID: item.EventID, Role: item.Role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
 	}
-	structured := revision
-	return CreateCandidateParams{EventID: input.Target.EventID, SpaceID: input.Target.SpaceID, MemoryType: string(revision.Kind), Content: revision.DisplayContent, ValidFrom: validFrom, ValidUntil: validUntil, Confidence: &confidence, Sensitivity: revision.Sensitivity, SuggestionKind: "new", ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Evidence: evidence, StructuredRevision: &structured}
+	return CreateCandidateParams{EventID: input.Target.EventID, SpaceID: input.Target.SpaceID, ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Evidence: evidence, Revision: revision}
 }
 
 func timePointerText(value *time.Time) *string {

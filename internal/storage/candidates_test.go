@@ -12,12 +12,15 @@ import (
 )
 
 func candidateParams() CreateCandidateParams {
-	confidence := 0.9
 	return CreateCandidateParams{
-		EventID: "event-1", SpaceID: "space-1", MemoryType: "fact", Content: "candidate searchable only after confirmation",
-		Confidence: &confidence, Sensitivity: "normal", SuggestionKind: "new", ProcessorIdentity: "processor/test",
+		EventID: "event-1", SpaceID: "space-1", ProcessorIdentity: "processor/test",
 		ProviderIdentity: stringPointer("provider/test"), ModelIdentity: stringPointer("model/test"), ProcessingVersion: "candidate-v1",
 		Evidence: directEvidence("event-1"),
+		Revision: domain.MemoryRevision{
+			Kind: domain.MemoryKindFact, DisplayContent: "candidate searchable only after confirmation",
+			CanonicalContent: "candidate searchable only after confirmation", Sensitivity: "normal", Confidence: 0.9,
+			Evidence: []domain.RevisionEvidence{{EvidenceID: "candidate-evidence", EventID: "event-1", Role: domain.EvidenceRoleDirect}},
+		},
 	}
 }
 
@@ -55,7 +58,7 @@ func TestCandidatePersistsIndependentlyDeduplicatesAndIsImmutable(t *testing.T) 
 			t.Fatalf("%s count = %d, %v; want %d", table, got, err, want)
 		}
 	}
-	if _, err := repository.store.writer.Exec(`UPDATE candidates SET content='mutated' WHERE candidate_id=?`, candidate.CandidateID); err == nil {
+	if _, err := repository.store.writer.Exec(`UPDATE candidates SET structured_revision_json='{"kind":"event"}' WHERE candidate_id=?`, candidate.CandidateID); err == nil {
 		t.Fatal("candidate specification update succeeded")
 	}
 	if _, err := repository.store.writer.Exec(`DELETE FROM candidate_evidence WHERE candidate_id=?`, candidate.CandidateID); err == nil {
@@ -85,7 +88,8 @@ func TestCandidateRejectsCrossSpaceAndOutOfRangeEvidence(t *testing.T) {
 		{"out-of-range", []EvidenceParams{{EventID: "event-1", StartOffset: &start, EndOffset: &end}}},
 	} {
 		params := candidateParams()
-		params.Content = test.name
+		params.Revision.DisplayContent = test.name
+		params.Revision.CanonicalContent = test.name
 		params.Evidence = test.evidence
 		if _, _, err := repository.CreateCandidate(context.Background(), params); !errors.Is(err, ErrInvalidEvidence) {
 			t.Fatalf("CreateCandidate(%s) error = %v; want ErrInvalidEvidence", test.name, err)
@@ -100,7 +104,6 @@ func TestCandidatePersistsStructuredRevisionThroughConfirmation(t *testing.T) {
 	eventEnd := time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC)
 	validFrom := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	validUntil := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
-	confidence := 0.9
 	structured := domain.MemoryRevision{
 		Kind: domain.MemoryKindFact, DisplayContent: "Alice prefers tea", CanonicalContent: "alice prefers tea",
 		SubjectEntityIDs: []string{"alice"}, ObjectEntityIDs: []string{"tea"}, EventType: "preference",
@@ -111,9 +114,7 @@ func TestCandidatePersistsStructuredRevisionThroughConfirmation(t *testing.T) {
 		Evidence: []domain.RevisionEvidence{{EvidenceID: "ev-1", EventID: "event-1", Role: domain.EvidenceRoleDirect}},
 	}
 	params := candidateParams()
-	params.Content = "Alice prefers tea"
-	params.Confidence = &confidence
-	params.StructuredRevision = &structured
+	params.Revision = structured
 	candidate, duplicate, err := repository.CreateCandidate(context.Background(), params)
 	if err != nil || duplicate {
 		t.Fatalf("CreateCandidate() = %+v, duplicate=%t, error=%v", candidate, duplicate, err)
@@ -156,7 +157,7 @@ func TestCandidateConfirmCreatesExactlyOneActiveMemoryAtomicallyAndReplays(t *te
 	if err != nil || replay {
 		t.Fatalf("ConfirmCandidate() = %+v, replay=%t, error=%v", memory, replay, err)
 	}
-	if memory.CurrentState != "active" || memory.CurrentRevision.DisplayContent != candidate.Content || !reflect.DeepEqual(memory.CurrentRevision.Confidence, *candidate.Confidence) || len(memory.CurrentRevision.Evidence) != len(candidate.Evidence) {
+	if memory.CurrentState != "active" || memory.CurrentRevision.DisplayContent != candidate.Revision.DisplayContent || memory.CurrentRevision.Confidence != candidate.Revision.Confidence || len(memory.CurrentRevision.Evidence) != len(candidate.Evidence) {
 		t.Fatalf("confirmed memory = %+v", memory)
 	}
 	confirmed, err := repository.GetCandidate(context.Background(), candidate.CandidateID)
@@ -214,31 +215,6 @@ func TestConcurrentCandidateConfirmsCreateOneMemory(t *testing.T) {
 	}
 }
 
-func TestCandidateConfirmDoesNotChangeFrozenRelatedMemory(t *testing.T) {
-	t.Parallel()
-	repository, _ := newMemoryTestRepository(t)
-	related := createTestMemory(t, repository, "related")
-	freeze := ChangeMemoryStateParams{ExpectedRevisionID: related.CurrentRevision.RevisionID, Action: "freeze", Reason: "protect"}
-	frozen, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("freeze-related", "/v1/memories/{memory_id}/state", freeze), related.MemoryID, freeze)
-	if err != nil {
-		t.Fatal(err)
-	}
-	params := candidateParams()
-	params.RelatedMemoryIDs = []string{related.MemoryID}
-	candidate, _, err := repository.CreateCandidate(context.Background(), params)
-	if err != nil {
-		t.Fatal(err)
-	}
-	review := ReviewCandidateParams{ReasonCode: "accepted"}
-	if _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("confirm-related", "confirm", candidate.CandidateID, review), candidate.CandidateID, review); err != nil {
-		t.Fatal(err)
-	}
-	got, err := repository.GetMemory(context.Background(), related.MemoryID)
-	if err != nil || !reflect.DeepEqual(got, frozen) {
-		t.Fatalf("related memory changed: got=%+v want=%+v err=%v", got, frozen, err)
-	}
-}
-
 func TestCandidateConfirmRevalidatesEvidence(t *testing.T) {
 	t.Parallel()
 	repository, _ := newMemoryTestRepository(t)
@@ -252,7 +228,7 @@ func TestCandidateConfirmRevalidatesEvidence(t *testing.T) {
 	if _, err := repository.store.writer.Exec(`INSERT INTO raw_events(event_id, operation_id, space_id, content_id, source_type, source_name, caller_id, occurred_at, received_at, created_at) VALUES ('event-sibling', 'op-sibling', 'space-sibling', 'content-sibling', 'manual', 'test', 'seed', ?, ?, ?)`, now, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.store.writer.Exec(`INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,content,content_hash,confidence,sensitivity,suggestion_kind,processor_identity,processing_version,specification_hash,created_at) VALUES ('invalid-candidate','event-1','space-1','fact','invalid evidence','hash',0.5,'normal','new','processor/test','v1','invalid-spec',?)`, now); err != nil {
+	if _, err := repository.store.writer.Exec(`INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,structured_revision_json,processor_identity,processing_version,specification_hash,created_at) VALUES ('invalid-candidate','event-1','space-1','fact',?,'processor/test','v1','invalid-spec',?)`, `{"kind":"fact","display_content":"invalid evidence","canonical_content":"invalid evidence","sensitivity":"normal","evidence":[{"evidence_id":"candidate-evidence","event_id":"event-1","role":"direct"}]}`, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.store.writer.Exec(`INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,created_at) VALUES ('invalid-evidence','invalid-candidate','event-sibling',?)`, now); err != nil {
@@ -265,6 +241,39 @@ func TestCandidateConfirmRevalidatesEvidence(t *testing.T) {
 	var memories int
 	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM memories`).Scan(&memories); err != nil || memories != 0 {
 		t.Fatalf("memory count = %d, %v", memories, err)
+	}
+}
+
+func TestCandidateConfirmRequiresValidStructuredRevision(t *testing.T) {
+	t.Parallel()
+	repository, _ := newMemoryTestRepository(t)
+	now := "2026-08-21T11:00:00Z"
+	revision := `{"kind":"fact","display_content":"","canonical_content":"","sensitivity":"normal","evidence":[{"evidence_id":"candidate-evidence","event_id":"event-1","role":"direct"}]}`
+	if _, err := repository.store.writer.Exec(`INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,structured_revision_json,processor_identity,processing_version,specification_hash,created_at) VALUES ('scalar-candidate','event-1','space-1','fact',?,'processor/test','v1','scalar-spec',?)`, revision, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.store.writer.Exec(`INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,created_at) VALUES ('scalar-evidence','scalar-candidate','event-1',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	review := ReviewCandidateParams{ReasonCode: "accepted"}
+	if _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("scalar-confirm", "confirm", "scalar-candidate", review), "scalar-candidate", review); err == nil {
+		t.Fatal("ConfirmCandidate succeeded without a valid structured revision")
+	}
+	var memories int
+	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM memories`).Scan(&memories); err != nil || memories != 0 {
+		t.Fatalf("memory count = %d, %v", memories, err)
+	}
+}
+
+func TestCandidateInvalidStructuredRevisionFailsRead(t *testing.T) {
+	t.Parallel()
+	repository, _ := newMemoryTestRepository(t)
+	now := "2026-08-21T11:00:00Z"
+	if _, err := repository.store.writer.Exec(`INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,structured_revision_json,processor_identity,processing_version,specification_hash,created_at) VALUES ('bad-json-candidate','event-1','space-1','fact','not-json','processor/test','v1','bad-json-spec',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.GetCandidate(context.Background(), "bad-json-candidate"); err == nil {
+		t.Fatal("GetCandidate succeeded with invalid structured revision JSON")
 	}
 }
 
@@ -287,7 +296,7 @@ func TestPendingCandidateExcludedFromMemoryListAndAllSearchModes(t *testing.T) {
 			t.Fatalf("%v search = %+v, %v", channels, result, err)
 		}
 		for _, item := range result.Results {
-			if item.Memory.CurrentRevision.DisplayContent == candidate.Content {
+			if item.Memory.CurrentRevision.DisplayContent == candidate.Revision.DisplayContent {
 				t.Fatalf("%v search returned pending candidate: %+v", channels, item)
 			}
 		}
@@ -383,7 +392,8 @@ func TestCandidateListFiltersAndUsesStableCursor(t *testing.T) {
 	first := createTestCandidate(t, repository)
 	clock.now = clock.now.Add(1)
 	params := candidateParams()
-	params.Content = "second candidate"
+	params.Revision.DisplayContent = "second candidate"
+	params.Revision.CanonicalContent = "second candidate"
 	second, _, err := repository.CreateCandidate(context.Background(), params)
 	if err != nil {
 		t.Fatal(err)

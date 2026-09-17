@@ -320,14 +320,7 @@ CREATE TABLE candidates (
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
     space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
     memory_type TEXT NOT NULL CHECK (memory_type IN ('fact', 'event', 'preference', 'plan', 'procedure', 'scene', 'topic', 'timeline')),
-    content TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    structured_revision_json TEXT NOT NULL DEFAULT '{}',
-    valid_from TEXT,
-    valid_until TEXT,
-    confidence REAL CHECK (confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
-    sensitivity TEXT NOT NULL DEFAULT 'normal' CHECK (sensitivity IN ('normal', 'sensitive')),
-    suggestion_kind TEXT NOT NULL CHECK (suggestion_kind IN ('new', 'duplicate', 'supplement', 'replacement', 'conflict')),
+    structured_revision_json TEXT NOT NULL CHECK (length(structured_revision_json) > 2),
     processor_identity TEXT NOT NULL,
     provider_identity TEXT,
     model_identity TEXT,
@@ -338,7 +331,6 @@ CREATE TABLE candidates (
     confirmed_revision_id TEXT,
     created_at TEXT NOT NULL,
     reviewed_at TEXT,
-    CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from),
     CHECK (
         (review_state = 'pending' AND reviewed_at IS NULL AND confirmed_memory_id IS NULL AND confirmed_revision_id IS NULL) OR
         (review_state = 'rejected' AND reviewed_at IS NOT NULL AND confirmed_memory_id IS NULL AND confirmed_revision_id IS NULL) OR
@@ -360,14 +352,7 @@ BEFORE UPDATE ON candidates
 WHEN OLD.event_id IS NOT NEW.event_id
   OR OLD.space_id IS NOT NEW.space_id
   OR OLD.memory_type IS NOT NEW.memory_type
-  OR OLD.content IS NOT NEW.content
-  OR OLD.content_hash IS NOT NEW.content_hash
   OR OLD.structured_revision_json IS NOT NEW.structured_revision_json
-  OR OLD.valid_from IS NOT NEW.valid_from
-  OR OLD.valid_until IS NOT NEW.valid_until
-  OR OLD.confidence IS NOT NEW.confidence
-  OR OLD.sensitivity IS NOT NEW.sensitivity
-  OR OLD.suggestion_kind IS NOT NEW.suggestion_kind
   OR OLD.processor_identity IS NOT NEW.processor_identity
   OR OLD.provider_identity IS NOT NEW.provider_identity
   OR OLD.model_identity IS NOT NEW.model_identity
@@ -416,25 +401,6 @@ CREATE TRIGGER candidate_evidence_no_delete
 BEFORE DELETE ON candidate_evidence
 BEGIN
     SELECT RAISE(ABORT, 'candidate evidence is immutable');
-END;
-
-CREATE TABLE candidate_related_memories (
-    candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id) ON DELETE RESTRICT,
-    memory_id TEXT NOT NULL REFERENCES memories(memory_id) ON DELETE RESTRICT,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (candidate_id, memory_id)
-) WITHOUT ROWID, STRICT;
-
-CREATE TRIGGER candidate_related_memories_no_update
-BEFORE UPDATE ON candidate_related_memories
-BEGIN
-    SELECT RAISE(ABORT, 'candidate related memories are immutable');
-END;
-
-CREATE TRIGGER candidate_related_memories_no_delete
-BEFORE DELETE ON candidate_related_memories
-BEGIN
-    SELECT RAISE(ABORT, 'candidate related memories are immutable');
 END;
 
 CREATE TABLE candidate_reviews (

@@ -389,7 +389,7 @@ paths:
         - $ref: '#/components/parameters/candidateId'
       responses:
         '200':
-          description: Candidate, evidence, related suggestions, and review history
+          description: Candidate revision, evidence, and review history
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Candidate' }
@@ -1300,7 +1300,7 @@ components:
     MemoryRevision:
       type: object
       additionalProperties: false
-      required: [revision_id, memory_id, kind, display_content, canonical_content, specificity, confidence, evidence, created_by, processing_version, created_at]
+      required: [kind, display_content, canonical_content, specificity, confidence, evidence]
       properties:
         revision_id: { type: string, format: uuid }
         memory_id: { type: string, format: uuid }
@@ -1378,18 +1378,12 @@ components:
     Candidate:
       type: object
       additionalProperties: false
-      required: [candidate_id, event_id, space_id, memory_type, content, sensitivity, suggestion_kind, processor_identity, processing_version, specification_hash, review_state, evidence, related_memory_ids, reviews, created_at]
+      required: [candidate_id, event_id, space_id, revision, processor_identity, processing_version, specification_hash, review_state, evidence, reviews, created_at]
       properties:
         candidate_id: { type: string, format: uuid }
         event_id: { type: string, format: uuid }
         space_id: { type: string, format: uuid }
-        memory_type: { $ref: '#/components/schemas/MemoryKind' }
-        content: { type: string }
-        valid_from: { type: [string, 'null'], format: date-time }
-        valid_until: { type: [string, 'null'], format: date-time }
-        confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
-        sensitivity: { type: string, enum: [normal, sensitive] }
-        suggestion_kind: { type: string, enum: [new, duplicate, supplement, replacement, conflict] }
+        revision: { $ref: '#/components/schemas/MemoryRevision' }
         processor_identity: { type: string }
         provider_identity: { type: [string, 'null'] }
         model_identity: { type: [string, 'null'] }
@@ -1399,7 +1393,6 @@ components:
         confirmed_memory_id: { type: [string, 'null'], format: uuid }
         confirmed_revision_id: { type: [string, 'null'], format: uuid }
         evidence: { type: array, items: { $ref: '#/components/schemas/RecallEvidence' } }
-        related_memory_ids: { type: array, items: { type: string, format: uuid } }
         reviews: { type: array, items: { $ref: '#/components/schemas/CandidateReview' } }
         created_at: { type: string, format: date-time }
         reviewed_at: { type: [string, 'null'], format: date-time }
