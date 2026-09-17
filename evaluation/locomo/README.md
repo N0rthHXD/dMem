@@ -50,8 +50,11 @@ inspection, but normally produces no recallable memories on a fresh instance.
 ## Setup
 
 ```sh
-pip install -r evaluation/locomo/requirements.txt
+pip install -r evaluation/requirements.txt
 ```
+
+Set `PYTHONPATH=evaluation/common` (or `pip install -e .` from the repository
+root) so the shared `dmem_eval` package is importable.
 
 Requires Python 3.11+ (uses `tomllib`). NLTK is optional (used only for the
 official Porter-stemmed F1 scorer); without it the scorer falls back to an

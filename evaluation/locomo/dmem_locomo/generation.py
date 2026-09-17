@@ -7,14 +7,13 @@ written to ``generation.jsonl``.
 
 from __future__ import annotations
 
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+
+from dmem_eval.generation import run_generation
 
 from .checkpoint import Checkpoint
 from .dataset import load_dataset
 from .llm import chat_with_retry, make_client
-from .progress import tqdm
 
 PROMPT = (
     "Below is a conversation between two people: {speaker_a} and {speaker_b}. "
@@ -64,8 +63,6 @@ def generate_answers(
     workers: int = 1,
 ) -> int:
     """Generate answers and append to checkpoint. Returns count generated."""
-    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
-        raise ValueError("workers must be a positive integer")
     conversations, _ = load_dataset(dataset_path)
     cp = Checkpoint(output_dir)
     cp.assert_phase_compatible({
@@ -78,9 +75,7 @@ def generate_answers(
     done = cp.load_generation_qids()
 
     client = make_client(api_key, base_url)
-    count = 0
 
-    conv_map = {c.sample_id: c for c in conversations}
     eligible: list[tuple[Any, Any]] = []
     for conv in conversations:
         for qa in conv.qa:
@@ -121,31 +116,20 @@ def generate_answers(
             pt + ct,
         )
 
-    first_error: Exception | None = None
-    with tqdm(
-        total=len(eligible), desc="generate", unit="q", file=sys.stderr
-    ) as bar:
-        with ThreadPoolExecutor(
-            max_workers=workers, thread_name_prefix="loc-generate"
-        ) as executor:
-            futures = {executor.submit(generate, item): item for item in eligible}
-            for future in as_completed(futures):
-                item = futures[future]
-                try:
-                    record, answer, tokens = future.result()
-                except Exception as exc:
-                    if first_error is None:
-                        first_error = exc
-                else:
-                    cp.append_generation(record)
-                    count += 1
-                    bar.set_postfix_str(
-                        f"q={record['qa_id']} tokens={tokens} generated={count}"
-                    )
-                bar.update(1)
+    def on_record(
+        _item: tuple[Any, Any], record: dict[str, Any], _answer: str, _tokens: int
+    ) -> None:
+        cp.append_generation(record)
 
-    if first_error is not None:
-        raise first_error
+    count = run_generation(
+        total=len(eligible),
+        todo=eligible,
+        generate=generate,
+        on_record=on_record,
+        id_field="qa_id",
+        workers=workers,
+        thread_name_prefix="loc-generate",
+    )
 
     manifest = cp.read_manifest() or {}
     manifest["answer_model"] = model

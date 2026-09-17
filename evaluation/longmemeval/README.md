@@ -49,8 +49,11 @@ inspection, but normally produces no recallable memories on a fresh instance.
 ## Setup
 
 ```sh
-pip install -r evaluation/longmemeval/requirements.txt
+pip install -r evaluation/requirements.txt
 ```
+
+Set `PYTHONPATH=evaluation/common` (or `pip install -e .` from the repository
+root) so the shared `dmem_eval` package is importable.
 
 Requires Python 3.11+ (uses `tomllib`).
 
@@ -343,6 +346,22 @@ estimated. The safety gate fails closed when safety was not measured. The full
 promotion gate also enforces no more than 0.5-point Recall@1/MRR regression,
 at least 50% graph-promoted top-10 precision, positive intended query-type gain
 without larger aggregate harm, and at least 50% duplicate-rate reduction.
+
+## Daemon Monitoring
+
+`monitor_daemon.sh` reports a running daemon through its public health API:
+
+```sh
+./monitor_daemon.sh --socket <output>/daemon-workspace/runtime/dmem.sock
+./monitor_daemon.sh --output <output> --summary
+```
+
+A legacy SQLite-inspection monitor lives at
+`evaluation/dev/monitor_daemon_sqlite.sh`. It reads the private storage schema
+and is **unsupported**; use the public health API monitor instead.
+
+The `evaluate.sh` and `run_ablation_matrix.sh` drivers are thin wrappers around
+the shared implementations in `evaluation/common/`.
 
 ## Output Files
 
