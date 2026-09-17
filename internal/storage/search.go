@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"time"
-	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
@@ -30,6 +29,30 @@ const (
 )
 
 var retrievalChannelOrder = []string{ChannelKeyword, ChannelSemantic, ChannelGraph}
+
+// minSelectionWindow is the smallest ranked window retained before context
+// selection. Selection rejects candidates for duplicates, sensitivity, source
+// and budget reasons, so recall keeps a window well beyond the requested limit
+// and lets the selector backfill from later-ranked candidates.
+const minSelectionWindow = 100
+
+// selectionWindow returns the ranked window retained before context selection.
+// MaxResults only constrains the final selected context, not the window.
+func selectionWindow(limit int) int {
+	if limit < 1 {
+		return minSelectionWindow
+	}
+	if w := limit * 10; w > minSelectionWindow {
+		return w
+	}
+	return minSelectionWindow
+}
+
+// selectionRecallLimit fetches one candidate past the retained window so the
+// continuation cursor can reach the first candidate after the window.
+func selectionRecallLimit(limit int) int {
+	return selectionWindow(limit) + 1
+}
 
 func validChannel(value string) bool {
 	switch value {
@@ -327,7 +350,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	all := map[string]*searchCandidate{}
 	keywordStart := time.Now()
 	if hasChannel(executed, ChannelKeyword) {
-		candidates, keywordErr := r.keywordRecall(ctx, tx, params, spaces, max(100, params.Limit*10))
+		candidates, keywordErr := r.keywordRecall(ctx, tx, params, spaces, selectionRecallLimit(params.Limit))
 		if errors.Is(keywordErr, ErrInvalidSearchQuery) {
 			return domain.SearchResponse{}, keywordErr
 		}
@@ -349,7 +372,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	calibrateKeywordScores(candidatePointers(all))
 	params.telemetry.markPhase("keyword", keywordStart)
 	graphStart := time.Now()
-	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, false, max(100, params.Limit*10))
+	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, false, selectionRecallLimit(params.Limit))
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
@@ -393,23 +416,12 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	}
 
 	var lastInspected *searchCandidate
-	hasMore := false
+	windowFull := false
 	returned := make(map[string]struct{})
+	window := selectionWindow(params.Limit)
 	for i := start; i < len(list); i++ {
 		candidate := list[i]
 		if _, duplicate := returned[candidate.memoryID]; duplicate {
-			continue
-		}
-		if len(response.Results) == params.Limit {
-			memory, err := getMemory(ctx, tx, candidate.memoryID, false)
-			if err != nil && !errors.Is(err, ErrNotFound) {
-				return domain.SearchResponse{}, err
-			}
-			if err == nil && searchCandidateCurrent(memory, *candidate, spaces, params) {
-				hasMore = true
-				response.Truncated = true
-				break
-			}
 			continue
 		}
 		memory, err := getMemory(ctx, tx, candidate.memoryID, false)
@@ -421,16 +433,6 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 			return domain.SearchResponse{}, err
 		}
 		if !searchCandidateCurrent(memory, *candidate, spaces, params) {
-			lastInspected = candidate
-			continue
-		}
-		chars := utf8.RuneCountInString(memory.CurrentRevision.DisplayContent)
-		if response.CharsUsed+chars > params.MaxChars {
-			response.Truncated = true
-			if len(response.Results) > 0 && chars <= params.MaxChars {
-				hasMore = true
-				break
-			}
 			lastInspected = candidate
 			continue
 		}
@@ -462,9 +464,15 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		}
 		response.Results = append(response.Results, searchResult)
 		returned[memory.MemoryID] = struct{}{}
-		response.CharsUsed += chars
+		if len(response.Results) >= window {
+			windowFull = true
+			break
+		}
 	}
-	if hasMore && lastInspected != nil {
+	// A full ranked window may have more candidates behind the bounded recall,
+	// so it always yields a continuation cursor anchored at the window tail.
+	if windowFull && lastInspected != nil {
+		response.Truncated = true
 		next := encodeSearchCursor(hash, params, identities, *lastInspected)
 		response.NextCursor = &next
 	}

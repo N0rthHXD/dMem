@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -279,9 +280,11 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	d, release, client := startHeldDaemon(t, cfg)
 	defer d.Close(context.Background())
 	root := createSpace(t, client, "ep-root", map[string]any{"space_type": "user", "external_id": "ep-root", "display_name": "Root"})
-	for _, content := range []string{"分页符星星", "分页符月亮", "分页符太阳"} {
-		event := ingestManualEvent(t, client, "ep-event-"+content, root.SpaceID, "evidence")
-		createMemory(t, client, "ep-memory-"+content, memoryCreateBody(root.SpaceID, event.EventID, content))
+	const paginationMemories = 101
+	for i := 0; i < paginationMemories; i++ {
+		content := "分页符" + string(rune('一')+rune(i))
+		event := ingestManualEvent(t, client, fmt.Sprintf("ep-event-%03d", i), root.SpaceID, "evidence")
+		createMemory(t, client, fmt.Sprintf("ep-memory-%03d", i), memoryCreateBody(root.SpaceID, event.EventID, content))
 	}
 	first := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "max_results": 1, "max_context_tokens": 5})
 	if len(first.Context.Items) != 1 || first.Context.TokensUsed > 5 || !first.Context.Truncated || first.Context.NextCursor == nil {
@@ -384,8 +387,8 @@ func TestSearchBudgetPaginationValidationDegradedAndRebuild(t *testing.T) {
 	}
 	close(release)
 	waitForJobStatus(t, client, job.JobID, "succeeded")
-	after := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}})
-	if len(after.Context.Items) != 3 || containsString(after.Execution.DegradationReasons, "keyword_unavailable") {
+	after := search(t, client, map[string]any{"query": "分页符", "space_ids": []string{root.SpaceID}, "max_results": 1000})
+	if len(after.Context.Items) != paginationMemories || containsString(after.Execution.DegradationReasons, "keyword_unavailable") {
 		t.Fatalf("post-rebuild search = %+v", after)
 	}
 	var stale int

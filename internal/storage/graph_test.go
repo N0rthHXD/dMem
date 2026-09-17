@@ -356,6 +356,7 @@ func TestGraphIndexGenerationChangeInvalidatesCursor(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	createGraphMemory(t, r, "graph-cursor-a", "graphcursor one")
 	createGraphMemory(t, r, "graph-cursor-b", "graphcursor two")
+	createMatchingMemories(t, r, "graph-cursor", "graphcursor", minSelectionWindow)
 	params := SearchParams{Query: "graphcursor", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword", "graph"}, Limit: 1, MaxChars: 1000}
 	first, err := r.SearchMemories(context.Background(), params)
 	if err != nil || first.NextCursor == nil {

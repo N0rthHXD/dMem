@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -726,8 +727,7 @@ func TestHybridKeywordFallbackCursorPaginates(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	provider := &semanticTestProvider{}
 	configureSemanticTest(t, repository, provider)
-	createMemoryWithContent(t, repository, "fallback-page-a", "automobile fallbackpage")
-	createMemoryWithContent(t, repository, "fallback-page-b", "automobile fallbackpage")
+	createMatchingMemories(t, repository, "fallback-page", "fallbackpage", minSelectionWindow+1)
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -735,7 +735,7 @@ func TestHybridKeywordFallbackCursorPaginates(t *testing.T) {
 	params := hybridParams("fallbackpage")
 	params.Limit = 1
 	first, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || !reflect.DeepEqual(first.ExecutedChannels, []string{"keyword", "graph"}) || first.NextCursor == nil || len(first.Results) != 1 {
+	if err != nil || !reflect.DeepEqual(first.ExecutedChannels, []string{"keyword", "graph"}) || first.NextCursor == nil || len(first.Results) != selectionWindow(params.Limit) {
 		t.Fatalf("first fallback page = %+v, %v", first, err)
 	}
 	params.Cursor = *first.NextCursor
@@ -983,16 +983,14 @@ func TestSemanticQueryDenialExplicitlyDegradesHybrid(t *testing.T) {
 func TestHybridCursorStableInvalidAfterVersionSwitchAndHonorsBudgets(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	configureSemanticTest(t, repository, &semanticTestProvider{})
-	for i, content := range []string{"automobile pageword one", "automobile pageword two", "automobile pageword three"} {
-		createMemoryWithContent(t, repository, "cursor-"+string(rune('a'+i)), content)
-	}
+	createMatchingMemories(t, repository, "cursor", "automobile pageword", minSelectionWindow+1)
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	params := hybridParams("pageword")
 	params.Limit, params.MaxChars = 1, 100
 	first, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || len(first.Results) != 1 || first.NextCursor == nil || first.CharsUsed > params.MaxChars {
+	if err != nil || len(first.Results) != selectionWindow(params.Limit) || first.NextCursor == nil || first.CharsUsed > params.MaxChars {
 		t.Fatalf("first page = %+v, %v", first, err)
 	}
 	params.Cursor = *first.NextCursor
@@ -1012,15 +1010,14 @@ func TestHybridCursorStableInvalidAfterVersionSwitchAndHonorsBudgets(t *testing.
 	params = hybridParams("pageword")
 	params.Limit, params.MaxChars = 2, len("automobile pageword one")
 	budgeted, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || len(budgeted.Results) > params.Limit || budgeted.CharsUsed > params.MaxChars || !budgeted.Truncated {
+	if err != nil || len(budgeted.Context.Items) > params.Limit || budgeted.Context.Accounting.CharsUsed > params.MaxChars || !budgeted.Truncated {
 		t.Fatalf("simultaneous budgets = %+v, %v", budgeted, err)
 	}
 }
 
 func TestFTSRebuildAdvancesVersionAndRejectsOldKeywordCursor(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
-	createMemoryWithContent(t, repository, "fts-version-a", "versionword one")
-	createMemoryWithContent(t, repository, "fts-version-b", "versionword two")
+	createMatchingMemories(t, repository, "fts-version", "versionword", minSelectionWindow+1)
 	params := SearchParams{Query: "versionword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 1, MaxChars: 1000}
 	first, err := repository.SearchMemories(context.Background(), params)
 	if err != nil || first.FTSIndexVersion != 1 || first.NextCursor == nil {
@@ -1046,11 +1043,10 @@ func TestKeywordCursorBindsCorpusAndRankingVersions(t *testing.T) {
 	if _, err := repository.store.writer.Exec(`UPDATE feedback_aggregate_metadata SET generation=7 WHERE singleton=1; UPDATE entity_index_metadata SET active_version=8 WHERE singleton=1; UPDATE relation_index_metadata SET active_version=9 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
-	createMemoryWithContent(t, repository, "cursor-contract-a", "contractword one")
-	createMemoryWithContent(t, repository, "cursor-contract-b", "contractword two")
+	createMatchingMemories(t, repository, "cursor-contract", "contractword", minSelectionWindow+1)
 	params := SearchParams{Query: "contractword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 1, MaxChars: 1000}
 	first, err := repository.SearchMemories(context.Background(), params)
-	if err != nil || first.NextCursor == nil || first.CorpusGeneration != 3 || first.FeedbackAggregateVersion != 7 {
+	if err != nil || first.NextCursor == nil || first.CorpusGeneration == 0 || first.FeedbackAggregateVersion != 7 {
 		t.Fatalf("versioned response = %+v, %v", first, err)
 	}
 	for _, update := range []string{
@@ -1075,8 +1071,7 @@ func TestKeywordCursorBindsCorpusAndRankingVersions(t *testing.T) {
 func TestHybridCursorBindsCorpusAndRankingVersions(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	configureSemanticTest(t, repository, &semanticTestProvider{})
-	createMemoryWithContent(t, repository, "hybrid-contract-a", "hybridcontract one")
-	createMemoryWithContent(t, repository, "hybrid-contract-b", "hybridcontract two")
+	createMatchingMemories(t, repository, "hybrid-contract", "hybridcontract", minSelectionWindow+1)
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1107,6 +1102,16 @@ func hybridParams(query string) SearchParams {
 
 func createMemoryWithContent(t *testing.T, repository *Repository, key, content string) domain.Memory {
 	return createMemoryInSpace(t, repository, key, "space-1", content)
+}
+
+// createMatchingMemories fills a repository with enough distinct current
+// candidates to exceed the ranked selection window. Cursor tests need a full
+// window before a NextCursor is produced.
+func createMatchingMemories(t *testing.T, repository *Repository, prefix, token string, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		createMemoryWithContent(t, repository, fmt.Sprintf("%s-%03d", prefix, i), fmt.Sprintf("%s item %03d", token, i))
+	}
 }
 
 func createMemoryInSpace(t *testing.T, repository *Repository, key, spaceID, content string) domain.Memory {

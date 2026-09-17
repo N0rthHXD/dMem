@@ -57,6 +57,9 @@ func (r *Repository) applyContextSelection(ctx context.Context, params SearchPar
 		CharsUsed: selection.Accounting.CharsUsed, Accounting: selection.Accounting,
 		Truncated: response.Truncated,
 	}
+	// Recall keeps the full ranked window in response.Results; only the
+	// selected context consumes the character budget.
+	response.CharsUsed = response.Context.CharsUsed
 	if params.telemetry != nil {
 		params.telemetry.rejected = selection.Rejected
 		for _, rejected := range selection.Rejected {

@@ -30,12 +30,13 @@ func (r *Repository) planQuery(ctx context.Context, params SearchParams) SearchP
 		reference = r.runtime.Now()
 	}
 	params.Plan = retrieval.BuildQueryPlan(params.Query, retrieval.PlanOptions{
-		ReferenceTime:  reference,
-		Intent:         params.Intent,
-		Limit:          params.Limit,
-		MaxChars:       params.MaxChars,
-		RequestedKinds: params.MemoryTypes,
-		RequestedScope: params.SpaceIDs,
+		ReferenceTime:   reference,
+		Intent:          params.Intent,
+		Limit:           params.Limit,
+		CandidateBudget: selectionWindow(params.Limit),
+		MaxChars:        params.MaxChars,
+		RequestedKinds:  params.MemoryTypes,
+		RequestedScope:  params.SpaceIDs,
 	})
 	params.Plan = retrieval.EnrichPlan(ctx, params.Plan, r.queryEnricher, r.queryEnrichmentAllowed, 8, 8)
 	params.QueryTime, _, params.QueryTimeSet = retrieval.ParseQueryTime(params.Query, reference)

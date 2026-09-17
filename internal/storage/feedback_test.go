@@ -466,8 +466,7 @@ func TestFeedbackPoisoningSingleCallerIsBounded(t *testing.T) {
 
 func TestAggregateVersionSwitchRejectsCursor(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
-	createMemoryWithContent(t, repository, "rank-cursor-a", "cursorfeedback one")
-	createMemoryWithContent(t, repository, "rank-cursor-b", "cursorfeedback two")
+	createMatchingMemories(t, repository, "rank-cursor", "cursorfeedback", minSelectionWindow+1)
 	p := SearchParams{Query: "cursorfeedback", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 1, MaxChars: 1000}
 	first, err := repository.SearchMemories(context.Background(), p)
 	if err != nil || first.NextCursor == nil {

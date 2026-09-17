@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
@@ -155,7 +154,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return domain.SearchResponse{}, err
 	}
 	response := r.semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, metadata)
-	recallLimit := max(100, params.Limit*10)
+	recallLimit := selectionRecallLimit(params.Limit)
 	all := map[string]*hybridCandidate{}
 	keywordStart := time.Now()
 	if hasChannel(executed, ChannelKeyword) {
@@ -295,6 +294,8 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 	}
 	var last *searchCandidate
+	windowFull := false
+	window := selectionWindow(params.Limit)
 	for i := start; i < len(list); i++ {
 		candidate := list[i]
 		memory, err := getMemory(ctx, tx, candidate.memoryID, false)
@@ -309,14 +310,6 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		}
 		var projectionHash string
 		if err := tx.QueryRowContext(ctx, `SELECT content_hash FROM memory_projections WHERE memory_id=? AND revision_id=? AND searchable=1`, candidate.memoryID, candidate.revisionID).Scan(&projectionHash); err != nil || candidate.semanticRank > 0 && projectionHash != candidate.contentHash {
-			continue
-		}
-		chars := utf8.RuneCountInString(memory.CurrentRevision.DisplayContent)
-		if response.CharsUsed+chars > params.MaxChars {
-			response.Truncated = true
-			if len(response.Results) > 0 && chars <= params.MaxChars {
-				break
-			}
 			continue
 		}
 		channels := make([]string, 0, 3)
@@ -354,16 +347,16 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			r.applyExplain(candidate, &searchResult, params)
 		}
 		response.Results = append(response.Results, searchResult)
-		response.CharsUsed += chars
 		last = candidate
-		if len(response.Results) == params.Limit {
-			if i+1 < len(list) {
-				response.Truncated = true
-			}
+		if len(response.Results) >= window {
+			windowFull = true
 			break
 		}
 	}
-	if response.Truncated && last != nil {
+	// A full ranked window may have more candidates behind the bounded recall,
+	// so it always yields a continuation cursor anchored at the window tail.
+	if windowFull && last != nil {
+		response.Truncated = true
 		value := encodeSearchCursor(hash, params, identities, searchCandidate{memoryID: last.memoryID, revisionID: last.revisionID, score: last.score})
 		response.NextCursor = &value
 	}

@@ -126,10 +126,9 @@ func (r *Repository) recordQueryTelemetry(ctx context.Context, params SearchPara
 	}
 	rejections, _ := json.Marshal(rejectionCounts)
 	duplicateClusters := distinctContextClusters(selected, response.Context.Rejected)
+	// context_tokens reports the selected context cost, not the raw ranked
+	// window retained for selection. With no selected context it is zero.
 	tokensUsed := response.Context.Accounting.TokensUsed
-	if len(selected) == 0 {
-		tokensUsed = estimatedResultTokens(response.Results)
-	}
 	graphSignals, graphPaths, graphCandidates := 0, 0, 0
 	graphFamilies := map[string]int{}
 	var graphScoreMin, graphScoreMax, graphScoreSum float64
@@ -295,16 +294,4 @@ func contextSelectionReason(item domain.ContextItem) string {
 		return "context_utility"
 	}
 	return "primary_relevance"
-}
-
-func estimatedResultTokens(results []domain.SearchResult) int {
-	total := 0
-	for _, result := range results {
-		total += estimatedContextTokens(result.Memory.CurrentRevision.DisplayContent)
-	}
-	return total
-}
-
-func estimatedContextTokens(content string) int {
-	return domain.EstimateContextTokens(content)
 }

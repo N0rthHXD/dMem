@@ -156,12 +156,13 @@ type QueryPlan struct {
 
 // PlanOptions are the deterministic, caller-supplied inputs to query planning.
 type PlanOptions struct {
-	ReferenceTime  time.Time
-	Intent         string
-	Limit          int
-	MaxChars       int
-	RequestedKinds []string
-	RequestedScope []string
+	ReferenceTime   time.Time
+	Intent          string
+	Limit           int
+	CandidateBudget int
+	MaxChars        int
+	RequestedKinds  []string
+	RequestedScope  []string
 }
 
 var (
@@ -199,13 +200,17 @@ func BuildQueryPlan(query string, options PlanOptions) QueryPlan {
 		reference = time.Unix(0, 0).UTC()
 	}
 	normalized := normalizeQuery(query)
+	candidateBudget := options.CandidateBudget
+	if candidateBudget < 1 {
+		candidateBudget = options.Limit
+	}
 	plan := QueryPlan{
 		Version:         QueryPlanVersion,
 		NormalizedQuery: normalized,
 		Language:        detectLanguage(normalized),
 		ReferenceTime:   reference.UTC().Format(time.RFC3339Nano),
 		GraphPolicy:     GraphFeaturesOnly,
-		CandidateBudget: options.Limit,
+		CandidateBudget: candidateBudget,
 		ContextBudget:   options.MaxChars,
 	}
 	if plan.CandidateBudget < 1 {
