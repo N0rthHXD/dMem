@@ -39,7 +39,6 @@ type RankingConfig struct {
 
 // ContextConfig bounds budgeted context selection.
 type ContextConfig struct {
-	Version          string
 	MaxContextTokens int
 	MaxContextChars  int
 	MaxResults       int
@@ -76,7 +75,7 @@ func defaultRankingConfig() RankingConfig {
 }
 
 func defaultContextConfig() ContextConfig {
-	return ContextConfig{Version: "context-selection-v1", MaxContextTokens: 4000, MaxContextChars: 16000, MaxResults: 20}
+	return ContextConfig{MaxContextTokens: 4000, MaxContextChars: 16000, MaxResults: 20}
 }
 
 func buildConsolidationConfig(t consolidationTable) (ConsolidationConfig, error) {
@@ -202,9 +201,6 @@ func buildRankingConfig(t rankingTable) (RankingConfig, error) {
 
 func buildContextConfig(t contextTable) (ContextConfig, error) {
 	c := defaultContextConfig()
-	if t.Version != nil {
-		c.Version = *t.Version
-	}
 	if t.MaxContextTokens != nil {
 		c.MaxContextTokens = *t.MaxContextTokens
 	}
@@ -213,9 +209,6 @@ func buildContextConfig(t contextTable) (ContextConfig, error) {
 	}
 	if t.MaxResults != nil {
 		c.MaxResults = *t.MaxResults
-	}
-	if c.Version == "" {
-		return c, newValidationError("config_missing_field", Diagnostic{Code: "config_missing_field", Path: "context.version"})
 	}
 	if c.MaxContextTokens < 1 || c.MaxContextTokens > 1000000 {
 		return c, newValidationError("config_invalid_value", Diagnostic{Code: "config_out_of_bounds", Path: "context.max_context_tokens"})

@@ -52,9 +52,13 @@ make offline-default
   confirmation.
 - `performance` checks broad shared Linux CI bounds for latency, allocation,
   rebuild cost, portability throughput, and storage growth. These are regression
-  gates, not production capacity promises.
+  gates, not production capacity promises. Wall-clock and allocation gates are
+  skipped by the default and race suites; they run only with
+  `DMEM_PERFORMANCE=1`, which the `performance` target sets.
 - `offline-default` verifies that disabled providers do not read secrets or make
   HTTP requests.
+- `python-test` runs the evaluation suites under `evaluation/` (calibration,
+  LoCoMo, and LongMemEval) with `pytest`.
 
 ### Configuration And Reconciliation
 
@@ -102,4 +106,6 @@ stale-revision return rate, conflict-reference completeness, latency, and
 resource use.
 
 `make check` runs the full required suite except the separately invoked
-`performance` and `govulncheck` targets.
+`performance`, `python-test`, and `govulncheck` targets. Performance gates are
+also skipped by `test` and `test-race`; a controlled runner or CI job opts in
+with `DMEM_PERFORMANCE=1`.

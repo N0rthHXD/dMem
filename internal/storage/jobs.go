@@ -559,7 +559,7 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 			return err
 		}
 		for _, evidence := range params.Evidence {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,evidence_type,role,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?,?)`, ids[idIndex], candidateID, evidence.EventID, evidence.EvidenceType, evidence.Role, evidence.StartOffset, evidence.EndOffset, now); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,role,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?)`, ids[idIndex], candidateID, evidence.EventID, evidence.Role, evidence.StartOffset, evidence.EndOffset, now); err != nil {
 				return candidateConstraintError(err)
 			}
 			idIndex++
@@ -686,7 +686,7 @@ func processingCandidateParams(input domain.ProcessingInput, result domain.Proce
 	domain.OrderRevisionEvidence(ordered)
 	evidence := make([]EvidenceParams, len(ordered))
 	for i, item := range ordered {
-		evidence[i] = EvidenceParams{EventID: item.EventID, EvidenceType: "manual_reference", Role: item.Role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
+		evidence[i] = EvidenceParams{EventID: item.EventID, Role: item.Role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
 	}
 	structured := revision
 	return CreateCandidateParams{EventID: input.Target.EventID, SpaceID: input.Target.SpaceID, MemoryType: string(revision.Kind), Content: revision.DisplayContent, ValidFrom: validFrom, ValidUntil: validUntil, Confidence: &confidence, Sensitivity: revision.Sensitivity, SuggestionKind: "new", ProcessorIdentity: input.ProcessorIdentity, ProviderIdentity: providerIdentity, ModelIdentity: modelIdentity, ProcessingVersion: input.ProcessingVersion, Evidence: evidence, StructuredRevision: &structured}

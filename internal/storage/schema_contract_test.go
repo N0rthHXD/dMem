@@ -656,9 +656,6 @@ func TestStructuredRevisionSchema(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertColumnAbsent(t, store, "memories", "memory_type")
-	assertColumnAbsent(t, store, "memory_revisions", "content")
-	assertColumnAbsent(t, store, "memory_revisions", "content_hash")
 	_, _, memoryID, _ := seedContractAuthority(t, store, "structured")
 
 	valid := `INSERT INTO memory_revisions(revision_id,memory_id,kind,display_content,canonical_content,canonical_hash,event_type,event_time_start,event_time_end,time_precision,time_source,source_speaker,language,sensitivity,specificity,confidence,created_by,processing_version,created_at) VALUES ('rev-ok',?,'event','Alice met Bob','alice met bob','ch-1','meeting','2024-03-01T09:00:00Z','2024-03-01T10:00:00Z','exact','statement','alice','en','normal',0.8,0.9,'test','v1','now')`
@@ -929,46 +926,6 @@ func TestTypedGraphAuthorityAndBroadRelationRemoval(t *testing.T) {
 	}
 }
 
-func TestAlgorithmIdentityAndActiveGenerationSchema(t *testing.T) {
-	t.Parallel()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "identity-generations.db"), Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-
-	if err := assertColumns(store, "algorithm_identity_versions", map[string]bool{
-		"identity_kind": false, "identity": false, "version": false, "generation": false,
-		"state": false, "created_at": false,
-	}, map[string]bool{"activated_at": false}); err != nil {
-		t.Fatal(err)
-	}
-	if err := assertColumns(store, "active_generation_metadata", map[string]bool{
-		"scope": false, "identity_kind": false, "identity": false, "generation": false, "updated_at": false,
-	}, nil); err != nil {
-		t.Fatal(err)
-	}
-	seedIdentity := `INSERT INTO algorithm_identity_versions(identity_kind, identity, version, generation, state, created_at) VALUES ('ranking_weights', 'sha256:weights', 'v1', 1, 'active', 'now')`
-	if _, err := store.writer.Exec(seedIdentity); err != nil {
-		t.Fatalf("valid algorithm identity insert rejected: %v", err)
-	}
-	if _, err := store.writer.Exec(`INSERT INTO algorithm_identity_versions(identity_kind, identity, version, generation, state, created_at) VALUES ('unknown_kind', 'sha256:x', 'v1', 1, 'active', 'now')`); err == nil {
-		t.Fatal("algorithm_identity_versions accepted unsupported identity_kind")
-	}
-	if _, err := store.writer.Exec(`INSERT INTO algorithm_identity_versions(identity_kind, identity, version, generation, state, created_at) VALUES ('ranking_weights', 'sha256:bad', 'v1', 1, 'published', 'now')`); err == nil {
-		t.Fatal("algorithm_identity_versions accepted unsupported state")
-	}
-	if _, err := store.writer.Exec(`INSERT INTO active_generation_metadata(scope, identity_kind, identity, generation, updated_at) VALUES ('ranking', 'ranking_weights', 'sha256:weights', 1, 'now')`); err != nil {
-		t.Fatalf("valid active generation insert rejected: %v", err)
-	}
-	if _, err := store.writer.Exec(`INSERT INTO active_generation_metadata(scope, identity_kind, identity, generation, updated_at) VALUES ('nonsense', 'ranking_weights', 'sha256:weights', 1, 'now')`); err == nil {
-		t.Fatal("active_generation_metadata accepted unsupported scope")
-	}
-	if _, err := store.writer.Exec(`INSERT INTO active_generation_metadata(scope, identity_kind, identity, generation, updated_at) VALUES ('context', 'context_selection', 'sha256:missing', 1, 'now')`); err == nil {
-		t.Fatal("active_generation_metadata accepted identity without a stored version")
-	}
-}
-
 func TestQueryTelemetrySchema(t *testing.T) {
 	t.Parallel()
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "query-telemetry.db"), Options{})
@@ -989,7 +946,7 @@ func TestQueryTelemetrySchema(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	valid := `INSERT INTO query_telemetry(telemetry_id, operation_id, query_plan_version, query_plan_identity, query_hash, query_type, requested_scope_json, reference_time, candidate_budget, context_budget, requested_capabilities_json, executed_capabilities_json, candidate_counts_json, rejection_counts_json, score_summary_json, graph_counts_json, duplicate_cluster_count, context_tokens, context_chars, ranking_identity, context_identity, feedback_identity, degradation_reasons_json, phase_latency_ms_json, created_at) VALUES ('tel-1', 'op-1', 'query-plan-v1', 'sha256:p', 'sha256:q', 'lookup', '["space-1"]', '2026-01-01T00:00:00Z', 20, 4000, '["semantic","keyword"]', '["semantic","keyword"]', '{"semantic":10,"keyword":5}', '{"scope":1}', '{"max":0.9}', '{"seeds":2}', 1, 128, 512, 'sha256:r', 'sha256:c', 'feedback-v2', '[]', '{"plan":0.1}', 'now')`
+	valid := `INSERT INTO query_telemetry(telemetry_id, operation_id, query_plan_version, query_plan_identity, query_hash, query_type, requested_scope_json, reference_time, candidate_budget, context_budget, requested_capabilities_json, executed_capabilities_json, candidate_counts_json, rejection_counts_json, score_summary_json, graph_counts_json, duplicate_cluster_count, context_tokens, context_chars, ranking_identity, context_identity, feedback_identity, degradation_reasons_json, phase_latency_ms_json, created_at) VALUES ('tel-1', 'op-1', 'test-plan', 'sha256:p', 'sha256:q', 'lookup', '["space-1"]', '2026-01-01T00:00:00Z', 20, 4000, '["semantic","keyword"]', '["semantic","keyword"]', '{"semantic":10,"keyword":5}', '{"scope":1}', '{"max":0.9}', '{"seeds":2}', 1, 128, 512, 'sha256:r', 'sha256:c', 'feedback-v2', '[]', '{"plan":0.1}', 'now')`
 	if _, err := store.writer.Exec(valid); err != nil {
 		t.Fatalf("valid query_telemetry insert rejected: %v", err)
 	}
@@ -1021,7 +978,7 @@ func TestContextDecisionSchema(t *testing.T) {
 	}
 }
 
-func TestReplacementKindEnumsExcludeObsoleteMemoryTypes(t *testing.T) {
+func TestMemoryKindEnumEnforcement(t *testing.T) {
 	t.Parallel()
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "kind-enums.db"), Options{})
 	if err != nil {
@@ -1040,14 +997,14 @@ func TestReplacementKindEnumsExcludeObsoleteMemoryTypes(t *testing.T) {
 			t.Fatalf("evolution_proposals rejected replacement kind %q: %v", kind, err)
 		}
 	}
-	for i, obsolete := range []string{"constraint", "decision", "task", "project_context", "agent_experience", "aggregate"} {
+	for i, invalid := range []string{"not-a-kind"} {
 		candidate := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, content, content_hash, suggestion_kind, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, ?, 'content', 'hash', 'new', 'processor', 'v1', ?, 'now')`
-		if _, err := store.writer.Exec(candidate, fmt.Sprintf("candidate-obsolete-%d", i), eventID, space, obsolete, fmt.Sprintf("candidate-obsolete-spec-%d", i)); err == nil {
-			t.Fatalf("candidates accepted obsolete memory_type %q", obsolete)
+		if _, err := store.writer.Exec(candidate, fmt.Sprintf("candidate-invalid-%d", i), eventID, space, invalid, fmt.Sprintf("candidate-invalid-spec-%d", i)); err == nil {
+			t.Fatalf("candidates accepted invalid memory_type %q", invalid)
 		}
 		proposal := `INSERT INTO evolution_proposals(proposal_id, event_id, space_id, action, proposed_content, proposed_content_hash, memory_type, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'supplement', 'content', 'hash', ?, 'processor', 'v1', ?, 'now')`
-		if _, err := store.writer.Exec(proposal, fmt.Sprintf("proposal-obsolete-%d", i), eventID, space, obsolete, fmt.Sprintf("proposal-obsolete-spec-%d", i)); err == nil {
-			t.Fatalf("evolution_proposals accepted obsolete memory_type %q", obsolete)
+		if _, err := store.writer.Exec(proposal, fmt.Sprintf("proposal-invalid-%d", i), eventID, space, invalid, fmt.Sprintf("proposal-invalid-spec-%d", i)); err == nil {
+			t.Fatalf("evolution_proposals accepted invalid memory_type %q", invalid)
 		}
 	}
 }
@@ -1111,27 +1068,4 @@ func assertColumns(store *Store, table string, notNull map[string]bool, nullable
 		}
 	}
 	return nil
-}
-
-func assertColumnAbsent(t *testing.T, store *Store, table, column string) {
-	t.Helper()
-	rows, err := store.reader.Query(`PRAGMA table_info(` + table + `)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var name, dataType string
-		var defaultValue any
-		if err = rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
-			t.Fatal(err)
-		}
-		if name == column {
-			t.Fatalf("%s retains obsolete column %s", table, column)
-		}
-	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
 }

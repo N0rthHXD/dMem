@@ -46,7 +46,7 @@ func testDecision(repository *Repository, queryHash string, rank int, state stri
 		EntityIDs:         []string{"00000000-0000-4000-8000-000000000201"},
 		RankingIdentity:   repository.rankingIdentity(),
 		FeatureIdentity:   retrieval.RankingFeatureVersion,
-		ContextIdentity:   searchContextIdentity,
+		ContextIdentity:   "test-context-selection",
 		ResultRank:        rank,
 		SelectionState:    state,
 		MatchedSignals:    []string{"keyword", "semantic"},

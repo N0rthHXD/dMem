@@ -772,30 +772,6 @@ func (i RecallIntent) Valid() bool {
 	}
 }
 
-// RecallDebugOverrides is the evaluation/debug-only contract. Production
-// callers express intent and budget; explicit capability overrides exist only
-// for evaluation and debugging.
-type RecallDebugOverrides struct {
-	Capabilities           []string `json:"capabilities,omitempty"`
-	GraphPolicy            string   `json:"graph_policy,omitempty"`
-	DisableDiversification bool     `json:"disable_diversification,omitempty"`
-	IncludeStaleAggregates bool     `json:"include_stale_aggregates,omitempty"`
-}
-
-type RecallRequest struct {
-	Query            string                `json:"query"`
-	SpaceIDs         []string              `json:"space_ids"`
-	IncludeAncestors bool                  `json:"include_ancestors"`
-	ReferenceTime    string                `json:"reference_time,omitempty"`
-	Intent           RecallIntent          `json:"intent"`
-	Debug            *RecallDebugOverrides `json:"debug,omitempty"`
-	MaxResults       int                   `json:"max_results"`
-	MaxContextTokens int                   `json:"max_context_tokens"`
-	IncludeEvidence  bool                  `json:"include_evidence"`
-	Explain          bool                  `json:"explain"`
-	Cursor           string                `json:"cursor,omitempty"`
-}
-
 type RecallExplanation struct {
 	MatchedSignals              []string                    `json:"matched_signals"`
 	SelectionReason             string                      `json:"selection_reason"`

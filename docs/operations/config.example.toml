@@ -71,7 +71,6 @@ agreement_weight = 0.05
 
 # Budgeted context selection. max_context_chars must be at least max_context_tokens.
 [context]
-version = "context-selection-v1"
 max_context_tokens = 4000
 max_context_chars = 16000
 max_results = 20

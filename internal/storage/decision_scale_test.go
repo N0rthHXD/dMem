@@ -76,6 +76,7 @@ func decisionPercentile95(samples []float64) float64 {
 // the target scale. Thresholds live in
 // testdata/decision-scale-gates-v1.json so they are versioned and reviewable.
 func TestDecisionScaleGates(t *testing.T) {
+	requirePerformanceGates(t)
 	gates := loadDecisionScaleGates(t)
 	repository, _ := newMemoryTestRepository(t)
 

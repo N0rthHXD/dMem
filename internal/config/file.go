@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 const maxConfigFileSize = 1 << 20
@@ -57,10 +58,9 @@ type rankingTable struct {
 }
 
 type contextTable struct {
-	Version          *string `toml:"version"`
-	MaxContextTokens *int    `toml:"max_context_tokens"`
-	MaxContextChars  *int    `toml:"max_context_chars"`
-	MaxResults       *int    `toml:"max_results"`
+	MaxContextTokens *int `toml:"max_context_tokens"`
+	MaxContextChars  *int `toml:"max_context_chars"`
+	MaxResults       *int `toml:"max_results"`
 }
 
 type instanceTable struct {
@@ -211,27 +211,38 @@ func newValidationError(code string, diagnostics ...Diagnostic) *ValidationError
 }
 
 func readFile(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
 		}
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
+	}
+	if filepath.Clean(resolved) != filepath.Clean(path) {
 		return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
 	}
 	if info.Size() > maxConfigFileSize {
 		return nil, newValidationError("config_too_large", Diagnostic{Code: "config_too_large", Path: path})
 	}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
+	}
+	defer f.Close()
+	opened, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	if !opened.Mode().IsRegular() {
+		return nil, newValidationError("config_unavailable", Diagnostic{Code: "config_unavailable", Path: path})
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
 	if err != nil {
 		return nil, err

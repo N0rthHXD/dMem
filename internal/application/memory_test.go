@@ -6,7 +6,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
-func TestValidateRecallUsesReplacementMemoryKinds(t *testing.T) {
+func TestValidateRecallUsesDomainMemoryKinds(t *testing.T) {
 	base := RecallQuery{
 		Query: "query", SpaceIDs: []string{"space"}, Intent: domain.RecallIntentAuto,
 		Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000, MaxContextTokens: 1000,
@@ -16,16 +16,14 @@ func TestValidateRecallUsesReplacementMemoryKinds(t *testing.T) {
 		query.MemoryTypes = []string{kind}
 		query.MemoryTypesSet = true
 		if err := validateRecall(query); err != nil {
-			t.Fatalf("validateRecall rejected replacement kind %q: %v", kind, err)
+			t.Fatalf("validateRecall rejected kind %q: %v", kind, err)
 		}
 	}
-	for _, obsolete := range []string{"constraint", "decision", "task", "project_context", "agent_experience", "aggregate"} {
-		query := base
-		query.MemoryTypes = []string{obsolete}
-		query.MemoryTypesSet = true
-		if err := validateRecall(query); err == nil {
-			t.Fatalf("validateRecall accepted obsolete memory_type %q", obsolete)
-		}
+	query := base
+	query.MemoryTypes = []string{"not-a-kind"}
+	query.MemoryTypesSet = true
+	if err := validateRecall(query); err == nil {
+		t.Fatal("validateRecall accepted an invalid memory kind")
 	}
 }
 

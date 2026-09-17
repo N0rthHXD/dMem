@@ -94,7 +94,7 @@ type RestoreResult struct {
 
 var authorityTables = []string{
 	"entities", "entity_events", "entity_aliases", "entity_alias_events", "entity_mentions",
-	"entity_proposals", "entity_proposal_reviews", "entity_merge_proposals", "memory_relations",
+	"entity_proposals", "entity_proposal_reviews", "memory_relations",
 	"relation_evidence", "relation_state_events", "relation_proposals", "relation_proposal_reviews",
 	"evolution_proposals", "evolution_proposal_targets", "evolution_proposal_evidence",
 	"evolution_proposal_reviews", "evolution_result_refs", "conflict_cases", "conflict_case_participants",
@@ -496,7 +496,7 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 	if _, err := tx.ExecContext(ctx, `UPDATE relation_index_metadata SET active_version=active_version+1,generation=generation+1,state='ready',source_relation_count=(SELECT count(*) FROM memory_relations),updated_at=? WHERE singleton=1`, nowText); err != nil {
 		return 0, 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE projection_metadata SET state='rebuilding', updated_at=? WHERE singleton=1`, nowText); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE projection_metadata SET quality_state='rebuilding', duplicate_state='rebuilding', updated_at=? WHERE singleton=1`, nowText); err != nil {
 		return 0, 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE graph_index_metadata SET state='rebuilding', updated_at=? WHERE singleton=1`, nowText); err != nil {

@@ -485,7 +485,7 @@ func revisionEvidenceFromEvolution(items []domain.RelationEvidence) []EvidencePa
 	for _, e := range items {
 		if e.EvidenceType == "raw_event_range" && e.EventID != nil {
 			start, end := int64(*e.StartOffset), int64(*e.EndOffset)
-			out = append(out, EvidenceParams{EventID: *e.EventID, EvidenceType: "manual_reference", StartOffset: &start, EndOffset: &end})
+			out = append(out, EvidenceParams{EventID: *e.EventID, StartOffset: &start, EndOffset: &end})
 		}
 	}
 	return out

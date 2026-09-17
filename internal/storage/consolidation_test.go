@@ -223,7 +223,7 @@ func TestConsolidationAttachEvidenceIsAtomicDeduplicatedAndFrozenSafe(t *testing
 		t.Fatal(err)
 	}
 	start, end := int64(0), int64(6)
-	evidence := []EvidenceParams{{EventID: "event-2", EvidenceType: "direct_statement", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}}
+	evidence := []EvidenceParams{{EventID: "event-2", Role: domain.EvidenceRoleDirect, StartOffset: &start, EndOffset: &end}}
 	inserted, err := repository.attachConsolidationEvidence(context.Background(), tx, "space-1", memory.MemoryID, revisionID, evidence, formatTime(repository.runtime.Now()))
 	if err != nil || inserted != 1 {
 		t.Fatalf("first attach = %d, %v; want 1", inserted, err)

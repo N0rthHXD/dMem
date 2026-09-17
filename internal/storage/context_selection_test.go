@@ -3,8 +3,6 @@ package storage
 import (
 	"context"
 	"testing"
-
-	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
 func selectionSearchParams(query string, explain bool) SearchParams {
@@ -88,9 +86,13 @@ func TestContextSelectionBudgetIsHardCap(t *testing.T) {
 func TestContextSelectionProtectsExactPrimaryOverAggregate(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	source := createMemoryWithContent(t, repository, "sel-source", "zephyr protected source")
-	aggregate := createMemoryWithContentInKind(t, repository, "sel-aggregate", "zephyr protected source summary", "scene")
-	if aggregate.Kind != domain.MemoryKindScene {
-		t.Fatalf("aggregate kind = %s", aggregate.Kind)
+	params := aggregateProposalParams(aggregateInput(source))
+	params.Content = "zephyr protected source summary"
+	proposal := createAggregateProposalTest(t, repository, "sel-aggregate-proposal", params)
+	confirmed := confirmAggregateTest(t, repository, "sel-aggregate-confirm", proposal)
+	aggregate, err := repository.GetAggregate(context.Background(), *confirmed.ResultMemoryID)
+	if err != nil || aggregate.AggregateKind != "scene" {
+		t.Fatalf("aggregate kind = %+v err=%v", aggregate, err)
 	}
 	response, err := repository.SearchMemories(context.Background(), selectionSearchParams("zephyr protected source", true))
 	if err != nil {
@@ -102,7 +104,7 @@ func TestContextSelectionProtectsExactPrimaryOverAggregate(t *testing.T) {
 	if response.Context.Items[0].MemoryID != source.MemoryID {
 		t.Fatalf("broad aggregate consumed the primary slot: %+v", response.Context.Items[0])
 	}
-	if len(response.Context.Items[0].SupplementaryMemoryIDs) == 0 || response.Context.Items[0].SupplementaryMemoryIDs[0] != aggregate.MemoryID {
+	if len(response.Context.Items[0].SupplementaryMemoryIDs) == 0 || response.Context.Items[0].SupplementaryMemoryIDs[0] != *confirmed.ResultMemoryID {
 		t.Fatalf("aggregate synthesis not attached as supplementary: %+v", response.Context.Items[0])
 	}
 }
@@ -150,14 +152,4 @@ func TestContextSelectionExcludesStaleAggregateByDefault(t *testing.T) {
 	if !found {
 		t.Fatalf("debug inclusion did not return stale aggregate: %+v", provenance.Context.Items)
 	}
-}
-
-func createMemoryWithContentInKind(t *testing.T, repository *Repository, key, content, kind string) domain.Memory {
-	t.Helper()
-	params := CreateMemoryParams{SpaceID: "space-1", Kind: kind, Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "context selection test"}
-	memory, replay, err := repository.CreateMemory(context.Background(), memoryIdentity(key, "/v1/memories", params), params)
-	if err != nil || replay {
-		t.Fatalf("create %s memory = %+v, replay=%t, %v", kind, memory, replay, err)
-	}
-	return memory
 }

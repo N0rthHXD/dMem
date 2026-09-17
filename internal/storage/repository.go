@@ -98,7 +98,6 @@ type Repository struct {
 	queryEnricher                      retrieval.QueryEnricher
 	queryEnrichmentAllowed             bool
 	consolidationVersion               string
-	consolidationIdentity              string
 	consolidationMaxCandidates         int
 	consolidationExactHashEnabled      bool
 	consolidationSameSourceCosine      float64
@@ -234,11 +233,10 @@ func (r *Repository) SetRetrievalCalibration(weights retrieval.Weights, calibrat
 
 // SetConsolidation configures bounded candidate consolidation. The versioned
 // identity binds the thresholds and candidate bound into consolidation records.
-func (r *Repository) SetConsolidation(version, identity string, maxCandidates int, exactHashEnabled bool, sameSourceEventCosine, sameSubjectKindCosine float64) {
+func (r *Repository) SetConsolidation(version string, maxCandidates int, exactHashEnabled bool, sameSourceEventCosine, sameSubjectKindCosine float64) {
 	if version != "" {
 		r.consolidationVersion = version
 	}
-	r.consolidationIdentity = identity
 	if maxCandidates > 0 {
 		r.consolidationMaxCandidates = maxCandidates
 	}

@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -54,3 +55,78 @@ jobs:
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - name: Scan
         run: make govulncheck
+
+  python:
+    name: Python 3.12 / evaluation tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest httpx openai numpy tqdm
+      - name: Run evaluation tests
+        run: make python-test
+
+  release-smoke:
+    name: Linux amd64 / release smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: Download dependencies
+        run: go mod download
+      - name: Build release binary
+        run: CGO_ENABLED=1 go build -tags sqlite_fts5 -o dmemd ./cmd/dmemd
+      - name: Validate, initialize, and back up
+        run: |
+          root="$(mktemp -d)"
+          install -d -m 0700 "$root/data" "$root/runtime"
+          cat > "$root/config.toml" <<EOF
+          config_version = 1
+
+          [instance]
+          data_dir = "$root/data"
+          runtime_dir = "$root/runtime"
+          database_filename = "dmem.db"
+          socket_filename = "dmem.sock"
+
+          [server]
+          request_timeout = "30s"
+          shutdown_grace_period = "15s"
+          max_connections = 4
+          max_request_bytes = 4194304
+
+          [jobs]
+          worker_count = 1
+          queue_soft_limit = 10
+          queue_hard_limit = 20
+          max_attempts = 3
+          lease_duration = "30s"
+          per_job_timeout = "2m"
+          retry_initial_backoff = "1s"
+          retry_max_backoff = "5m"
+
+          [storage]
+          disk_soft_free_bytes = 1073741824
+          disk_hard_free_bytes = 268435456
+
+          [processing]
+          version = "builtin-noop-v1"
+
+          [processing.provider]
+          enabled = false
+
+          [embedding.provider]
+          enabled = false
+          EOF
+          ./dmemd --config "$root/config.toml" config validate
+          ./dmemd --config "$root/config.toml" init
+          ./dmemd --config "$root/config.toml" backup --target "$root/backup"
+          test -f "$root/backup/manifest.json"

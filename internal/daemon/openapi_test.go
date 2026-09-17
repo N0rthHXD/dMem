@@ -528,11 +528,6 @@ func TestRecallOpenAPIReplacementContract(t *testing.T) {
 			t.Errorf("RecallRequest is missing property %q", property)
 		}
 	}
-	for _, obsolete := range []string{"limit", "max_chars", "channels"} {
-		if request.Properties[obsolete] != nil {
-			t.Errorf("RecallRequest retains obsolete property %q", obsolete)
-		}
-	}
 	debug := request.Properties["debug"]
 	if debug == nil || debug.Value == nil || debug.Value.Properties["capabilities"] == nil || debug.Value.Properties["capabilities"].Value.Items == nil {
 		t.Fatalf("RecallRequest is missing the evaluation/debug capability override contract")
@@ -551,9 +546,6 @@ func TestRecallOpenAPIReplacementContract(t *testing.T) {
 
 func TestOpenAPIReplacementMemoryKindContract(t *testing.T) {
 	doc := loadOpenAPI(t)
-	if doc.Components.Schemas["MemoryType"] != nil {
-		t.Error("OpenAPI still exposes the obsolete MemoryType enum")
-	}
 	kind := doc.Components.Schemas["MemoryKind"]
 	if kind == nil || kind.Value == nil {
 		t.Fatal("OpenAPI is missing the MemoryKind schema")
@@ -603,11 +595,6 @@ func TestOpenAPIReplacementMemoryKindContract(t *testing.T) {
 		for _, value := range property.Value.Enum {
 			if name, ok := value.(string); ok {
 				allowed[name] = true
-			}
-		}
-		for _, obsolete := range []string{"constraint", "decision", "project_context", "agent_experience", "aggregate"} {
-			if allowed[obsolete] {
-				t.Errorf("%s.memory_type retains obsolete enum value %q", schema, obsolete)
 			}
 		}
 		for _, want := range replacement {

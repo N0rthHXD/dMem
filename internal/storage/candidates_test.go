@@ -81,8 +81,8 @@ func TestCandidateRejectsCrossSpaceAndOutOfRangeEvidence(t *testing.T) {
 		name     string
 		evidence []EvidenceParams
 	}{
-		{"cross-space", []EvidenceParams{{EventID: "event-sibling", EvidenceType: "direct_statement"}}},
-		{"out-of-range", []EvidenceParams{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}}},
+		{"cross-space", []EvidenceParams{{EventID: "event-sibling"}}},
+		{"out-of-range", []EvidenceParams{{EventID: "event-1", StartOffset: &start, EndOffset: &end}}},
 	} {
 		params := candidateParams()
 		params.Content = test.name
@@ -255,7 +255,7 @@ func TestCandidateConfirmRevalidatesEvidence(t *testing.T) {
 	if _, err := repository.store.writer.Exec(`INSERT INTO candidates(candidate_id,event_id,space_id,memory_type,content,content_hash,confidence,sensitivity,suggestion_kind,processor_identity,processing_version,specification_hash,created_at) VALUES ('invalid-candidate','event-1','space-1','fact','invalid evidence','hash',0.5,'normal','new','processor/test','v1','invalid-spec',?)`, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.store.writer.Exec(`INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,evidence_type,created_at) VALUES ('invalid-evidence','invalid-candidate','event-sibling','direct_statement',?)`, now); err != nil {
+	if _, err := repository.store.writer.Exec(`INSERT INTO candidate_evidence(evidence_id,candidate_id,event_id,created_at) VALUES ('invalid-evidence','invalid-candidate','event-sibling',?)`, now); err != nil {
 		t.Fatal(err)
 	}
 	review := ReviewCandidateParams{ReasonCode: "accepted"}

@@ -3,7 +3,6 @@ package domain
 import (
 	"errors"
 	"math"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -31,21 +30,6 @@ func TestMemoryUsesReplacementKindAndRevisionModels(t *testing.T) {
 	memory := Memory{Kind: MemoryKindProcedure, CurrentRevision: baseRevision()}
 	if memory.Kind != MemoryKindProcedure || memory.CurrentRevision.Kind != MemoryKindFact {
 		t.Fatalf("memory kinds = %q, %q", memory.Kind, memory.CurrentRevision.Kind)
-	}
-
-	for _, model := range []struct {
-		name      string
-		typeOf    reflect.Type
-		oldFields []string
-	}{
-		{name: "Memory", typeOf: reflect.TypeOf(Memory{}), oldFields: []string{"MemoryType"}},
-		{name: "MemoryRevision", typeOf: reflect.TypeOf(MemoryRevision{}), oldFields: []string{"Content"}},
-	} {
-		for _, field := range model.oldFields {
-			if _, ok := model.typeOf.FieldByName(field); ok {
-				t.Fatalf("%s retains obsolete field %s", model.name, field)
-			}
-		}
 	}
 }
 

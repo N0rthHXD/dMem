@@ -50,7 +50,7 @@ def test_failure_records_are_append_only_and_do_not_complete_ingestion(tmp_path)
     assert checkpoint.load_ingested_qids() == set()
 
 
-def test_checkpoint_compatibility_has_no_legacy_missing_key_exception(tmp_path):
+def test_checkpoint_requires_every_compatibility_key(tmp_path):
     checkpoint = Checkpoint(tmp_path)
     checkpoint.write_manifest({"dataset_sha": "sha"})
 

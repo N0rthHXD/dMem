@@ -10,6 +10,40 @@ import (
 	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
+func TestLoadRejectsSymlinkedConfig(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("testdata", "valid", "minimal.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.toml")
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(link); err == nil {
+		t.Fatal("symlinked config file accepted")
+	}
+	parentLink := filepath.Join(dir, "parent-link")
+	if err := os.Symlink(dir, parentLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(filepath.Join(parentLink, "real.toml")); err == nil {
+		t.Fatal("config under a symlinked directory accepted")
+	}
+}
+
+func TestLoadRejectsNonRegularConfig(t *testing.T) {
+	t.Parallel()
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("directory accepted as config file")
+	}
+}
+
 func TestLoadValidMinimal(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))

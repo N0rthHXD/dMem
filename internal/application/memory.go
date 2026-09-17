@@ -189,8 +189,8 @@ func validateRemember(command RememberCommand) error {
 	if command.SpaceID == "" || strings.TrimSpace(command.Content) == "" {
 		return errors.New("space_id and content are required")
 	}
-	validKinds := map[string]bool{"fact": true, "event": true, "preference": true, "plan": true, "procedure": true, "scene": true, "topic": true, "timeline": true}
-	if !validKinds[command.Kind] || command.Sensitivity != "normal" && command.Sensitivity != "sensitive" {
+	kind := domain.MemoryKind(command.Kind)
+	if !kind.Valid() || domain.ValidAggregateKind(command.Kind) || command.Sensitivity != "normal" && command.Sensitivity != "sensitive" {
 		return errors.New("kind or sensitivity is invalid")
 	}
 	if command.SourceName == "" || utf8.RuneCountInString(command.SourceName) > 128 || utf8.RuneCountInString(command.Reason) < 1 || utf8.RuneCountInString(command.Reason) > 1024 {
@@ -236,13 +236,8 @@ func validateRecall(query RecallQuery) error {
 			return errors.New("reference_time must be RFC3339")
 		}
 	}
-	if query.GraphPolicy != "" {
-		switch retrieval.GraphPolicy(query.GraphPolicy) {
-		case retrieval.GraphOff, retrieval.GraphFeaturesOnly, retrieval.GraphDirect:
-		case retrieval.GraphBoundedPath:
-		default:
-			return errors.New("recall graph_policy is invalid")
-		}
+	if query.GraphPolicy != "" && !retrieval.GraphPolicy(query.GraphPolicy).Valid() {
+		return errors.New("recall graph_policy is invalid")
 	}
 	return nil
 }

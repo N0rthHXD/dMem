@@ -18,6 +18,8 @@ const (
 // state. Projections never change eligibility; they only order candidates.
 type ProjectionHealth struct {
 	State                     string `json:"state"`
+	QualityState              string `json:"quality_state"`
+	DuplicateState            string `json:"duplicate_state"`
 	QualityGeneration         int64  `json:"quality_generation"`
 	DuplicateGeneration       int64  `json:"duplicate_generation"`
 	QualityAlgorithmVersion   string `json:"quality_algorithm_version"`
@@ -25,7 +27,7 @@ type ProjectionHealth struct {
 }
 
 func advanceProjectionGeneration(ctx context.Context, tx *sql.Tx, now string) error {
-	result, err := tx.ExecContext(ctx, `UPDATE projection_metadata SET quality_generation=quality_generation+1, duplicate_generation=duplicate_generation+1, state='stale', updated_at=? WHERE singleton=1`, now)
+	result, err := tx.ExecContext(ctx, `UPDATE projection_metadata SET quality_generation=quality_generation+1, duplicate_generation=duplicate_generation+1, quality_state='stale', duplicate_state='stale', updated_at=? WHERE singleton=1`, now)
 	if err != nil {
 		return err
 	}
@@ -37,8 +39,9 @@ func advanceProjectionGeneration(ctx context.Context, tx *sql.Tx, now string) er
 
 func (r *Repository) ProjectionHealth(ctx context.Context) (ProjectionHealth, error) {
 	var result ProjectionHealth
-	err := r.store.reader.QueryRowContext(ctx, `SELECT state, quality_generation, duplicate_generation, quality_algorithm_version, duplicate_algorithm_version FROM projection_metadata WHERE singleton=1`).Scan(
-		&result.State, &result.QualityGeneration, &result.DuplicateGeneration, &result.QualityAlgorithmVersion, &result.DuplicateAlgorithmVersion)
+	err := r.store.reader.QueryRowContext(ctx, `SELECT quality_state, duplicate_state, quality_generation, duplicate_generation, quality_algorithm_version, duplicate_algorithm_version FROM projection_metadata WHERE singleton=1`).Scan(
+		&result.QualityState, &result.DuplicateState, &result.QualityGeneration, &result.DuplicateGeneration, &result.QualityAlgorithmVersion, &result.DuplicateAlgorithmVersion)
+	result.State = result.QualityState
 	return result, err
 }
 
@@ -229,15 +232,22 @@ func (r *Repository) requireProjectionGeneration(ctx context.Context, tx *sql.Tx
 }
 
 func (r *Repository) setProjectionRebuilding(ctx context.Context, kind string) error {
-	_, err := r.store.writer.ExecContext(ctx, `UPDATE projection_metadata SET state='rebuilding', updated_at=? WHERE singleton=1`, formatTime(r.runtime.Now()))
+	_, err := r.store.writer.ExecContext(ctx, `UPDATE projection_metadata SET `+projectionStateColumn(kind)+`='rebuilding', updated_at=? WHERE singleton=1`, formatTime(r.runtime.Now()))
 	return err
 }
 
 func (r *Repository) setProjectionState(ctx context.Context, tx *sql.Tx, kind, state, now string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE projection_metadata SET state=?, updated_at=? WHERE singleton=1`, state, now)
+	_, err := tx.ExecContext(ctx, `UPDATE projection_metadata SET `+projectionStateColumn(kind)+`=?, updated_at=? WHERE singleton=1`, state, now)
 	return err
 }
 
 func (r *Repository) markProjectionDegraded(kind string) {
-	_, _ = r.store.writer.ExecContext(context.Background(), `UPDATE projection_metadata SET state='degraded', updated_at=? WHERE singleton=1`, formatTime(r.runtime.Now()))
+	_, _ = r.store.writer.ExecContext(context.Background(), `UPDATE projection_metadata SET `+projectionStateColumn(kind)+`='degraded', updated_at=? WHERE singleton=1`, formatTime(r.runtime.Now()))
+}
+
+func projectionStateColumn(kind string) string {
+	if kind == "duplicate" {
+		return "duplicate_state"
+	}
+	return "quality_state"
 }

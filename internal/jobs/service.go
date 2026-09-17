@@ -293,18 +293,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *Service) Wait() error {
-	s.mu.Lock()
-	if !s.started {
-		s.mu.Unlock()
-		return nil
-	}
-	done := s.done
-	s.mu.Unlock()
-	<-done
-	return nil
-}
-
 func (s *Service) maintain(ctx context.Context) error {
 	if _, err := s.repository.RecoverExpiredLeases(ctx); err != nil {
 		return fmt.Errorf("recover expired job leases: %w", err)

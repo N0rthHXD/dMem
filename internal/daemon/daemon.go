@@ -48,20 +48,6 @@ type Daemon struct {
 	applySnapshotErr error
 }
 
-func Start(ctx context.Context, cfg config.Config) (_ *Daemon, err error) {
-	processor := jobs.Processor(jobs.NoopProcessor{})
-	var aggregateProvider domain.AggregateProvider
-	if cfg.ProcessingProvider.Enabled {
-		client, err := provider.New(cfg.ProcessingProvider, nil)
-		if err != nil {
-			return nil, err
-		}
-		processor = jobs.NewProviderProcessor(client)
-		aggregateProvider = client
-	}
-	return startService(ctx, cfg, processor, aggregateProvider, true)
-}
-
 // StartManaged starts a daemon from the manager's immutable active snapshot.
 func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err error) {
 	if manager == nil {
@@ -501,6 +487,13 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		snapshot.Config.Graph.MinFactConfidence,
 		snapshot.Config.Graph.BoostCap,
 	)
+	d.repository.SetConsolidation(
+		snapshot.Config.Consolidation.Version,
+		snapshot.Config.Consolidation.MaxCandidates,
+		snapshot.Config.Consolidation.ExactHashEnabled,
+		snapshot.Config.Consolidation.SameSourceEventCosine,
+		snapshot.Config.Consolidation.SameSubjectKindCosine,
+	)
 	d.repository.SetProcessingGeneration(snapshot.ActivationGeneration, processingPolicyGeneration, snapshot.ProcessingCapability.CompatibilityIdentity)
 	d.repository.SetGraphExtractionEnabled(snapshot.ProcessingCapability.Enabled && snapshot.Config.GraphEnabled)
 	d.jobs.SetProcessing(jobs.ProcessingConfig{
@@ -609,15 +602,14 @@ func (d *Daemon) cleanup() error {
 }
 
 func prepareDir(path string, mode os.FileMode) error {
+	if err := rejectSymlinkComponents(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(path, mode); err != nil {
 		return err
 	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
+	if err := rejectSymlinkComponents(path); err != nil {
 		return err
-	}
-	if filepath.Clean(resolved) != filepath.Clean(path) {
-		return errors.New("directory path must not contain symlinks")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -628,6 +620,31 @@ func prepareDir(path string, mode os.FileMode) error {
 		return errors.New("directory must be owned by the current user")
 	}
 	return os.Chmod(path, mode)
+}
+
+// rejectSymlinkComponents fails when any existing component of path is a
+// symlink. Missing components are allowed so callers can create fresh
+// directories without ever creating through a link.
+func rejectSymlinkComponents(path string) error {
+	clean := filepath.Clean(path)
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("directory path must not contain symlinks: %s", current)
+		}
+	}
+	return nil
 }
 
 func clearStaleSocket(path string) error {

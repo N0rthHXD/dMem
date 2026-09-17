@@ -97,10 +97,6 @@ func Default() (Config, error) {
 	}, nil
 }
 
-func DefaultConfigPath() (string, error) {
-	return defaultConfigPath()
-}
-
 func Load(path string) (Config, error) {
 	if path == "" {
 		var err error
@@ -125,17 +121,6 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
-}
-
-func (c Config) ValidateOffline() error {
-	return validateRestartFields(c)
-}
-
-var ErrRestartRequired = errors.New("config: restart required")
-
-func validateRestartFields(c Config) error {
-	_ = c
-	return nil
 }
 
 func defaultDataDir() (string, error) {

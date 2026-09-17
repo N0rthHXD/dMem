@@ -414,7 +414,7 @@ func (r *Repository) autoConfirmAlias(ctx context.Context, tx *sql.Tx, input dom
 	var collision string
 	err := tx.QueryRowContext(ctx, `SELECT a.entity_id FROM entity_aliases a JOIN entities e ON e.entity_id=a.entity_id WHERE e.space_id=? AND a.state='active' AND a.normalized_alias=? AND a.entity_id<>? LIMIT 1`, input.SpaceID, norm, entityID).Scan(&collision)
 	if err == nil {
-		return r.createMergeProposal(ctx, tx, input, entityID, collision, norm, now)
+		return nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -435,16 +435,6 @@ func (r *Repository) autoConfirmAlias(ctx context.Context, tx *sql.Tx, input dom
 		return err
 	}
 	return r.markEntityIndexStale(ctx, tx, now)
-}
-
-func (r *Repository) createMergeProposal(ctx context.Context, tx *sql.Tx, input domain.GraphExtractionInput, entityID, otherID, norm string, now string) error {
-	h := sha256.Sum256([]byte(otherID + "\x00" + entityID + "\x00" + norm))
-	id, err := r.runtime.ID()
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO entity_merge_proposals(merge_proposal_id, space_id, source_entity_id, target_entity_id, reason, processing_version, specification_hash, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, input.SpaceID, entityID, otherID, "alias_normalization_collision", input.ProcessingVersion, hex.EncodeToString(h[:]), autoReviewIdentity, now)
-	return err
 }
 
 func (r *Repository) commitGraphMentions(ctx context.Context, tx *sql.Tx, input domain.GraphExtractionInput, mentions []domain.GraphMention, entityMap map[string]string, now string) error {

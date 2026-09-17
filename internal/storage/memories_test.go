@@ -82,7 +82,7 @@ func memoryIdentity(key, route string, request any) WriteIdentity {
 
 func directEvidence(eventID string) []EvidenceParams {
 	start, end := int64(1), int64(5)
-	return []EvidenceParams{{EventID: eventID, EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}}
+	return []EvidenceParams{{EventID: eventID, StartOffset: &start, EndOffset: &end}}
 }
 
 func equalEvidenceValues(a, b []domain.RevisionEvidence) bool {
@@ -137,7 +137,7 @@ func TestMEMCreateIsAtomicProjectedSearchableAuditedAndReplaySafe(t *testing.T) 
 	params := CreateMemoryParams{
 		SpaceID: "space-1", Kind: "preference", Content: "prefers deterministic storage tests",
 		ValidFrom: &validFrom, ValidUntil: &validUntil, Sensitivity: "sensitive", Reason: "create reason",
-		Evidence: []EvidenceParams{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &end}},
+		Evidence: []EvidenceParams{{EventID: "event-1", StartOffset: &start, EndOffset: &end}},
 	}
 	identity := memoryIdentity("create", "/v1/memories", params)
 	memory, replay, err := repository.CreateMemory(ctx, identity, params)
@@ -312,7 +312,7 @@ func TestMEMEvidenceOffsetConstraintsRollbackWholeCreate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository, _ := newMemoryTestRepository(t)
 			before := memoryTableCounts(t, repository)
-			params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "bad offsets", Sensitivity: "normal", Evidence: []EvidenceParams{{EventID: "event-1", EvidenceType: "direct_statement", StartOffset: test.start, EndOffset: test.end}}, Reason: test.name}
+			params := CreateMemoryParams{SpaceID: "space-1", Kind: "fact", Content: "bad offsets", Sensitivity: "normal", Evidence: []EvidenceParams{{EventID: "event-1", StartOffset: test.start, EndOffset: test.end}}, Reason: test.name}
 			if _, _, err := repository.CreateMemory(ctx, memoryIdentity("offset-"+test.name, "/v1/memories", params), params); !errors.Is(err, ErrInvalidEvidence) {
 				t.Fatalf("CreateMemory() error = %v; want ErrInvalidEvidence", err)
 			}
@@ -343,19 +343,19 @@ func TestMEMEvidenceScopeAndContentKindValidation(t *testing.T) {
 		return err
 	}
 	start, runeEnd, pastEnd := int64(0), int64(3), int64(4)
-	if err := create("ancestor evidence", "space-child", EvidenceParams{EventID: "event-1", EvidenceType: "direct_statement"}); err != nil {
+	if err := create("ancestor evidence", "space-child", EvidenceParams{EventID: "event-1"}); err != nil {
 		t.Fatalf("ancestor evidence rejected: %v", err)
 	}
-	if err := create("unicode range", "space-child", EvidenceParams{EventID: "event-child", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &runeEnd}); err != nil {
+	if err := create("unicode range", "space-child", EvidenceParams{EventID: "event-child", StartOffset: &start, EndOffset: &runeEnd}); err != nil {
 		t.Fatalf("rune-bounded evidence rejected: %v", err)
 	}
 	for _, test := range []struct {
 		name     string
 		evidence EvidenceParams
 	}{
-		{"cross-space", EvidenceParams{EventID: "event-sibling", EvidenceType: "direct_statement"}},
-		{"out-of-range", EvidenceParams{EventID: "event-child", EvidenceType: "direct_statement", StartOffset: &start, EndOffset: &pastEnd}},
-		{"reference-offset", EvidenceParams{EventID: "event-reference", EvidenceType: "manual_reference", StartOffset: &start, EndOffset: &runeEnd}},
+		{"cross-space", EvidenceParams{EventID: "event-sibling"}},
+		{"out-of-range", EvidenceParams{EventID: "event-child", StartOffset: &start, EndOffset: &pastEnd}},
+		{"reference-offset", EvidenceParams{EventID: "event-reference", StartOffset: &start, EndOffset: &runeEnd}},
 	} {
 		if err := create(test.name, "space-child", test.evidence); !errors.Is(err, ErrInvalidEvidence) {
 			t.Fatalf("%s error = %v; want ErrInvalidEvidence", test.name, err)

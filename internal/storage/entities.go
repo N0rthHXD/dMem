@@ -490,13 +490,6 @@ func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIde
 				if _, err = tx.ExecContext(ctx, `INSERT INTO entity_alias_events(alias_event_id,alias_id,operation_id,to_state,reason,created_by,created_at) VALUES (?,?,?,'active',?,?,?)`, ids[8], extraAliasID, operationID, review.ReasonCode, identity.CallerID, now); err != nil {
 					return p, false, err
 				}
-				var other string
-				if e := tx.QueryRowContext(ctx, `SELECT a.entity_id FROM entity_aliases a JOIN entities e ON e.entity_id=a.entity_id WHERE e.space_id=? AND a.normalization_version=? AND a.normalized_alias=? AND a.state='active' AND a.entity_id<>? ORDER BY a.entity_id LIMIT 1`, p.SpaceID, *p.NormalizationVersion, extraNorm, eid).Scan(&other); e == nil {
-					h := sha256.Sum256([]byte(other + "\x00" + eid + "\x00" + extraNorm))
-					if _, err = tx.ExecContext(ctx, `INSERT INTO entity_merge_proposals(merge_proposal_id,space_id,source_entity_id,target_entity_id,reason,processing_version,specification_hash,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, ids[9], p.SpaceID, eid, other, "alias_normalization_collision", p.ProcessingVersion, hex.EncodeToString(h[:]), identity.CallerID, now); err != nil {
-						return p, false, err
-					}
-				}
 			}
 			if p.MentionRevisionID != nil || p.MentionEventID != nil {
 				mid := ids[10]
@@ -515,14 +508,6 @@ func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIde
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO entity_alias_events(alias_event_id,alias_id,operation_id,to_state,reason,created_by,created_at) VALUES (?,?,?,'active',?,?,?)`, ids[5], aid, operationID, review.ReasonCode, identity.CallerID, now); err != nil {
 				return p, false, err
-			}
-			var other string
-			if e := tx.QueryRowContext(ctx, `SELECT a.entity_id FROM entity_aliases a JOIN entities e ON e.entity_id=a.entity_id WHERE e.space_id=? AND a.normalization_version=? AND a.normalized_alias=? AND a.state='active' AND a.entity_id<>? ORDER BY a.entity_id LIMIT 1`, p.SpaceID, *p.NormalizationVersion, norm, *entityID).Scan(&other); e == nil {
-				h := sha256.Sum256([]byte(other + "\x00" + *entityID + "\x00" + norm))
-				_, err = tx.ExecContext(ctx, `INSERT INTO entity_merge_proposals(merge_proposal_id,space_id,source_entity_id,target_entity_id,reason,processing_version,specification_hash,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, ids[6], p.SpaceID, *entityID, other, "alias_normalization_collision", p.ProcessingVersion, hex.EncodeToString(h[:]), identity.CallerID, now)
-				if err != nil {
-					return p, false, err
-				}
 			}
 		case "mention":
 			entityID = p.EntityID

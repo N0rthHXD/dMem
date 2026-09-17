@@ -491,6 +491,7 @@ func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) 
 }
 
 func TestPortabilityPerformanceAtTargetScale(t *testing.T) {
+	requirePerformanceGates(t)
 	gates := loadPortabilityGates(t)
 	source := newTestDatabase(t)
 	tx, err := source.writer.Begin()

@@ -18,6 +18,17 @@ func TestCanonicalStructuredDocumentCoversEveryMemoryKind(t *testing.T) {
 	}
 	for _, kind := range kinds {
 		content := "canonical body for " + string(kind)
+		if domain.ValidAggregateKind(string(kind)) {
+			revision := domain.MemoryRevision{Kind: kind, DisplayContent: content, CanonicalContent: content, Sensitivity: "normal"}
+			want := canonicalStructuredDocument(revision)
+			if !strings.HasPrefix(want, "\nkind:"+string(kind)) {
+				t.Fatalf("kind %s canonical document missing kind prefix: %q", kind, want)
+			}
+			if embedding := embeddingDocument(revision); !strings.Contains(embedding, "kind:"+string(kind)) || !strings.Contains(embedding, content) {
+				t.Fatalf("kind %s embedding document = %q", kind, embedding)
+			}
+			continue
+		}
 		params := CreateMemoryParams{SpaceID: "space-1", Kind: string(kind), Content: content, Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "canonical"}
 		memory, replay, err := repository.CreateMemory(context.Background(), memoryIdentity("canonical-"+string(kind), "/v1/memories", params), params)
 		if err != nil || replay {

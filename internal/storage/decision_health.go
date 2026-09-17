@@ -52,10 +52,10 @@ func (r *Repository) DecisionHealth(ctx context.Context) DecisionHealth {
 	health.Duplicate.Identity = duplicateAlgorithmVersion
 	health.Duplicate.State = "unavailable"
 	if projection, err := r.ProjectionHealth(ctx); err == nil {
-		health.Quality.State = projection.State
+		health.Quality.State = projection.QualityState
 		health.Quality.Generation = projection.QualityGeneration
 		health.Quality.Identity = projection.QualityAlgorithmVersion
-		health.Duplicate.State = projection.State
+		health.Duplicate.State = projection.DuplicateState
 		health.Duplicate.Generation = projection.DuplicateGeneration
 		health.Duplicate.Identity = projection.DuplicateAlgorithmVersion
 	}

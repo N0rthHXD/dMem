@@ -274,7 +274,6 @@ func verifySchema(ctx context.Context, db *sql.DB) error {
 		"entity_events",
 		"entity_index_metadata",
 		"entity_mentions",
-		"entity_merge_proposals",
 		"entity_proposal_reviews",
 		"entity_proposals",
 		"evolution_proposal_evidence",

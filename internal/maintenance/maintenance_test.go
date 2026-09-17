@@ -441,9 +441,9 @@ func TestRestoreRebuildsDerivedHealthFromAuthority(t *testing.T) {
 	if entityState != "ready" || entities != 1 || mentions != 1 || relationState != "ready" || relations != 1 || feedbackState != "ready" || feedback != 1 || semanticState != "absent" || fts != 2 {
 		t.Fatalf("rebuilt derived health/counts = entities %s %d/%d, relations %s %d, feedback %s %d, semantic %s, fts=%d", entityState, entities, mentions, relationState, relations, feedbackState, feedback, semanticState, fts)
 	}
-	var projectionState, graphState string
+	var qualityState, duplicateState, graphState string
 	var qualityJobs, duplicateJobs, graphJobs int
-	if err := db.QueryRow(`SELECT state FROM projection_metadata WHERE singleton=1`).Scan(&projectionState); err != nil {
+	if err := db.QueryRow(`SELECT quality_state, duplicate_state FROM projection_metadata WHERE singleton=1`).Scan(&qualityState, &duplicateState); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT state FROM graph_index_metadata WHERE singleton=1`).Scan(&graphState); err != nil {
@@ -453,8 +453,8 @@ func TestRestoreRebuildsDerivedHealthFromAuthority(t *testing.T) {
 		coalesce(sum(job_type='rebuild_quality'),0), coalesce(sum(job_type='rebuild_duplicates'),0), coalesce(sum(job_type='rebuild_graph_index'),0) FROM jobs`).Scan(&qualityJobs, &duplicateJobs, &graphJobs); err != nil {
 		t.Fatal(err)
 	}
-	if projectionState != "rebuilding" || graphState != "rebuilding" || qualityJobs < 1 || duplicateJobs < 1 || graphJobs < 1 {
-		t.Fatalf("restore did not schedule derived rebuilds: projection=%s graph=%s quality=%d duplicate=%d graph=%d", projectionState, graphState, qualityJobs, duplicateJobs, graphJobs)
+	if qualityState != "rebuilding" || duplicateState != "rebuilding" || graphState != "rebuilding" || qualityJobs < 1 || duplicateJobs < 1 || graphJobs < 1 {
+		t.Fatalf("restore did not schedule derived rebuilds: quality=%s duplicate=%s graph=%s quality_jobs=%d duplicate_jobs=%d graph_jobs=%d", qualityState, duplicateState, graphState, qualityJobs, duplicateJobs, graphJobs)
 	}
 }
 

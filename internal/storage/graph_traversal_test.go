@@ -184,6 +184,7 @@ func TestGraphTraversalMaximumTwoHopsAndCycleProtection(t *testing.T) {
 }
 
 func TestGraphTraversalFanOutIsBounded(t *testing.T) {
+	requirePerformanceGates(t)
 	r, _ := newMemoryTestRepository(t)
 	seedEntity(t, r, "entity-a", "A", "project")
 	seedEntity(t, r, "entity-hub", "Hub", "project")

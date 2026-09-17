@@ -167,6 +167,7 @@ func (r *Repository) CommitImportBatch(ctx context.Context, operationID string, 
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	semanticCorpusChanged := false
+	authorityChanged := false
 	var sourceID, exportID, targetSpace string
 	if err := tx.QueryRowContext(ctx, `SELECT source_id,export_id,target_space_id FROM import_operations WHERE import_operation_id=?`, operationID).Scan(&sourceID, &exportID, &targetSpace); err != nil {
 		return err
@@ -176,6 +177,7 @@ func (r *Repository) CommitImportBatch(ctx context.Context, operationID string, 
 			if err := importAuthorityObject(ctx, tx, object, targetSpace, operationID, now); err != nil {
 				return fmt.Errorf("import %s %s: %w", object.SourceType, object.SourceID, err)
 			}
+			authorityChanged = true
 			semanticCorpusChanged = semanticCorpusChanged || object.SourceType == "revision"
 		} else if object.Action == "proposal" {
 			if err := importConflictProposal(ctx, tx, object, targetSpace, operationID, now); err != nil {
@@ -189,6 +191,14 @@ func (r *Repository) CommitImportBatch(ctx context.Context, operationID string, 
 		}
 		provenanceID := stableImportID("provenance", operationID, mappingID)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO imported_provenance(provenance_id,import_operation_id,mapping_id,batch_number,imported_by,imported_at) VALUES (?,?,?,?,?,?) ON CONFLICT(import_operation_id,mapping_id) DO NOTHING`, provenanceID, operationID, mappingID, batch, importedBy, now); err != nil {
+			return err
+		}
+	}
+	if authorityChanged {
+		if err := advanceCorpusGeneration(ctx, tx, now); err != nil {
+			return err
+		}
+		if err := markImportedDerivedStateStale(ctx, tx, now); err != nil {
 			return err
 		}
 	}
@@ -289,6 +299,26 @@ func (r *Repository) ImportStatus(ctx context.Context, id string) (ImportOperati
 		err = ErrNotFound
 	}
 	return s, err
+}
+
+// markImportedDerivedStateStale fences every derived projection while an import
+// is in progress, so a partially imported corpus is never reported as a healthy
+// index and cursors bound to the previous corpus are invalidated.
+func markImportedDerivedStateStale(ctx context.Context, tx *sql.Tx, now string) error {
+	statements := []string{
+		`UPDATE index_metadata SET state='degraded', updated_at=? WHERE index_name='` + ftsIndexName + `'`,
+		`UPDATE projection_metadata SET quality_state='stale', duplicate_state='stale', updated_at=? WHERE singleton=1`,
+		`UPDATE entity_index_metadata SET state='stale', generation=generation+1, updated_at=? WHERE singleton=1`,
+		`UPDATE relation_index_metadata SET state='stale', generation=generation+1, updated_at=? WHERE singleton=1`,
+		`UPDATE graph_index_metadata SET state='stale', generation=generation+1, updated_at=? WHERE singleton=1`,
+		`UPDATE feedback_aggregate_metadata SET state='stale', updated_at=? WHERE singleton=1`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targetSpace, operationID, now string) error {

@@ -9,23 +9,29 @@ import (
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
+// contextSelectionIdentity binds every input that can change which candidates
+// consume budgeted context slots. Cursors compare this identity so a stored
+// position cannot be reused after the effective selection contract changes.
+func contextSelectionIdentity(params SearchParams) string {
+	mode := "mmr"
+	if params.SkipDiversification {
+		mode = "fixed_cutoff"
+	}
+	policy := retrieval.PolicyForQuestionType(retrieval.QuestionType(params.Plan.QuestionType))
+	return retrieval.ContextSelectionVersion + ":policy=" + policy.Identity() + ":tokens=" + domain.ContextTokenFormatVersion + ":mode=" + mode
+}
+
 // applyContextSelection runs the versioned context-selection stage after
 // ranking. Ranking decides relevance; selection decides which representatives
 // consume context slots under hard budgets. Raw results stay on the response
 // for policy-safe explain/debug use only.
 func (r *Repository) applyContextSelection(ctx context.Context, params SearchParams, response *domain.SearchResponse) error {
-	mode := "mmr"
-	if params.SkipDiversification {
-		mode = "fixed_cutoff"
-	}
 	if len(response.Results) == 0 {
-		policy := retrieval.PolicyForQuestionType(retrieval.QuestionType(params.Plan.QuestionType))
-		response.ContextSelectionIdentity = retrieval.ContextSelectionVersion + ":policy=" + policy.Identity() + ":mode=" + mode
+		response.ContextSelectionIdentity = contextSelectionIdentity(params)
 		response.Context = domain.ContextPackage{Items: []domain.ContextItem{}}
 		return nil
 	}
 	candidates, index, aggregateInputs := r.buildContextCandidates(ctx, params, response.Results)
-	policy := retrieval.PolicyForQuestionType(retrieval.QuestionType(params.Plan.QuestionType))
 	budget := domain.ContextBudget{
 		MaxTokens: params.MaxContextTokens, MaxChars: params.MaxChars,
 		MaxResults: params.Limit, MaxSources: params.MaxSources, MaxSensitive: params.MaxSensitive,
@@ -37,7 +43,7 @@ func (r *Repository) applyContextSelection(ctx context.Context, params SearchPar
 	} else {
 		selection = retrieval.SelectContext(input)
 	}
-	response.ContextSelectionIdentity = retrieval.ContextSelectionVersion + ":policy=" + policy.Identity() + ":tokens=" + domain.ContextTokenFormatVersion + ":mode=" + mode
+	response.ContextSelectionIdentity = contextSelectionIdentity(params)
 	items := make([]domain.ContextItem, 0, len(selection.Items))
 	for _, selected := range selection.Items {
 		result, ok := index[selected.MemoryID+"\x00"+selected.RevisionID]

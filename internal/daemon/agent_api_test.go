@@ -7,11 +7,12 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/jobs"
 )
 
 func TestAgentMemoryAPI(t *testing.T) {
 	cfg := testConfig(t)
-	daemon, err := Start(context.Background(), cfg)
+	daemon, err := start(context.Background(), cfg, jobs.NoopProcessor{})
 	if err != nil {
 		t.Fatal(err)
 	}

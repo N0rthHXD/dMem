@@ -94,7 +94,7 @@ func (r *Repository) CreateCandidate(ctx context.Context, params CreateCandidate
 		if role == "" {
 			role = domain.EvidenceRoleDirect
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_evidence(evidence_id, candidate_id, event_id, evidence_type, role, start_offset, end_offset, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, ids[i+1], candidateID, evidence.EventID, evidence.EvidenceType, role, evidence.StartOffset, evidence.EndOffset, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_evidence(evidence_id, candidate_id, event_id, role, start_offset, end_offset, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, ids[i+1], candidateID, evidence.EventID, role, evidence.StartOffset, evidence.EndOffset, now); err != nil {
 			return domain.Candidate{}, false, candidateConstraintError(err)
 		}
 	}

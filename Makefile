@@ -1,8 +1,9 @@
 GO ?= go
 GO_TAGS := sqlite_fts5
 GOVULNCHECK ?= govulncheck
+PYTHON ?= python3
 
-.PHONY: build test test-race vet openapi schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check govulncheck check
+.PHONY: build test test-race vet openapi schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check python-test govulncheck check
 
 build:
 	CGO_ENABLED=1 $(GO) build -tags '$(GO_TAGS)' ./...
@@ -42,8 +43,11 @@ quality:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalQuality|SearchQuality|FeedbackPoisoningSingleCaller)' -count=1 -v
 
 performance:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalPerformance|SearchPerformance|DecisionScaleGates|GraphTraversalFanOutIsBounded)' -count=1 -v
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestPortabilityPerformanceAtTargetScale$$' -count=1 -v
+	DMEM_PERFORMANCE=1 CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalPerformance|SearchPerformance|DecisionScaleGates|GraphTraversalFanOutIsBounded)' -count=1 -v
+	DMEM_PERFORMANCE=1 CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestPortabilityPerformanceAtTargetScale$$' -count=1 -v
+
+python-test:
+	$(PYTHON) -m pytest evaluation/calibration/tests evaluation/locomo/tests evaluation/longmemeval/tests
 
 offline-default:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestProvidersDisabledByDefault$$' -count=1

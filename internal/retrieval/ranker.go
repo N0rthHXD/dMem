@@ -100,7 +100,7 @@ func Score(weights Weights, input RankInput) RankOutput {
 	if features.Feedback != nil {
 		output.FeatureContributions[string(FeatureFeedback)] = signed(features.Feedback)
 	}
-	output.Primary = weights.weighted(features, false)
+	output.Primary = weights.weighted(features)
 	output.Penalty = 0.15*value(features.DuplicateRisk) +
 		0.10*value(features.Overbreadth) +
 		0.10*value(features.StalePenalty)
@@ -145,7 +145,7 @@ func addContribution(result map[string]float64, name string, weight float64, fea
 	}
 }
 
-func (w Weights) weighted(features FeatureVector, graphOnly bool) float64 {
+func (w Weights) weighted(features FeatureVector) float64 {
 	total := 0.0
 	total += w.Semantic * value(features.Semantic)
 	total += w.Keyword * value(features.Keyword)
@@ -153,7 +153,6 @@ func (w Weights) weighted(features FeatureVector, graphOnly bool) float64 {
 	total += w.Temporal * value(features.Temporal)
 	total += w.Quality * value(features.Quality)
 	total += w.Agreement * value(features.Agreement)
-	_ = graphOnly
 	return total
 }
 

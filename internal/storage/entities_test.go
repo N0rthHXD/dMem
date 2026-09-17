@@ -80,9 +80,9 @@ func TestEntityMentionRevisionAndRuneRangeRejectedAtomically(t *testing.T) {
 	}
 }
 
-func TestEntityAliasCollisionCreatesMergeProposalOnly(t *testing.T) {
+func TestEntityAliasCollisionDoesNotMergeIdentity(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
-	first := confirmEntityTest(t, r, "Alpha")
+	confirmEntityTest(t, r, "Alpha")
 	second := confirmEntityTest(t, r, "Beta")
 	alias := " ALPHA "
 	p := CreateEntityProposalParams{EventID: "event-2", SpaceID: "space-1", ProposalKind: "alias", EntityID: &second, Alias: alias, NormalizationVersion: "v1", Sensitivity: "normal", ProcessorIdentity: "processor/test", ProcessingVersion: "entity-v1"}
@@ -90,11 +90,6 @@ func TestEntityAliasCollisionCreatesMergeProposalOnly(t *testing.T) {
 	review := ReviewEntityProposalParams{ReasonCode: "alias"}
 	if _, _, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("alias-collision", "confirm", proposal.ID, review), proposal.ID, review); err != nil {
 		t.Fatal(err)
-	}
-	var merges int
-	r.store.reader.QueryRow(`SELECT count(*) FROM entity_merge_proposals WHERE source_entity_id=? AND target_entity_id=? AND state='pending'`, second, first).Scan(&merges)
-	if merges != 1 {
-		t.Fatalf("alias collision merge proposals=%d, want 1", merges)
 	}
 	var entityCount int
 	r.store.reader.QueryRow(`SELECT count(*) FROM entities`).Scan(&entityCount)

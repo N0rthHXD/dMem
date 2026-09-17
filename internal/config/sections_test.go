@@ -166,7 +166,6 @@ func TestContextConfigBounds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			table := contextTable{
-				Version:          strPtr("v1"),
 				MaxContextTokens: intPtr(4000),
 				MaxContextChars:  intPtr(16000),
 				MaxResults:       intPtr(20),

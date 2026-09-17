@@ -127,7 +127,7 @@ func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, requestID, &request) {
 		return
 	}
-	query, err := recallQuery(request)
+	query, err := h.recallQuery(request)
 	if err != nil {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error(), requestID, "", false, nil)
 		return
@@ -236,8 +236,30 @@ func appIdentity(caller, key, requestID, method, route string, request any) appl
 	return application.RequestIdentity{CallerID: caller, IdempotencyKey: key, RequestID: requestID, Method: method, Route: route, RequestHash: application.HashRequest(request)}
 }
 
-func recallQuery(request recallRequest) (application.RecallQuery, error) {
-	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Limit: 20, MaxContextTokens: 4000, MaxChars: 16000, ExcludeStaleAggregates: true}
+// RecallBudgets are the daemon defaults applied when a recall request omits a
+// budget. They come from the active configuration snapshot.
+type RecallBudgets struct {
+	MaxResults       int
+	MaxContextTokens int
+	MaxContextChars  int
+}
+
+func defaultRecallBudgets() RecallBudgets {
+	return RecallBudgets{MaxResults: 20, MaxContextTokens: 4000, MaxContextChars: 16000}
+}
+
+func (h *Handler) recallQuery(request recallRequest) (application.RecallQuery, error) {
+	defaults := defaultRecallBudgets()
+	if h.configuration != nil {
+		if snapshot, _ := h.configuration.ConfigurationStatus(); snapshot != nil {
+			defaults = RecallBudgets{
+				MaxResults:       snapshot.Config.Context.MaxResults,
+				MaxContextTokens: snapshot.Config.Context.MaxContextTokens,
+				MaxContextChars:  snapshot.Config.Context.MaxContextChars,
+			}
+		}
+	}
+	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Limit: defaults.MaxResults, MaxContextTokens: defaults.MaxContextTokens, MaxChars: defaults.MaxContextChars, ExcludeStaleAggregates: true}
 	seenSpaces := map[string]bool{}
 	for _, id := range request.SpaceIDs {
 		if !validUUID(id) {
@@ -307,7 +329,6 @@ func recallQuery(request recallRequest) (application.RecallQuery, error) {
 	if err := decodeRange(request.MaxContextTokens, &query.MaxContextTokens, 1, 1000000, "max_context_tokens"); err != nil {
 		return application.RecallQuery{}, err
 	}
-	query.MaxChars = query.MaxContextTokens
 	if request.IncludeEvidence != nil && (isNull(request.IncludeEvidence) || json.Unmarshal(request.IncludeEvidence, &query.IncludeEvidence) != nil) {
 		return application.RecallQuery{}, errors.New("include_evidence must be a boolean")
 	}

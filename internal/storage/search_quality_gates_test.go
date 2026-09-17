@@ -351,6 +351,7 @@ func TestSearchQualityContextSelectionPromotionAblation(t *testing.T) {
 }
 
 func TestSearchPerformanceMultichannelQueryResources(t *testing.T) {
+	requirePerformanceGates(t)
 	_, gates := loadSearchQualityGates(t)
 	documents := performanceDocuments(gates.Performance.TargetMemoryCount)
 	_, retrievalConfig := loadRetrievalEvaluation(t)
@@ -384,6 +385,7 @@ func TestSearchPerformanceMultichannelQueryResources(t *testing.T) {
 }
 
 func TestSearchPerformanceAuthorityProjectionRebuildResources(t *testing.T) {
+	requirePerformanceGates(t)
 	r, _, gates := searchQualityGateFixture(t)
 	info, err := os.Stat(r.store.path)
 	if err != nil {

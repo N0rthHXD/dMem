@@ -307,12 +307,13 @@ CREATE TABLE projection_metadata (
     duplicate_generation INTEGER NOT NULL DEFAULT 1 CHECK (duplicate_generation > 0),
     quality_algorithm_version TEXT NOT NULL,
     duplicate_algorithm_version TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'rebuilding', 'degraded')),
+    quality_state TEXT NOT NULL CHECK (quality_state IN ('ready', 'stale', 'rebuilding', 'degraded')),
+    duplicate_state TEXT NOT NULL CHECK (duplicate_state IN ('ready', 'stale', 'rebuilding', 'degraded')),
     updated_at TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO projection_metadata(singleton, quality_generation, duplicate_generation, quality_algorithm_version, duplicate_algorithm_version, state, updated_at)
-VALUES (1, 1, 1, 'memory-quality-v1', 'duplicate-cluster-v1', 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+INSERT INTO projection_metadata(singleton, quality_generation, duplicate_generation, quality_algorithm_version, duplicate_algorithm_version, quality_state, duplicate_state, updated_at)
+VALUES (1, 1, 1, 'memory-quality-v1', 'duplicate-cluster-v1', 'ready', 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 CREATE TABLE candidates (
     candidate_id TEXT PRIMARY KEY,
@@ -395,7 +396,6 @@ CREATE TABLE candidate_evidence (
     evidence_id TEXT PRIMARY KEY,
     candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id) ON DELETE RESTRICT,
     event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
-    evidence_type TEXT NOT NULL CHECK (evidence_type IN ('direct_statement', 'tool_result', 'manual_reference')),
     role TEXT NOT NULL DEFAULT 'direct' CHECK (role IN ('direct', 'derived', 'temporal_anchor', 'context')),
     start_offset INTEGER CHECK (start_offset IS NULL OR start_offset >= 0),
     end_offset INTEGER CHECK (end_offset IS NULL OR end_offset >= 0),
@@ -695,23 +695,6 @@ CREATE TABLE entity_proposal_reviews (
 CREATE UNIQUE INDEX entity_proposal_reviews_terminal_once ON entity_proposal_reviews(proposal_id);
 CREATE TRIGGER entity_proposal_reviews_no_update BEFORE UPDATE ON entity_proposal_reviews BEGIN SELECT RAISE(ABORT, 'entity proposal reviews are append-only'); END;
 CREATE TRIGGER entity_proposal_reviews_no_delete BEFORE DELETE ON entity_proposal_reviews BEGIN SELECT RAISE(ABORT, 'entity proposal reviews are append-only'); END;
-
-CREATE TABLE entity_merge_proposals (
-    merge_proposal_id TEXT PRIMARY KEY,
-    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
-    source_entity_id TEXT NOT NULL REFERENCES entities(entity_id) ON DELETE RESTRICT,
-    target_entity_id TEXT NOT NULL REFERENCES entities(entity_id) ON DELETE RESTRICT,
-    reason TEXT NOT NULL,
-    processing_version TEXT NOT NULL,
-    specification_hash TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'pending' CHECK (state = 'pending'),
-    created_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    CHECK (source_entity_id <> target_entity_id),
-    UNIQUE (source_entity_id, target_entity_id, processing_version, specification_hash)
-) STRICT;
-CREATE TRIGGER entity_merge_proposals_no_update BEFORE UPDATE ON entity_merge_proposals BEGIN SELECT RAISE(ABORT, 'entity merge proposals are schema-only and immutable'); END;
-CREATE TRIGGER entity_merge_proposals_no_delete BEFORE DELETE ON entity_merge_proposals BEGIN SELECT RAISE(ABORT, 'entity merge proposals are schema-only and immutable'); END;
 
 CREATE TABLE memory_relations (
     relation_id TEXT PRIMARY KEY,
@@ -1975,42 +1958,5 @@ CREATE TABLE context_decisions (
 
 CREATE INDEX context_decisions_operation_idx
 ON context_decisions(operation_id, selection_state, created_at, decision_id);
-
-CREATE TABLE algorithm_identity_versions (
-    identity_kind TEXT NOT NULL CHECK (identity_kind IN (
-        'processing', 'consolidation', 'projection', 'embedding_document', 'embedding_query',
-        'semantic_calibration', 'keyword_compiler', 'entity_normalization', 'predicate_registry',
-        'graph_extraction', 'graph_scoring', 'query_planning', 'ranking_features', 'ranking_weights',
-        'context_selection', 'feedback_aggregation', 'metric_schema')),
-    identity TEXT NOT NULL CHECK (length(identity) > 0),
-    version TEXT NOT NULL CHECK (length(version) > 0),
-    generation INTEGER NOT NULL CHECK (generation > 0),
-    state TEXT NOT NULL CHECK (state IN ('active', 'building', 'degraded', 'superseded')),
-    created_at TEXT NOT NULL,
-    activated_at TEXT,
-    PRIMARY KEY (identity_kind, identity)
-) WITHOUT ROWID, STRICT;
-
-CREATE INDEX algorithm_identity_versions_state_idx
-ON algorithm_identity_versions(identity_kind, state, generation, identity);
-
-CREATE TABLE active_generation_metadata (
-    scope TEXT NOT NULL CHECK (scope IN ('membership', 'ranking', 'graph', 'context', 'evaluation')),
-    identity_kind TEXT NOT NULL CHECK (identity_kind IN (
-        'processing', 'consolidation', 'projection', 'embedding_document', 'embedding_query',
-        'semantic_calibration', 'keyword_compiler', 'entity_normalization', 'predicate_registry',
-        'graph_extraction', 'graph_scoring', 'query_planning', 'ranking_features', 'ranking_weights',
-        'context_selection', 'feedback_aggregation', 'metric_schema')),
-    identity TEXT NOT NULL,
-    generation INTEGER NOT NULL CHECK (generation > 0),
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (scope, identity_kind),
-    FOREIGN KEY (identity_kind, identity)
-        REFERENCES algorithm_identity_versions(identity_kind, identity)
-        ON DELETE RESTRICT
-) WITHOUT ROWID, STRICT;
-
-CREATE INDEX active_generation_metadata_identity_idx
-ON active_generation_metadata(identity_kind, identity, generation);
 
 COMMIT;

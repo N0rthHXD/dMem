@@ -5,8 +5,8 @@ includes direct memory operations, raw-event processing and review, scoped
 keyword and semantic primary recall with gated typed-graph features and budgeted
 context selection, entities, entity facts, and relations, explicit conflict
 evolution, feedback-derived ranking, reviewed scene/topic/timeline aggregates,
-decision telemetry and explain output, backup and restore, and a Go library for
-logical import and export.
+decision telemetry and explain output, backup and restore, and logical import
+and export.
 
 Schema v1 has no migration path. When the executable schema changes, initialize
 a new data directory instead of reusing an incompatible database.
@@ -17,11 +17,6 @@ a new data directory instead of reusing an incompatible database.
   the broader resource API.
 - [Architecture and data model](architecture/overview.md): authority, revisions,
   scopes, jobs, providers, and retrieval.
-- [Memory and retrieval optimization plan](architecture/memory-retrieval-optimization-plan.md):
-  replacement design for extraction, consolidation, indexes, graph, ranking,
-  context selection, feedback, and evaluation.
-- [Memory and retrieval implementation tasks](../specs/002-memory-retrieval-optimization/tasks.md):
-  phased task checklist, dependencies, verification gates, and session handoff.
 - [Entities, relations, conflicts, and evolution](architecture/evolution.md):
   reviewed changes, entity facts, and conflict resolution.
 - [Feedback, ranking, and aggregation](architecture/feedback-and-aggregation.md):

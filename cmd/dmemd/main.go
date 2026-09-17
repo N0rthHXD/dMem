@@ -157,9 +157,6 @@ func runConfig(ctx context.Context, configPath string, args []string, output io.
 		if err != nil {
 			return err
 		}
-		if err := cfg.ValidateOffline(); err != nil {
-			return err
-		}
 		return json.NewEncoder(output).Encode(struct {
 			SourceIdentity    string `json:"source_identity"`
 			EffectiveIdentity string `json:"effective_identity"`

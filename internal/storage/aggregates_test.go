@@ -177,9 +177,11 @@ func TestAggregateTimelineKindBuildsAndStabilizes(t *testing.T) {
 
 func TestAggregateAuthorityCannotBeBypassedByGenericMemoryWrites(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
-	params := CreateMemoryParams{SpaceID: "space-1", Kind: "aggregate", Content: "unreviewed", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "bypass"}
-	if _, _, err := r.CreateMemory(context.Background(), memoryIdentity("agg-generic-create", "/v1/memories", params), params); !errors.Is(err, ErrInvalidAggregateProposal) {
-		t.Fatalf("create error=%v", err)
+	for _, kind := range []string{"scene", "topic", "timeline", "aggregate"} {
+		params := CreateMemoryParams{SpaceID: "space-1", Kind: kind, Content: "unreviewed", Sensitivity: "normal", Evidence: directEvidence("event-1"), Reason: "bypass"}
+		if _, _, err := r.CreateMemory(context.Background(), memoryIdentity("agg-generic-create-"+kind, "/v1/memories", params), params); !errors.Is(err, ErrInvalidAggregateProposal) {
+			t.Fatalf("create %s error=%v", kind, err)
+		}
 	}
 
 	input := createTestMemory(t, r, "agg-authority")

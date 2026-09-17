@@ -46,8 +46,8 @@ configured tolerance.
 
 ## Optional learned reranker
 
-The bounded reranker interface and its safety validation live in
-`internal/retrieval/reranker.go`. Learned reranking remains evaluation-only:
-`SelectReranker` returns the deterministic fallback unless a caller explicitly
-opts into `RerankerModeEvaluation`, and promotion requires gains that exceed
+Learned reranking remains evaluation-only and is not part of the daemon. The
+`dmem_calibration` package compares same-window reranking through
+`rerank_compare.py`; production retrieval always uses the deterministic
+feature ranker. A learned reranker is promoted only when measured gains exceed
 latency, variance, and degradation thresholds on identical candidate windows.

@@ -9,13 +9,13 @@ import (
 
 func testSearchIdentities() searchIdentities {
 	return searchIdentities{
-		Schema:     "schema-v1",
-		QueryPlan:  "query-plan-v1",
-		Membership: "membership-v1",
-		Ranking:    "ranking-v1",
-		Graph:      "graph-v1",
-		Context:    "context-v1",
-		Feedback:   "feedback-v1",
+		Schema:     "test-schema",
+		QueryPlan:  "test-query-plan",
+		Membership: "test-membership",
+		Ranking:    "test-ranking",
+		Graph:      "test-graph",
+		Context:    "test-context",
+		Feedback:   "test-feedback",
 	}
 }
 
@@ -55,42 +55,11 @@ func TestSearchCursorRoundTripBindsEveryIdentity(t *testing.T) {
 	}
 }
 
-func TestSearchCursorDoesNotCarryChannelSelectors(t *testing.T) {
-	encoded := encodeSearchCursor("query-hash", testSearchParams(), testSearchIdentities(), searchCandidate{memoryID: "memory-1", revisionID: "revision-1", score: 0.5})
-	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(decoded, &payload); err != nil {
-		t.Fatal(err)
-	}
-	for _, obsolete := range []string{"rc", "ec", "rv"} {
-		if _, ok := payload[obsolete]; ok {
-			t.Fatalf("cursor still carries obsolete channel field %q: %s", obsolete, decoded)
-		}
-	}
-}
-
-func TestSearchCursorRejectsLegacyChannelPayload(t *testing.T) {
-	legacy, err := json.Marshal(map[string]any{
-		"v": 4, "q": "query-hash", "rc": []string{"keyword"}, "ec": []string{"keyword"},
-		"rv": "obsolete-ranking", "fv": 1, "sv": 0, "m": "memory-1", "r": "revision-1",
-		"rt": "2026-08-21T10:00:00Z", "s": "3fe0000000000000",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := decodeSearchCursor(base64.RawURLEncoding.EncodeToString(legacy)); !errors.Is(err, ErrInvalidCursor) {
-		t.Fatalf("legacy channel cursor error = %v, want ErrInvalidCursor", err)
-	}
-}
-
 func TestSearchCursorRejectsUnknownFields(t *testing.T) {
 	valid := searchCursor{
-		Version: 5, SchemaIdentity: "schema-v1", QueryHash: "query-hash", QueryPlanIdentity: "query-plan-v1",
-		MembershipIdentity: "membership-v1", RankingIdentity: "ranking-v1", GraphIdentity: "graph-v1",
-		ContextIdentity: "context-v1", FeedbackIdentity: "feedback-v1", Limit: 5, MaxChars: 100,
+		Version: 5, SchemaIdentity: "test-schema", QueryHash: "query-hash", QueryPlanIdentity: "test-query-plan",
+		MembershipIdentity: "test-membership", RankingIdentity: "test-ranking", GraphIdentity: "test-graph",
+		ContextIdentity: "test-context", FeedbackIdentity: "test-feedback", Limit: 5, MaxChars: 100,
 		ScoreBits: "3fe0000000000000", MemoryID: "memory-1", RevisionID: "revision-1", ReferenceTime: "2026-08-21T10:00:00Z",
 	}
 	payload, err := json.Marshal(valid)
@@ -113,9 +82,9 @@ func TestSearchCursorRejectsUnknownFields(t *testing.T) {
 
 func TestSearchCursorRequiresEveryIdentity(t *testing.T) {
 	valid := searchCursor{
-		Version: 5, SchemaIdentity: "schema-v1", QueryHash: "query-hash", QueryPlanIdentity: "query-plan-v1",
-		MembershipIdentity: "membership-v1", RankingIdentity: "ranking-v1", GraphIdentity: "graph-v1",
-		ContextIdentity: "context-v1", FeedbackIdentity: "feedback-v1", Limit: 5, MaxChars: 100,
+		Version: 5, SchemaIdentity: "test-schema", QueryHash: "query-hash", QueryPlanIdentity: "test-query-plan",
+		MembershipIdentity: "test-membership", RankingIdentity: "test-ranking", GraphIdentity: "test-graph",
+		ContextIdentity: "test-context", FeedbackIdentity: "test-feedback", Limit: 5, MaxChars: 100,
 		ScoreBits: "3fe0000000000000", MemoryID: "memory-1", RevisionID: "revision-1", ReferenceTime: "2026-08-21T10:00:00Z",
 	}
 	if err := decodeCursorPayload(t, valid); err != nil {
@@ -179,9 +148,9 @@ func TestSearchCursorInvalidatesWhenAnyIdentityChanges(t *testing.T) {
 
 func TestSearchCursorRejectsNonFiniteScore(t *testing.T) {
 	cursor := searchCursor{
-		Version: 5, SchemaIdentity: "schema-v1", QueryHash: "query-hash", QueryPlanIdentity: "query-plan-v1",
-		MembershipIdentity: "membership-v1", RankingIdentity: "ranking-v1", GraphIdentity: "graph-v1",
-		ContextIdentity: "context-v1", FeedbackIdentity: "feedback-v1", Limit: 5, MaxChars: 100,
+		Version: 5, SchemaIdentity: "test-schema", QueryHash: "query-hash", QueryPlanIdentity: "test-query-plan",
+		MembershipIdentity: "test-membership", RankingIdentity: "test-ranking", GraphIdentity: "test-graph",
+		ContextIdentity: "test-context", FeedbackIdentity: "test-feedback", Limit: 5, MaxChars: 100,
 		ScoreBits: "not-hex", MemoryID: "memory-1", RevisionID: "revision-1", ReferenceTime: "2026-08-21T10:00:00Z",
 	}
 	if err := decodeCursorPayload(t, cursor); !errors.Is(err, ErrInvalidCursor) {

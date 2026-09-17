@@ -64,9 +64,18 @@ func (r *Repository) rebuildDuplicates(ctx context.Context, claim *ClaimedJob) e
 		index[members[i].revisionID] = i
 	}
 	r.unionCanonical(ctx, members, index, union)
-	r.unionSharedEvidence(ctx, members, index, union)
-	r.unionAggregateProvenance(ctx, members, index, union)
-	r.unionSemanticTimeCompatible(ctx, members, index, union)
+	if err := r.unionSharedEvidence(ctx, members, index, union); err != nil {
+		r.markProjectionDegraded("duplicate")
+		return err
+	}
+	if err := r.unionAggregateProvenance(ctx, members, index, union); err != nil {
+		r.markProjectionDegraded("duplicate")
+		return err
+	}
+	if err := r.unionSemanticTimeCompatible(ctx, members, index, union); err != nil {
+		r.markProjectionDegraded("duplicate")
+		return err
+	}
 
 	groups := map[int][]int{}
 	for i := range members {
@@ -243,7 +252,7 @@ func (r *Repository) unionCanonical(ctx context.Context, members []duplicateMemb
 	}
 }
 
-func (r *Repository) unionSharedEvidence(ctx context.Context, members []duplicateMember, index map[string]int, union *unionFind) {
+func (r *Repository) unionSharedEvidence(ctx context.Context, members []duplicateMember, index map[string]int, union *unionFind) error {
 	rows, err := r.store.reader.QueryContext(ctx, `SELECT p.space_id, me.event_id, me.start_offset, me.end_offset, me.revision_id
 		FROM memory_evidence me
 		JOIN memory_revisions rv ON rv.revision_id=me.revision_id
@@ -251,7 +260,7 @@ func (r *Repository) unionSharedEvidence(ctx context.Context, members []duplicat
 		WHERE me.role='direct' AND p.searchable=1
 		ORDER BY p.space_id, me.event_id, me.start_offset`)
 	if err != nil {
-		return
+		return err
 	}
 	defer rows.Close()
 	groups := map[string]int{}
@@ -259,7 +268,7 @@ func (r *Repository) unionSharedEvidence(ctx context.Context, members []duplicat
 		var spaceID, eventID, revisionID string
 		var start, end sql.NullInt64
 		if err := rows.Scan(&spaceID, &eventID, &start, &end, &revisionID); err != nil {
-			return
+			return err
 		}
 		id, ok := index[revisionID]
 		if !ok {
@@ -272,22 +281,23 @@ func (r *Repository) unionSharedEvidence(ctx context.Context, members []duplicat
 			groups[key] = id
 		}
 	}
+	return rows.Err()
 }
 
-func (r *Repository) unionAggregateProvenance(ctx context.Context, members []duplicateMember, index map[string]int, union *unionFind) {
+func (r *Repository) unionAggregateProvenance(ctx context.Context, members []duplicateMember, index map[string]int, union *unionFind) error {
 	rows, err := r.store.reader.QueryContext(ctx, `SELECT ap.result_memory_id, api.memory_id
 		FROM aggregate_proposals ap
 		JOIN aggregate_proposal_inputs api ON api.proposal_id=ap.proposal_id
 		WHERE ap.review_state='confirmed' AND ap.result_memory_id IS NOT NULL
 		ORDER BY ap.result_memory_id, api.memory_id`)
 	if err != nil {
-		return
+		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var aggregateMemory, inputMemory string
 		if err := rows.Scan(&aggregateMemory, &inputMemory); err != nil {
-			return
+			return err
 		}
 		left, okLeft := index[currentRevisionForMemory(members, aggregateMemory)]
 		right, okRight := index[currentRevisionForMemory(members, inputMemory)]
@@ -295,25 +305,29 @@ func (r *Repository) unionAggregateProvenance(ctx context.Context, members []dup
 			union.union(left, right)
 		}
 	}
+	return rows.Err()
 }
 
-func (r *Repository) unionSemanticTimeCompatible(ctx context.Context, members []duplicateMember, index map[string]int, union *unionFind) {
+func (r *Repository) unionSemanticTimeCompatible(ctx context.Context, members []duplicateMember, index map[string]int, union *unionFind) error {
 	rows, err := r.store.reader.QueryContext(ctx, `SELECT a.memory_id, b.memory_id
 		FROM memory_embeddings a
-		JOIN memory_embeddings b ON a.memory_id < b.memory_id AND a.compatibility_identity=b.compatibility_identity
+		JOIN memory_embeddings b ON a.memory_id < b.memory_id AND a.compatibility_identity=b.compatibility_identity AND a.dimension=b.dimension
 		JOIN memory_projections pa ON pa.memory_id=a.memory_id AND pa.revision_id=a.revision_id
 		JOIN memory_projections pb ON pb.memory_id=b.memory_id AND pb.revision_id=b.revision_id
-		WHERE pa.space_id=pb.space_id AND vec_distance_cosine(a.vector_blob, b.vector_blob) <= ?
+		WHERE pa.space_id=pb.space_id AND pa.memory_type=pb.memory_type
+		  AND pa.embedding_state='current' AND pb.embedding_state='current'
+		  AND a.content_hash=pa.content_hash AND b.content_hash=pb.content_hash
+		  AND vec_distance_cosine(a.vector_blob, b.vector_blob) <= ?
 		ORDER BY a.memory_id, b.memory_id
 		LIMIT 4096`, 1-duplicateSemanticCosineThreshold)
 	if err != nil {
-		return
+		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var leftMemory, rightMemory string
 		if err := rows.Scan(&leftMemory, &rightMemory); err != nil {
-			return
+			return err
 		}
 		left, okLeft := index[currentRevisionForMemory(members, leftMemory)]
 		right, okRight := index[currentRevisionForMemory(members, rightMemory)]
@@ -325,6 +339,7 @@ func (r *Repository) unionSemanticTimeCompatible(ctx context.Context, members []
 		}
 		union.union(left, right)
 	}
+	return rows.Err()
 }
 
 func currentRevisionForMemory(members []duplicateMember, memoryID string) string {

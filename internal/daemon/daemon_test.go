@@ -18,9 +18,26 @@ import (
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/instance"
+	"github.com/N0rthHXD/dMem/internal/jobs"
 	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
+
+// Start is the test-only unmanaged startup path. Production always uses
+// StartManaged so that runtime calibration and reload state are applied.
+func Start(ctx context.Context, cfg config.Config) (*Daemon, error) {
+	processor := jobs.Processor(jobs.NoopProcessor{})
+	var aggregateProvider domain.AggregateProvider
+	if cfg.ProcessingProvider.Enabled {
+		client, err := provider.New(cfg.ProcessingProvider, nil)
+		if err != nil {
+			return nil, err
+		}
+		processor = jobs.NewProviderProcessor(client)
+		aggregateProvider = client
+	}
+	return startService(ctx, cfg, processor, aggregateProvider, true)
+}
 
 func TestRetrievalContractsMapEffectiveConfiguration(t *testing.T) {
 	cfg := config.Config{
@@ -43,6 +60,25 @@ func TestRetrievalContractsMapEffectiveConfiguration(t *testing.T) {
 	}
 	if policy != retrieval.GraphDirect {
 		t.Fatalf("graph policy = %q", policy)
+	}
+}
+
+func TestPrepareDirRejectsSymlinkedComponents(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := filepath.Join(root, "real")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDir(filepath.Join(link, "data"), 0o700); err == nil {
+		t.Fatal("prepareDir accepted a symlinked directory component")
+	}
+	if _, err := os.Stat(filepath.Join(target, "data")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepareDir created a directory through a symlink: %v", err)
 	}
 }
 

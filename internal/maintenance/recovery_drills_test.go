@@ -57,21 +57,21 @@ func TestRecoveryDrillsFenceInterruptedWork(t *testing.T) {
 // rebuild jobs so interrupted derived state can never be read as current.
 func TestRecoverySchedulesProjectionAndGraphRebuilds(t *testing.T) {
 	db, _ := recoveryTestDatabase(t)
-	if _, err := db.Exec(`UPDATE projection_metadata SET state='rebuilding' WHERE singleton=1`); err != nil {
+	if _, err := db.Exec(`UPDATE projection_metadata SET quality_state='rebuilding', duplicate_state='rebuilding' WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := validateAndPrepare(context.Background(), db, time.Date(2026, 8, 25, 13, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	var projectionState, graphState string
-	if err := db.QueryRow(`SELECT state FROM projection_metadata WHERE singleton=1`).Scan(&projectionState); err != nil {
+	var qualityState, duplicateState, graphState string
+	if err := db.QueryRow(`SELECT quality_state, duplicate_state FROM projection_metadata WHERE singleton=1`).Scan(&qualityState, &duplicateState); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT state FROM graph_index_metadata WHERE singleton=1`).Scan(&graphState); err != nil {
 		t.Fatal(err)
 	}
-	if projectionState != "rebuilding" || graphState != "rebuilding" {
-		t.Fatalf("restore did not mark derived state rebuilding: projection=%s graph=%s", projectionState, graphState)
+	if qualityState != "rebuilding" || duplicateState != "rebuilding" || graphState != "rebuilding" {
+		t.Fatalf("restore did not mark derived state rebuilding: quality=%s duplicate=%s graph=%s", qualityState, duplicateState, graphState)
 	}
 	for _, jobType := range []string{"rebuild_quality", "rebuild_duplicates", "rebuild_graph_index"} {
 		var count int

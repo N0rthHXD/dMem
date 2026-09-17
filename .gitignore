@@ -17,5 +17,6 @@ Thumbs.db
 .idea/
 __pycache__/
 *.pyc
+.pytest_cache/
 results/
 dmemd

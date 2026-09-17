@@ -121,20 +121,19 @@ type searchIdentities struct {
 
 const (
 	searchQueryPlanIdentity = retrieval.QueryPlanVersion
-	searchContextIdentity   = domain.ContextSelectionVersion + ":tokens=" + domain.ContextTokenFormatVersion
 )
 
 // rankingVersion is the versioned deterministic feature-rank identity.
 const rankingVersion = retrieval.RankingWeightsVersion
 
-func currentSearchIdentities(ftsVersion, semanticVersion int, metadata searchMetadata, rankingIdentity string) searchIdentities {
+func currentSearchIdentities(ftsVersion, semanticVersion int, metadata searchMetadata, rankingIdentity, contextIdentity string) searchIdentities {
 	return searchIdentities{
 		Schema:     "schema-v" + strconv.Itoa(SchemaVersion),
 		QueryPlan:  searchQueryPlanIdentity,
 		Membership: membershipIdentity(ftsVersion, semanticVersion, metadata),
 		Ranking:    rankingIdentity,
 		Graph:      graphIdentity(metadata),
-		Context:    searchContextIdentity,
+		Context:    contextIdentity,
 		Feedback:   "feedback-v" + strconv.FormatInt(metadata.feedbackAggregateVersion, 10) + ":" + FeedbackAggregationIdentity(),
 	}
 }
@@ -303,7 +302,7 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 		after = &cursor
 	}
 	hash := searchQueryHash(params)
-	identities := currentSearchIdentities(ftsVersion, params.SemanticVersion, metadata, r.rankingIdentity())
+	identities := currentSearchIdentities(ftsVersion, params.SemanticVersion, metadata, r.rankingIdentity(), contextSelectionIdentity(params))
 	if after != nil && !searchCursorMatches(*after, hash, params, identities) {
 		return domain.SearchResponse{}, ErrInvalidCursor
 	}
@@ -563,11 +562,16 @@ func searchQueryHash(params SearchParams) string {
 		Semantic               int      `json:"semantic_version"`
 		Limit                  int      `json:"limit"`
 		MaxChars               int      `json:"max_chars"`
+		MaxContextTokens       int      `json:"max_context_tokens"`
+		MaxSources             int      `json:"max_sources"`
+		MaxSensitive           int      `json:"max_sensitive"`
+		SkipDiversification    bool     `json:"skip_diversification"`
+		QuestionType           string   `json:"question_type"`
 		Evidence               bool     `json:"include_evidence"`
 		ExcludeStaleAggregates bool     `json:"exclude_stale_aggregates"`
 		Intent                 string   `json:"intent"`
 		GraphPolicy            string   `json:"graph_policy"`
-	}{3, params.Query, planIdentity, spaces, params.IncludeAncestors, types, params.MemoryTypesSet, states, params.ReferenceTime, params.Channels, params.EffectiveChannels, params.SemanticVersion, params.Limit, params.MaxChars, params.IncludeEvidence, params.ExcludeStaleAggregates, params.Intent, string(params.GraphPolicy)}
+	}{4, params.Query, planIdentity, spaces, params.IncludeAncestors, types, params.MemoryTypesSet, states, params.ReferenceTime, params.Channels, params.EffectiveChannels, params.SemanticVersion, params.Limit, params.MaxChars, params.MaxContextTokens, params.MaxSources, params.MaxSensitive, params.SkipDiversification, string(params.Plan.QuestionType), params.IncludeEvidence, params.ExcludeStaleAggregates, params.Intent, string(params.GraphPolicy)}
 	encoded, _ := json.Marshal(canonical)
 	hash := sha256.Sum256(encoded)
 	return hex.EncodeToString(hash[:])

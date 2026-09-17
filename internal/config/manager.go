@@ -169,14 +169,6 @@ func (m *Manager) tryReload(ctx context.Context, trigger ActivationTrigger, star
 	}
 }
 
-func (m *Manager) Current() *Snapshot {
-	return m.Snapshot()
-}
-
-func (m *Manager) ConfigPath() string {
-	return m.path
-}
-
 func (m *Manager) Revert(prev *Snapshot) {
 	if prev == nil {
 		return

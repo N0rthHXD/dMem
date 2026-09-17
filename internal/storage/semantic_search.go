@@ -67,7 +67,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, reasons)
 	}
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
-		return semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, preflightMetadata), nil
+		return r.semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, preflightMetadata), nil
 	}
 	authorization, err := r.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -154,7 +154,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	response := semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, metadata)
+	response := r.semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, metadata)
 	recallLimit := max(100, params.Limit*10)
 	all := map[string]*hybridCandidate{}
 	keywordStart := time.Now()
@@ -269,7 +269,7 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	list = admittedRankedCandidates(list)
 	params.telemetry.markPhase("ranking", rankStart)
 	recordGraphAdmissionTelemetry(params, list)
-	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity())
+	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity(), contextSelectionIdentity(params))
 	response.RankingIdentity = identities.Ranking
 	response.ContextIdentity = identities.Context
 	response.FeedbackIdentity = identities.Feedback
@@ -459,8 +459,9 @@ func semanticSearchStatus(ctx context.Context, tx *sql.Tx) (SemanticStatus, stri
 	return status, ftsState, ftsVersion, nil
 }
 
-func semanticSearchResponse(params SearchParams, executed []string, reasons []string, status SemanticStatus, ftsState string, ftsVersion int, metadata searchMetadata) domain.SearchResponse {
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, Degraded: len(reasons) > 0 || status.State == "stale", DegradationReasons: reasons, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
+func (r *Repository) semanticSearchResponse(params SearchParams, executed []string, reasons []string, status SemanticStatus, ftsState string, ftsVersion int, metadata searchMetadata) domain.SearchResponse {
+	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity(), contextSelectionIdentity(params))
+	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, Degraded: len(reasons) > 0 || status.State == "stale", DegradationReasons: reasons, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, QueryPlanIdentity: params.Plan.Identity(), RankingIdentity: identities.Ranking, ContextIdentity: identities.Context, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, FeedbackIdentity: identities.Feedback, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
 	if status.State == "stale" {
 		response.DegradationReasons = append(response.DegradationReasons, "semantic_stale")
 	}

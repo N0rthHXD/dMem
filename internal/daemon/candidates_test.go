@@ -91,7 +91,7 @@ func seedCandidateAPI(t *testing.T, db *sql.DB, candidateID, evidenceID, eventID
 	if _, err := db.Exec(`INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, content, content_hash, confidence, sensitivity, suggestion_kind, processor_identity, processing_version, specification_hash, created_at) VALUES (?, ?, ?, 'fact', ?, 'content-hash', 0.75, 'normal', 'new', 'processor/api', 'api-v1', ?, ?)`, candidateID, eventID, spaceID, content, specificationHash, createdAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO candidate_evidence(evidence_id, candidate_id, event_id, evidence_type, created_at) VALUES (?, ?, ?, 'direct_statement', ?)`, evidenceID, candidateID, eventID, createdAt); err != nil {
+	if _, err := db.Exec(`INSERT INTO candidate_evidence(evidence_id, candidate_id, event_id, created_at) VALUES (?, ?, ?, ?)`, evidenceID, candidateID, eventID, createdAt); err != nil {
 		t.Fatal(err)
 	}
 }

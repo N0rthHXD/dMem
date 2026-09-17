@@ -433,12 +433,12 @@ func TestRetrievalQualityGraphAblations(t *testing.T) {
 	}
 	_ = corpus
 	path := filepath.Join("testdata", "graph-ablation-baseline-v1.json")
-	if os.Getenv("DMEM_GRAPH_BASELINE_UPDATE") == "1" {
+	if out := os.Getenv("DMEM_GRAPH_BASELINE_OUT"); out != "" {
 		body, err := json.MarshalIndent(graphAblationBaseline{Version: "graph-ablation-baseline-v1", Metrics: metrics}, "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(out, append(body, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -457,6 +457,7 @@ func TestRetrievalQualityGraphAblations(t *testing.T) {
 }
 
 func TestRetrievalPerformanceGraphTraversalResources(t *testing.T) {
+	requirePerformanceGates(t)
 	corpus, gates := loadGraphQuality(t)
 	fixture := buildGraphQualityFixture(t, gates.Performance.TargetFactCount)
 	r := fixture.repository

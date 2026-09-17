@@ -24,11 +24,10 @@ var (
 )
 
 type EvidenceParams struct {
-	EventID      string
-	EvidenceType string
-	Role         domain.EvidenceRole
-	StartOffset  *int64
-	EndOffset    *int64
+	EventID     string
+	Role        domain.EvidenceRole
+	StartOffset *int64
+	EndOffset   *int64
 }
 
 type CreateMemoryParams struct {
@@ -88,7 +87,7 @@ type ChangeMemoryStateParams struct {
 }
 
 func (r *Repository) CreateMemory(ctx context.Context, identity WriteIdentity, params CreateMemoryParams) (domain.Memory, bool, error) {
-	if params.Kind == "aggregate" {
+	if domain.ValidAggregateKind(params.Kind) || params.Kind == "aggregate" {
 		return domain.Memory{}, false, ErrInvalidAggregateProposal
 	}
 	tx, err := r.store.writer.BeginTx(ctx, nil)
@@ -116,6 +115,9 @@ func (r *Repository) CreateMemory(ctx context.Context, identity WriteIdentity, p
 	}
 	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, params.Kind, params.Content, params.ValidFrom, params.ValidUntil, nil, params.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
 	if err != nil {
+		return domain.Memory{}, false, err
+	}
+	if err := validateDirectRevision(revision, params.Evidence); err != nil {
 		return domain.Memory{}, false, err
 	}
 	if err := insertRevision(ctx, tx, revision); err != nil {
@@ -204,10 +206,13 @@ func (r *Repository) Remember(ctx context.Context, identity WriteIdentity, param
 	if err != nil {
 		return RememberResult{}, false, err
 	}
+	if err := validateDirectRevision(revision, []EvidenceParams{{EventID: eventID}}); err != nil {
+		return RememberResult{}, false, err
+	}
 	if err := insertRevision(ctx, tx, revision); err != nil {
 		return RememberResult{}, false, err
 	}
-	if err := insertEvidence(ctx, tx, revisionID, []EvidenceParams{{EventID: eventID, EvidenceType: "direct_statement"}}, []string{evidenceID}, now); err != nil {
+	if err := insertEvidence(ctx, tx, revisionID, []EvidenceParams{{EventID: eventID}}, []string{evidenceID}, now); err != nil {
 		return RememberResult{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) VALUES (?,?,?,?,NULL,'active',NULL,0,?,?,?)`, stateEventID, memoryID, revisionID, operationID, params.Reason, identity.CallerID, now); err != nil {
@@ -322,6 +327,9 @@ func (r *Repository) ReviseMemory(ctx context.Context, identity WriteIdentity, m
 	now := formatTime(r.runtime.Now())
 	revision, err := revisionFromTextInput(revisionID, memoryID, &params.ExpectedRevisionID, nil, string(current.Kind), params.Content, params.ValidFrom, params.ValidUntil, nil, current.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
 	if err != nil {
+		return domain.Memory{}, false, err
+	}
+	if err := validateDirectRevision(revision, params.Evidence); err != nil {
 		return domain.Memory{}, false, err
 	}
 	if err := insertRevision(ctx, tx, revision); err != nil {
@@ -994,6 +1002,26 @@ func revisionFromTextInput(revisionID, memoryID string, parentID, restoredFrom *
 		return domain.MemoryRevision{}, err
 	}
 	return revision, nil
+}
+
+func validateDirectRevision(revision domain.MemoryRevision, evidence []EvidenceParams) error {
+	if domain.ValidAggregateKind(string(revision.Kind)) {
+		return ErrInvalidAggregateProposal
+	}
+	revision.Evidence = revisionEvidenceParamsToDomain(evidence)
+	return domain.ValidateMemoryRevision(revision)
+}
+
+func revisionEvidenceParamsToDomain(items []EvidenceParams) []domain.RevisionEvidence {
+	result := make([]domain.RevisionEvidence, len(items))
+	for i, item := range items {
+		role := item.Role
+		if role == "" {
+			role = domain.EvidenceRoleDirect
+		}
+		result[i] = domain.RevisionEvidence{EvidenceID: fmt.Sprintf("pending-%d", i), EventID: item.EventID, Role: role, StartOffset: item.StartOffset, EndOffset: item.EndOffset}
+	}
+	return result
 }
 
 func parseOptionalTime(value *string) (*time.Time, error) {

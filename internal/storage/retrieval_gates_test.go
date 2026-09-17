@@ -259,6 +259,7 @@ func TestRetrievalQualitySiblingContaminationZero(t *testing.T) {
 }
 
 func TestRetrievalPerformanceQueryP95AtTargetScale(t *testing.T) {
+	requirePerformanceGates(t)
 	_, config := loadRetrievalEvaluation(t)
 	documents := performanceDocuments(config.Performance.TargetMemoryCount)
 	fixture := newRetrievalFixture(t, config, documents)
@@ -283,6 +284,7 @@ func TestRetrievalPerformanceQueryP95AtTargetScale(t *testing.T) {
 }
 
 func TestRetrievalPerformanceSemanticRebuildResources(t *testing.T) {
+	requirePerformanceGates(t)
 	_, config := loadRetrievalEvaluation(t)
 	documents := performanceDocuments(config.Performance.TargetMemoryCount)
 	fixture := newRetrievalFixture(t, config, documents)
