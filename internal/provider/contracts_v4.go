@@ -12,10 +12,10 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
-// ADR 0035 replacement provider contracts. These types define the structured
-// memory candidate and typed graph output that supersede the text-first
-// Candidate and broad-relation graph contracts. They are validated here so the
-// job layer only ever sees deterministic, bounded proposals.
+// Structured provider contracts. These types define the memory candidate and
+// typed graph output that supersede the text-first Candidate and broad-relation
+// graph contracts. They are validated here so the job layer only ever sees
+// deterministic, bounded proposals.
 
 const (
 	StructuredProcessingContractVersion = "processing-structured-v1"

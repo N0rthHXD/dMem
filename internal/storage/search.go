@@ -131,7 +131,7 @@ type SearchParams struct {
 
 // searchIdentities binds a cursor to every algorithm identity that can change
 // candidate membership, rank, or rendered context. The decoder accepts only the
-// current version and no legacy channel payload (ADR 0035 section 11).
+// current version and no legacy channel payload.
 type searchIdentities struct {
 	Schema     string
 	QueryPlan  string

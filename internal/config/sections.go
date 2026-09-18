@@ -2,7 +2,7 @@ package config
 
 import "sort"
 
-// ConsolidationConfig bounds deterministic candidate consolidation (ADR 0035).
+// ConsolidationConfig bounds deterministic candidate consolidation.
 type ConsolidationConfig struct {
 	Version               string
 	MaxCandidates         int

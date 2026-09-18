@@ -1,52 +1,58 @@
-# Logical Portability
+# 逻辑可移植性
 
-Logical Format v1 provides selective cross-instance portability. It is
-implemented in the internal Go package `internal/portability`, not as a `dmemd`
-command or HTTP endpoint. It is distinct from SQLite backup and restore: backup
-replaces a complete data directory at an exact schema version, while logical
-import maps selected domain objects into an existing target space.
+逻辑 Format v1 提供选择性的跨实例可移植性。它实现于内部 Go 包
+`internal/portability`，不是 `dmemd` 命令或 HTTP 端点。它与 SQLite 备份/恢复
+不同：备份在精确 schema 版本上替换整个数据目录，而逻辑导入把选定的领域对象
+映射到既有目标空间。
 
-## Package
+## 包结构
 
-A package contains `manifest.json`, `checksums.json`, and deterministic JSONL
-members for spaces, raw events, memories, revisions, evidence, entities,
-mentions, relations, conflicts, feedback, and aggregate provenance. FTS,
-embeddings, vector data, derived feedback aggregates, jobs, leases, secrets, and
-logs are not exported.
+格式族为 `dmem-logical`，`FormatVersion = 1`。一个包是一个目录，包含：
 
-Selection names spaces and whether ancestors are included. The exporter closes
-over required revisions, evidence, and raw events while representing references
-outside the selection as stubs. Sensitive data follows the explicit export
-policy. `Exporter.DryRun` reports counts, estimated size, sensitivity, external
-references, and refusal reasons.
+- `manifest.json`：格式族、版本、来源身份与选择信息；
+- `checksums.json`：成员文件的 sha256；
+- 11 个确定性的 JSONL 成员：
 
-## Export Consistency
+```text
+spaces          raw_events      memories        revisions
+evidence        entities        entity_mentions relations
+conflicts       feedback        aggregate_provenance
+```
 
-`Exporter.Export` reads one SQLite snapshot, writes a private temporary package,
-calculates checksums, self-validates, syncs it, and atomically publishes a new
-destination directory. Existing destinations, unsafe ownership or permissions,
-symlinks, broken closure, and checksum failures are rejected.
+每条记录的形状为 `{object_id, object_type, data}`。FTS、embedding、向量数据、
+派生反馈聚合、作业、租约、密钥与日志不会被导出。
 
-## Import
+## 选择与一致性
 
-`Importer.DryRun` strictly validates members, size limits, checksums, references,
-format version, target space, deterministic ID mappings, duplicates, and local
-revision conflicts before authority is written. The default limits are 13
-files, 100,000 records, 64 MiB per file, 512 MiB total, and batches of 500.
+选择以空间为单位，并声明是否包含祖先。导出器会闭包所需修订、证据与原始事件，
+把选择之外的引用表示为 stub。敏感数据遵循显式导出策略；导出请求要求来源身份、
+空间列表、`closure_policy = "strict"`、敏感度策略（`exclude` 或 `include`）与
+RFC3339 参考时间。
 
-`Importer.Import` stores a durable operation and commits bounded batches. Each
-batch atomically writes objects, source-to-local mappings, provenance, and its
-checkpoint. A retry resumes after the last committed batch without duplicating
-objects. Generation fencing prevents an old importer from advancing a recovered
-operation. `Status` reports progress; `Cancel` stops later batches but retains
-already committed, fully mapped objects.
+`Exporter.DryRun` 报告计数、估算大小、敏感度、外部引用与拒绝原因。
 
-Duplicate content maps to existing objects. A mapped local memory whose current
-revision conflicts with imported content produces an evolution proposal instead
-of overwriting authority. Successful import queues FTS, semantic, entity,
-relation, and feedback-aggregate rebuild work, so health can remain degraded
-until those jobs finish.
+`Exporter.Export` 读取一个 SQLite 快照，写入私有临时包，计算校验和，自我校验，
+同步，然后原子发布新的目标目录。已存在的目标、不安全的所有权或权限、符号链接、
+断裂的闭包与校验和失败都会被拒绝。
 
-Logical portability does not provide arbitrary SQLite compatibility, preserve-ID
-mode, synchronization, replication, remote transport, or all-or-nothing rollback
-of already committed batches.
+## 导入
+
+`Importer.DryRun` 在写入权威之前严格校验成员、大小限制、校验和、引用、格式
+版本、目标空间、确定性 ID 映射、重复项与本地修订冲突。默认限制为 13 个文件、
+100,000 条记录、每文件 64 MiB、总计 512 MiB，批大小为 500。校验还要求目录权限
+`0700`、文件权限 `0600`、当前用户所有权、精确的成员集合、规范化且排序的 JSON
+记录，以及正确的格式族与版本。
+
+`Importer.Import` 存储持久操作并按有界批次提交。每个批次原子地写入对象、源到
+本地映射、溯源及其检查点。重试会从最后一个已提交批次继续，不会重复对象。
+generation 围栏阻止旧的导入器推进已恢复的操作。`Status` 报告进度；`Cancel`
+停止后续批次，但保留已提交且完整映射的对象。
+
+重复内容映射到既有对象。被映射的本地记忆若其当前修订与导入内容冲突，会产生
+演化提案，而不是覆盖权威。成功导入会入队 FTS、语义、实体、关系与反馈聚合的
+重建工作，因此在这些作业完成之前健康状态可能保持降级。
+
+## 边界
+
+逻辑可移植性不提供任意 SQLite 兼容性、保留 ID 模式、同步、复制、远程传输，也
+不提供对已提交批次的整体回滚。

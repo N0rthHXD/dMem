@@ -1,147 +1,131 @@
-# dMem HTTP REST+JSON Contract
+# dMem HTTP REST+JSON 契约
 
-## Status
+## 状态
 
-This document is the frozen wire contract for the first Agent-neutral REST+JSON
-protocol adapter. It is the design source for `internal/protocol/httpapi` and is
-the only HTTP contract in the repository: the previous Unix-socket
-`docs/api/openapi.yaml` has been removed. The route metadata in
-`internal/protocol/httpapi` and its conformance tests are the executable form of
-this contract.
+本文档是第一个 Agent 中立 REST+JSON 协议适配器的冻结线上契约。它是
+`internal/protocol/httpapi` 的设计来源，也是仓库中唯一的 HTTP 契约；此前的
+Unix socket `docs/api/openapi.yaml` 已删除。`internal/protocol/httpapi` 中的路由元数据
+及其一致性测试是本文档的可执行形式。
 
-The contract is frozen. Changing a route, DTO field, status code, header name, or
-error code is a contract change and requires updating this document, the route
-metadata in `internal/protocol/httpapi`, and the contract tests together.
+契约已冻结。修改路由、DTO 字段、状态码、请求头名称或错误码都属于契约变更，
+必须同时更新本文档、`internal/protocol/httpapi` 中的路由元数据和契约测试。
 
-The adapter returns an `http.Handler`. The runtime composes it but does not
-serve it: there is no production listener, TLS, h2c, or socket lifecycle in the
-current architecture.
+适配器返回一个 `http.Handler`。运行时组装该 handler，但不提供监听服务：
+当前架构中不存在生产监听器、TLS、h2c 或 socket 生命周期。
 
-## Scope
+## 范围
 
-In scope:
+包含：
 
-- nine Agent-neutral routes under `/v1`;
-- request and response DTOs for those routes;
-- request identification, caller identity, and idempotency headers;
-- strict JSON decoding rules and body limits;
-- the unified error body and status mapping;
-- the pagination convention reserved for later list routes;
-- HTTP/2 compatibility expectations for the handler.
+- `/v1` 下的九条 Agent 中立路由；
+- 这些路由的请求与响应 DTO；
+- 请求标识、调用方身份与幂等请求头；
+- 严格 JSON 解码规则与请求体上限；
+- 统一错误体与状态码映射；
+- 为后续列表路由预留的分页约定；
+- handler 的 HTTP/2 兼容性要求。
 
-Out of scope, and deliberately absent from this contract:
+不包含，且有意从本契约中排除：
 
-- a production listener, TLS, h2c, or socket lifecycle;
-- authentication, authorization at the network edge, rate limiting, or any
-  network security boundary;
-- candidate review, job control, index rebuild, configuration reload, graph
-  maintenance, or any other administrative operation;
-- Agent-specific routes, DTOs, or behavior for Claude, OpenCode, or any other
-  client. Every route is caller-neutral and client-neutral.
+- 生产监听器、TLS、h2c 或 socket 生命周期；
+- 认证、网络边缘授权、限流或任何网络安全边界；
+- 候选审核、作业控制、索引重建、配置重载、图谱维护或任何其他管理操作；
+- 面向 Claude、OpenCode 或其他具体客户端的路由、DTO 或行为。所有路由都是
+  调用方中立、客户端中立的。
 
-## Transport
+## 传输
 
-- Scheme: caller-defined. The handler is transport-agnostic.
-- Protocol: HTTP/1.1 or HTTP/2. The handler must not branch on
-  `r.ProtoMajor`; enforcing HTTP/2 belongs to the future server layer.
-- Base path: `/v1`.
-- Media type: `application/json`.
-- No cookies, sessions, redirects, or connection-specific behavior. Every
-  request is self-describing.
+- 协议方案：由调用方决定。handler 与传输无关。
+- 协议版本：HTTP/1.1 或 HTTP/2。handler 不得依赖 `r.ProtoMajor` 分支；强制
+  HTTP/2 是未来服务层的职责。
+- 基础路径：`/v1`。
+- 媒体类型：`application/json`。
+- 不使用 cookie、会话、重定向或连接相关行为。每个请求都是自描述的。
 
-## Common Headers
+## 通用请求头
 
-Request headers:
+请求头：
 
-| Header | Required | Rules |
+| 请求头 | 是否必需 | 规则 |
 | --- | --- | --- |
-| `Content-Type` | writes | Must parse as `application/json`; optional parameters are ignored. |
-| `X-Request-ID` | no | Opaque token, 1–128 visible ASCII characters. Generated when absent. |
-| `X-Correlation-ID` | no | Opaque token, 1–128 visible ASCII characters. |
-| `X-Caller-Subject-ID` | conditionally | Opaque token, 1–128 visible ASCII characters. |
-| `X-Caller-Client-ID` | conditionally | Opaque token, 1–128 visible ASCII characters. |
-| `Idempotency-Key` | writes | Opaque token, 1–128 visible ASCII characters. |
+| `Content-Type` | 写操作 | 必须可解析为 `application/json`；忽略可选参数。 |
+| `X-Request-ID` | 否 | 不透明令牌，1–128 个可见 ASCII 字符。缺失时自动生成。 |
+| `X-Correlation-ID` | 否 | 不透明令牌，1–128 个可见 ASCII 字符。 |
+| `X-Caller-Subject-ID` | 条件必需 | 不透明令牌，1–128 个可见 ASCII 字符。 |
+| `X-Caller-Client-ID` | 条件必需 | 不透明令牌，1–128 个可见 ASCII 字符。 |
+| `Idempotency-Key` | 写操作 | 不透明令牌，1–128 个可见 ASCII 字符。 |
 
-Caller identity: every route in this contract is non-public. At least one of
-`X-Caller-Subject-ID` or `X-Caller-Client-ID` is required. When both are
-present, the subject is the primary audit identity and the client identifies the
-acting client. Neither header names nor semantics are Agent-specific.
+调用方身份：本契约中的每条路由都是非公开路由。`X-Caller-Subject-ID` 与
+`X-Caller-Client-ID` 至少需要一个。两者同时存在时，subject 是主要审计身份，
+client 标识实际发起的客户端。两个请求头的名称与语义都不针对特定 Agent。
 
-Response headers:
+响应头：
 
-| Header | Always | Meaning |
+| 请求头 | 是否总是返回 | 含义 |
 | --- | --- | --- |
-| `X-Request-ID` | yes | Echoes the request ID, or the generated one. |
-| `Content-Type` | yes | `application/json`. |
-| `Idempotency-Replayed` | writes | `true` when the response was served from a previously committed idempotent write, otherwise `false`. |
+| `X-Request-ID` | 是 | 回显请求 ID，或返回生成的 ID。 |
+| `Content-Type` | 是 | `application/json`。 |
+| `Idempotency-Replayed` | 写操作 | 响应来自已提交的幂等写时返回 `true`，否则返回 `false`。 |
 
-An opaque token is a non-empty string of at most 128 bytes, each byte in the
-range `0x21`–`0x7E` (no spaces or control characters).
+不透明令牌是指长度不超过 128 字节、每个字节都位于 `0x21`–`0x7E` 范围
+（不含空格与控制字符）的非空字符串。
 
-### Request ID
+### 请求 ID
 
-- When `X-Request-ID` is absent, the adapter generates a UUIDv4-shaped value.
-- When present, it is validated; an invalid value yields `422 invalid_request`.
-- The response always carries `X-Request-ID`, including error responses.
-- The request ID is carried in the gateway `CallContext.RequestID`. It is audit
-  correlation only: it never participates in idempotency identity and never
-  changes the canonical command hash.
+- `X-Request-ID` 缺失时，适配器生成 UUIDv4 形状的值。
+- 存在时进行校验；非法值返回 `422 invalid_request`。
+- 响应始终携带 `X-Request-ID`，错误响应也不例外。
+- 请求 ID 会进入 gateway 的 `CallContext.RequestID`。它仅用于审计关联，永不参与
+  幂等身份，也永不改变规范化命令哈希。
 
-### Idempotency
+### 幂等
 
-- Every write route requires `Idempotency-Key`.
-- The adapter only transports the key. The gateway forms the write identity
-  from caller identity + operation name + idempotency key + canonical command
-  hash. HTTP method and route are never part of that identity.
-- Reusing a key with an equivalent canonical command returns the original
-  result with `Idempotency-Replayed: true`.
-- Reusing a key with a different canonical command returns
-  `409 idempotency_conflict`.
-- Read routes ignore `Idempotency-Key` if it is present.
+- 每条写路由都要求 `Idempotency-Key`。
+- 适配器只负责传递该 key。gateway 由调用方身份 + 操作名 + 幂等 key + 规范化命令
+  哈希构成写身份。HTTP 方法与路由永不参与该身份。
+- 用相同 key 提交等价命令时，返回原始结果并带 `Idempotency-Replayed: true`。
+- 用相同 key 提交不同命令时，返回 `409 idempotency_conflict`。
+- 读路由忽略存在的 `Idempotency-Key`。
 
-## Routes
+## 路由
 
-All paths are relative to `/v1`.
+所有路径都相对于 `/v1`。
 
-| # | Operation | Method and path | Access | Caller | Idempotency | Body limit | Success |
+| # | 操作 | 方法与路径 | 访问 | 调用方 | 幂等 | 请求体上限 | 成功状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `memory.remember` | `POST /v1/memories` | write | required | required | 1 MiB | `201` |
-| 2 | `memory.get` | `GET /v1/memories/{memory_id}` | read | required | not required | none | `200` |
-| 3 | `memory.forget` | `POST /v1/memories/{memory_id}/forget` | write | required | required | 64 KiB | `200` |
-| 4 | `feedback.append` | `POST /v1/memories/{memory_id}/feedback` | write | required | required | 256 KiB | `201` |
-| 5 | `retrieval.recall` | `POST /v1/recall` | write | required | required | 256 KiB | `200` |
-| 6 | `extraction.ingest` | `POST /v1/events` | write | required | required | 4 MiB | `202` |
-| 7 | `extraction.event.get` | `GET /v1/events/{event_id}` | read | required | not required | none | `200` |
-| 8 | `scope.create` | `POST /v1/scopes` | write | required | required | 64 KiB | `201` |
-| 9 | `scope.get` | `GET /v1/scopes/{scope_id}` | read | required | not required | none | `200` |
+| 1 | `memory.remember` | `POST /v1/memories` | 写 | 必需 | 必需 | 1 MiB | `201` |
+| 2 | `memory.get` | `GET /v1/memories/{memory_id}` | 读 | 必需 | 不需要 | 无 | `200` |
+| 3 | `memory.forget` | `POST /v1/memories/{memory_id}/forget` | 写 | 必需 | 必需 | 64 KiB | `200` |
+| 4 | `feedback.append` | `POST /v1/memories/{memory_id}/feedback` | 写 | 必需 | 必需 | 256 KiB | `201` |
+| 5 | `retrieval.recall` | `POST /v1/recall` | 写 | 必需 | 必需 | 256 KiB | `200` |
+| 6 | `extraction.ingest` | `POST /v1/events` | 写 | 必需 | 必需 | 4 MiB | `202` |
+| 7 | `extraction.event.get` | `GET /v1/events/{event_id}` | 读 | 必需 | 不需要 | 无 | `200` |
+| 8 | `scope.create` | `POST /v1/scopes` | 写 | 必需 | 必需 | 64 KiB | `201` |
+| 9 | `scope.get` | `GET /v1/scopes/{scope_id}` | 读 | 必需 | 不需要 | 无 | `200` |
 
-Notes:
+说明：
 
-- `POST /v1/recall` is classified as a write because it records bounded recall
-  telemetry and therefore requires an idempotency key. It does not mutate
-  memory authority.
-- Read routes reject a non-empty request body with `400 unexpected_body`.
-- Path identifiers are opaque, non-empty strings of 1–128 characters. The
-  adapter does not impose a UUID format; an unknown identifier is reported by
-  the gateway as `404 not_found`.
-- Route order in the metadata table is stable and is the declaration order.
+- `POST /v1/recall` 被归类为写操作，因为它会记录有界的召回遥测，因此要求幂等
+  key。它不修改记忆权威数据。
+- 读路由拒绝非空请求体，返回 `400 unexpected_body`。
+- 路径标识符是 1–128 个字符的不透明非空字符串。适配器不强制 UUID 格式；未知
+  标识符由 gateway 返回 `404 not_found`。
+- 元数据表中的路由顺序稳定，即为声明顺序。
 
-## Naming
+## 命名
 
-The public HTTP surface uses **scope** terminology consistently:
-`scope_id`, `scope_ids`, `parent_scope_id`, `scope_type`, and the `/v1/scopes`
-path. Internal storage may continue to use `space`. No response in this
-contract emits a `space_id` field.
+公开 HTTP 接口统一使用 **scope** 术语：`scope_id`、`scope_ids`、
+`parent_scope_id`、`scope_type` 以及 `/v1/scopes` 路径。内部存储可以继续使用
+`space`。本契约的任何响应都不输出 `space_id` 字段。
 
-Resource bodies use the gateway domain JSON shape for nested protocol-neutral
-values (memory revisions, context packages, feedback events, content). The
-adapter owns the envelope and any field renamed for the public contract.
+资源体中的嵌套协议中立值（记忆修订、上下文包、反馈事件、内容）使用 gateway
+领域 JSON 形状。适配器拥有外层信封以及为公开契约重命名的字段。
 
-## DTOs
+## DTO
 
 ### `POST /v1/memories`
 
-Request:
+请求：
 
 ```json
 {
@@ -161,7 +145,7 @@ Request:
 }
 ```
 
-Response `201`:
+响应 `201`：
 
 ```json
 {
@@ -172,13 +156,13 @@ Response `201`:
 }
 ```
 
-Semantic defaults (`kind`, `sensitivity`, `source_name`, `occurred_at`,
-`metadata`, `reason`) are applied by the gateway, not by the adapter. Omitted
-fields are omitted from the command and the gateway default applies.
+语义默认值（`kind`、`sensitivity`、`source_name`、`occurred_at`、`metadata`、
+`reason`）由 gateway 应用，而不是适配器。字段省略时不会进入命令，由 gateway
+应用默认值。
 
 ### `GET /v1/memories/{memory_id}`
 
-Response `200`:
+响应 `200`：
 
 ```json
 { "memory": { "memory_id": "string", "scope_id": "string", "current_revision": {} } }
@@ -186,13 +170,13 @@ Response `200`:
 
 ### `POST /v1/memories/{memory_id}/forget`
 
-Request:
+请求：
 
 ```json
 { "reason": "string, required, 1-1024 characters" }
 ```
 
-Response `200`:
+响应 `200`：
 
 ```json
 { "operation_id": "string", "replayed": false, "memory": { "memory_id": "string", "scope_id": "string" } }
@@ -200,7 +184,7 @@ Response `200`:
 
 ### `POST /v1/memories/{memory_id}/feedback`
 
-Request:
+请求：
 
 ```json
 {
@@ -216,18 +200,18 @@ Request:
 }
 ```
 
-Response `201`:
+响应 `201`：
 
 ```json
 { "operation_id": "string", "replayed": false, "feedback": {}, "proposal": { "status": "string" } }
 ```
 
-Purpose, type, reason, decision-context, and proposal rules are enforced by the
-Feedback gateway module, not by the adapter.
+用途、类型、原因、决策上下文与提案规则由 Feedback gateway 模块强制，而不是
+适配器。
 
 ### `POST /v1/recall`
 
-Request:
+请求：
 
 ```json
 {
@@ -249,8 +233,7 @@ Request:
 }
 ```
 
-The initial Agent contract does not expose capability or graph-policy debug
-overrides. Response `200`:
+初始 Agent 契约不暴露能力或图谱策略调试覆盖项。响应 `200`：
 
 ```json
 { "context": { "items": [], "tokens_used": 0, "chars_used": 0, "truncated": false, "next_cursor": null }, "execution": {} }
@@ -258,7 +241,7 @@ overrides. Response `200`:
 
 ### `POST /v1/events`
 
-Request:
+请求：
 
 ```json
 {
@@ -274,8 +257,7 @@ Request:
 }
 ```
 
-Content kind, required fields, and incompatible-field rules are enforced by the
-Extraction gateway module. Response `202`:
+内容 kind、必需字段与互斥字段规则由 Extraction gateway 模块强制。响应 `202`：
 
 ```json
 { "operation_id": "string", "replayed": false, "event_id": "string", "status": "string", "job_ids": [], "accepted_at": "string" }
@@ -283,7 +265,7 @@ Extraction gateway module. Response `202`:
 
 ### `GET /v1/events/{event_id}`
 
-Response `200`:
+响应 `200`：
 
 ```json
 { "event": { "event_id": "string", "scope_id": "string", "source_type": "string", "content": {}, "processing_status": "string" } }
@@ -291,7 +273,7 @@ Response `200`:
 
 ### `POST /v1/scopes`
 
-Request:
+请求：
 
 ```json
 {
@@ -302,7 +284,7 @@ Request:
 }
 ```
 
-Response `201`:
+响应 `201`：
 
 ```json
 { "operation_id": "string", "replayed": false, "scope": { "scope_id": "string", "parent_scope_id": null, "scope_type": "string", "external_id": "string", "display_name": "string", "created_at": "string" } }
@@ -310,37 +292,32 @@ Response `201`:
 
 ### `GET /v1/scopes/{scope_id}`
 
-Response `200`:
+响应 `200`：
 
 ```json
 { "scope": { "scope_id": "string", "parent_scope_id": null, "scope_type": "string", "external_id": "string", "display_name": "string", "created_at": "string" } }
 ```
 
-## JSON Decoding Rules
+## JSON 解码规则
 
-Every write body is decoded strictly:
+每个写请求体都严格解码：
 
-1. The body is bounded by the route body limit. Exceeding it yields
-   `413 request_too_large`.
-2. `Content-Type` must be `application/json`. Otherwise
-   `415 unsupported_media_type`.
-3. The body must contain exactly one top-level JSON object. An empty body, a
-   non-object value (`null`, array, string, number, boolean), or a second JSON
-   value yields `400 invalid_json`.
-4. Unknown object fields are rejected with `400 invalid_json`.
-5. Field type mismatches are rejected with `400 invalid_json`.
-6. Numbers are decoded with `json.Number`, so integer values are never rounded
-   through `float64`. Typed integer fields still reject fractional or
-   exponent-form values.
-7. JSON object values that carry arbitrary user data (`metadata`,
-   `content.value`) preserve `json.Number` semantics.
+1. 请求体受路由上限约束。超限返回 `413 request_too_large`。
+2. `Content-Type` 必须是 `application/json`，否则返回 `415 unsupported_media_type`。
+3. 请求体必须恰好包含一个顶层 JSON 对象。空请求体、非对象值（`null`、数组、
+   字符串、数字、布尔值）或第二个 JSON 值都返回 `400 invalid_json`。
+4. 未知对象字段返回 `400 invalid_json`。
+5. 字段类型不匹配返回 `400 invalid_json`。
+6. 数字使用 `json.Number` 解码，整数值不会经过 `float64` 舍入。类型化的整数字段
+   仍然拒绝小数或指数形式的值。
+7. 承载任意用户数据的 JSON 对象值（`metadata`、`content.value`）保留
+   `json.Number` 语义。
 
-Read routes do not decode a body. A non-empty body on a read route yields
-`400 unexpected_body`.
+读路由不解析请求体。读路由上的非空请求体返回 `400 unexpected_body`。
 
-## Error Model
+## 错误模型
 
-Every error response uses one body shape:
+每个错误响应使用同一种请求体形状：
 
 ```json
 {
@@ -355,60 +332,53 @@ Every error response uses one body shape:
 }
 ```
 
-`retry_after_ms` and `details` are omitted when absent. Clients must branch on
-`code` and `retryable`, never on `message`.
+`retry_after_ms` 与 `details` 缺失时省略。客户端必须基于 `code` 和 `retryable`
+分支，绝不解析 `message`。
 
-Status mapping:
+状态码映射：
 
-| Code | Status | Source |
+| 错误码 | 状态码 | 来源 |
 | --- | --- | --- |
-| `invalid_json` | 400 | adapter |
-| `unexpected_body` | 400 | adapter |
-| `not_found` | 404 | adapter (unknown route) or gateway |
-| `method_not_allowed` | 405 | adapter |
-| `request_too_large` | 413 | adapter |
-| `unsupported_media_type` | 415 | adapter |
-| `invalid_request` | 422 | adapter (headers, path identifiers, pagination) |
+| `invalid_json` | 400 | 适配器 |
+| `unexpected_body` | 400 | 适配器 |
+| `not_found` | 404 | 适配器（未知路由）或 gateway |
+| `method_not_allowed` | 405 | 适配器 |
+| `request_too_large` | 413 | 适配器 |
+| `unsupported_media_type` | 415 | 适配器 |
+| `invalid_request` | 422 | 适配器（请求头、路径标识符、分页） |
 | `invalid_input` | 422 | gateway |
 | `permission_denied` | 403 | gateway |
 | `conflict` | 409 | gateway |
 | `idempotency_conflict` | 409 | gateway |
-| `resource_exhausted` | 429 when retryable, otherwise 507 | gateway |
+| `resource_exhausted` | 可重试时 429，否则 507 | gateway |
 | `capability_unavailable` | 503 | gateway |
-| `internal` | 500 | gateway or adapter |
-| `canceled` | 499 | adapter (client cancellation; non-standard, best effort) |
-| `deadline_exceeded` | 504 | adapter |
+| `internal` | 500 | gateway 或适配器 |
+| `canceled` | 499 | 适配器（客户端取消；非标准，尽力而为） |
+| `deadline_exceeded` | 504 | 适配器 |
 
-Safe errors:
+安全错误：
 
-- A gateway `*gateway.Error` contributes only its declared-safe message,
-  retryability, retry hint, and string details.
-- The wrapped internal cause is never serialized.
-- A non-gateway error is reported as `500 internal` with a generic message; its
-  text is never echoed.
-- A recovered panic is reported as `500 internal` with a generic message; the
-  recovered value is never echoed.
+- gateway 的 `*gateway.Error` 只贡献其声明为安全的 message、可重试性、重试提示和
+  字符串 details。
+- 被包装的内部原因永不序列化。
+- 非 gateway 错误以 `500 internal` 和通用 message 报告，其文本永不回显。
+- 恢复的 panic 以 `500 internal` 和通用 message 报告，恢复值永不回显。
 
-## Pagination
+## 分页
 
-No route in this contract returns a page. The following convention is frozen
-now so later list routes are consistent:
+本契约中没有路由返回分页。以下约定现在冻结，以便后续列表路由保持一致：
 
-- Query parameters: `limit` (integer, `1`–`200`, default `50`) and `cursor`
-  (opaque string, at most 512 characters).
-- Invalid values yield `422 invalid_request`.
-- List responses use `{"items": [...], "next_cursor": "string"|null}`.
-- A cursor is opaque and is produced by the owning gateway module; clients must
-  not construct or parse one.
-- `internal/protocol/httpapi` exposes `ParsePageRequest` implementing this
-  convention.
+- 查询参数：`limit`（整数，`1`–`200`，默认 `50`）与 `cursor`（不透明字符串，
+  最多 512 个字符）。
+- 非法值返回 `422 invalid_request`。
+- 列表响应使用 `{"items": [...], "next_cursor": "string"|null}`。
+- cursor 是不透明的，由所属 gateway 模块生成；客户端不得构造或解析。
+- `internal/protocol/httpapi` 导出 `ParsePageRequest` 实现该约定。
 
-## HTTP/2 Compatibility
+## HTTP/2 兼容性
 
-- The handler must not inspect `r.ProtoMajor`, `r.Proto`, or connection state.
-- The handler must not create a listener, `http.Server`, TLS configuration, or
-  h2c upgrade.
-- All request state lives in the request, the `CallContext`, or the response.
-- Compatibility is proven with a test-only HTTP/2 transport
-  (`httptest.Server` with `EnableHTTP2`); no production TLS or listener is
-  added by this contract.
+- handler 不得检查 `r.ProtoMajor`、`r.Proto` 或连接状态。
+- handler 不得创建监听器、`http.Server`、TLS 配置或 h2c 升级。
+- 所有请求状态都存在于请求、`CallContext` 或响应中。
+- 兼容性通过仅用于测试的 HTTP/2 传输（启用 `EnableHTTP2` 的 `httptest.Server`）
+  证明；本契约不添加任何生产 TLS 或监听器。

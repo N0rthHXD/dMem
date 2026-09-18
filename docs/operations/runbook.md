@@ -1,133 +1,128 @@
-# Operations
+# 运维手册
 
-## Runtime
+## 运行时
 
-`dmemd` runs as a local single-user daemon. The data directory must be owned by
-the current user, must be mode `0700`, and must not resolve through unsafe
-symlinks. A lock in the data directory prevents a second writer.
+`dmemd` 作为本地单用户守护进程运行。数据目录必须由当前用户拥有、权限为 `0700`，
+且不能经过不安全的符号链接。数据目录中的锁文件阻止第二个写入者。
 
-The daemon reads exactly one strict TOML file. Its default location is
-`${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`; `--config PATH` is the
-only setting-related command-line option. Begin from
-`docs/operations/config.example.toml`, replace its example absolute paths, and
-publish edits by atomically renaming a private temporary file over the selected
-file. The file contains no secret values: enabled providers reference an
-environment variable that is resolved only after policy approval for a request.
-
-`dmemd daemon` assembles the SQLite capability adapters, gateway services,
-providers, durable workers, and the Agent-neutral REST+JSON `http.Handler`, then
-waits for shutdown. **It does not open a Unix socket or a TCP port.** There is no
-production listener, TLS, h2c, authentication, or network security boundary in
-this repository yet; serving the handler is separate future work. Operator
-visibility therefore comes from process logs and the durable state in SQLite,
-not from a live health endpoint.
-
-Important defaults are represented in that file:
-
-| Setting | Default |
-| --- | --- |
-| shutdown grace | 15 seconds |
-| workers/read connections | 2 |
-| queue soft/hard limits | 10,000 / 20,000 |
-| job lease / timeout / attempts | 30 seconds / 2 minutes / 3 |
-| disk soft/hard free thresholds | 1 GiB / 256 MiB |
-| context result/token/char budgets | 20 results / 4,000 tokens / 16,000 chars |
-
-HTTP request body limits are per route and are declared in the frozen contract
-and in `internal/protocol/httpapi` route metadata; they are not daemon settings.
-
-Providers require explicit enablement, endpoint, model, default-deny policy, and
-an environment secret reference. Disabled providers do not resolve secrets or
-make HTTP requests. `instance.data_dir`, `instance.database_filename`, and
-`jobs.worker_count` are restart-bound; a reload that changes one is rejected as a
-whole.
-
-Use `dmemd [--config PATH] config validate` to validate offline, `init` to
-initialize a new database, and `daemon` to run. There is no `status` or `reload`
-subcommand: `SIGHUP` requests a serialized reload pipeline and repeated signals
-are coalesced. Failed or rejected reloads preserve the prior complete snapshot.
-Correct a rejected file and signal again.
-
-## Health And Failures
-
-Because the runtime exposes a handler but no listener, health is observed
-through logs and durable state rather than an HTTP endpoint. Treat authority
-failures differently from derived-index failures:
-
-- Stop writes and preserve the data directory when SQLite integrity, schema, or
-  authority checks fail.
-- Keep authority intact and re-run the corresponding rebuild when a derived
-  index is stale or unavailable.
-- Track an already-active rebuild through the durable job rather than creating a
-  rebuild storm.
-- Let startup lease recovery fence interrupted workers; never edit job state or
-  generation directly.
-- At the disk hard threshold, expect writes to fail while read-only queries can
-  remain available.
-
-The SQLite integrity check runs in the background after startup so a large
-database (or FTS5 index) does not block readiness. On failure the daemon logs an
-error and storage becomes unavailable. Restart or stop the daemon and preserve
-the data directory, then diagnose from a copy before resuming writes.
-
-Derived-index rebuilds (FTS, semantic, graph, and feedback aggregates) are
-durable internal jobs. They are not part of the initial Agent HTTP contract.
-
-Semantic vectors are stored as compact `float32` blobs in the authority table
-`memory_embeddings` and retrieved with sqlite-vec exact cosine. The daemon
-verifies the sqlite-vec extension at startup (`vec_version()` plus a
-`vec_length()` sanity probe) and refuses to start if it is unavailable, so a
-missing or corrupted native build fails loudly rather than returning wrong
-retrieval results. To diagnose the linked extension on an operator box, run
-`SELECT vec_version()` against the authority database with the same `sqlite_fts5`
-build tag.
-
-## Initialize, Backup, And Restore
-
-Initialize only a new database:
+守护进程只读取一个严格 TOML 文件。默认位置为
+`${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`；`--config PATH` 是唯一与
+设置相关的命令行选项。建议从
+[config.example.toml](config.example.toml) 开始，替换示例中的绝对路径，并通过
+把私有临时文件原子重命名到目标位置来发布修改。文件不包含密钥值：启用的 provider
+引用一个环境变量，该变量只在策略批准某次请求之后才解析。
 
 ```sh
-dmemd init
+dmemd --config /absolute/path/config.toml daemon
 ```
 
-There is no schema migration command. A database with an incompatible schema is
-rejected and must be replaced by a newly initialized data directory.
+`dmemd daemon` 组装 SQLite 能力适配器、gateway 服务、provider、持久 worker 与
+Agent 中立 REST+JSON `http.Handler`，然后等待关闭。**它不打开 Unix socket 或
+TCP 端口。** 本仓库中目前没有生产监听器、TLS、h2c、认证或网络安全边界；提供
+监听服务属于后续独立工作。因此运维可见性来自进程日志与 SQLite 中的持久状态，
+而不是健康检查端点。
 
-Backup uses SQLite's online backup API and may run while the daemon is active.
-The target must not exist and its parent must be a private, current-user-owned
-directory:
+重要默认值：
+
+| 设置 | 默认值 |
+| --- | --- |
+| 关闭宽限期 | 15 秒 |
+| worker / 读连接数 | 2 |
+| 队列软/硬上限 | 10,000 / 20,000 |
+| 作业租约 / 超时 / 最大尝试 | 30 秒 / 2 分钟 / 3 |
+| 磁盘软/硬空闲阈值 | 1 GiB / 256 MiB |
+| 上下文结果/token/字符预算 | 20 条 / 4,000 token / 16,000 字符 |
+
+HTTP 请求体上限按路由声明在冻结契约与 `internal/protocol/httpapi` 路由元数据中，
+它们不是守护进程设置。
+
+Provider 需要显式启用、endpoint、model、默认拒绝策略与环境变量密钥引用。禁用的
+provider 不解析密钥、不发起 HTTP 请求。`instance.data_dir`、
+`instance.database_filename` 与 `jobs.worker_count` 是重启绑定字段；改变其中任何
+一项的重载会被整体拒绝。
+
+## 命令行
+
+| 命令 | 说明 |
+| --- | --- |
+| `dmemd [--config PATH] config validate` | 离线校验配置，输出 source/effective identity。 |
+| `dmemd [--config PATH] init` | 初始化一个新数据库，输出 `schema_version`。 |
+| `dmemd [--config PATH] daemon` | 运行守护进程。 |
+| `dmemd [--config PATH] backup --target DIR` | 创建一致性备份。 |
+| `dmemd [--config PATH] restore --source DIR --confirm-replace` | 用备份替换数据目录。 |
+
+`backup`、`restore`、`init` 接受 `--timeout`（默认 5 分钟，必须大于零且不超过
+1 小时）。退出码：用法错误与守护进程启动失败为 `2`，其他维护失败为 `1`，成功为
+`0`。维护失败在 stderr 输出 `maintenance: <code>`，例如 `maintenance:
+offline_required`、`maintenance: unsafe_path`、`maintenance: database_exists`。
+
+没有 `status` 或 `reload` 子命令：`SIGHUP` 请求一次串行化重载流水线，重复信号
+会被合并。失败或被拒绝的重载保留先前完整快照；修正文件后再次发送信号即可。
+
+## 健康与故障
+
+由于运行时暴露 handler 但没有监听器，健康状态通过日志与持久状态观察。请区分
+权威故障与派生索引故障：
+
+- SQLite 完整性、schema 或权威检查失败时，停止写入并保留数据目录。
+- 派生索引过时或不可用时，保持权威不变并重新运行相应重建。
+- 通过持久作业跟踪已在进行中的重建，而不是制造重建风暴。
+- 让启动时的租约恢复来围栏被中断的 worker；永不直接编辑作业状态或 generation。
+- 达到磁盘硬阈值时，写入会失败，而只读查询仍可继续。
+
+SQLite 完整性检查在启动后于后台运行，因此大型数据库（或 FTS5 索引）不会阻塞
+就绪。失败时守护进程记录错误并使存储不可用。此时应重启或停止守护进程、保留
+数据目录，然后从副本诊断再恢复写入。
+
+派生索引重建（FTS、语义、图谱与反馈聚合）是持久内部作业，不属于初始 Agent
+HTTP 契约。
+
+语义向量以紧凑 `float32` BLOB 存储在权威表 `memory_embeddings` 中，并通过
+sqlite-vec 精确余弦检索。守护进程在启动时校验 sqlite-vec 扩展（`vec_version()`
+加 `vec_length()` 健全性探针），不可用时拒绝启动，因此缺失或损坏的原生构建会
+明确失败，而不是返回错误的检索结果。要诊断运维机器上链接的扩展，可使用相同的
+`sqlite_fts5` 构建标签对权威数据库执行 `SELECT vec_version()`。
+
+## 初始化、备份与恢复
+
+只初始化新数据库：
+
+```sh
+dmemd --config /absolute/path/config.toml init
+```
+
+没有 schema 迁移命令。schema 不兼容的数据库会被拒绝，必须由新初始化的数据目录
+替代。`init` 拒绝已存在的数据库，并要求守护进程离线（锁可用）。
+
+备份使用 SQLite 在线备份 API，可以在守护进程运行时执行。目标必须不存在，其父
+目录必须是当前用户拥有的私有目录：
 
 ```sh
 install -d -m 0700 "$HOME/dmem-backups"
-dmemd backup \
+dmemd --config /absolute/path/config.toml backup \
   --target "$HOME/dmem-backups/backup-$(date +%Y%m%dT%H%M%S)"
 ```
 
-Restore replaces the complete data directory. Stop the daemon first:
+恢复会替换整个数据目录。请先停止守护进程：
 
 ```sh
-dmemd restore \
+dmemd --config /absolute/path/config.toml restore \
   --source "$HOME/dmem-backups/backup-20260826T120000" \
   --confirm-replace
 ```
 
-Restore validates checksums, exact schema, SQLite integrity, foreign keys,
-authority counts, import checkpoints, and domain references in a same-filesystem
-staging directory before publication. It fences interrupted jobs/imports,
-rebuilds authority-derived projections, clears stale semantic activation, and
-queues semantic recovery. After restore, start the daemon, inspect logs and
-durable jobs, then run representative scoped recalls through the gateway or the
-HTTP adapter tests. Semantic state can remain absent until a configured
-embedding provider completes its work.
+恢复会在同一文件系统的 staging 目录中校验校验和、精确 schema、SQLite 完整性、
+外键、权威计数、导入检查点与领域引用，然后才发布。它会围栏被中断的作业/导入，
+重建权威派生的投影，清理过时的语义激活并入队语义恢复。恢复后：启动守护进程，
+检查日志与持久作业，然后通过 gateway 或 HTTP 适配器测试运行有代表性的 scope
+召回。在已配置的 embedding provider 完成工作之前，语义状态可以保持缺失。
 
-Logical export/import is a separate library workflow documented in
-[logical portability](../storage/logical-portability.md); no export/import CLI or
-HTTP route exists.
+逻辑导出/导入是独立的库工作流，见
+[逻辑可移植性](../storage/logical-portability.md)；没有导出/导入 CLI 或 HTTP
+路由。
 
-## Privacy
+## 隐私
 
-The default deployment is local and offline. Logs must not contain secrets,
-Authorization headers, raw memory/event content, feedback notes, query text, or
-provider responses. Provider allowlists restrict spaces, source/content types,
-and sensitivities before egress. Backups and logical packages require the same
-filesystem protection as the authority database.
+默认部署是本地且离线的。日志不得包含密钥、Authorization 请求头、原始记忆/事件
+内容、反馈备注、查询文本或 provider 响应。provider 允许列表在出网前限制空间、
+来源/内容类型与敏感度。备份与逻辑包需要与权威数据库相同的文件系统保护。

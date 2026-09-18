@@ -10,7 +10,7 @@ import (
 )
 
 // Rules are the versioned deterministic consolidation thresholds that classify a
-// structured candidate against existing memory revisions (ADR 0035). They are a
+// structured candidate against existing memory revisions. They are a
 // protocol-independent configuration value: the persistence adapter supplies
 // them and the classifier never reads configuration itself.
 type Rules struct {

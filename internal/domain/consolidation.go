@@ -1,7 +1,7 @@
 package domain
 
 // ConsolidationAction is the deterministic decision applied to a structured
-// candidate proposal relative to existing memory revisions (ADR 0035).
+// candidate proposal relative to existing memory revisions.
 type ConsolidationAction string
 
 const (

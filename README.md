@@ -1,77 +1,92 @@
 # dMem
 
-dMem is a local, single-user memory daemon for agents and applications. It
-stores versioned, structured memories and their evidence in SQLite, retrieves
-scoped keyword and semantic candidates with gated typed-graph features, and
-exposes its semantics through a protocol-independent Memory Gateway. External
-processing and embedding providers are disabled by default.
+dMem 是一个面向 Agent 与应用的本地单用户记忆守护进程。它以 SQLite 存储版本化、
+结构化的记忆及其证据，通过带门控类型化图谱特征的关键词与语义召回检索受 scope
+约束的候选，并通过协议无关的 Memory Gateway 暴露其语义。外部处理与 embedding
+provider 默认关闭。
 
-Schema v1 has no migration path. Databases with an incompatible schema must be
-replaced by a newly initialized data directory.
+> **状态**：项目处于预发布阶段。Schema v1 没有迁移路径；schema 不兼容的数据库
+> 必须由新初始化的数据目录替代。运行时组装 HTTP handler，但**不启动监听器**：
+> 传输层、TLS、认证与网络暴露属于后续独立工作。
 
-## Architecture
+## 能力
 
-The repository is organized around one semantic core and thin inbound protocol
-adapters:
+- **版本化记忆权威**：稳定的逻辑 ID、不可变修订、仅追加状态事件、证据与当前
+  投影；修订永不原地编辑，逻辑删除保留完整审计历史。
+- **原始事件摄取与异步处理**：事件与所需处理作业在同一事务中提交；默认处理器
+  为 no-op，因此没有外部 provider 时事件捕获依然可用。
+- **可审核的知识构建**：实体、别名、提及、类型化实体事实与记忆关系以提案形式
+  产生，经确定性校验与风险分类后自动确认或进入人工审核。
+- **混合检索**：关键词（SQLite FTS5）与语义（sqlite-vec 精确余弦）作为独立的
+  主召回信号，叠加门控类型化图谱特征、确定性特征排序、预算化上下文选择与
+  结果多样化。
+- **反馈驱动排序**：仅追加的反馈事件与可重建聚合，按调用方与修订限定在 90 天
+  窗口内，永不绕过 scope、当前修订、生命周期、时间或预算检查。
+- **冲突与演化**：显式冲突用例、双方保留、`contradicts` 断言与显式解决；演化
+  提案覆盖重复、补充、替换与冲突。
+- **聚合记忆**：经审核的 `scene`、`topic`、`timeline` 聚合，建立在显式、有界、
+  去重的输入修订列表之上，并通过 `derived_from` 关系保留来源。
+- **离线优先**：处理与 embedding provider 分别配置、独立限流、默认禁用；密钥
+  只以环境变量引用形式存在，永不进入配置、数据库、状态或日志。
+- **可移植与可恢复**：一致性在线备份与离线 staging 恢复、SQLite 完整性检查、
+  派生索引重建，以及 Format v1 逻辑导出/导入。
 
-- **Memory Gateway** (`internal/gateway`) owns application semantics:
-  `memory`, `scope`, `feedback`, `retrieval`, `extraction`, `policy`,
-  `consolidation`, and `knowledge`. Modules publish protocol-neutral commands,
-  queries, results, errors, and narrow capability ports. They never import
-  `net/http`, a protocol package, or a storage implementation.
-- **Protocol adapters** (`internal/protocol/httpapi`) translate a wire protocol
-  into gateway calls. The first adapter is an Agent-neutral REST+JSON
-  `http.Handler` over a frozen nine-route `/v1` surface. Adapters own strict
-  decoding, body limits, headers, routing, and error mapping; they never own
-  domain rules or repository calls.
-- **Runtime adapters** (`internal/storage`, `internal/jobs`,
-  `internal/provider`) implement the gateway's capability ports over the
-  existing SQLite, FTS5, sqlite-vec, relational graph, job, policy, and
-  metadata implementation. Logical ports do not imply separate databases.
-- **Composition root** (`internal/daemon`) assembles configuration, the SQLite
-  adapters, gateway services, providers, workers, and the protocol handler.
+## 架构
 
-The dependency direction is:
+仓库围绕一个语义核心与轻量入站协议适配器组织：
+
+- **Memory Gateway**（`internal/gateway`）拥有应用语义，分为 `memory`、`scope`、
+  `feedback`、`retrieval`、`extraction`、`consolidation`、`policy`、`knowledge`
+  八个模块。模块发布协议中立的命令、查询、结果、错误与窄能力端口，且永不导入
+  `net/http`、协议包或存储实现。
+- **协议适配器**（`internal/protocol/httpapi`）把线上协议翻译为 gateway 调用。
+  第一个适配器是 Agent 中立的 REST+JSON `http.Handler`，覆盖冻结的九路由 `/v1`
+  接口。适配器负责严格解码、请求体上限、请求头、路由与错误映射，永不拥有领域
+  规则或仓储调用。
+- **运行时适配器**（`internal/storage`、`internal/jobs`、`internal/provider`）
+  在现有 SQLite、FTS5、sqlite-vec、关系图谱、作业、策略与元数据实现之上实现
+  gateway 的能力端口。逻辑端口不意味着物理上分离的数据库。
+- **组合根**（`internal/daemon`）组装配置、SQLite 适配器、gateway 服务、
+  provider、worker 与协议 handler。
+
+依赖方向为：
 
 ```text
-agent client -> protocol adapter -> gateway module -> capability port -> runtime adapter
+Agent 客户端 -> 协议适配器 -> gateway 模块 -> 能力端口 -> 运行时适配器
 ```
 
-The current runtime **exposes the protocol handler but does not start a
-listener**. There is no production HTTP/2 server, TLS, h2c, authentication,
-authorization at the network edge, rate limiting, or socket lifecycle in this
-repository yet. The HTTP contract is frozen and exercised through in-process
-tests; a server layer is separate future work.
+禁止的方向包括 `protocol -> storage`、`gateway -> net/http`、`storage -> gateway
+service`，以及模块之间直接依赖具体服务。这些规则由架构测试强制。
 
-## Build And Run
+## 构建与运行
 
-Linux, Go 1.24 or newer, a C compiler, and SQLite FTS5 support are required.
+需要 Linux、Go 1.24 或更新版本、C 编译器，以及 SQLite FTS5 支持。语义检索静态
+链接 sqlite-vec，无需外部 `.so` 或运行时扩展加载。
 
 ```sh
 go mod download
 CGO_ENABLED=1 go build -tags sqlite_fts5 -o dmemd ./cmd/dmemd
 install -d -m 0700 "${XDG_CONFIG_HOME:-$HOME/.config}/dmem"
 cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml"
-# Edit the example's absolute data_dir path for this user.
+# 编辑示例中的绝对 data_dir 路径
 ./dmemd config validate
 ./dmemd init
 ./dmemd daemon
 ```
 
-The default configuration file is
-`${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`. Use
-`--config /absolute/path/config.toml` to select a different instance. The file
-chooses the data directory and all daemon settings; it is the only source of
-daemon settings. Providers are disabled in the shipped example.
+默认配置文件为 `${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`。使用
+`--config /absolute/path/config.toml` 选择其他实例。该文件决定数据目录与所有
+守护进程设置，是守护进程设置的唯一来源。随仓库提供的示例中 provider 处于禁用
+状态。
 
-`dmemd daemon` starts the SQLite adapters and the durable workers, applies the
-configuration snapshot, and waits for shutdown. It does not open a socket or a
-TCP port. `SIGHUP` requests a serialized configuration reload.
+`dmemd daemon` 启动 SQLite 适配器与持久 worker，应用配置快照，然后等待关闭。
+它不打开 socket 或 TCP 端口。`SIGHUP` 请求一次串行化的配置重载。可用子命令为
+`daemon`、`config validate`、`init`、`backup`、`restore`。
 
-## HTTP Contract
+## HTTP 契约
 
-The frozen contract is [docs/api/http-rest-contract.md](docs/api/http-rest-contract.md).
-It defines nine Agent-neutral routes:
+冻结契约见 [docs/api/http-rest-contract.md](docs/api/http-rest-contract.md)。它定义
+九条 Agent 中立路由：
 
 ```text
 POST /v1/memories
@@ -85,23 +100,27 @@ POST /v1/scopes
 GET  /v1/scopes/{scope_id}
 ```
 
-Every route requires caller identity (`X-Caller-Subject-ID` and/or
-`X-Caller-Client-ID`), and every write requires an `Idempotency-Key`. Requests
-are strict single-value JSON with per-route body limits, and every response
-carries `X-Request-ID`. The adapter returns an `http.Handler`; serving it is the
-responsibility of a future server layer. Because no listener exists yet, the
-contract is validated by the adapter's route, decoding, error, and HTTP/2
-compatibility tests rather than by a running endpoint.
+每条路由都要求调用方身份（`X-Caller-Subject-ID` 和/或 `X-Caller-Client-ID`），
+每次写操作都要求 `Idempotency-Key`。请求是严格的单值 JSON，具有按路由的请求体
+上限，每个响应都携带 `X-Request-ID`。适配器返回 `http.Handler`；提供监听服务
+是未来服务层的职责。由于当前没有监听器，契约由适配器的路由、解码、错误与
+HTTP/2 兼容性测试验证，而不是由运行中的端点验证。
 
-## Documentation
+## 文档
 
-- [Documentation index](docs/README.md)
-- [HTTP REST+JSON contract](docs/api/http-rest-contract.md)
-- [Architecture and data model](docs/architecture/overview.md)
-- [Memory Gateway refactor design](docs/architecture/memory-gateway-refactor.md)
-- [Entities, relations, conflicts, and evolution](docs/architecture/evolution.md)
-- [Feedback, ranking, and aggregation](docs/architecture/feedback-and-aggregation.md)
-- [Logical portability](docs/storage/logical-portability.md)
-- [Operations](docs/operations/runbook.md)
-- [Testing](docs/development/testing.md)
-- [Architecture decisions](docs/adr/README.md)
+- [文档索引](docs/README.md)
+- [架构总览](docs/architecture/overview.md)
+- [领域模型与权威数据](docs/architecture/domain-model.md)
+- [处理、审核与演化](docs/architecture/processing.md)
+- [检索与排序](docs/architecture/retrieval.md)
+- [HTTP REST+JSON 契约](docs/api/http-rest-contract.md)
+- [API 使用说明](docs/api/usage.md)
+- [SQLite Schema v1](docs/storage/schema.md)
+- [逻辑可移植性](docs/storage/logical-portability.md)
+- [配置参考](docs/operations/configuration.md)
+- [运维手册](docs/operations/runbook.md)
+- [测试与质量门禁](docs/development/testing.md)
+
+## 许可证
+
+见 [LICENSE](LICENSE)。

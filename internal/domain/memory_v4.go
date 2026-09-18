@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// MemoryKind is the explicit retrieval role of a memory revision (ADR 0035).
+// MemoryKind is the explicit retrieval role of a memory revision.
 type MemoryKind string
 
 const (
@@ -44,7 +44,7 @@ func ValidAggregateKind(kind string) bool {
 	}
 }
 
-// EvidenceRole describes how a cited span supports a revision (ADR 0035).
+// EvidenceRole describes how a cited span supports a revision.
 type EvidenceRole string
 
 const (
@@ -200,9 +200,9 @@ func HasAuthoritativeEvidence(evidence []RevisionEvidence) bool {
 	return false
 }
 
-// OrderRevisionEvidence sorts evidence into the stable order defined by ADR 0035:
-// event timestamp, event sequence, start offset, evidence ID. Missing values sort
-// last and equal keys fall back to the stable evidence ID.
+// OrderRevisionEvidence sorts evidence into the stable order defined by the
+// memory model: event timestamp, event sequence, start offset, evidence ID.
+// Missing values sort last and equal keys fall back to the stable evidence ID.
 func OrderRevisionEvidence(evidence []RevisionEvidence) {
 	sort.SliceStable(evidence, func(i, j int) bool {
 		a, b := evidence[i], evidence[j]

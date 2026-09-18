@@ -1,0 +1,132 @@
+# 处理、审核与演化
+
+dMem 把外部模型输出当作建议，而不是权威。处理在后台异步进行，产出独立可审核的
+候选或提案；只有显式确认才会改变记忆权威。
+
+## 事件摄取
+
+`extraction.ingest` 摄取一条原始事件，并在同一事务中持久化入队其抽取工作。事件
+包含 scope、来源类型与名称、可选来源事件 ID/流键/序号、可选发生时间、内容与
+元数据。内容 kind 为：
+
+- `text`：文本内容。
+- `json`：结构化 JSON 值。
+- `reference`：外部引用，只记录元数据（URI、声明大小与哈希），不复制也不保证
+  所引用的资源。
+
+二进制内容与托管附件存储尚未实现。摄取返回事件 ID、处理状态与作业 ID 列表。
+
+## 处理 Provider
+
+处理与 embedding provider 分别配置、独立限流、默认禁用。provider 类型为
+`openai-compatible`，且必须显式启用、提供 endpoint、model、默认拒绝的出网策略
+与环境变量密钥引用。禁用状态下不解析密钥、不发起 HTTP 请求。
+
+默认处理器是 no-op（`builtin-noop-v1`），因此没有外部 provider 时事件捕获依然
+可用。启用处理 provider 时，处理版本必须不再使用 `builtin-noop-v1`。
+
+处理 provider 同时驱动两类工作：
+
+- `extract_memory`：记忆候选抽取，遵循 `processing-structured-v1` 契约。
+- `extract_graph`：知识图谱抽取，遵循 `graph-typed-v1` 契约，并额外受
+  `[processing].graph_enabled` 门控。
+
+embedding provider 遵循 `embedding-document-v2` / `embedding-query-v1` 文档与
+查询格式。provider 调用在 SQLite 写事务之外执行；provider/model 与处理身份随
+工作一起存储，使结果始终可归因。provider 错误分类
+（disabled/policy/invalid_input/transient/permanent/invalid_output）映射为领域
+结果，用于决定重试或终止。
+
+## 候选与整合
+
+抽取产生候选，候选在确认或拒绝之前是独立的审核对象。整合
+（consolidation）把新候选与现有修订比较，产生以下动作之一：
+
+| 动作 | 含义 |
+| --- | --- |
+| `attach_evidence` | 把候选作为证据附加到现有修订。 |
+| `refine` | 提出对现有记忆的细化。 |
+| `supersede` | 提出用候选取代现有修订。 |
+| `contest` | 提出争议并打开冲突路径。 |
+| `create` | 创建新记忆。 |
+| `reject` | 拒绝候选。 |
+
+分类可以是确定性的（`consolidation-v1`）或由 provider 给出。确定性分类使用
+精确哈希与余弦阈值（默认同一来源事件 0.90、同一主体与 kind 0.94），候选上限为
+32。余弦阈值本身永不取代、争议或删除任何内容；它们只产生建议，破坏性变更仍需
+审核。
+
+## 审核与自动确认
+
+实体、别名、提及、记忆关系、实体事实、演化提案与聚合提案各自拥有独立的提案
+资源与审核记录。提案字段不可变，审核状态是终态，记录不可删除。
+
+满足封闭自动确认策略的图谱事实可以自动确认，并记录 `auto-review-v1` 规则版本；
+其余进入待审核队列。谓词的自动确认策略取值为 `never`、`exact_match` 或
+`threshold`，并受谓词自身的最低置信度约束。
+
+没有任何置信度阈值会自动确认演化提案。模型置信度不能自主修订或删除记忆。
+
+## 出网策略与密钥
+
+provider 出网策略是版本化的默认拒绝决策集合。作业分配目标可以是：
+
+- 精确空间（`selector = "space"`）；
+- 稳定空间属性（`selector = "space_type"`）；
+- 稳定外部标识（`selector = "external_id"`）。
+
+匹配规则：当前空间覆盖优先，否则最近祖先优先；同等具体度下显式拒绝优先；
+未匹配的空间默认拒绝；兄弟空间永不继承。每个空间在 provider 工作被评估之前都会
+获得当前 generation 的决策，因此启动后新建的空间无需在文件中列出 UUID。
+
+策略同时限制来源/内容类型与敏感度。被拒绝的作业移动到 `blocked_policy`，且不
+解析密钥、不发起网络调用。密钥只以类型化环境变量引用的形式持久化，并且只在
+策略批准某次请求之后解析；密钥值永不进入配置、数据库、状态或日志。provider
+出网输入会被裁剪到配置的 `max_egress_input_chars` 上限。
+
+## 作业系统
+
+SQLite 存储持久作业。worker 处理的工作类型包括：
+
+```text
+extract_memory              extract_graph
+rebuild_fts                 rebuild_semantic
+rebuild_entity_index        rebuild_relation_index
+rebuild_graph_index         embed_memory
+aggregate_feedback          rebuild_feedback_aggregates
+rebuild_aggregate
+```
+
+作业使用租约、尝试次数、心跳、有界重试与 generation 围栏：
+
+- 认领会选择到期的 `pending`/`retrying` 作业并递增尝试次数与租约 generation，
+  设置租约到期时间。
+- 心跳延长租约并报告取消请求；租约丢失会放弃该次执行。
+- 失败时，可重试且未超最大尝试次数则回到 `retrying` 并按指数退避安排
+  （从初始退避翻倍，封顶于最大退避），否则进入 `failed`。
+- 过期租约在启动时恢复为 `retrying`/`cancelled`/`failed`。
+- 只有当前租约持有者与 generation 可以提交结果。
+
+队列应用软上限与硬上限：软上限内的写入可以接受并延迟工作；硬上限或磁盘硬上限
+下的写入会被原子拒绝，而不是存储缺少必需作业的权威数据。磁盘压力达到软阈值时
+worker 暂停认领，达到硬阈值时写入失败而只读查询仍可继续。
+
+## 配置重载与调和
+
+`SIGHUP` 请求一次串行化的配置重载流水线，重复信号会被合并。重载读取、严格解码
+并原子激活一个完整的文件修订：
+
+- 结果可能是 `activated`、`no_change`、`rejected` 或 `failed`。
+- 有效变更发布不可变的有效快照，并递增激活、配置与策略 generation。
+- 无效或无变化的变更保持先前快照不变。
+- 重启绑定字段（`instance.data_dir`、`instance.database_filename`、
+  `jobs.worker_count`）的变化会使整个候选文件被拒绝，返回
+  `config_restart_required`。
+- 若激活后的应用失败，运行时会回退到先前快照并重新应用。
+
+策略纠正会创建持久调和运行，在崩溃安全游标下分批重新评估被阻塞的工作。调和
+只改变作业、资格投影与索引元数据，永不修改权威记录。策略变化后兼容的 embedding
+会被复用；身份不兼容时触发重建。
+
+维护循环每秒执行一次，负责恢复过期租约、使过期作业到期、提升等待中的作业并
+推进调和运行；worker 以 100 毫秒间隔轮询认领，在磁盘压力下跳过。
