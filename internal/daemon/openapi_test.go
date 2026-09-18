@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
@@ -88,7 +87,7 @@ func TestOpenAPIContract(t *testing.T) {
 	c.close(c.do(http.MethodGet, "/v1/spaces/"+space.SpaceID, "", nil))
 	agentMemoryBody := map[string]any{"space_id": space.SpaceID, "content": "agent contract memory", "kind": "fact"}
 	response = c.do(http.MethodPost, "/v1/remember", "agent-memory", agentMemoryBody)
-	var agentMemory application.RememberResult
+	var agentMemory agentRememberResponse
 	decodeResponse(t, response, &agentMemory)
 	c.replay(http.MethodPost, "/v1/remember", "agent-memory", agentMemoryBody)
 	c.close(c.expect(http.StatusOK, http.MethodPost, "/v1/recall", "", map[string]any{"query": "agent contract", "space_ids": []string{space.SpaceID}, "debug": map[string]any{"capabilities": []string{"keyword"}}}))

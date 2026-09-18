@@ -12,6 +12,8 @@ type Store interface {
 	// CreateScope atomically persists the scope and its initial effective
 	// policy. The bool reports an idempotent replay.
 	CreateScope(context.Context, gateway.WriteIdentity, CreateParams) (domain.Space, bool, error)
+	// ResolveScope returns the scope matching a stable external identity.
+	ResolveScope(context.Context, ResolveParams) (domain.Space, error)
 	// GetScope returns one scope by identifier.
 	GetScope(context.Context, string) (domain.Space, error)
 	// ListScopes returns one page of scopes.
@@ -24,6 +26,14 @@ type CreateParams struct {
 	SpaceType     string
 	ExternalID    string
 	DisplayName   string
+}
+
+// ResolveParams is the transport-free persistence input for scope resolution by
+// stable external identity.
+type ResolveParams struct {
+	ParentSpaceID *string
+	SpaceType     string
+	ExternalID    string
 }
 
 // ListParams is the transport-free persistence input for scope listing.

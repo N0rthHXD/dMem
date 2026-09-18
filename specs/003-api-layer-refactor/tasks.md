@@ -214,15 +214,15 @@ and the repository-shaped application path.
 
 ### Lower-Risk Vertical Slices
 
-- [ ] T031 [MEM] Implement Memory remember/get/forget service semantics,
+- [X] T031 [MEM] Implement Memory remember/get/forget service semantics,
   validation, defaults, idempotency, and stable error mapping
-- [ ] T032 [SCOPE] Implement Scope create/resolve/get/list semantics and stable
+- [X] T032 [SCOPE] Implement Scope create/resolve/get/list semantics and stable
   external identity behavior
-- [ ] T033 [FEEDBACK] Implement feedback combination validation, decision-context
+- [X] T033 [FEEDBACK] Implement feedback combination validation, decision-context
   handling, persistence, aggregate scheduling, and error mapping
-- [ ] T034 [TEST] Add focused unit tests for T031-T033 using only narrow fake
+- [X] T034 [TEST] Add focused unit tests for T031-T033 using only narrow fake
   ports and verify cancellation and idempotency propagation
-- [ ] T035 [CLEAN] Remove replaced logic from `internal/application/memory.go`
+- [X] T035 [CLEAN] Remove replaced logic from `internal/application/memory.go`
   while retaining only temporary code still required by an incomplete slice
 
 ### Retrieval

@@ -21,6 +21,8 @@ import (
 	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/identity"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/jobs"
@@ -195,8 +197,10 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	d.listener = limitListener(d.listener, cfg.MaxConnections)
 	d.handler = api.NewHandler(ftsState, api.HandlerDependencies{
 		Repository: repository, AggregateService: aggregateService, ProcessorHealth: d.jobs,
-		MemoryService:  application.NewService(repository),
-		MaxRequestSize: cfg.MaxRequestSize, ID: identity.UUID, Configuration: d,
+		MemoryService:   application.NewService(repository),
+		MemoryGateway:   memory.NewService(storage.NewMemoryCapability(repository)),
+		FeedbackGateway: feedback.NewService(storage.NewFeedbackCapability(repository)),
+		MaxRequestSize:  cfg.MaxRequestSize, ID: identity.UUID, Configuration: d,
 	})
 	d.server = &http.Server{
 		Handler:           d.handler.Routes(),

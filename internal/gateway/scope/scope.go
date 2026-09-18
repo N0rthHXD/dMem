@@ -16,6 +16,7 @@ const OperationCreate gateway.OperationName = "scope.create"
 // Service is the inbound, protocol-facing Scope module surface.
 type Service interface {
 	Create(context.Context, gateway.CallContext, CreateCommand) (CreateResult, error)
+	Resolve(context.Context, gateway.CallContext, ResolveQuery) (domain.Space, error)
 	Get(context.Context, gateway.CallContext, GetQuery) (domain.Space, error)
 	List(context.Context, gateway.CallContext, ListQuery) (Page, error)
 }
@@ -32,6 +33,14 @@ type CreateCommand struct {
 type CreateResult struct {
 	gateway.WriteResult
 	Scope domain.Space
+}
+
+// ResolveQuery looks up one scope by its stable external identity: the parent,
+// the scope type, and the caller-supplied external identifier.
+type ResolveQuery struct {
+	ParentSpaceID *string
+	SpaceType     string
+	ExternalID    string
 }
 
 // GetQuery reads one scope by identifier.

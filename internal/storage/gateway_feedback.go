@@ -23,7 +23,7 @@ func NewFeedbackCapability(repo *Repository) *FeedbackCapability {
 // AppendFeedback atomically appends the feedback event, schedules aggregate
 // work, and records audit history and the idempotency result.
 func (c *FeedbackCapability) AppendFeedback(ctx context.Context, identity gateway.WriteIdentity, params feedback.AppendParams) (domain.FeedbackAppendResponse, bool, error) {
-	return c.repo.AppendCurrentFeedback(ctx, gatewayWriteIdentity(identity), AppendFeedbackParams{
+	response, replay, err := c.repo.AppendCurrentFeedback(ctx, gatewayWriteIdentity(identity), AppendFeedbackParams{
 		SpaceID:         params.SpaceID,
 		MemoryID:        params.MemoryID,
 		Purpose:         params.Purpose,
@@ -35,9 +35,17 @@ func (c *FeedbackCapability) AppendFeedback(ctx context.Context, identity gatewa
 		SourceEventID:   params.SourceEventID,
 		ProposedContent: params.ProposedContent,
 	})
+	if err != nil {
+		return domain.FeedbackAppendResponse{}, replay, gatewayError(err)
+	}
+	return response, replay, nil
 }
 
 // FeedbackAggregateHealth returns the aggregate projection health.
 func (c *FeedbackCapability) FeedbackAggregateHealth(ctx context.Context) (domain.FeedbackAggregateHealth, error) {
-	return c.repo.FeedbackAggregateHealth(ctx)
+	health, err := c.repo.FeedbackAggregateHealth(ctx)
+	if err != nil {
+		return domain.FeedbackAggregateHealth{}, gatewayError(err)
+	}
+	return health, nil
 }

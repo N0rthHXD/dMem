@@ -10,6 +10,8 @@ import (
 	"github.com/N0rthHXD/dMem/internal/aggregate"
 	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/config"
+	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -59,6 +61,8 @@ type Handler struct {
 	ftsState        string
 	repository      *storage.Repository
 	memoryService   application.MemoryService
+	memoryGateway   memory.Service
+	feedbackGateway feedback.Service
 	aggregates      *aggregate.Service
 	processorHealth interface{ ProcessorHealth() (string, string) }
 	maxRequestSize  int64
@@ -81,6 +85,8 @@ type ConfigurationController interface {
 type HandlerDependencies struct {
 	Repository       *storage.Repository
 	MemoryService    application.MemoryService
+	MemoryGateway    memory.Service
+	FeedbackGateway  feedback.Service
 	AggregateService *aggregate.Service
 	ProcessorHealth  interface{ ProcessorHealth() (string, string) }
 	MaxRequestSize   int64
@@ -93,6 +99,8 @@ func NewHandler(ftsState string, dependencies HandlerDependencies) *Handler {
 		ftsState:        ftsState,
 		repository:      dependencies.Repository,
 		memoryService:   dependencies.MemoryService,
+		memoryGateway:   dependencies.MemoryGateway,
+		feedbackGateway: dependencies.FeedbackGateway,
 		aggregates:      dependencies.AggregateService,
 		processorHealth: dependencies.ProcessorHealth,
 		maxRequestSize:  dependencies.MaxRequestSize,

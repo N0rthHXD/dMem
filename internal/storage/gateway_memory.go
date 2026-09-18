@@ -39,18 +39,26 @@ func (c *MemoryCapability) Remember(ctx context.Context, identity gateway.WriteI
 		Reason:          params.Reason,
 	})
 	if err != nil {
-		return memory.RememberRecord{}, replay, err
+		return memory.RememberRecord{}, replay, gatewayError(err)
 	}
 	return memory.RememberRecord{Memory: result.Memory, EventID: result.EventID}, replay, nil
 }
 
 // GetMemory returns the current memory projection.
 func (c *MemoryCapability) GetMemory(ctx context.Context, memoryID string) (domain.Memory, error) {
-	return c.repo.GetMemory(ctx, memoryID)
+	memory, err := c.repo.GetMemory(ctx, memoryID)
+	if err != nil {
+		return domain.Memory{}, gatewayError(err)
+	}
+	return memory, nil
 }
 
 // ForgetMemory atomically applies the deletion state, audit record, and
 // idempotency result.
 func (c *MemoryCapability) ForgetMemory(ctx context.Context, identity gateway.WriteIdentity, memoryID, reason string) (domain.Memory, bool, error) {
-	return c.repo.ForgetMemory(ctx, gatewayWriteIdentity(identity), memoryID, reason)
+	memory, replay, err := c.repo.ForgetMemory(ctx, gatewayWriteIdentity(identity), memoryID, reason)
+	if err != nil {
+		return domain.Memory{}, replay, gatewayError(err)
+	}
+	return memory, replay, nil
 }

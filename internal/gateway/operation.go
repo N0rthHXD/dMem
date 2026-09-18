@@ -1,6 +1,9 @@
 package gateway
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // OperationName is the stable, transport-independent name of a gateway
 // operation. It never contains an HTTP method or a route path. Each module
@@ -53,4 +56,18 @@ func NewWriteIdentity(call CallContext, operation OperationName, command any) (W
 		CommandHash:    hash,
 		RequestID:      call.RequestID,
 	}, nil
+}
+
+// WriteIdentityError classifies a NewWriteIdentity failure as a stable gateway
+// error so write services never leak a bare sentinel to a protocol adapter.
+func WriteIdentityError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, ErrMissingCaller), errors.Is(err, ErrMissingIdempotency):
+		return WrapError(ErrorInvalidInput, err.Error(), err)
+	default:
+		return WrapError(ErrorInvalidInput, "command could not be canonically encoded", err)
+	}
 }

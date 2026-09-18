@@ -115,6 +115,52 @@ func TestScopeCapabilityCreateAndListCursor(t *testing.T) {
 	}
 }
 
+func TestScopeCapabilityResolveByExternalIdentity(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	capability := NewScopeCapability(repository)
+	call := gatewayCall("gateway-caller", "scope-resolve", "request-scope-resolve")
+	command := scope.CreateCommand{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: "resolvable", DisplayName: "Resolvable"}
+	identity := gatewayIdentity(t, call, scope.OperationCreate, command)
+	created, _, err := capability.CreateScope(ctx, identity, scope.CreateParams{ParentSpaceID: command.ParentSpaceID, SpaceType: command.SpaceType, ExternalID: command.ExternalID, DisplayName: command.DisplayName})
+	if err != nil {
+		t.Fatalf("CreateScope() error = %v", err)
+	}
+
+	resolved, err := capability.ResolveScope(ctx, scope.ResolveParams{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: "resolvable"})
+	if err != nil || resolved.SpaceID != created.SpaceID {
+		t.Fatalf("ResolveScope() = %+v error=%v", resolved, err)
+	}
+	if _, err := capability.ResolveScope(ctx, scope.ResolveParams{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: "missing"}); !gateway.IsCode(err, gateway.ErrorNotFound) {
+		t.Fatalf("missing ResolveScope() error = %v, want not_found", err)
+	}
+}
+
+func TestMemoryCapabilityClassifiesStableErrors(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	capability := NewMemoryCapability(repository)
+	call := gatewayCall("gateway-caller", "remember-conflict", "request-remember-conflict")
+	command := memgw.RememberCommand{SpaceID: "space-1", Content: "first", Kind: "fact", Sensitivity: "normal", SourceName: "test", OccurredAt: "2026-08-21T12:00:00Z", Reason: "gateway"}
+	params := memgw.RememberParams{SpaceID: "space-1", Content: "first", Kind: "fact", Sensitivity: "normal", SourceName: "test", OccurredAt: "2026-08-21T12:00:00Z", Reason: "gateway"}
+	identity := gatewayIdentity(t, call, memgw.OperationRemember, command)
+	if _, _, err := capability.Remember(ctx, identity, params); err != nil {
+		t.Fatalf("Remember() error = %v", err)
+	}
+	conflict := command
+	conflict.Content = "second"
+	conflictParams := params
+	conflictParams.Content = "second"
+	conflictIdentity := gatewayIdentity(t, call, memgw.OperationRemember, conflict)
+	_, _, err := capability.Remember(ctx, conflictIdentity, conflictParams)
+	if !gateway.IsCode(err, gateway.ErrorIdempotencyConflict) {
+		t.Fatalf("error = %v, want idempotency_conflict", err)
+	}
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("error = %v, want wrapped storage sentinel", err)
+	}
+}
+
 func TestFeedbackCapabilityAppendSchedulesAggregate(t *testing.T) {
 	ctx := context.Background()
 	repository, _ := newMemoryTestRepository(t)

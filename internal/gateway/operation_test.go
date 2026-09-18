@@ -33,6 +33,22 @@ func TestNewWriteIdentityRejectsMissingCallerAndKey(t *testing.T) {
 	}
 }
 
+func TestWriteIdentityErrorClassifiesFailures(t *testing.T) {
+	cases := []error{ErrMissingCaller, ErrMissingIdempotency, errors.New("marshal failure")}
+	for _, err := range cases {
+		classified := WriteIdentityError(err)
+		if !IsCode(classified, ErrorInvalidInput) {
+			t.Fatalf("WriteIdentityError(%v) = %v, want invalid_input", err, classified)
+		}
+		if !errors.Is(classified, err) {
+			t.Fatalf("WriteIdentityError(%v) lost the cause", err)
+		}
+	}
+	if err := WriteIdentityError(nil); err != nil {
+		t.Fatalf("WriteIdentityError(nil) = %v", err)
+	}
+}
+
 func TestWriteIdentityHashExcludesCallContext(t *testing.T) {
 	command := hashCommand{Content: "text"}
 	first, err := NewWriteIdentity(CallContext{Caller: CallerIdentity{SubjectID: "caller"}, Idempotency: &Idempotency{Key: "key-1"}}, "op", command)

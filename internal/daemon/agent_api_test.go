@@ -5,10 +5,18 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/jobs"
 )
+
+type agentRememberResponse struct {
+	Memory  domain.Memory `json:"memory"`
+	EventID string        `json:"event_id"`
+}
+
+type agentForgetResponse struct {
+	Memory domain.Memory `json:"memory"`
+}
 
 func TestAgentMemoryAPI(t *testing.T) {
 	cfg := testConfig(t)
@@ -29,7 +37,7 @@ func TestAgentMemoryAPI(t *testing.T) {
 	if response.StatusCode != http.StatusCreated || response.Header.Get("Idempotent-Replay") != "false" {
 		t.Fatalf("remember status/header = %d/%q", response.StatusCode, response.Header.Get("Idempotent-Replay"))
 	}
-	var remembered application.RememberResult
+	var remembered agentRememberResponse
 	decodeResponse(t, response, &remembered)
 	if remembered.Memory.CurrentRevision.DisplayContent != rememberBody["content"] || remembered.EventID == "" || len(remembered.Memory.CurrentRevision.Evidence) != 1 || remembered.Memory.CurrentRevision.Evidence[0].EventID != remembered.EventID {
 		t.Fatalf("remember result = %+v", remembered)
@@ -38,7 +46,7 @@ func TestAgentMemoryAPI(t *testing.T) {
 	if response.StatusCode != http.StatusCreated || response.Header.Get("Idempotent-Replay") != "true" {
 		t.Fatalf("remember replay status/header = %d/%q", response.StatusCode, response.Header.Get("Idempotent-Replay"))
 	}
-	var replay application.RememberResult
+	var replay agentRememberResponse
 	decodeResponse(t, response, &replay)
 	if replay.Memory.MemoryID != remembered.Memory.MemoryID || replay.EventID != remembered.EventID {
 		t.Fatalf("remember replay = %+v, want %+v", replay, remembered)
@@ -73,7 +81,7 @@ func TestAgentMemoryAPI(t *testing.T) {
 	if response.StatusCode != http.StatusOK || response.Header.Get("Idempotent-Replay") != "false" {
 		t.Fatalf("forget status/header = %d/%q", response.StatusCode, response.Header.Get("Idempotent-Replay"))
 	}
-	var forgotten application.ForgetResult
+	var forgotten agentForgetResponse
 	decodeResponse(t, response, &forgotten)
 	if forgotten.Memory.CurrentState != "deleted" {
 		t.Fatalf("forgotten memory = %+v", forgotten.Memory)

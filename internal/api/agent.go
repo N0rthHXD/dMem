@@ -9,8 +9,20 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway"
+	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
+
+type rememberResponse struct {
+	Memory  domain.Memory `json:"memory"`
+	EventID string        `json:"event_id"`
+}
+
+type forgetResponse struct {
+	Memory domain.Memory `json:"memory"`
+}
 
 type rememberRequest struct {
 	SpaceID         string         `json:"space_id"`
@@ -80,42 +92,23 @@ func (h *Handler) remember(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, requestID, &request) {
 		return
 	}
-	originalRequest := request
 	if !validUUID(request.SpaceID) {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "space_id must be a UUID", requestID, "", false, nil)
 		return
 	}
-	if request.Kind == "" {
-		request.Kind = "fact"
-	}
-	if request.Sensitivity == "" {
-		request.Sensitivity = "normal"
-	}
-	if request.SourceName == "" {
-		request.SourceName = caller
-	}
-	if request.OccurredAt == "" {
-		request.OccurredAt = formatAPITime(time.Now())
-	}
-	if request.Metadata == nil {
-		request.Metadata = map[string]any{}
-	}
-	if request.Reason == "" {
-		request.Reason = "agent_remember"
-	}
-	command := application.RememberCommand{
+	command := memory.RememberCommand{
 		SpaceID: request.SpaceID, Content: request.Content, Kind: request.Kind, Sensitivity: request.Sensitivity,
 		ValidFrom: request.ValidFrom, ValidUntil: request.ValidUntil, SourceName: request.SourceName,
 		SourceEventID: request.SourceEventID, SourceStreamKey: request.SourceStreamKey, Sequence: request.Sequence,
 		OccurredAt: request.OccurredAt, Metadata: request.Metadata, Reason: request.Reason,
 	}
-	result, err := h.memoryService.Remember(r.Context(), appIdentity(caller, key, requestID, r.Method, "/v1/remember", originalRequest), command)
+	result, err := h.memoryGateway.Remember(r.Context(), gatewayCall(caller, key, requestID), command)
 	if err != nil {
-		h.serviceError(w, err, requestID)
+		h.gatewayError(w, err, requestID)
 		return
 	}
 	w.Header().Set("Idempotent-Replay", strconv.FormatBool(result.Replay))
-	h.writeJSON(w, http.StatusCreated, result)
+	h.writeJSON(w, http.StatusCreated, rememberResponse{Memory: result.Memory, EventID: result.EventID})
 }
 
 func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
@@ -166,17 +159,14 @@ func (h *Handler) memoryFeedback(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "space_id must be a UUID", requestID, "", false, nil)
 		return
 	}
-	command := application.FeedbackCommand{
+	command := feedback.AppendCommand{
 		SpaceID: request.SpaceID, MemoryID: memoryID, Purpose: request.Purpose, FeedbackType: request.Type, ReasonCode: request.ReasonCode,
 		Note: request.Note, Decision: request.Decision, CreateProposal: request.CreateProposal,
 		SourceEventID: request.SourceEventID, ProposedContent: request.ProposedContent,
 	}
-	result, err := h.memoryService.Feedback(r.Context(), appIdentity(caller, key, requestID, r.Method, "/v1/memories/{memory_id}/feedback", struct {
-		MemoryID string                `json:"memory_id"`
-		Request  memoryFeedbackRequest `json:"request"`
-	}{memoryID, request}), command)
+	result, err := h.feedbackGateway.Append(r.Context(), gatewayCall(caller, key, requestID), command)
 	if err != nil {
-		h.serviceError(w, err, requestID)
+		h.gatewayError(w, err, requestID)
 		return
 	}
 	w.Header().Set("Idempotent-Replay", strconv.FormatBool(result.Replay))
@@ -198,17 +188,14 @@ func (h *Handler) forget(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, requestID, &request) {
 		return
 	}
-	command := application.ForgetCommand{MemoryID: memoryID, Reason: request.Reason}
-	result, err := h.memoryService.Forget(r.Context(), appIdentity(caller, key, requestID, r.Method, "/v1/memories/{memory_id}/forget", struct {
-		MemoryID string `json:"memory_id"`
-		Reason   string `json:"reason"`
-	}{memoryID, request.Reason}), command)
+	command := memory.ForgetCommand{MemoryID: memoryID, Reason: request.Reason}
+	result, err := h.memoryGateway.Forget(r.Context(), gatewayCall(caller, key, requestID), command)
 	if err != nil {
-		h.serviceError(w, err, requestID)
+		h.gatewayError(w, err, requestID)
 		return
 	}
 	w.Header().Set("Idempotent-Replay", strconv.FormatBool(result.Replay))
-	h.writeJSON(w, http.StatusOK, result)
+	h.writeJSON(w, http.StatusOK, forgetResponse{Memory: result.Memory})
 }
 
 func (h *Handler) writeHeaders(w http.ResponseWriter, r *http.Request, requestID string) (string, string, bool) {
@@ -232,8 +219,33 @@ func (h *Handler) serviceError(w http.ResponseWriter, err error, requestID strin
 	h.repositoryError(w, err, requestID)
 }
 
-func appIdentity(caller, key, requestID, method, route string, request any) application.RequestIdentity {
-	return application.RequestIdentity{CallerID: caller, IdempotencyKey: key, RequestID: requestID, Method: method, Route: route, RequestHash: application.HashRequest(request)}
+func gatewayCall(caller, key, requestID string) gateway.CallContext {
+	call := gateway.CallContext{RequestID: requestID, Caller: gateway.CallerIdentity{SubjectID: caller}}
+	if key != "" {
+		call.Idempotency = &gateway.Idempotency{Key: key}
+	}
+	return call
+}
+
+func (h *Handler) gatewayError(w http.ResponseWriter, err error, requestID string) {
+	switch gateway.CodeOf(err) {
+	case gateway.ErrorInvalidInput:
+		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error(), requestID, "", false, nil)
+	case gateway.ErrorNotFound:
+		h.writeError(w, http.StatusNotFound, "not_found", "object not found", requestID, "", false, nil)
+	case gateway.ErrorConflict:
+		h.writeError(w, http.StatusConflict, "conflict", "object conflicts with existing state", requestID, "", false, nil)
+	case gateway.ErrorIdempotencyConflict:
+		h.writeError(w, http.StatusConflict, "idempotency_conflict", "idempotency key was used for a different request", requestID, "", false, nil)
+	case gateway.ErrorPermissionDenied:
+		h.writeError(w, http.StatusForbidden, "permission_denied", "operation is not permitted", requestID, "", false, nil)
+	case gateway.ErrorResourceExhausted:
+		h.writeError(w, http.StatusInsufficientStorage, "resource_exhausted", "disk hard limit reached", requestID, "", false, map[string]any{"resource": "disk", "pressure": "hard"})
+	case gateway.ErrorCapabilityUnavailable:
+		h.writeError(w, http.StatusServiceUnavailable, "index_degraded", "requested search index is unavailable", requestID, "", true, map[string]any{"index_state": "degraded"})
+	default:
+		h.repositoryError(w, err, requestID)
+	}
 }
 
 // RecallBudgets are the daemon defaults applied when a recall request omits a

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
 
@@ -73,7 +72,7 @@ func TestEventStreamSequenceAndSourceStreamAPI(t *testing.T) {
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("remember status = %d", response.StatusCode)
 	}
-	var remembered application.RememberResult
+	var remembered agentRememberResponse
 	decodeResponse(t, response, &remembered)
 	response = requestJSON(t, client, http.MethodGet, "/v1/events/"+remembered.EventID, "", nil)
 	var event domain.RawEvent

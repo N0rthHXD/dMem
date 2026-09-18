@@ -19,6 +19,15 @@ const (
 	OperationForget   gateway.OperationName = "memory.forget"
 )
 
+// Protocol-independent defaults applied by the Memory service when a caller
+// omits an optional field. They are semantic defaults, not wire defaults, so a
+// protocol adapter must not re-apply them.
+const (
+	DefaultKind        = "fact"
+	DefaultSensitivity = "normal"
+	DefaultReason      = "agent_remember"
+)
+
 // Service is the inbound, protocol-facing Memory module surface.
 type Service interface {
 	Remember(context.Context, gateway.CallContext, RememberCommand) (RememberResult, error)
