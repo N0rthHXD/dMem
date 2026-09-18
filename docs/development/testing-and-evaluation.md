@@ -57,13 +57,6 @@ make offline-default
   `DMEM_PERFORMANCE=1`, which the `performance` target sets.
 - `offline-default` verifies that disabled providers do not read secrets or make
   HTTP requests.
-- `python-test` runs the evaluation suites under `evaluation/` (calibration,
-  LoCoMo, and LongMemEval) with `pytest`. Install the Python dependencies once
-  with `pip install -r evaluation/requirements-dev.txt`. Shared evaluation code
-  lives in `evaluation/common/dmem_eval/` and its tests in
-  `evaluation/common/tests/`; the root `pyproject.toml` puts the shared and
-  benchmark packages on `pytest`'s import path and installs them for
-  `python -m dmem_locomo` / `python -m dmem_longmemeval`.
 
 ### Configuration And Reconciliation
 
@@ -111,6 +104,6 @@ stale-revision return rate, conflict-reference completeness, latency, and
 resource use.
 
 `make check` runs the full required suite except the separately invoked
-`performance`, `python-test`, and `govulncheck` targets. Performance gates are
+`performance` and `govulncheck` targets. Performance gates are
 also skipped by `test` and `test-race`; a controlled runner or CI job opts in
 with `DMEM_PERFORMANCE=1`.

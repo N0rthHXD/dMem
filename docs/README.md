@@ -28,10 +28,6 @@ a new data directory instead of reusing an incompatible database.
   rebuilds, and failure handling.
 - [Testing](development/testing-and-evaluation.md): current build profile and
   executable checks.
-- [LoCoMo](../evaluation/locomo/README.md): shared-corpus retrieval benchmark,
-  fixed ablation matrix, and reproducible end-to-end reports.
-- [LongMemEval](../evaluation/longmemeval/README.md): external retrieval benchmark
-  workflow and metric semantics.
 
 ## Executable Contracts
 
