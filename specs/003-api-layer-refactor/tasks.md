@@ -281,27 +281,27 @@ production listener.
 
 **Dependencies**: Phase 3 service needed by each route before that route starts.
 
-- [ ] T051 [HTTP] Freeze the initial route, request, response, error, pagination,
+- [X] T051 [HTTP] Freeze the initial route, request, response, error, pagination,
   request-ID, caller, and idempotency contract in an HTTP-specific contract
   document
-- [ ] T052 [HTTP] Create `internal/protocol/httpapi` with dependency injection
+- [X] T052 [HTTP] Create `internal/protocol/httpapi` with dependency injection
   only for gateway module interfaces
-- [ ] T053 [HTTP] Implement declarative route metadata for operation name,
+- [X] T053 [HTTP] Implement declarative route metadata for operation name,
   caller requirement, write/idempotency policy, body limit, and handler
-- [ ] T054 [HTTP] Implement strict single-value JSON decoding, bounded bodies,
+- [X] T054 [HTTP] Implement strict single-value JSON decoding, bounded bodies,
   common JSON responses, request IDs, panic recovery, and gateway error mapping
-- [ ] T055 [P] [HTTP] Implement Memory routes and DTO conversion
-- [ ] T056 [P] [HTTP] Implement Recall route and DTO conversion
-- [ ] T057 [P] [HTTP] Implement Feedback route and DTO conversion
-- [ ] T058 [P] [HTTP] Implement Event ingress/detail routes and DTO conversion
-- [ ] T059 [P] [HTTP] Implement Scope create/detail routes and DTO conversion
-- [ ] T060 [HTTP] Add route-conformance tests proving every write requires an
+- [X] T055 [P] [HTTP] Implement Memory routes and DTO conversion
+- [X] T056 [P] [HTTP] Implement Recall route and DTO conversion
+- [X] T057 [P] [HTTP] Implement Feedback route and DTO conversion
+- [X] T058 [P] [HTTP] Implement Event ingress/detail routes and DTO conversion
+- [X] T059 [P] [HTTP] Implement Scope create/detail routes and DTO conversion
+- [X] T060 [HTTP] Add route-conformance tests proving every write requires an
   idempotency key and every non-public route requires caller identity
-- [ ] T061 [HTTP] Add fake-gateway contract tests for all routes, statuses,
+- [X] T061 [HTTP] Add fake-gateway contract tests for all routes, statuses,
   strict decoding, cancellation, panic recovery, and safe errors
-- [ ] T062 [HTTP] Add HTTP/2 compatibility and multiplexed concurrency tests
+- [X] T062 [HTTP] Add HTTP/2 compatibility and multiplexed concurrency tests
   using test-only transport; do not add a production listener or TLS setup
-- [ ] T063 [TEST] Add static dependency checks proving protocol packages do not
+- [X] T063 [TEST] Add static dependency checks proving protocol packages do not
   import storage, jobs, or concrete gateway services
 
 **Checkpoint**:
