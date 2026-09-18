@@ -227,15 +227,15 @@ and the repository-shaped application path.
 
 ### Retrieval
 
-- [ ] T036 [SEARCH] Move query parsing defaults that are protocol-independent
+- [X] T036 [SEARCH] Move query parsing defaults that are protocol-independent
   into the Retrieval module
-- [ ] T037 [SEARCH] Move query planning and capability degradation orchestration
+- [X] T037 [SEARCH] Move query planning and capability degradation orchestration
   out of `storage.Repository`
-- [ ] T038 [SEARCH] Move fusion, ranking, temporal interpretation, and context
+- [X] T038 [SEARCH] Move fusion, ranking, temporal interpretation, and context
   selection orchestration into Retrieval while reusing pure algorithms
-- [ ] T039 [SEARCH] Preserve cursor generation binding, explain policy, bounded
+- [X] T039 [SEARCH] Preserve cursor generation binding, explain policy, bounded
   telemetry, and pre-top-k scope/policy/lifecycle filtering
-- [ ] T040 [TEST] Migrate search, ranking, context, graph-quality, semantic, and
+- [X] T040 [TEST] Migrate search, ranking, context, graph-quality, semantic, and
   cursor tests to the Retrieval service and SQLite capability adapter boundaries
 
 ### Extraction And Policy

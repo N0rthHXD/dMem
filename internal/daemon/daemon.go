@@ -18,11 +18,11 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/aggregate"
 	"github.com/N0rthHXD/dMem/internal/api"
-	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
 	"github.com/N0rthHXD/dMem/internal/gateway/memory"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/identity"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/jobs"
@@ -37,6 +37,7 @@ type Daemon struct {
 	repository       *storage.Repository
 	aggregateService *aggregate.Service
 	manager          *config.Manager
+	retrievalService *gwretrieval.ServiceImpl
 	listener         net.Listener
 	server           *http.Server
 	handler          *api.Handler
@@ -195,12 +196,14 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		return nil, fmt.Errorf("inspect Unix socket: %w", err)
 	}
 	d.listener = limitListener(d.listener, cfg.MaxConnections)
+	recall := storage.NewRecallCapability(repository)
+	d.retrievalService = gwretrieval.NewService(gwretrieval.Ports{ReferenceTime: recall, Capabilities: recall, Candidates: recall, Telemetry: recall}, recallDefaults(cfg))
 	d.handler = api.NewHandler(ftsState, api.HandlerDependencies{
 		Repository: repository, AggregateService: aggregateService, ProcessorHealth: d.jobs,
-		MemoryService:   application.NewService(repository),
-		MemoryGateway:   memory.NewService(storage.NewMemoryCapability(repository)),
-		FeedbackGateway: feedback.NewService(storage.NewFeedbackCapability(repository)),
-		MaxRequestSize:  cfg.MaxRequestSize, ID: identity.UUID, Configuration: d,
+		MemoryGateway:    memory.NewService(storage.NewMemoryCapability(repository)),
+		FeedbackGateway:  feedback.NewService(storage.NewFeedbackCapability(repository)),
+		RetrievalGateway: d.retrievalService,
+		MaxRequestSize:   cfg.MaxRequestSize, ID: identity.UUID, Configuration: d,
 	})
 	d.server = &http.Server{
 		Handler:           d.handler.Routes(),
@@ -483,6 +486,9 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 	processingPolicyGeneration := d.policyGeneration(ctx, previous, snapshot, "processing")
 	embeddingPolicyGeneration := d.policyGeneration(ctx, previous, snapshot, "embedding")
 	weights, calibration, graphPolicy := retrievalContracts(snapshot.Config)
+	if d.retrievalService != nil {
+		d.retrievalService.SetDefaults(recallDefaults(snapshot.Config))
+	}
 	d.repository.SetRetrievalCalibration(
 		weights,
 		calibration,
@@ -557,6 +563,25 @@ func retrievalContracts(cfg config.Config) (retrieval.Weights, retrieval.Calibra
 		ByQuestionType: map[string]float64{},
 	}
 	return weights, calibration, retrieval.GraphPolicy(cfg.Graph.Policy)
+}
+
+func recallDefaults(cfg config.Config) gwretrieval.Defaults {
+	defaults := gwretrieval.Defaults{
+		MaxResults:       cfg.Context.MaxResults,
+		MaxContextTokens: cfg.Context.MaxContextTokens,
+		MaxContextChars:  cfg.Context.MaxContextChars,
+		GraphPolicy:      retrieval.GraphPolicy(cfg.Graph.Policy),
+	}
+	if defaults.MaxResults == 0 {
+		defaults.MaxResults = 20
+	}
+	if defaults.MaxContextTokens == 0 {
+		defaults.MaxContextTokens = 4000
+	}
+	if defaults.MaxContextChars == 0 {
+		defaults.MaxContextChars = 16000
+	}
+	return defaults
 }
 
 func (d *Daemon) Close(ctx context.Context) error {

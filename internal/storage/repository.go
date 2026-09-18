@@ -95,21 +95,12 @@ type Repository struct {
 	minFactConfidence                  float64
 	graphBoostCap                      float64
 	semanticWindowRecall               SemanticWindowRecall
-	queryEnricher                      retrieval.QueryEnricher
-	queryEnrichmentAllowed             bool
 	consolidationVersion               string
 	consolidationMaxCandidates         int
 	consolidationExactHashEnabled      bool
 	consolidationSameSourceCosine      float64
 	consolidationSameSubjectKindCosine float64
 	consolidationClassifier            ConsolidationClassifier
-}
-
-// SetQueryEnricher installs an optional, policy-gated query plan enrichment
-// source. When it is nil or disallowed, planning falls back to the local plan.
-func (r *Repository) SetQueryEnricher(enricher retrieval.QueryEnricher, allowed bool) {
-	r.queryEnricher = enricher
-	r.queryEnrichmentAllowed = allowed
 }
 
 // SemanticWindowRecall is the optional approximate-nearest-neighbor extension

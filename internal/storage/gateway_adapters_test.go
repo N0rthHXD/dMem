@@ -15,6 +15,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
 func gatewayCall(caller, key, requestID string) gateway.CallContext {
@@ -189,7 +190,9 @@ func TestRecallCapabilityReturnsContextAndCursor(t *testing.T) {
 	createTestMemory(t, repository, "gateway-recall")
 	capability := NewRecallCapability(repository)
 
-	response, err := capability.Recall(ctx, gwretrieval.RecallParams{Query: "searchable", SpaceIDs: []string{"space-1"}, IncludeAncestors: true, States: []string{"active"}, Limit: 10, MaxChars: 1000, MaxContextTokens: 500})
+	plan := retrieval.BuildQueryPlan("searchable", retrieval.PlanOptions{ReferenceTime: repository.runtime.Now(), Limit: 10, CandidateBudget: 100, MaxChars: 1000, RequestedScope: []string{"space-1"}})
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	response, err := capability.Recall(ctx, gwretrieval.RecallParams{Query: "searchable", SpaceIDs: []string{"space-1"}, IncludeAncestors: true, States: []string{"active"}, Channels: []string{"keyword"}, EffectiveChannels: []string{"keyword"}, Limit: 10, MaxChars: 1000, MaxContextTokens: 500, ReferenceTime: formatTime(repository.runtime.Now()), Plan: plan}, processor)
 	if err != nil {
 		t.Fatalf("Recall() error = %v", err)
 	}

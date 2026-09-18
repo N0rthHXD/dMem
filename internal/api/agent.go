@@ -5,13 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"time"
 
-	"github.com/N0rthHXD/dMem/internal/application"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
 	"github.com/N0rthHXD/dMem/internal/gateway/memory"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -113,7 +112,8 @@ func (h *Handler) remember(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
 	requestID := h.requestID()
-	if _, ok := h.requireCaller(w, r, requestID); !ok {
+	caller, ok := h.requireCaller(w, r, requestID)
+	if !ok {
 		return
 	}
 	var request recallRequest
@@ -125,8 +125,7 @@ func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error(), requestID, "", false, nil)
 		return
 	}
-	query.OperationID = requestID
-	result, err := h.memoryService.Recall(r.Context(), query)
+	result, err := h.retrievalGateway.Recall(r.Context(), gatewayCall(caller, "", requestID), query)
 	if err != nil {
 		// An unknown scope space is a request error, not a missing object:
 		// scope resolution fails before any ranking happens.
@@ -134,10 +133,10 @@ func (h *Handler) recall(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "recall request is invalid", requestID, "", false, nil)
 			return
 		}
-		h.serviceError(w, err, requestID)
+		h.gatewayError(w, err, requestID)
 		return
 	}
-	h.writeJSON(w, http.StatusOK, recallResponse(requestID, query, result))
+	h.writeJSON(w, http.StatusOK, domain.RecallResponse{Context: result.Context, Execution: result.Execution})
 }
 
 func (h *Handler) memoryFeedback(w http.ResponseWriter, r *http.Request) {
@@ -207,18 +206,6 @@ func (h *Handler) writeHeaders(w http.ResponseWriter, r *http.Request, requestID
 	return caller, key, ok
 }
 
-func (h *Handler) serviceError(w http.ResponseWriter, err error, requestID string) {
-	if errors.Is(err, application.ErrInvalidInput) {
-		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error(), requestID, "", false, nil)
-		return
-	}
-	if errors.Is(err, storage.ErrInvalidSearchQuery) {
-		h.writeError(w, http.StatusUnprocessableEntity, "invalid_request", "recall request is invalid", requestID, "", false, nil)
-		return
-	}
-	h.repositoryError(w, err, requestID)
-}
-
 func gatewayCall(caller, key, requestID string) gateway.CallContext {
 	call := gateway.CallContext{RequestID: requestID, Caller: gateway.CallerIdentity{SubjectID: caller}}
 	if key != "" {
@@ -248,110 +235,86 @@ func (h *Handler) gatewayError(w http.ResponseWriter, err error, requestID strin
 	}
 }
 
-// RecallBudgets are the daemon defaults applied when a recall request omits a
-// budget. They come from the active configuration snapshot.
-type RecallBudgets struct {
-	MaxResults       int
-	MaxContextTokens int
-	MaxContextChars  int
-}
-
-func defaultRecallBudgets() RecallBudgets {
-	return RecallBudgets{MaxResults: 20, MaxContextTokens: 4000, MaxContextChars: 16000}
-}
-
-func (h *Handler) recallQuery(request recallRequest) (application.RecallQuery, error) {
-	defaults := defaultRecallBudgets()
-	if h.configuration != nil {
-		if snapshot, _ := h.configuration.ConfigurationStatus(); snapshot != nil {
-			defaults = RecallBudgets{
-				MaxResults:       snapshot.Config.Context.MaxResults,
-				MaxContextTokens: snapshot.Config.Context.MaxContextTokens,
-				MaxContextChars:  snapshot.Config.Context.MaxContextChars,
-			}
-		}
-	}
-	query := application.RecallQuery{Query: request.Query, SpaceIDs: request.SpaceIDs, IncludeAncestors: true, States: []string{"active", "contested"}, Intent: domain.RecallIntentAuto, Limit: defaults.MaxResults, MaxContextTokens: defaults.MaxContextTokens, MaxChars: defaults.MaxContextChars, ExcludeStaleAggregates: true}
+func (h *Handler) recallQuery(request recallRequest) (gwretrieval.Query, error) {
+	query := gwretrieval.Query{Query: request.Query, SpaceIDs: request.SpaceIDs}
 	seenSpaces := map[string]bool{}
 	for _, id := range request.SpaceIDs {
 		if !validUUID(id) {
-			return application.RecallQuery{}, errors.New("space_ids must contain UUIDs")
+			return gwretrieval.Query{}, errors.New("space_ids must contain UUIDs")
 		}
 		if seenSpaces[id] {
-			return application.RecallQuery{}, errors.New("space_ids must be unique")
+			return gwretrieval.Query{}, errors.New("space_ids must be unique")
 		}
 		seenSpaces[id] = true
 	}
 	if request.IncludeAncestors != nil && (isNull(request.IncludeAncestors) || json.Unmarshal(request.IncludeAncestors, &query.IncludeAncestors) != nil) {
-		return application.RecallQuery{}, errors.New("include_ancestors must be a boolean")
+		return gwretrieval.Query{}, errors.New("include_ancestors must be a boolean")
+	} else if request.IncludeAncestors != nil {
+		query.IncludeAncestorsSet = true
 	}
 	if request.MemoryTypes != nil {
 		query.MemoryTypesSet = true
 		if isNull(request.MemoryTypes) || json.Unmarshal(request.MemoryTypes, &query.MemoryTypes) != nil {
-			return application.RecallQuery{}, errors.New("memory_types must be an array")
+			return gwretrieval.Query{}, errors.New("memory_types must be an array")
 		}
 	}
-	validStates := map[string]bool{"active": true, "contested": true}
 	if request.States != nil {
-		if isNull(request.States) || json.Unmarshal(request.States, &query.States) != nil || !validValues(query.States, validStates) {
-			return application.RecallQuery{}, errors.New("states is invalid")
+		if isNull(request.States) || json.Unmarshal(request.States, &query.States) != nil {
+			return gwretrieval.Query{}, errors.New("states must be an array")
 		}
 	}
 	if request.ReferenceTime != nil {
-		var value string
-		if isNull(request.ReferenceTime) || json.Unmarshal(request.ReferenceTime, &value) != nil {
-			return application.RecallQuery{}, errors.New("reference_time must be RFC3339")
+		if isNull(request.ReferenceTime) || json.Unmarshal(request.ReferenceTime, &query.ReferenceTime) != nil {
+			return gwretrieval.Query{}, errors.New("reference_time must be a string")
 		}
-		parsed, err := time.Parse(time.RFC3339, value)
-		if err != nil {
-			return application.RecallQuery{}, errors.New("reference_time must be RFC3339")
-		}
-		query.ReferenceTime, query.ReferenceTimeSet = formatAPITime(parsed), true
+		query.ReferenceTimeSet = true
 	}
 	if request.Intent != nil {
-		if isNull(request.Intent) || json.Unmarshal(request.Intent, &query.Intent) != nil || !query.Intent.Valid() {
-			return application.RecallQuery{}, errors.New("intent is invalid")
+		if isNull(request.Intent) || json.Unmarshal(request.Intent, &query.Intent) != nil {
+			return gwretrieval.Query{}, errors.New("intent must be a string")
 		}
 	}
 	if request.Debug != nil && request.Debug.Capabilities != nil {
-		if isNull(request.Debug.Capabilities) || json.Unmarshal(request.Debug.Capabilities, &query.Channels) != nil || len(query.Channels) == 0 || !validValues(query.Channels, validChannels) {
-			return application.RecallQuery{}, errors.New("debug.capabilities is invalid")
+		if isNull(request.Debug.Capabilities) || json.Unmarshal(request.Debug.Capabilities, &query.Channels) != nil {
+			return gwretrieval.Query{}, errors.New("debug.capabilities must be an array")
 		}
 	}
 	if request.Debug != nil && request.Debug.GraphPolicy != nil {
 		if isNull(request.Debug.GraphPolicy) || json.Unmarshal(request.Debug.GraphPolicy, &query.GraphPolicy) != nil {
-			return application.RecallQuery{}, errors.New("debug.graph_policy is invalid")
+			return gwretrieval.Query{}, errors.New("debug.graph_policy must be a string")
 		}
 	}
 	if request.Debug != nil && request.Debug.DisableDiversification != nil {
 		if isNull(request.Debug.DisableDiversification) || json.Unmarshal(request.Debug.DisableDiversification, &query.SkipDiversification) != nil {
-			return application.RecallQuery{}, errors.New("debug.disable_diversification is invalid")
+			return gwretrieval.Query{}, errors.New("debug.disable_diversification must be a boolean")
 		}
 	}
 	if request.Debug != nil && request.Debug.IncludeStaleAggregates != nil {
 		var include bool
 		if isNull(request.Debug.IncludeStaleAggregates) || json.Unmarshal(request.Debug.IncludeStaleAggregates, &include) != nil {
-			return application.RecallQuery{}, errors.New("debug.include_stale_aggregates must be a boolean")
+			return gwretrieval.Query{}, errors.New("debug.include_stale_aggregates must be a boolean")
 		}
 		query.ExcludeStaleAggregates = !include
+		query.ExcludeStaleAggregatesSet = true
 	}
-	if err := decodeRange(request.MaxResults, &query.Limit, 1, 1000, "max_results"); err != nil {
-		return application.RecallQuery{}, err
+	if err := decodeInt(request.MaxResults, &query.Limit, "max_results"); err != nil {
+		return gwretrieval.Query{}, err
+	} else if request.MaxResults != nil {
+		query.LimitSet = true
 	}
-	if err := decodeRange(request.MaxContextTokens, &query.MaxContextTokens, 1, 1000000, "max_context_tokens"); err != nil {
-		return application.RecallQuery{}, err
+	if err := decodeInt(request.MaxContextTokens, &query.MaxContextTokens, "max_context_tokens"); err != nil {
+		return gwretrieval.Query{}, err
+	} else if request.MaxContextTokens != nil {
+		query.MaxContextTokensSet = true
 	}
 	if request.IncludeEvidence != nil && (isNull(request.IncludeEvidence) || json.Unmarshal(request.IncludeEvidence, &query.IncludeEvidence) != nil) {
-		return application.RecallQuery{}, errors.New("include_evidence must be a boolean")
+		return gwretrieval.Query{}, errors.New("include_evidence must be a boolean")
 	}
 	if request.Explain != nil && (isNull(request.Explain) || json.Unmarshal(request.Explain, &query.Explain) != nil) {
-		return application.RecallQuery{}, errors.New("explain must be a boolean")
+		return gwretrieval.Query{}, errors.New("explain must be a boolean")
 	}
 	if request.Cursor != nil && (isNull(request.Cursor) || json.Unmarshal(request.Cursor, &query.Cursor) != nil) {
-		return application.RecallQuery{}, errors.New("cursor must be a string")
+		return gwretrieval.Query{}, errors.New("cursor must be a string")
 	}
-	query.States = sortedUnique(query.States)
-	query.MemoryTypes = sortedUnique(query.MemoryTypes)
-	query.Channels = sortedUnique(query.Channels)
 	return query, nil
 }

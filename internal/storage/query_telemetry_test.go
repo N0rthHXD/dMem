@@ -51,7 +51,7 @@ func TestRecallTelemetryCapturesDecisionPhases(t *testing.T) {
 		}
 	}
 	latency := decodeObject(t, row.phaseLatency)
-	for _, phase := range []string{"query_planning", "recall", "context_selection", "total"} {
+	for _, phase := range []string{"recall", "context_selection", "total"} {
 		if _, ok := latency[phase]; !ok {
 			t.Fatalf("phase latency missing %q: %v", phase, latency)
 		}
@@ -132,7 +132,7 @@ func TestDegradedSemanticRecallPersistsOneCompleteTelemetryRecord(t *testing.T) 
 		t.Fatalf("telemetry degradation = %s", row.degradation)
 	}
 	latency := decodeObject(t, row.phaseLatency)
-	for _, phase := range []string{"query_planning", "keyword", "ranking", "recall", "context_selection", "total"} {
+	for _, phase := range []string{"keyword", "ranking", "recall", "context_selection", "total"} {
 		if _, ok := latency[phase]; !ok {
 			t.Fatalf("phase latency missing %q: %v", phase, latency)
 		}

@@ -21,26 +21,31 @@ type Service interface {
 
 // Query is the transport-free recall request.
 type Query struct {
-	OperationID            string
-	Query                  string
-	SpaceIDs               []string
-	IncludeAncestors       bool
-	MemoryTypes            []string
-	MemoryTypesSet         bool
-	States                 []string
-	ReferenceTime          string
-	ReferenceTimeSet       bool
-	Intent                 domain.RecallIntent
-	Channels               []string
-	Limit                  int
-	MaxChars               int
-	MaxContextTokens       int
-	IncludeEvidence        bool
-	Explain                bool
-	ExcludeStaleAggregates bool
-	Cursor                 string
-	GraphPolicy            string
-	SkipDiversification    bool
+	OperationID               string
+	Query                     string
+	SpaceIDs                  []string
+	IncludeAncestors          bool
+	IncludeAncestorsSet       bool
+	MemoryTypes               []string
+	MemoryTypesSet            bool
+	States                    []string
+	ReferenceTime             string
+	ReferenceTimeSet          bool
+	Intent                    domain.RecallIntent
+	Channels                  []string
+	Limit                     int
+	LimitSet                  bool
+	MaxChars                  int
+	MaxCharsSet               bool
+	MaxContextTokens          int
+	MaxContextTokensSet       bool
+	IncludeEvidence           bool
+	Explain                   bool
+	ExcludeStaleAggregates    bool
+	ExcludeStaleAggregatesSet bool
+	Cursor                    string
+	GraphPolicy               string
+	SkipDiversification       bool
 }
 
 // Result is the budgeted context package plus execution metadata.

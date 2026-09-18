@@ -20,7 +20,10 @@ var (
 
 	_ feedback.Store = (*FeedbackCapability)(nil)
 
-	_ gwretrieval.RecallStore = (*RecallCapability)(nil)
+	_ gwretrieval.ReferenceTimeSource = (*RecallCapability)(nil)
+	_ gwretrieval.CapabilityInspector = (*RecallCapability)(nil)
+	_ gwretrieval.CandidateStore      = (*RecallCapability)(nil)
+	_ gwretrieval.TelemetrySink       = (*RecallCapability)(nil)
 
 	_ extraction.EventStore = (*EventCapability)(nil)
 	_ extraction.WorkStore  = (*ExtractionWorkCapability)(nil)

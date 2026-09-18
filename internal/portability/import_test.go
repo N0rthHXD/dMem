@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
@@ -460,11 +461,18 @@ func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) 
 	if eventType != "meeting" || precision != "exact" || speaker != "alice" || language != "en" || subjects != 1 || objects != 1 || facts != 1 || factEvidence != 1 || factStates != 1 {
 		t.Fatalf("structured authority not preserved: %q/%q/%q/%q links=%d/%d facts=%d/%d/%d", eventType, precision, speaker, language, subjects, objects, facts, factEvidence, factStates)
 	}
-	result, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000})
+	capability := storage.NewRecallCapability(fresh.repo)
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	recall := func(query string, channels []string, graphPolicy retrieval.GraphPolicy) (domain.SearchResponse, error) {
+		reference := time.Now().UTC()
+		plan := retrieval.BuildQueryPlan(query, retrieval.PlanOptions{ReferenceTime: reference, Limit: 10, CandidateBudget: 100, MaxChars: 1000, RequestedScope: []string{rootSpace}})
+		return capability.Recall(context.Background(), gwretrieval.RecallParams{Query: query, SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: channels, EffectiveChannels: channels, GraphPolicy: graphPolicy, Limit: 10, MaxChars: 1000, MaxContextTokens: 4000, ReferenceTime: reference.Format(time.RFC3339Nano), Plan: plan}, processor)
+	}
+	result, err := recall("alpha", []string{"keyword"}, retrieval.GraphOff)
 	if err != nil || len(result.Results) != 1 || result.Results[0].Memory.CurrentRevision.DisplayContent != "alpha" {
 		t.Fatalf("imported memory retrieval = %+v, error = %v", result, err)
 	}
-	graphResult, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "Alice", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"graph"}, GraphPolicy: retrieval.GraphDirect, Limit: 10, MaxChars: 1000})
+	graphResult, err := recall("Alice", []string{"graph"}, retrieval.GraphDirect)
 	if err != nil || len(graphResult.Results) != 1 || graphResult.Results[0].Memory.CurrentRevision.DisplayContent != "alpha" {
 		t.Fatalf("imported graph retrieval = %+v, error = %v", graphResult, err)
 	}
@@ -473,11 +481,11 @@ func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) 
 			t.Fatalf("repeat rebuild %s: %v", name, err)
 		}
 	}
-	repeat, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "alpha", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"keyword"}, Limit: 10, MaxChars: 1000})
+	repeat, err := recall("alpha", []string{"keyword"}, retrieval.GraphOff)
 	if err != nil || len(repeat.Results) != 1 || repeat.Results[0].Memory.CurrentRevision.RevisionID != result.Results[0].Memory.CurrentRevision.RevisionID {
 		t.Fatalf("rebuilt retrieval is not equivalent: %+v, %v", repeat, err)
 	}
-	repeatGraph, err := fresh.repo.SearchMemories(context.Background(), storage.SearchParams{Query: "Alice", SpaceIDs: []string{rootSpace}, States: []string{"active"}, Channels: []string{"graph"}, GraphPolicy: retrieval.GraphDirect, Limit: 10, MaxChars: 1000})
+	repeatGraph, err := recall("Alice", []string{"graph"}, retrieval.GraphDirect)
 	if err != nil || len(repeatGraph.Results) != 1 || repeatGraph.Results[0].Memory.CurrentRevision.RevisionID != graphResult.Results[0].Memory.CurrentRevision.RevisionID {
 		t.Fatalf("rebuilt graph retrieval is not equivalent: %+v, %v", repeatGraph, err)
 	}

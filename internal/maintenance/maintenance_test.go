@@ -14,6 +14,8 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/jobs"
 	"github.com/N0rthHXD/dMem/internal/provider"
@@ -182,8 +184,10 @@ func validateSemanticRestore(ctx context.Context, staging, databaseFilename stri
 		}
 	}
 	for _, channels := range [][]string{{"semantic"}, {"keyword", "semantic"}} {
-		result, err := repository.SearchMemories(ctx, storage.SearchParams{Query: "restored concept", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: channels, Limit: 10, MaxChars: 1000})
-		if err != nil || !reflect.DeepEqual(result.ExecutedChannels, channels) || result.Degraded || len(result.Results) != 1 || result.Results[0].Memory.MemoryID != "memory-1" || result.Results[0].Memory.CurrentRevision.DisplayContent != "restorable content" {
+		recall := storage.NewRecallCapability(repository)
+		service := gwretrieval.NewService(gwretrieval.Ports{ReferenceTime: recall, Capabilities: recall, Candidates: recall, Telemetry: recall}, gwretrieval.Defaults{MaxResults: 10, MaxContextTokens: 4000, MaxContextChars: 1000})
+		result, err := service.Recall(ctx, gateway.CallContext{}, gwretrieval.Query{Query: "restored concept", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: channels, Limit: 10, LimitSet: true, MaxChars: 1000, MaxCharsSet: true})
+		if err != nil || !reflect.DeepEqual(result.Execution.ExecutedCapabilities, channels) || result.Execution.Degraded || len(result.Context.Items) != 1 || result.Context.Items[0].MemoryID != "memory-1" || result.Context.Items[0].DisplayContent != "restorable content" {
 			return errors.New("semantic restore retrieval validation failed")
 		}
 	}

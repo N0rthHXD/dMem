@@ -2,10 +2,12 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"sort"
 	"strings"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
@@ -21,36 +23,41 @@ func contextSelectionIdentity(params SearchParams) string {
 	return retrieval.ContextSelectionVersion + ":policy=" + policy.Identity() + ":tokens=" + domain.ContextTokenFormatVersion + ":mode=" + mode
 }
 
-// applyContextSelection runs the versioned context-selection stage after
-// ranking. Ranking decides relevance; selection decides which representatives
-// consume context slots under hard budgets. Raw results stay on the response
-// for policy-safe explain/debug use only.
-func (r *Repository) applyContextSelection(ctx context.Context, params SearchParams, response *domain.SearchResponse) error {
+type contextSelectionState struct {
+	index           map[string]*domain.SearchResult
+	aggregateInputs map[string][]string
+}
+
+func (r *Repository) prepareContextSelection(ctx context.Context, tx *sql.Tx, params SearchParams, response *domain.SearchResponse) (gwretrieval.SelectionInput, contextSelectionState) {
+	state := contextSelectionState{index: map[string]*domain.SearchResult{}, aggregateInputs: map[string][]string{}}
 	if len(response.Results) == 0 {
-		response.ContextSelectionIdentity = contextSelectionIdentity(params)
-		response.Context = domain.ContextPackage{Items: []domain.ContextItem{}}
-		return nil
+		return gwretrieval.SelectionInput{
+			QuestionType:        params.Plan.QuestionType,
+			Budget:              domain.ContextBudget{MaxTokens: params.MaxContextTokens, MaxChars: params.MaxChars, MaxResults: params.Limit, MaxSources: params.MaxSources, MaxSensitive: params.MaxSensitive},
+			SkipDiversification: params.SkipDiversification,
+		}, state
 	}
-	candidates, index, aggregateInputs := r.buildContextCandidates(ctx, params, response.Results)
+	candidates, index, aggregateInputs := r.buildContextCandidates(ctx, tx, params, response.Results)
 	budget := domain.ContextBudget{
 		MaxTokens: params.MaxContextTokens, MaxChars: params.MaxChars,
 		MaxResults: params.Limit, MaxSources: params.MaxSources, MaxSensitive: params.MaxSensitive,
 	}
-	input := retrieval.SelectInput{QuestionType: retrieval.QuestionType(params.Plan.QuestionType), Budget: budget, Candidates: candidates}
-	var selection retrieval.SelectOutput
-	if params.SkipDiversification {
-		selection = retrieval.SelectContextFixedCutoff(input)
-	} else {
-		selection = retrieval.SelectContext(input)
-	}
+	return gwretrieval.SelectionInput{
+		QuestionType: params.Plan.QuestionType, Budget: budget, Candidates: candidates,
+		SkipDiversification: params.SkipDiversification,
+	}, contextSelectionState{index: index, aggregateInputs: aggregateInputs}
+}
+
+func (r *Repository) renderContextSelection(params SearchParams, response *domain.SearchResponse, output gwretrieval.SelectionOutput, state contextSelectionState) {
+	selection := output.Selection
 	response.ContextSelectionIdentity = contextSelectionIdentity(params)
 	items := make([]domain.ContextItem, 0, len(selection.Items))
 	for _, selected := range selection.Items {
-		result, ok := index[selected.MemoryID+"\x00"+selected.RevisionID]
+		result, ok := state.index[selected.MemoryID+"\x00"+selected.RevisionID]
 		if !ok {
 			continue
 		}
-		items = append(items, r.selectedContextItem(selected, *result, params, aggregateInputs[result.Memory.MemoryID]))
+		items = append(items, r.selectedContextItem(selected, *result, params, state.aggregateInputs[result.Memory.MemoryID]))
 	}
 	response.Context = domain.ContextPackage{
 		Items: items, TokensUsed: selection.Accounting.TokensUsed,
@@ -61,18 +68,14 @@ func (r *Repository) applyContextSelection(ctx context.Context, params SearchPar
 	// selected context consumes the character budget.
 	response.CharsUsed = response.Context.CharsUsed
 	if params.telemetry != nil {
-		params.telemetry.rejected = selection.Rejected
-		for _, rejected := range selection.Rejected {
-			params.telemetry.addGate(rejected.Reason)
-		}
+		params.telemetry.SetRejected(selection.Rejected)
 	}
 	if params.Explain {
 		response.Context.Rejected = selection.Rejected
 	}
-	return nil
 }
 
-func (r *Repository) buildContextCandidates(ctx context.Context, params SearchParams, results []domain.SearchResult) ([]domain.ContextCandidate, map[string]*domain.SearchResult, map[string][]string) {
+func (r *Repository) buildContextCandidates(ctx context.Context, tx *sql.Tx, params SearchParams, results []domain.SearchResult) ([]domain.ContextCandidate, map[string]*domain.SearchResult, map[string][]string) {
 	index := make(map[string]*domain.SearchResult, len(results))
 	memoryIDs := make([]string, 0, len(results))
 	for i := range results {
@@ -80,8 +83,8 @@ func (r *Repository) buildContextCandidates(ctx context.Context, params SearchPa
 		index[result.Memory.MemoryID+"\x00"+result.Memory.CurrentRevision.RevisionID] = result
 		memoryIDs = append(memoryIDs, result.Memory.MemoryID)
 	}
-	clusters := r.contextClusterIDs(ctx, memoryIDs)
-	aggregateSources := r.aggregateSources(ctx, memoryIDs)
+	clusters := contextClusterIDs(ctx, tx, memoryIDs)
+	aggregateSources := aggregateSources(ctx, tx, memoryIDs)
 	terms := params.planTerms()
 	candidates := make([]domain.ContextCandidate, 0, len(results))
 	for i := range results {
@@ -220,12 +223,12 @@ func contextEvidenceKey(evidence domain.RevisionEvidence) string {
 	return key
 }
 
-func (r *Repository) contextClusterIDs(ctx context.Context, memoryIDs []string) map[string]string {
+func contextClusterIDs(ctx context.Context, tx *sql.Tx, memoryIDs []string) map[string]string {
 	result := map[string]string{}
 	if len(memoryIDs) == 0 {
 		return result
 	}
-	rows, err := r.store.reader.QueryContext(ctx, `SELECT dcm.memory_id,dc.cluster_id,dc.generation FROM duplicate_cluster_members dcm JOIN duplicate_clusters dc ON dc.cluster_id=dcm.cluster_id WHERE dcm.memory_id IN (`+placeholders(len(memoryIDs))+`)`, stringArgs(memoryIDs)...)
+	rows, err := tx.QueryContext(ctx, `SELECT dcm.memory_id,dc.cluster_id,dc.generation FROM duplicate_cluster_members dcm JOIN duplicate_clusters dc ON dc.cluster_id=dcm.cluster_id WHERE dcm.memory_id IN (`+placeholders(len(memoryIDs))+`)`, stringArgs(memoryIDs)...)
 	if err != nil {
 		return result
 	}
@@ -245,12 +248,12 @@ func (r *Repository) contextClusterIDs(ctx context.Context, memoryIDs []string) 
 	return result
 }
 
-func (r *Repository) aggregateSources(ctx context.Context, memoryIDs []string) map[string][]string {
+func aggregateSources(ctx context.Context, tx *sql.Tx, memoryIDs []string) map[string][]string {
 	result := map[string][]string{}
 	if len(memoryIDs) == 0 {
 		return result
 	}
-	rows, err := r.store.reader.QueryContext(ctx, `SELECT source_memory_id,target_memory_id FROM memory_relations WHERE relation_type='derived_from' AND state='active' AND source_memory_id IN (`+placeholders(len(memoryIDs))+`) ORDER BY source_memory_id,target_memory_id`, stringArgs(memoryIDs)...)
+	rows, err := tx.QueryContext(ctx, `SELECT source_memory_id,target_memory_id FROM memory_relations WHERE relation_type='derived_from' AND state='active' AND source_memory_id IN (`+placeholders(len(memoryIDs))+`) ORDER BY source_memory_id,target_memory_id`, stringArgs(memoryIDs)...)
 	if err != nil {
 		return result
 	}

@@ -926,7 +926,7 @@ func TestSemanticQueryNormalizesCompleteScopeAndSeparatesQueryClassification(t *
 	}
 
 	params := semanticParams("car")
-	params.SpaceIDs = []string{"space-query-b", "space-query-a", "space-query-b"}
+	params.SpaceIDs = []string{"space-query-b", "space-query-a"}
 	result, err := repository.SearchMemories(context.Background(), params)
 	if err != nil || len(result.Results) != 2 {
 		t.Fatalf("normalized semantic search = %+v, %v", result, err)

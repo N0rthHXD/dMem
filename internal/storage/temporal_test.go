@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
@@ -76,9 +77,10 @@ func TestTemporalPrecisionAffectsScore(t *testing.T) {
 func TestTemporalFilterAlwaysRejectsImpossibleIntervals(t *testing.T) {
 	start := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	filtered := applyTemporalFilter([]*searchCandidate{{eventStart: &start, eventEnd: &end}}, retrieval.TimeInterval{}, retrieval.QuestionLookup)
-	if len(filtered) != 0 {
-		t.Fatalf("impossible interval survived without query time: %+v", filtered)
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	ranked := processor.Rank(gwretrieval.RankInput{Candidates: []gwretrieval.Candidate{{EventStart: &start, EventEnd: &end}}, Weights: retrieval.DefaultWeights()})
+	if len(ranked.Candidates) != 0 {
+		t.Fatalf("impossible interval survived without query time: %+v", ranked.Candidates)
 	}
 }
 
@@ -100,13 +102,14 @@ func TestTemporalFilterRemovesIncompatibleCandidatesBeforeTopK(t *testing.T) {
 	query := retrieval.TimeInterval{Start: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), Set: true}
 	farStart := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	farEnd := time.Date(2030, 1, 2, 0, 0, 0, 0, time.UTC)
-	candidates := []*searchCandidate{
-		{memoryID: "compatible", revisionID: "r1", eventStart: &query.Start, eventEnd: &query.End, keywordRank: 1},
-		{memoryID: "incompatible", revisionID: "r2", eventStart: &farStart, eventEnd: &farEnd, keywordRank: 2},
+	candidates := []gwretrieval.Candidate{
+		{MemoryID: "compatible", RevisionID: "r1", EventStart: &query.Start, EventEnd: &query.End, KeywordRank: 1},
+		{MemoryID: "incompatible", RevisionID: "r2", EventStart: &farStart, EventEnd: &farEnd, KeywordRank: 2},
 	}
-	filtered := applyTemporalFilter(candidates, query, retrieval.QuestionTemporal)
-	if len(filtered) != 1 || filtered[0].memoryID != "compatible" {
-		t.Fatalf("temporal filter survivors = %+v", filtered)
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	ranked := processor.Rank(gwretrieval.RankInput{Candidates: candidates, Params: gwretrieval.RecallParams{QueryTime: query, QueryTimeSet: true, Plan: retrieval.QueryPlan{QuestionType: retrieval.QuestionTemporal}}, Weights: retrieval.DefaultWeights()})
+	if len(ranked.Candidates) != 1 || ranked.Candidates[0].MemoryID != "compatible" {
+		t.Fatalf("temporal filter survivors = %+v", ranked.Candidates)
 	}
 }
 

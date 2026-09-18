@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
@@ -97,21 +98,22 @@ func TestDecisionScaleGates(t *testing.T) {
 		t.Fatalf("write amplification = %.1f, gate %.1f", amplification, gates.Performance.MaximumWriteAmplification)
 	}
 
-	params := repository.planQuery(context.Background(), SearchParams{Query: "scaleword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 20, MaxChars: 10000})
-	candidates := make([]*searchCandidate, 200)
+	params := SearchParams{Query: "scaleword", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 20, MaxChars: 10000}
+	params.Plan = retrieval.BuildQueryPlan(params.Query, retrieval.PlanOptions{ReferenceTime: time.Now(), Limit: params.Limit, CandidateBudget: selectionWindow(params.Limit), MaxChars: params.MaxChars, RequestedScope: params.SpaceIDs})
+	candidates := make([]gwretrieval.Candidate, 200)
 	for i := range candidates {
-		candidates[i] = &searchCandidate{
-			memoryID: fmt.Sprintf("feature-%03d", i), revisionID: fmt.Sprintf("feature-rev-%03d", i),
-			keywordRank: i + 1, keywordRaw: -float64(i), semanticRank: i + 1, semanticRaw: 0.9 - float64(i)*0.001,
-			ftsContent: "scaleword item",
+		candidates[i] = gwretrieval.Candidate{
+			MemoryID: fmt.Sprintf("feature-%03d", i), RevisionID: fmt.Sprintf("feature-rev-%03d", i),
+			KeywordRank: i + 1, KeywordRaw: -float64(i), SemanticRank: i + 1, SemanticRaw: 0.9 - float64(i)*0.001,
+			FTSContent: "scaleword item",
 		}
 	}
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	prepared := processor.PreparePrimary(gwretrieval.PrimaryInput{Candidates: candidates, Calibration: retrieval.DefaultCalibration(), Weights: retrieval.DefaultWeights()})
 	var featureSamples []float64
 	for sample := 0; sample < gates.Performance.QuerySamples; sample++ {
 		start := time.Now()
-		for _, candidate := range candidates {
-			_ = repository.buildFeatures(candidate, params, params.Plan)
-		}
+		_ = processor.Rank(gwretrieval.RankInput{Candidates: prepared.Candidates, Params: gatewayRecallParams(params), Weights: retrieval.DefaultWeights(), Terms: retrieval.CompileKeyword(params.Query).Terms})
 		featureSamples = append(featureSamples, float64(time.Since(start).Milliseconds()))
 	}
 	if p95 := decisionPercentile95(featureSamples); p95 > gates.Performance.MaximumFeatureP95MS {

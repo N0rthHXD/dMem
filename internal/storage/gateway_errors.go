@@ -28,6 +28,10 @@ func gatewayError(err error) error {
 		return gateway.WrapError(gateway.ErrorInvalidInput, "invalid parent scope", err)
 	case errors.Is(err, ErrInvalidCursor):
 		return gateway.WrapError(gateway.ErrorInvalidInput, "cursor is invalid", err)
+	case errors.Is(err, ErrInvalidSearchQuery):
+		return gateway.WrapError(gateway.ErrorInvalidInput, "recall query is invalid", err)
+	case errors.Is(err, ErrPolicyDenied):
+		return gateway.WrapError(gateway.ErrorPermissionDenied, "recall denied by policy", err)
 	case errors.Is(err, ErrInvalidStateTransition):
 		return gateway.WrapError(gateway.ErrorConflict, "state transition is not allowed", err)
 	case errors.Is(err, ErrFeedbackIdentityMismatch):

@@ -5,16 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sort"
 	"strconv"
 
-	"github.com/N0rthHXD/dMem/internal/application"
-	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
-
-// Capability selection is available only through recall debug overrides.
-var validChannels = map[string]bool{"keyword": true, "semantic": true, "graph": true}
 
 func (h *Handler) rebuildFTS(w http.ResponseWriter, r *http.Request) {
 	requestID := h.requestID()
@@ -64,64 +58,14 @@ func (h *Handler) rebuildSemantic(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusAccepted, result)
 }
 
-func validValues(values []string, allowed map[string]bool) bool {
-	for _, value := range values {
-		if !allowed[value] {
-			return false
-		}
-	}
-	return true
-}
-
-func sortedUnique(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value]; !ok {
-			seen[value] = struct{}{}
-			result = append(result, value)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
-func decodeRange(raw json.RawMessage, target *int, minimum, maximum int, field string) error {
+func decodeInt(raw json.RawMessage, target *int, field string) error {
 	if raw == nil {
 		return nil
 	}
-	if isNull(raw) || json.Unmarshal(raw, target) != nil || *target < minimum || *target > maximum {
-		return errors.New(field + " is out of range")
+	if isNull(raw) || json.Unmarshal(raw, target) != nil {
+		return errors.New(field + " must be an integer")
 	}
 	return nil
 }
 
 func isNull(raw json.RawMessage) bool { return bytes.Equal(bytes.TrimSpace(raw), []byte("null")) }
-
-func recallResponse(operationID string, query application.RecallQuery, result domain.SearchResponse) domain.RecallResponse {
-	pkg := result.Context
-	if pkg.Items == nil {
-		pkg.Items = []domain.ContextItem{}
-	}
-	pkg.NextCursor = result.NextCursor
-	pkg.Truncated = result.Truncated
-	if !query.Explain {
-		pkg.Rejected = nil
-	}
-	contextIdentity := result.ContextSelectionIdentity
-	if contextIdentity == "" {
-		contextIdentity = result.ContextIdentity
-	}
-	return domain.RecallResponse{
-		Context: pkg,
-		Execution: domain.RecallExecutionMetadata{
-			OperationID: operationID, Intent: query.Intent, ReferenceTime: result.ReferenceTime,
-			RequestedCapabilities: append([]string(nil), result.RequestedChannels...), ExecutedCapabilities: append([]string(nil), result.ExecutedChannels...),
-			Degraded: result.Degraded, DegradationReasons: append([]string{}, result.DegradationReasons...),
-			QueryPlanIdentity: result.QueryPlanIdentity, RankingIdentity: result.RankingIdentity, ContextSelectionIdentity: contextIdentity,
-			RankingVersion: result.RankingVersion, FeedbackIdentity: result.FeedbackIdentity, FeedbackAggregateVersion: result.FeedbackAggregateVersion,
-			FTSIndexVersion:      result.FTSIndexVersion,
-			SemanticIndexVersion: result.SemanticIndexVersion, GraphIndexVersion: result.GraphIndexVersion, GraphIndexState: result.GraphIndexState,
-		},
-	}
-}

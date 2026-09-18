@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"runtime"
 	"testing"
@@ -236,7 +237,12 @@ func TestSearchQualityContextSelectionMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawCandidates, _, _ := r.buildContextCandidates(context.Background(), params, response.Results)
+	tx, err := r.store.reader.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	rawCandidates, _, _ := r.buildContextCandidates(context.Background(), tx, params, response.Results)
 	rawDuplicateRate := selectionDuplicateRate(rawCandidates)
 	selectedDuplicateRate := selectionDuplicateRateForItems(response.Context.Items)
 

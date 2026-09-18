@@ -6,15 +6,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/provider"
-	"github.com/N0rthHXD/dMem/internal/retrieval"
 	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
@@ -50,23 +48,17 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	}
 	runtime := r.emb()
 	executed := append([]string{}, params.EffectiveChannels...)
-	reasons := []string{}
 	if hasChannel(executed, ChannelSemantic) && !r.semanticQueryable(status, 0) {
-		executed = channelsWithout(executed, ChannelSemantic)
-		reasons = append(reasons, "semantic_unavailable")
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
 	if hasChannel(executed, ChannelKeyword) && ftsState != "ready" {
-		executed = channelsWithout(executed, ChannelKeyword)
-		reasons = append(reasons, "keyword_unavailable")
-	}
-	if len(executed) == 0 {
-		return domain.SearchResponse{}, ErrIndexDegraded
-	}
-	if !hasChannel(executed, ChannelSemantic) {
-		return r.semanticKeywordFallback(ctx, params, status.ActiveVersion, reasons)
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelKeyword, Reason: "keyword_unavailable"}
 	}
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
-		return r.semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, preflightMetadata), nil
+		response := r.semanticSearchResponse(params, executed, status, ftsState, ftsVersion, preflightMetadata)
+		response.ContextSelectionIdentity = contextSelectionIdentity(params)
+		response.Context = domain.ContextPackage{Items: []domain.ContextItem{}}
+		return response, nil
 	}
 	authorization, err := r.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -81,31 +73,25 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		err = closeErr
 	}
 	if err != nil {
-		if hasChannel(params.Channels, ChannelKeyword) && ftsState == "ready" {
-			return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_policy_denied", true)
+		if errors.Is(err, ErrPolicyDenied) {
+			return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_policy_denied", Denied: true}
 		}
 		return domain.SearchResponse{}, err
 	}
 	if len(scope) == 0 {
-		if hasChannel(params.Channels, ChannelKeyword) && ftsState == "ready" {
-			return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_policy_denied", true)
-		}
-		return domain.SearchResponse{}, ErrPolicyDenied
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_policy_denied", Denied: true}
 	}
 	if policyGeneration > 0 && runtime.PolicyGeneration != policyGeneration {
-		if hasChannel(params.Channels, ChannelKeyword) && ftsState == "ready" {
-			return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_policy_changed", true)
-		}
-		return domain.SearchResponse{}, ErrPolicyDenied
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_policy_changed", Denied: true}
 	}
 
 	queryResult, err := runtime.Provider.Embed(ctx, provider.NewEmbeddingQueryRequest(scope[0], "text/plain", "normal", []string{"semantic_query"}, []string{embeddingQueryDocument(params.Query)}))
 	if err != nil || len(queryResult.Vectors()) != 1 {
-		return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_unavailable", hasChannel(params.Channels, ChannelKeyword))
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
 	queryVector, err := validEmbedding(queryResult.Vectors()[0])
 	if err != nil {
-		return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_unavailable", hasChannel(params.Channels, ChannelKeyword))
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
 
 	tx, err := r.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -123,20 +109,18 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 	}
 	semanticAvailable := r.semanticQueryable(status, len(queryVector))
 	keywordAvailable := ftsState == "ready"
-	executed, reasons = append([]string{}, params.EffectiveChannels...), []string{}
+	executed = append([]string{}, params.EffectiveChannels...)
 	if hasChannel(executed, ChannelSemantic) && !semanticAvailable {
-		_ = tx.Rollback()
-		return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_unavailable", hasChannel(params.Channels, ChannelKeyword) && keywordAvailable)
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
 	if hasChannel(executed, ChannelKeyword) && !keywordAvailable {
-		executed = channelsWithout(executed, ChannelKeyword)
-		reasons = append(reasons, "keyword_unavailable")
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelKeyword, Reason: "keyword_unavailable"}
 	}
 	spaces, err := searchScope(ctx, tx, params.SpaceIDs, params.IncludeAncestors)
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	response := r.semanticSearchResponse(params, executed, reasons, status, ftsState, ftsVersion, metadata)
+	response := r.semanticSearchResponse(params, executed, status, ftsState, ftsVersion, metadata)
 	recallLimit := selectionRecallLimit(params.Limit)
 	all := map[string]*hybridCandidate{}
 	keywordStart := time.Now()
@@ -146,36 +130,29 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 			if errors.Is(err, ErrInvalidSearchQuery) {
 				return domain.SearchResponse{}, err
 			}
-			executed = channelsWithout(executed, ChannelKeyword)
-			response.ExecutedChannels, response.Degraded = executed, true
-			response.DegradationReasons = append(response.DegradationReasons, "keyword_unavailable")
-		} else {
-			for i, item := range keyword {
-				item.keywordRank = i + 1
-				copy := item
-				all[item.memoryID+"\x00"+item.revisionID] = &copy
-			}
+			return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelKeyword, Reason: "keyword_unavailable"}
+		}
+		for i, item := range keyword {
+			item.keywordRank = i + 1
+			copy := item
+			all[item.memoryID+"\x00"+item.revisionID] = &copy
 		}
 	}
 	if current := r.emb(); current.Generation != runtime.Generation || current.PolicyGeneration != runtime.PolicyGeneration || current.CompatibilityIdentity != runtime.CompatibilityIdentity {
-		_ = tx.Rollback()
-		return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_unavailable", hasChannel(params.Channels, ChannelKeyword))
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
 	queryBlob, err := vec.SerializeFloat32(queryVector)
 	if err != nil {
-		_ = tx.Rollback()
-		return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_unavailable", hasChannel(params.Channels, ChannelKeyword))
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
 	if r.semanticSearchErr != nil {
-		_ = tx.Rollback()
-		return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_unavailable", hasChannel(params.Channels, ChannelKeyword))
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
-	params.telemetry.markPhase("keyword", keywordStart)
+	params.telemetry.MarkPhase("keyword", keywordStart)
 	semanticStart := time.Now()
 	semantic, err := r.semanticVectorRecallWindow(ctx, tx, params, spaces, runtime.PolicyGeneration, runtime.CompatibilityIdentity, len(queryVector), queryBlob, recallLimit)
 	if err != nil {
-		_ = tx.Rollback()
-		return r.degradeSemantic(ctx, params, status.ActiveVersion, "semantic_unavailable", hasChannel(params.Channels, ChannelKeyword))
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelSemantic, Reason: "semantic_unavailable"}
 	}
 	for i, item := range semantic {
 		key := item.MemoryID + "\x00" + item.RevisionID
@@ -192,60 +169,56 @@ func (r *Repository) searchSemanticHybrid(ctx context.Context, params SearchPara
 		candidate.timePrecision, candidate.sourceSpeaker, candidate.language = item.TimePrecision, item.SourceSpeaker, item.Language
 		candidate.kind = item.Kind
 	}
-	calibrateKeywordScores(candidatePointers(all))
-	calibrateSemanticScores(r.semanticCalibrationValue(), candidatePointers(all), params.Plan.QuestionType)
-	params.telemetry.markPhase("semantic", semanticStart)
-	pruneRejectedCandidates(all)
-	graphStart := time.Now()
-	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, true, recallLimit)
-	if err != nil {
-		return domain.SearchResponse{}, err
-	}
-	params.telemetry.markPhase("graph", graphStart)
-	usageScores, err := r.FeedbackUsageScores(ctx, tx, hybridRevisionKeys(all), metadata.feedbackAggregateVersion, searchQueryHash(params))
-	if err != nil {
-		return domain.SearchResponse{}, err
-	}
-	list := candidatePointers(all)
-	if err := hydrateRankingProjections(ctx, tx, list); err != nil {
-		return domain.SearchResponse{}, err
-	}
-	recordCandidateTelemetry(params, all)
-	temporalBefore := len(list)
-	list = applyTemporalFilter(list, params.QueryTime, params.Plan.QuestionType)
-	if removed := temporalBefore - len(list); removed > 0 {
-		for i := 0; i < removed; i++ {
-			params.telemetry.addGate("temporal_filter")
-		}
-	}
-	rankStart := time.Now()
-	r.rankCandidates(list, params, usageScores)
-	list = admittedRankedCandidates(list)
-	params.telemetry.markPhase("ranking", rankStart)
-	recordGraphAdmissionTelemetry(params, list)
+	weights, calibration, _ := r.retrievalCalibration()
+	params.telemetry.MarkPhase("semantic", semanticStart)
 	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity(), contextSelectionIdentity(params))
 	hash := semanticQueryHash(params)
-	start := 0
-	if params.Cursor != "" {
-		cursor, err := decodeSearchCursor(params.Cursor)
-		if err != nil {
-			return domain.SearchResponse{}, ErrInvalidCursor
-		}
-		if !searchCursorMatches(cursor, hash, params, identities) {
-			return domain.SearchResponse{}, ErrInvalidCursor
-		}
-		found := false
-		for i := range list {
-			if list[i].memoryID == cursor.MemoryID && list[i].revisionID == cursor.RevisionID && strconv.FormatUint(math.Float64bits(list[i].score), 16) == cursor.ScoreBits {
-				start, found = i+1, true
-				break
+	var responseSelectionState contextSelectionState
+	var contextSelectionStart time.Time
+	err = params.processor.Orchestrate(ctx, gwretrieval.PipelineInput{
+		Params: gatewayRecallParams(params), CursorBinding: gatewayCursorBinding(identities),
+		Primary: gwretrieval.PrimaryInput{
+			Candidates: toGatewayCandidates(candidatePointers(all)), Calibration: calibration, Weights: weights,
+			QuestionType: params.Plan.QuestionType, SemanticTop: 10, KeywordTop: 10, MaxSeeds: 15,
+		},
+		ExpandGraph: func(prepared gwretrieval.PrimaryOutput) ([]gwretrieval.Candidate, error) {
+			graphStart := time.Now()
+			all = candidateMap(fromGatewayCandidates(prepared.Candidates))
+			executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, prepared.Seeds, prepared.PrimaryKeys, recallLimit)
+			params.telemetry.MarkPhase("graph", graphStart)
+			return toGatewayCandidates(candidatePointers(all)), err
+		},
+		RankingInput: func(candidates []gwretrieval.Candidate) (gwretrieval.RankInput, error) {
+			list := fromGatewayCandidates(candidates)
+			if err := hydrateRankingProjections(ctx, tx, list); err != nil {
+				return gwretrieval.RankInput{}, err
 			}
-		}
-		if !found {
-			return domain.SearchResponse{}, ErrInvalidCursor
-		}
-	}
-	if err := r.finalizeRankedCandidates(ctx, tx, params, spaces, &response, list, start, identities, hash); err != nil {
+			all = candidateMap(list)
+			params.telemetry.ObserveCandidates(toGatewayCandidates(candidatePointers(all)))
+			usageScores, err := r.FeedbackUsageScores(ctx, tx, hybridRevisionKeys(all), metadata.feedbackAggregateVersion, searchQueryHash(params))
+			return gwretrieval.RankInput{Candidates: toGatewayCandidates(list), Params: gatewayRecallParams(params), Weights: weights, UsageScores: usageScores, Terms: params.planTerms()}, err
+		},
+		Materialize: func(ranked gwretrieval.RankOutput) (gwretrieval.SelectionInput, error) {
+			for i := 0; i < ranked.TemporalRemoved; i++ {
+				params.telemetry.AddGate("temporal_filter", 1)
+			}
+			list := fromGatewayCandidates(ranked.Candidates)
+			params.telemetry.ObserveGraphAdmissions(toGatewayCandidates(list))
+			if err := r.finalizeRankedCandidates(ctx, tx, params, spaces, &response, list, ranked.Start, identities, hash); err != nil {
+				return gwretrieval.SelectionInput{}, err
+			}
+			contextSelectionStart = time.Now()
+			input, state := r.prepareContextSelection(ctx, tx, params, &response)
+			responseSelectionState = state
+			return input, nil
+		},
+		Render: func(output gwretrieval.SelectionOutput) error {
+			r.renderContextSelection(params, &response, output, responseSelectionState)
+			params.telemetry.MarkPhase("context_selection", contextSelectionStart)
+			return nil
+		},
+	})
+	if err != nil {
 		return domain.SearchResponse{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -340,49 +313,9 @@ func semanticSearchStatus(ctx context.Context, tx *sql.Tx) (SemanticStatus, stri
 	return status, ftsState, ftsVersion, nil
 }
 
-func (r *Repository) semanticSearchResponse(params SearchParams, executed []string, reasons []string, status SemanticStatus, ftsState string, ftsVersion int, metadata searchMetadata) domain.SearchResponse {
+func (r *Repository) semanticSearchResponse(params SearchParams, executed []string, status SemanticStatus, ftsState string, ftsVersion int, metadata searchMetadata) domain.SearchResponse {
 	identities := currentSearchIdentities(ftsVersion, status.ActiveVersion, metadata, r.rankingIdentity(), contextSelectionIdentity(params))
-	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, Degraded: len(reasons) > 0 || status.State == "stale", DegradationReasons: reasons, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, QueryPlanIdentity: params.Plan.Identity(), RankingIdentity: identities.Ranking, ContextIdentity: identities.Context, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, FeedbackIdentity: identities.Feedback, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
-	if status.State == "stale" {
-		response.DegradationReasons = append(response.DegradationReasons, "semantic_stale")
-	}
-	return response
-}
-
-// semanticKeywordFallback executes available local recall without recursively
-// finalizing context or telemetry.
-func (r *Repository) semanticKeywordFallback(ctx context.Context, params SearchParams, semanticVersion int, reasons []string) (domain.SearchResponse, error) {
-	keywordParams := params
-	keywordParams.EffectiveChannels = channelsWithout(params.EffectiveChannels, ChannelSemantic)
-	keywordParams.SemanticVersion = semanticVersion
-	result, err := r.searchKeywordGraph(ctx, keywordParams)
-	if err != nil {
-		return result, err
-	}
-	result.RequestedChannels = params.Channels
-	result.SemanticIndexVersion = semanticVersion
-	for _, reason := range result.DegradationReasons {
-		if !contains(reasons, reason) {
-			reasons = append(reasons, reason)
-		}
-	}
-	result.DegradationReasons = reasons
-	result.Degraded = len(reasons) > 0
-	return result, nil
-}
-
-// degradeSemantic is the single entry point for dropping an unusable semantic
-// channel. It records one degradation reason and falls back to local recall when
-// the keyword channel is still available, or fails closed otherwise.
-func (r *Repository) degradeSemantic(ctx context.Context, params SearchParams, semanticVersion int, reason string, keywordAvailable bool) (domain.SearchResponse, error) {
-	if !keywordAvailable {
-		return domain.SearchResponse{}, ErrIndexDegraded
-	}
-	result, err := r.semanticKeywordFallback(ctx, params, semanticVersion, []string{reason})
-	if err != nil {
-		return domain.SearchResponse{}, ErrIndexDegraded
-	}
-	return result, nil
+	return domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: status.ActiveVersion, RankingVersion: rankingVersion, QueryPlanIdentity: params.Plan.Identity(), RankingIdentity: identities.Ranking, ContextIdentity: identities.Context, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, FeedbackIdentity: identities.Feedback, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
 }
 
 func hybridRevisionKeys(all map[string]*hybridCandidate) []string {
@@ -466,12 +399,6 @@ func exactRerankWindow(ctx context.Context, tx *sql.Tx, window []semanticRecallI
 		return result[i].RevisionID < result[j].RevisionID
 	})
 	return result, nil
-}
-
-// semanticCalibrationValue returns the configured semantic calibration.
-func (r *Repository) semanticCalibrationValue() retrieval.Calibration {
-	_, calibration, _ := r.retrievalCalibration()
-	return calibration
 }
 
 func semanticQueryHash(params SearchParams) string {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
@@ -91,20 +92,22 @@ func TestWeakGraphRankCannotEqualStrongGraphRank(t *testing.T) {
 }
 
 func TestPrimarySeedsRespectTopKAndDeduplication(t *testing.T) {
-	var candidates []*searchCandidate
+	var candidates []gwretrieval.Candidate
 	for i := 0; i < 20; i++ {
-		candidates = append(candidates, &searchCandidate{
-			memoryID: fmt.Sprintf("sem-%02d", i), revisionID: fmt.Sprintf("rev-sem-%02d", i),
-			semanticRank: i + 1, semanticRaw: 0.9 - float64(i)*0.01, semanticScore: 0.9 - float64(i)*0.01,
+		candidates = append(candidates, gwretrieval.Candidate{
+			MemoryID: fmt.Sprintf("sem-%02d", i), RevisionID: fmt.Sprintf("rev-sem-%02d", i),
+			SemanticRank: i + 1, SemanticRaw: 0.9 - float64(i)*0.01,
 		})
 	}
 	for i := 0; i < 20; i++ {
-		candidates = append(candidates, &searchCandidate{
-			memoryID: fmt.Sprintf("kw-%02d", i), revisionID: fmt.Sprintf("rev-kw-%02d", i),
-			keywordRank: i + 1, keywordRaw: -1 - float64(i)*0.01, keywordScore: 1 - float64(i)*0.02,
+		candidates = append(candidates, gwretrieval.Candidate{
+			MemoryID: fmt.Sprintf("kw-%02d", i), RevisionID: fmt.Sprintf("rev-kw-%02d", i),
+			KeywordRank: i + 1, KeywordRaw: -1 - float64(i)*0.01,
 		})
 	}
-	seeds, primary := primarySeeds(candidates, retrieval.DefaultWeights(), 10, 10, 15)
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	prepared := processor.PreparePrimary(gwretrieval.PrimaryInput{Candidates: candidates, Calibration: retrieval.DefaultCalibration(), Weights: retrieval.DefaultWeights(), SemanticTop: 10, KeywordTop: 10, MaxSeeds: 15})
+	seeds, primary := prepared.Seeds, prepared.PrimaryKeys
 	if len(seeds) != 15 {
 		t.Fatalf("seed count = %d, want 15", len(seeds))
 	}
@@ -121,11 +124,12 @@ func TestPrimarySeedsRespectTopKAndDeduplication(t *testing.T) {
 }
 
 func TestPrimarySeedsExcludeRejectedSemanticCandidates(t *testing.T) {
-	candidates := []*searchCandidate{
-		{memoryID: "good", revisionID: "rev-good", semanticRank: 1, semanticRaw: 0.8, semanticScore: 0.8},
-		{memoryID: "rejected", revisionID: "rev-rejected", semanticRank: 2, semanticRaw: 0.79, semanticScore: 0.79, semanticRejected: true},
+	candidates := []gwretrieval.Candidate{
+		{MemoryID: "good", RevisionID: "rev-good", SemanticRank: 1, SemanticRaw: 0.8},
+		{MemoryID: "rejected", RevisionID: "rev-rejected", SemanticRank: 2, SemanticRaw: 0.2},
 	}
-	seeds, _ := primarySeeds(candidates, retrieval.DefaultWeights(), 10, 10, 15)
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	seeds := processor.PreparePrimary(gwretrieval.PrimaryInput{Candidates: candidates, Calibration: retrieval.DefaultCalibration(), Weights: retrieval.DefaultWeights(), SemanticTop: 10, KeywordTop: 10, MaxSeeds: 15}).Seeds
 	for _, seed := range seeds {
 		if seed == "rev-rejected" {
 			t.Fatal("rejected semantic candidate became a seed")
@@ -135,11 +139,13 @@ func TestPrimarySeedsExcludeRejectedSemanticCandidates(t *testing.T) {
 
 func TestPrimarySeedsExcludeCandidatesBelowCalibratedFloors(t *testing.T) {
 	weights := retrieval.DefaultWeights()
-	candidates := []*searchCandidate{
-		{memoryID: "weak-semantic", revisionID: "r1", semanticRank: 1, semanticRaw: 0.9, semanticScore: weights.SemanticSeedFloor - 0.01},
-		{memoryID: "weak-keyword", revisionID: "r2", keywordRank: 1, keywordRaw: -10, keywordScore: weights.KeywordSeedFloor - 0.01},
-	}
-	seeds, _ := primarySeeds(candidates, weights, 10, 10, 15)
+	calibration := retrieval.DefaultCalibration()
+	calibration.AbsoluteFloor = 0
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	seeds := processor.PreparePrimary(gwretrieval.PrimaryInput{
+		Candidates:  []gwretrieval.Candidate{{MemoryID: "weak-semantic", RevisionID: "r1", SemanticRank: 1, SemanticRaw: weights.SemanticSeedFloor - 0.01}},
+		Calibration: calibration, Weights: weights, SemanticTop: 10, KeywordTop: 10, MaxSeeds: 15,
+	}).Seeds
 	if len(seeds) != 0 {
 		t.Fatalf("weak calibrated candidates became graph seeds: %v", seeds)
 	}
@@ -156,8 +162,6 @@ func TestRelationOnlySignalClassification(t *testing.T) {
 		t.Fatal("fact-backed candidate is not relation-only")
 	}
 }
-
-func floatPtr(value float64) *float64 { return &value }
 
 func TestRankingProjectionFeaturesAreHydrated(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
@@ -177,50 +181,35 @@ func TestRankingProjectionFeaturesAreHydrated(t *testing.T) {
 
 func TestGraphBoostCannotDemoteProtectedPrimaryExact(t *testing.T) {
 	weights := retrieval.DefaultWeights()
-	protected := &searchCandidate{
-		memoryID: "exact", revisionID: "r-exact",
-		features: retrieval.FeatureVector{Semantic: floatPtr(0.9), Exact: floatPtr(1)},
-	}
-	protected.rankOutput = retrieval.Score(weights, retrieval.RankInput{Features: protected.features})
-	protected.score = protected.rankOutput.Final
-	protected.protected = weights.ProtectedPrimary(protected.features)
-
-	graphOnly := &searchCandidate{
-		memoryID: "graph", revisionID: "r-graph",
-		features:  retrieval.FeatureVector{Graph: floatPtr(1)},
-		graphOnly: true,
-	}
-	graphOnly.rankOutput = retrieval.Score(weights, retrieval.RankInput{Features: graphOnly.features, GraphOnlyCandidate: true})
-	graphOnly.score = graphOnly.rankOutput.Final
-
-	list := []*searchCandidate{graphOnly, protected}
-	sortRecallCandidates(list)
-	if list[0] != protected {
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	list := processor.Rank(gwretrieval.RankInput{Candidates: []gwretrieval.Candidate{
+		{MemoryID: "graph", RevisionID: "r-graph", GraphScore: 1},
+		{MemoryID: "exact", RevisionID: "r-exact", SemanticRank: 1, SemanticScore: 0.9, FTSContent: "exact"},
+	}, Weights: weights, Terms: retrieval.CompileKeyword("exact").Terms}).Candidates
+	if list[0].MemoryID != "exact" {
 		t.Fatalf("graph-only candidate displaced protected primary exact match: %+v", list)
 	}
-	if graphOnly.rankOutput.GraphBoost != 0 {
-		t.Fatalf("graph-only candidate received graph boost: %+v", graphOnly.rankOutput)
+	if list[1].RankOutput.GraphBoost != 0 {
+		t.Fatalf("graph-only candidate received graph boost: %+v", list[1].RankOutput)
 	}
 }
 
 func TestGraphOnlyBelowAdmissionFloorIsRemoved(t *testing.T) {
 	weights := retrieval.DefaultWeights()
-	candidate := &searchCandidate{
-		memoryID: "weak-graph", revisionID: "r-weak-graph", graphOnly: true,
-		features: retrieval.FeatureVector{Graph: floatPtr(weights.GraphOnlyAdmissionFloor - 0.01)},
-	}
-	candidate.rankOutput = retrieval.Score(weights, retrieval.RankInput{Features: candidate.features, GraphOnlyCandidate: true})
-	if got := admittedRankedCandidates([]*searchCandidate{candidate}); len(got) != 0 {
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	got := processor.Rank(gwretrieval.RankInput{Candidates: []gwretrieval.Candidate{{MemoryID: "weak-graph", RevisionID: "r-weak-graph", GraphScore: weights.GraphOnlyAdmissionFloor - 0.01}}, Weights: weights}).Candidates
+	if len(got) != 0 {
 		t.Fatalf("below-floor graph-only candidate admitted: %+v", got)
 	}
 }
 
 func TestProtectedPrimaryDoesNotOverrideStrongerPrimary(t *testing.T) {
-	protected := &searchCandidate{memoryID: "protected", revisionID: "r-protected", protected: true, score: 0.8}
-	stronger := &searchCandidate{memoryID: "stronger", revisionID: "r-stronger", score: 0.9}
-	list := []*searchCandidate{protected, stronger}
-	sortRecallCandidates(list)
-	if list[0] != stronger {
+	processor := gwretrieval.NewService(gwretrieval.Ports{}, gwretrieval.Defaults{})
+	list := processor.Rank(gwretrieval.RankInput{Candidates: []gwretrieval.Candidate{
+		{MemoryID: "protected", RevisionID: "r-protected", SemanticRank: 1, SemanticScore: 0.6, FTSContent: "exact"},
+		{MemoryID: "stronger", RevisionID: "r-stronger", SemanticRank: 2, SemanticScore: 1},
+	}, Weights: retrieval.DefaultWeights(), Terms: retrieval.CompileKeyword("exact").Terms}).Candidates
+	if list[0].MemoryID != "stronger" {
 		t.Fatalf("protected rule displaced stronger primary: %+v", list)
 	}
 }

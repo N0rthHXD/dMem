@@ -1,21 +1,18 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
-	"math"
 	"sort"
 	"strconv"
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/mattn/go-sqlite3"
 )
@@ -110,6 +107,7 @@ type SearchParams struct {
 	ReferenceTimeSet       bool
 	Channels               []string
 	EffectiveChannels      []string
+	DegradationReasons     []string
 	SemanticVersion        int
 	Limit                  int
 	MaxChars               int
@@ -120,13 +118,15 @@ type SearchParams struct {
 	ExcludeStaleAggregates bool
 	Explain                bool
 	Cursor                 string
+	CursorState            *gwretrieval.CursorState
 	Intent                 string
 	GraphPolicy            retrieval.GraphPolicy
 	Plan                   retrieval.QueryPlan
 	QueryTime              retrieval.TimeInterval
 	QueryTimeSet           bool
 	SkipDiversification    bool
-	telemetry              *recallTelemetry
+	telemetry              *gwretrieval.Telemetry
+	processor              gwretrieval.RecallProcessor
 }
 
 // searchIdentities binds a cursor to every algorithm identity that can change
@@ -187,24 +187,6 @@ func graphIdentity(metadata searchMetadata) string {
 		":relations=" + strconv.FormatInt(metadata.graphSourceRelationCount, 10)
 }
 
-type searchCursor struct {
-	Version            int    `json:"v"`
-	SchemaIdentity     string `json:"si"`
-	QueryHash          string `json:"q"`
-	QueryPlanIdentity  string `json:"qp"`
-	MembershipIdentity string `json:"mi"`
-	RankingIdentity    string `json:"ri"`
-	GraphIdentity      string `json:"gi"`
-	ContextIdentity    string `json:"ci"`
-	FeedbackIdentity   string `json:"fi"`
-	Limit              int    `json:"l"`
-	MaxChars           int    `json:"b"`
-	ScoreBits          string `json:"s"`
-	MemoryID           string `json:"m"`
-	RevisionID         string `json:"r"`
-	ReferenceTime      string `json:"rt"`
-}
-
 type searchCandidate struct {
 	memoryID, revisionID, updatedAt string
 	contentHash                     string
@@ -236,54 +218,32 @@ type searchCandidate struct {
 	overbreadth, lifecyclePenalty   *float64
 }
 
-func (r *Repository) SearchMemories(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
+func (r *Repository) executeRecall(ctx context.Context, params SearchParams) (domain.SearchResponse, error) {
 	params.Channels = canonicalChannels(params.Channels)
-	if len(params.EffectiveChannels) > 0 {
-		params.EffectiveChannels = canonicalChannels(params.EffectiveChannels)
-	}
-	if params.Cursor != "" && !params.ReferenceTimeSet {
-		cursor, err := decodeSearchCursor(params.Cursor)
-		if err != nil {
-			return domain.SearchResponse{}, ErrInvalidCursor
-		}
-		params.ReferenceTime = cursor.ReferenceTime
-	}
+	params.EffectiveChannels = canonicalChannels(params.EffectiveChannels)
 	if params.ReferenceTime == "" {
 		params.ReferenceTime = formatTime(r.runtime.Now())
 	}
-	params.telemetry = newRecallTelemetry()
-	totalStart := time.Now()
-	planStart := time.Now()
-	params = r.planQuery(ctx, params)
-	params.telemetry.markPhase("query_planning", planStart)
-	if len(params.Channels) == 0 {
-		params.Channels = []string{ChannelKeyword, ChannelSemantic}
-		if params.Plan.GraphPolicy != retrieval.GraphOff {
-			params.Channels = append(params.Channels, ChannelGraph)
-		}
+	if params.telemetry == nil {
+		params.telemetry = gwretrieval.NewTelemetry()
 	}
 	if len(params.EffectiveChannels) == 0 {
-		params.EffectiveChannels = params.Channels
+		return domain.SearchResponse{}, ErrIndexDegraded
 	}
 	var response domain.SearchResponse
 	var err error
-	recallStart := time.Now()
 	if hasChannel(params.EffectiveChannels, ChannelSemantic) {
 		response, err = r.searchSemanticHybrid(ctx, params)
 	} else {
 		response, err = r.searchKeywordGraph(ctx, params)
 	}
-	params.telemetry.markPhase("recall", recallStart)
 	response.ReferenceTime = params.ReferenceTime
-	if err == nil {
-		selectStart := time.Now()
-		err = r.applyContextSelection(ctx, params, &response)
-		params.telemetry.markPhase("context_selection", selectStart)
+	for _, reason := range params.DegradationReasons {
+		if !contains(response.DegradationReasons, reason) {
+			response.DegradationReasons = append(response.DegradationReasons, reason)
+		}
 	}
-	params.telemetry.markPhase("total", totalStart)
-	if err == nil && params.OperationID != "" {
-		err = r.recordQueryTelemetry(ctx, params, response)
-	}
+	response.Degraded = len(response.DegradationReasons) > 0
 	return response, err
 }
 
@@ -313,34 +273,20 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 	if err != nil {
 		return domain.SearchResponse{}, err
 	}
-	var after *searchCursor
-	if params.Cursor != "" {
-		cursor, err := decodeSearchCursor(params.Cursor)
-		if err != nil {
-			return domain.SearchResponse{}, ErrInvalidCursor
-		}
-		if !params.ReferenceTimeSet {
-			params.ReferenceTime = cursor.ReferenceTime
-		}
-		after = &cursor
-	}
 	hash := searchQueryHash(params)
 	identities := currentSearchIdentities(ftsVersion, params.SemanticVersion, metadata, r.rankingIdentity(), contextSelectionIdentity(params))
-	if after != nil && !searchCursorMatches(*after, hash, params, identities) {
-		return domain.SearchResponse{}, ErrInvalidCursor
-	}
 	response := domain.SearchResponse{Results: []domain.SearchResult{}, RequestedChannels: params.Channels, ExecutedChannels: executed, DegradationReasons: []string{}, FTSIndexVersion: ftsVersion, SemanticIndexVersion: params.SemanticVersion, RankingVersion: rankingVersion, QueryPlanIdentity: params.Plan.Identity(), RankingIdentity: identities.Ranking, ContextIdentity: identities.Context, CorpusGeneration: metadata.corpusGeneration, FeedbackAggregateVersion: metadata.feedbackAggregateVersion, FeedbackIdentity: identities.Feedback, GraphIndexVersion: metadata.graphIndexVersion, GraphIndexState: metadata.graphIndexState}
 	if hasChannel(executed, ChannelKeyword) && indexState != "ready" {
-		executed = channelsWithout(executed, ChannelKeyword)
-		response.ExecutedChannels = executed
-		response.Degraded = true
-		response.DegradationReasons = append(response.DegradationReasons, "keyword_unavailable")
-	}
-	if len(executed) == 0 {
-		return domain.SearchResponse{}, ErrIndexDegraded
+		return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelKeyword, Reason: "keyword_unavailable"}
 	}
 	if len(params.States) == 0 || params.MemoryTypesSet && len(params.MemoryTypes) == 0 {
-		executed, response = r.applyGraphReadiness(params, metadata, response, executed)
+		if hasChannel(executed, ChannelGraph) {
+			if _, executable, reason := graphExecutable(metadata, params.GraphPolicy); !executable {
+				return domain.SearchResponse{}, &gwretrieval.CapabilityUnavailable{Capability: ChannelGraph, Reason: reason}
+			}
+		}
+		response.ContextSelectionIdentity = contextSelectionIdentity(params)
+		response.Context = domain.ContextPackage{Items: []domain.ContextItem{}}
 		if err := tx.Commit(); err != nil {
 			return domain.SearchResponse{}, err
 		}
@@ -369,52 +315,59 @@ func (r *Repository) searchKeywordGraph(ctx context.Context, params SearchParams
 			all[item.memoryID+"\x00"+item.revisionID] = &copy
 		}
 	}
-	calibrateKeywordScores(candidatePointers(all))
-	params.telemetry.markPhase("keyword", keywordStart)
-	graphStart := time.Now()
-	executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, false, selectionRecallLimit(params.Limit))
-	if err != nil {
-		return domain.SearchResponse{}, err
-	}
-	params.telemetry.markPhase("graph", graphStart)
-	if len(executed) == 0 {
-		return domain.SearchResponse{}, ErrIndexDegraded
-	}
-	usageScores, err := r.FeedbackUsageScores(ctx, tx, revisionKeys(all), metadata.feedbackAggregateVersion, searchQueryHash(params))
-	if err != nil {
-		return domain.SearchResponse{}, err
-	}
-	list := candidatePointers(all)
-	if err := hydrateRankingProjections(ctx, tx, list); err != nil {
-		return domain.SearchResponse{}, err
-	}
-	recordCandidateTelemetry(params, all)
-	temporalBefore := len(list)
-	list = applyTemporalFilter(list, params.QueryTime, params.Plan.QuestionType)
-	if removed := temporalBefore - len(list); removed > 0 {
-		for i := 0; i < removed; i++ {
-			params.telemetry.addGate("temporal_filter")
-		}
-	}
-	rankStart := time.Now()
-	r.rankCandidates(list, params, usageScores)
-	list = admittedRankedCandidates(list)
-	params.telemetry.markPhase("ranking", rankStart)
-	recordGraphAdmissionTelemetry(params, list)
-	start := 0
-	if after != nil {
-		found := false
-		for i := range list {
-			if list[i].memoryID == after.MemoryID && list[i].revisionID == after.RevisionID && strconv.FormatUint(math.Float64bits(list[i].score), 16) == after.ScoreBits {
-				start, found = i+1, true
-				break
+	weights, calibration, _ := r.retrievalCalibration()
+	params.telemetry.MarkPhase("keyword", keywordStart)
+	var responseSelectionState contextSelectionState
+	var contextSelectionStart time.Time
+	err = params.processor.Orchestrate(ctx, gwretrieval.PipelineInput{
+		Params: gatewayRecallParams(params), CursorBinding: gatewayCursorBinding(identities),
+		Primary: gwretrieval.PrimaryInput{
+			Candidates: toGatewayCandidates(candidatePointers(all)), Calibration: calibration, Weights: weights,
+			QuestionType: params.Plan.QuestionType, KeywordTop: 10, MaxSeeds: 15,
+		},
+		ExpandGraph: func(prepared gwretrieval.PrimaryOutput) ([]gwretrieval.Candidate, error) {
+			graphStart := time.Now()
+			all = candidateMap(fromGatewayCandidates(prepared.Candidates))
+			executed, response, err = r.applyGraphChannel(ctx, tx, params, spaces, metadata, response, executed, all, prepared.Seeds, prepared.PrimaryKeys, selectionRecallLimit(params.Limit))
+			params.telemetry.MarkPhase("graph", graphStart)
+			if err == nil && len(executed) == 0 {
+				err = ErrIndexDegraded
 			}
-		}
-		if !found {
-			return domain.SearchResponse{}, ErrInvalidCursor
-		}
-	}
-	if err := r.finalizeRankedCandidates(ctx, tx, params, spaces, &response, list, start, identities, hash); err != nil {
+			return toGatewayCandidates(candidatePointers(all)), err
+		},
+		RankingInput: func(candidates []gwretrieval.Candidate) (gwretrieval.RankInput, error) {
+			list := fromGatewayCandidates(candidates)
+			if err := hydrateRankingProjections(ctx, tx, list); err != nil {
+				return gwretrieval.RankInput{}, err
+			}
+			all = candidateMap(list)
+			params.telemetry.ObserveCandidates(toGatewayCandidates(candidatePointers(all)))
+			usageScores, err := r.FeedbackUsageScores(ctx, tx, revisionKeys(all), metadata.feedbackAggregateVersion, searchQueryHash(params))
+			return gwretrieval.RankInput{Candidates: toGatewayCandidates(list), Params: gatewayRecallParams(params), Weights: weights, UsageScores: usageScores, Terms: params.planTerms()}, err
+		},
+		Materialize: func(ranked gwretrieval.RankOutput) (gwretrieval.SelectionInput, error) {
+			rankStart := time.Now()
+			for i := 0; i < ranked.TemporalRemoved; i++ {
+				params.telemetry.AddGate("temporal_filter", 1)
+			}
+			list := fromGatewayCandidates(ranked.Candidates)
+			params.telemetry.MarkPhase("ranking", rankStart)
+			params.telemetry.ObserveGraphAdmissions(toGatewayCandidates(list))
+			if err := r.finalizeRankedCandidates(ctx, tx, params, spaces, &response, list, ranked.Start, identities, hash); err != nil {
+				return gwretrieval.SelectionInput{}, err
+			}
+			contextSelectionStart = time.Now()
+			input, state := r.prepareContextSelection(ctx, tx, params, &response)
+			responseSelectionState = state
+			return input, nil
+		},
+		Render: func(output gwretrieval.SelectionOutput) error {
+			r.renderContextSelection(params, &response, output, responseSelectionState)
+			params.telemetry.MarkPhase("context_selection", contextSelectionStart)
+			return nil
+		},
+	})
+	if err != nil {
 		return domain.SearchResponse{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -530,7 +483,10 @@ func (r *Repository) finalizeRankedCandidates(ctx context.Context, tx *sql.Tx, p
 	// so it always yields a continuation cursor anchored at the window tail.
 	if windowFull && last != nil {
 		response.Truncated = true
-		next := encodeSearchCursor(hash, params, identities, *last)
+		next, err := params.processor.EncodeCursor(gatewayRecallParams(params), gatewayCursorBinding(identities), gwretrieval.CursorPosition{MemoryID: last.memoryID, RevisionID: last.revisionID, Score: last.score})
+		if err != nil {
+			return err
+		}
 		response.NextCursor = &next
 	}
 	return nil
@@ -622,52 +578,6 @@ func searchQueryHash(params SearchParams) string {
 	encoded, _ := json.Marshal(canonical)
 	hash := sha256.Sum256(encoded)
 	return hex.EncodeToString(hash[:])
-}
-
-func searchCursorMatches(cursor searchCursor, hash string, params SearchParams, identities searchIdentities) bool {
-	return cursor.QueryHash == hash && cursor.ReferenceTime == params.ReferenceTime &&
-		cursor.SchemaIdentity == identities.Schema && cursor.QueryPlanIdentity == identities.QueryPlan &&
-		cursor.MembershipIdentity == identities.Membership && cursor.RankingIdentity == identities.Ranking &&
-		cursor.GraphIdentity == identities.Graph && cursor.ContextIdentity == identities.Context &&
-		cursor.FeedbackIdentity == identities.Feedback &&
-		cursor.Limit == params.Limit && cursor.MaxChars == params.MaxChars
-}
-
-func encodeSearchCursor(hash string, params SearchParams, identities searchIdentities, candidate searchCandidate) string {
-	value := searchCursor{
-		Version: 5, SchemaIdentity: identities.Schema, QueryHash: hash, QueryPlanIdentity: identities.QueryPlan,
-		MembershipIdentity: identities.Membership, RankingIdentity: identities.Ranking, GraphIdentity: identities.Graph,
-		ContextIdentity: identities.Context, FeedbackIdentity: identities.Feedback, Limit: params.Limit,
-		MaxChars: params.MaxChars, ScoreBits: strconv.FormatUint(math.Float64bits(candidate.score), 16),
-		MemoryID: candidate.memoryID, RevisionID: candidate.revisionID, ReferenceTime: params.ReferenceTime,
-	}
-	encoded, _ := json.Marshal(value)
-	return base64.RawURLEncoding.EncodeToString(encoded)
-}
-
-func decodeSearchCursor(value string) (searchCursor, error) {
-	var cursor searchCursor
-	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil {
-		return searchCursor{}, ErrInvalidCursor
-	}
-	decoder := json.NewDecoder(bytes.NewReader(decoded))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&cursor) != nil || decoder.Decode(&struct{}{}) != io.EOF || cursor.Version != 5 ||
-		cursor.SchemaIdentity == "" || cursor.QueryHash == "" || cursor.QueryPlanIdentity == "" ||
-		cursor.MembershipIdentity == "" || cursor.RankingIdentity == "" || cursor.GraphIdentity == "" ||
-		cursor.ContextIdentity == "" || cursor.FeedbackIdentity == "" ||
-		cursor.MemoryID == "" || cursor.RevisionID == "" || cursor.ReferenceTime == "" {
-		return searchCursor{}, ErrInvalidCursor
-	}
-	bits, err := strconv.ParseUint(cursor.ScoreBits, 16, 64)
-	if err != nil || math.IsNaN(math.Float64frombits(bits)) || math.IsInf(math.Float64frombits(bits), 0) {
-		return searchCursor{}, ErrInvalidCursor
-	}
-	if _, err := time.Parse(time.RFC3339Nano, cursor.ReferenceTime); err != nil {
-		return searchCursor{}, ErrInvalidCursor
-	}
-	return cursor, nil
 }
 
 func contains(values []string, value string) bool {

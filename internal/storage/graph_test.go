@@ -452,7 +452,8 @@ func TestUnresolvedAmbiguityDisablesGraphExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	params := r.planQuery(context.Background(), SearchParams{Query: "Jordan", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 10, ReferenceTime: formatTime(r.runtime.Now())})
+	params := SearchParams{Query: "Jordan", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 10, ReferenceTime: formatTime(r.runtime.Now())}
+	params.Plan = retrieval.BuildQueryPlan(params.Query, retrieval.PlanOptions{ReferenceTime: r.runtime.Now(), Limit: params.Limit, CandidateBudget: selectionWindow(params.Limit), RequestedScope: params.SpaceIDs})
 	graph, err := r.graphChannelRecall(context.Background(), tx, params, []string{"space-1"}, graphRecallPolicy{
 		Policy: retrieval.GraphDirect, MinEntityConfidence: 0.6, MinFactConfidence: 0.7,
 		AllowNewCandidates: true, Primary: map[string]struct{}{},
@@ -776,7 +777,8 @@ func TestEntityResolutionInsufficientConfidenceDisablesExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	params := r.planQuery(context.Background(), SearchParams{Query: "Jordan", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 10, ReferenceTime: formatTime(r.runtime.Now())})
+	params := SearchParams{Query: "Jordan", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Limit: 10, ReferenceTime: formatTime(r.runtime.Now())}
+	params.Plan = retrieval.BuildQueryPlan(params.Query, retrieval.PlanOptions{ReferenceTime: r.runtime.Now(), Limit: params.Limit, CandidateBudget: selectionWindow(params.Limit), RequestedScope: params.SpaceIDs})
 	graph, err := r.graphChannelRecall(context.Background(), tx, params, []string{"space-1"}, graphRecallPolicy{
 		Policy: retrieval.GraphDirect, MinEntityConfidence: 0.6, MinFactConfidence: 0.7,
 		AllowNewCandidates: true, Primary: map[string]struct{}{},
