@@ -74,13 +74,8 @@ type RedactedConfig struct {
 	SourceIdentity      string             `json:"source_identity"`
 	EffectiveIdentity   string             `json:"effective_identity"`
 	DataDir             string             `json:"data_dir"`
-	RuntimeDir          string             `json:"runtime_dir"`
 	DatabaseFilename    string             `json:"database_filename"`
-	SocketFilename      string             `json:"socket_filename"`
-	RequestTimeout      string             `json:"request_timeout"`
 	ShutdownGracePeriod string             `json:"shutdown_grace_period"`
-	MaxConnections      int                `json:"max_connections"`
-	MaxRequestBytes     int64              `json:"max_request_bytes"`
 	WorkerCount         int                `json:"worker_count"`
 	QueueSoftLimit      int                `json:"queue_soft_limit"`
 	QueueHardLimit      int                `json:"queue_hard_limit"`
@@ -122,13 +117,8 @@ func (s Snapshot) Redacted() RedactedConfig {
 		SourceIdentity:      s.Config.SourceIdentity,
 		EffectiveIdentity:   s.Config.EffectiveIdentity,
 		DataDir:             s.Config.DataDir,
-		RuntimeDir:          s.Config.RuntimeDir,
 		DatabaseFilename:    s.Config.DatabaseFilename,
-		SocketFilename:      s.Config.SocketFilename,
-		RequestTimeout:      s.Config.RequestTimeout.String(),
 		ShutdownGracePeriod: s.Config.ShutdownGracePeriod.String(),
-		MaxConnections:      s.Config.MaxConnections,
-		MaxRequestBytes:     s.Config.MaxRequestSize,
 		WorkerCount:         s.Config.WorkerCount,
 		QueueSoftLimit:      s.Config.QueueSoftLimit,
 		QueueHardLimit:      s.Config.QueueHardLimit,

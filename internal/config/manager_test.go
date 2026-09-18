@@ -15,11 +15,8 @@ import (
 
 type testConfigBuilder struct {
 	dataDir         string
-	runtimeDir      string
 	databaseFile    string
-	socketFile      string
 	workerCount     int
-	maxConnections  int
 	processing      bool
 	processingModel string
 	embedding       bool
@@ -31,18 +28,12 @@ func (b testConfigBuilder) String() string {
 	if b.databaseFile == "" {
 		b.databaseFile = "dmem.db"
 	}
-	if b.socketFile == "" {
-		b.socketFile = "dmem.sock"
-	}
 	if b.workerCount == 0 {
 		b.workerCount = 2
 	}
-	if b.maxConnections == 0 {
-		b.maxConnections = 64
-	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "config_version = 1\n\n[instance]\ndata_dir = %q\nruntime_dir = %q\ndatabase_filename = %q\nsocket_filename = %q\n\n", b.dataDir, b.runtimeDir, b.databaseFile, b.socketFile)
-	fmt.Fprintf(&sb, "[server]\nrequest_timeout = \"30s\"\nshutdown_grace_period = \"15s\"\nmax_connections = %d\nmax_request_bytes = 4194304\n\n", b.maxConnections)
+	fmt.Fprintf(&sb, "config_version = 1\n\n[instance]\ndata_dir = %q\ndatabase_filename = %q\n\n", b.dataDir, b.databaseFile)
+	sb.WriteString("[server]\nshutdown_grace_period = \"15s\"\n\n")
 	fmt.Fprintf(&sb, "[jobs]\nworker_count = %d\nqueue_soft_limit = 10000\nqueue_hard_limit = 20000\nmax_attempts = 3\nlease_duration = \"30s\"\nper_job_timeout = \"2m\"\nretry_initial_backoff = \"1s\"\nretry_max_backoff = \"5m\"\n\n", b.workerCount)
 	sb.WriteString("[storage]\ndisk_soft_free_bytes = 1073741824\ndisk_hard_free_bytes = 268435456\n\n")
 	if b.processing {
@@ -87,8 +78,8 @@ func newManagerConfigPath(t *testing.T) string {
 
 func reloadEnabledManager(t *testing.T, path string) *Manager {
 	t.Helper()
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data}.String())
 	m := NewManager(path, nil)
 	r := m.Reload(context.Background(), TriggerStartup)
 	if r.Outcome != OutcomeActivated {
@@ -99,8 +90,8 @@ func reloadEnabledManager(t *testing.T, path string) *Manager {
 
 func TestManager_ActivatedOutcome(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data}.String())
 	m := NewManager(path, nil)
 
 	r1 := m.Reload(context.Background(), TriggerStartup)
@@ -117,7 +108,7 @@ func TestManager_ActivatedOutcome(t *testing.T) {
 		t.Errorf("generation after r1 = %d, want 1", m.ActivationGeneration())
 	}
 
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime, processing: true}.String())
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, processing: true}.String())
 	r2 := m.Reload(context.Background(), TriggerAPI)
 	if r2.Outcome != OutcomeActivated {
 		t.Fatalf("r2 outcome = %s, want activated (error %s)", r2.Outcome, r2.ErrorCode)
@@ -159,8 +150,8 @@ func TestCapabilityDiffClassPolicyChangeUsesSchemaSupportedClass(t *testing.T) {
 
 func TestManager_NoChangeOutcome(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	content := testConfigBuilder{dataDir: data, runtimeDir: runtime}.String()
+	data := t.TempDir()
+	content := testConfigBuilder{dataDir: data}.String()
 	reloadWriteFile(t, path, content)
 	m := NewManager(path, nil)
 
@@ -189,8 +180,8 @@ func TestManager_NoChangeOutcome(t *testing.T) {
 
 func TestManager_RejectedOutcome(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data}.String())
 	m := NewManager(path, nil)
 	if r := m.Reload(context.Background(), TriggerStartup); r.Outcome != OutcomeActivated {
 		t.Fatalf("startup: outcome = %s", r.Outcome)
@@ -199,7 +190,7 @@ func TestManager_RejectedOutcome(t *testing.T) {
 	prior := m.Snapshot()
 
 	// Write an invalid config (bad version).
-	reloadWriteFile(t, path, strings.Replace(testConfigBuilder{dataDir: data, runtimeDir: runtime}.String(), "config_version = 1", "config_version = 2", 1))
+	reloadWriteFile(t, path, strings.Replace(testConfigBuilder{dataDir: data}.String(), "config_version = 1", "config_version = 2", 1))
 	r := m.Reload(context.Background(), TriggerAPI)
 	if r.Outcome != OutcomeRejected {
 		t.Fatalf("outcome = %s, want rejected", r.Outcome)
@@ -217,8 +208,8 @@ func TestManager_RejectedOutcome(t *testing.T) {
 
 func TestManager_RestartRequiredRejected(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data}.String())
 	m := NewManager(path, nil)
 	if r := m.Reload(context.Background(), TriggerStartup); r.Outcome != OutcomeActivated {
 		t.Fatalf("startup: outcome = %s", r.Outcome)
@@ -229,7 +220,7 @@ func TestManager_RestartRequiredRejected(t *testing.T) {
 
 	// Change a restart-bound field (data_dir).
 	otherData := t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: otherData, runtimeDir: runtime}.String())
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: otherData}.String())
 	r := m.Reload(context.Background(), TriggerAPI)
 	if r.Outcome != OutcomeRejected {
 		t.Fatalf("outcome = %s, want rejected for restart-bound change", r.Outcome)
@@ -248,7 +239,7 @@ func TestManager_RestartRequiredRejected(t *testing.T) {
 	}
 
 	// Changing worker_count is also restart-bound.
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime, workerCount: 4}.String())
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, workerCount: 4}.String())
 	r2 := m.Reload(context.Background(), TriggerAPI)
 	if r2.Outcome != OutcomeRejected || r2.ErrorCode != "config_restart_required" {
 		t.Fatalf("worker_count change: outcome=%s code=%q, want rejected/config_restart_required", r2.Outcome, r2.ErrorCode)
@@ -260,8 +251,8 @@ func TestManager_RestartRequiredRejected(t *testing.T) {
 
 func TestManager_PreviousSnapshotPreserved(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime, processing: true}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, processing: true}.String())
 	m := NewManager(path, nil)
 	if r := m.Reload(context.Background(), TriggerStartup); r.Outcome != OutcomeActivated {
 		t.Fatalf("startup: outcome = %s", r.Outcome)
@@ -291,13 +282,13 @@ func TestManager_PreviousSnapshotPreserved(t *testing.T) {
 
 func TestManager_IndependentEmbeddingEnable(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data}.String())
 	m := NewManager(path, nil)
 	m.Reload(context.Background(), TriggerStartup)
 
 	// Enable only embedding.
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime, embedding: true}.String())
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, embedding: true}.String())
 	r := m.Reload(context.Background(), TriggerAPI)
 	if r.Outcome != OutcomeActivated {
 		t.Fatalf("outcome = %s, want activated", r.Outcome)
@@ -316,13 +307,13 @@ func TestManager_IndependentEmbeddingEnable(t *testing.T) {
 
 func TestManager_DisableCapability(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime, processing: true}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, processing: true}.String())
 	m := NewManager(path, nil)
 	m.Reload(context.Background(), TriggerStartup)
 
 	// Disable processing.
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime}.String())
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data}.String())
 	r := m.Reload(context.Background(), TriggerAPI)
 	if r.Outcome != OutcomeActivated {
 		t.Fatalf("outcome = %s, want activated", r.Outcome)
@@ -337,13 +328,13 @@ func TestManager_DisableCapability(t *testing.T) {
 
 func TestManager_ConcurrentReloadsSerialized(t *testing.T) {
 	path := newManagerConfigPath(t)
-	data, runtime := t.TempDir(), t.TempDir()
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime}.String())
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data}.String())
 	m := NewManager(path, nil)
 	m.Reload(context.Background(), TriggerStartup)
 
 	// All goroutines reload the same processing-enabled config.
-	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, runtimeDir: runtime, processing: true}.String())
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, processing: true}.String())
 	const n = 16
 	var wg sync.WaitGroup
 	var activated, noChange int32

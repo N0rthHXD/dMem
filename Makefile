@@ -2,7 +2,7 @@ GO ?= go
 GO_TAGS := sqlite_fts5
 GOVULNCHECK ?= govulncheck
 
-.PHONY: build test test-race vet openapi schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check govulncheck check
+.PHONY: build test test-race vet schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check govulncheck check
 
 build:
 	CGO_ENABLED=1 $(GO) build -tags '$(GO_TAGS)' ./...
@@ -16,9 +16,6 @@ test-race:
 vet:
 	CGO_ENABLED=1 $(GO) vet -tags '$(GO_TAGS)' ./...
 
-openapi:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/daemon -run '^TestOpenAPIContract$$'
-
 schema:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^TestDocumentedSchemaMatchesEmbeddedSchema$$'
 
@@ -29,7 +26,7 @@ schema-init:
 schema-check: schema
 	@root="$$(mktemp -d)"; trap 'rm -rf "$$root"' EXIT; \
 		config="$$root/config.toml"; \
-		printf '%s\n' 'config_version = 1' '' '[instance]' "data_dir = \"$$root/data\"" "runtime_dir = \"$$root/runtime\"" 'database_filename = "dmem.db"' 'socket_filename = "dmem.sock"' '' '[server]' 'request_timeout = "30s"' 'shutdown_grace_period = "15s"' 'max_connections = 4' 'max_request_bytes = 4194304' '' '[jobs]' 'worker_count = 1' 'queue_soft_limit = 10' 'queue_hard_limit = 20' 'max_attempts = 3' 'lease_duration = "30s"' 'per_job_timeout = "2m"' 'retry_initial_backoff = "1s"' 'retry_max_backoff = "5m"' '' '[storage]' 'disk_soft_free_bytes = 1073741824' 'disk_hard_free_bytes = 268435456' '' '[processing]' 'version = "builtin-noop-v1"' '' '[processing.provider]' 'enabled = false' '' '[embedding.provider]' 'enabled = false' > "$$config"; \
+		printf '%s\n' 'config_version = 1' '' '[instance]' "data_dir = \"$$root/data\"" 'database_filename = "dmem.db"' '' '[server]' 'shutdown_grace_period = "15s"' '' '[jobs]' 'worker_count = 1' 'queue_soft_limit = 10' 'queue_hard_limit = 20' 'max_attempts = 3' 'lease_duration = "30s"' 'per_job_timeout = "2m"' 'retry_initial_backoff = "1s"' 'retry_max_backoff = "5m"' '' '[storage]' 'disk_soft_free_bytes = 1073741824' 'disk_hard_free_bytes = 268435456' '' '[processing]' 'version = "builtin-noop-v1"' '' '[processing.provider]' 'enabled = false' '' '[embedding.provider]' 'enabled = false' > "$$config"; \
 		$(MAKE) --no-print-directory schema-init CONFIG="$$config"
 
 restore-drill:
@@ -60,7 +57,6 @@ check:
 	$(MAKE) --no-print-directory test
 	$(MAKE) --no-print-directory test-race
 	$(MAKE) --no-print-directory vet
-	$(MAKE) --no-print-directory openapi
 	$(MAKE) --no-print-directory schema-check
 	$(MAKE) --no-print-directory restore-drill
 	$(MAKE) --no-print-directory portability-drill

@@ -31,15 +31,10 @@ func writeTestConfig(t *testing.T, dataDir string) string {
 
 [instance]
 data_dir = "%s"
-runtime_dir = "%s"
 database_filename = "dmem.db"
-socket_filename = "dmem.sock"
 
 [server]
-request_timeout = "30s"
 shutdown_grace_period = "15s"
-max_connections = 64
-max_request_bytes = 4194304
 
 [jobs]
 worker_count = 2
@@ -63,7 +58,7 @@ enabled = false
 
 [embedding.provider]
 enabled = false
-`, dataDir, t.TempDir())
+`, dataDir)
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,30 +160,17 @@ func TestExtractGlobalConfig(t *testing.T) {
 func TestRunConfigValidate(t *testing.T) {
 	configPath := writeTestConfig(t, filepath.Join(t.TempDir(), "data"))
 	var output bytes.Buffer
-	if err := runConfig(context.Background(), configPath, []string{"validate"}, &output); err != nil {
+	if err := runConfig(configPath, []string{"validate"}, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `"source_identity":"sha256:`) || !strings.Contains(output.String(), `"effective_identity":"sha256:`) {
 		t.Fatalf("validate output = %q", output.String())
 	}
-	if err := runConfig(context.Background(), configPath, []string{"validate", "extra"}, &output); !errors.Is(err, errUsage) {
+	if err := runConfig(configPath, []string{"validate", "extra"}, &output); !errors.Is(err, errUsage) {
 		t.Fatalf("invalid config command error = %v", err)
 	}
-}
-
-func TestCommandExitCode(t *testing.T) {
-	for _, test := range []struct {
-		err  error
-		want int
-	}{
-		{err: commandError{code: 3, err: errors.New("unavailable")}, want: 3},
-		{err: commandError{code: 4, err: errors.New("rejected")}, want: 4},
-		{err: commandError{code: 5, err: errors.New("overloaded")}, want: 5},
-		{err: errors.New("internal"), want: 1},
-	} {
-		if got := commandExitCode(test.err); got != test.want {
-			t.Errorf("commandExitCode(%v) = %d, want %d", test.err, got, test.want)
-		}
+	if err := runConfig(configPath, []string{"status"}, &output); !errors.Is(err, errUsage) {
+		t.Fatalf("removed status command error = %v", err)
 	}
 }
 

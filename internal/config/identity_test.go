@@ -50,15 +50,10 @@ func TestFormattingOnlyChangesProduceNoChange(t *testing.T) {
 
 [instance]
 data_dir = "/tmp/data"
-runtime_dir = "/tmp/run"
 database_filename = "dmem.db"
-socket_filename = "dmem.sock"
 
 [server]
-request_timeout = "30s"
 shutdown_grace_period = "15s"
-max_connections = 64
-max_request_bytes = 4194304
 
 [jobs]
 worker_count = 2

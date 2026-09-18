@@ -109,15 +109,9 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	cfg := Config{
 		ConfigVersion:       doc.ConfigVersion,
 		DataDir:             doc.Instance.DataDir,
-		RuntimeDir:          doc.Instance.RuntimeDir,
 		DatabaseFilename:    doc.Instance.DatabaseFilename,
-		SocketFilename:      doc.Instance.SocketFilename,
 		DatabasePath:        filepath.Join(doc.Instance.DataDir, doc.Instance.DatabaseFilename),
-		Endpoint:            filepath.Join(doc.Instance.RuntimeDir, doc.Instance.SocketFilename),
-		RequestTimeout:      parseDuration(doc.Server.RequestTimeout),
 		ShutdownGracePeriod: parseDuration(doc.Server.ShutdownGracePeriod),
-		MaxConnections:      doc.Server.MaxConnections,
-		MaxRequestSize:      doc.Server.MaxRequestBytes,
 		WorkerCount:         doc.Jobs.WorkerCount,
 		QueueSoftLimit:      doc.Jobs.QueueSoftLimit,
 		QueueHardLimit:      doc.Jobs.QueueHardLimit,
@@ -150,44 +144,19 @@ func validateInstance(t *instanceTable) error {
 	if !filepath.IsAbs(t.DataDir) {
 		return newValidationError("config_invalid_value", Diagnostic{Code: "config_relative_path", Path: "instance.data_dir"})
 	}
-	if t.RuntimeDir == "" {
-		return newValidationError("config_missing_field", Diagnostic{Code: "config_missing_field", Path: "instance.runtime_dir"})
-	}
-	if !filepath.IsAbs(t.RuntimeDir) {
-		return newValidationError("config_invalid_value", Diagnostic{Code: "config_relative_path", Path: "instance.runtime_dir"})
-	}
 	if t.DatabaseFilename == "" || filepath.Dir(t.DatabaseFilename) != "." {
 		return newValidationError("config_invalid_value", Diagnostic{Code: "config_not_basename", Path: "instance.database_filename"})
-	}
-	if t.SocketFilename == "" || filepath.Dir(t.SocketFilename) != "." {
-		return newValidationError("config_invalid_value", Diagnostic{Code: "config_not_basename", Path: "instance.socket_filename"})
 	}
 	return nil
 }
 
 func validateServer(t *serverTable) error {
-	if t.RequestTimeout == "" {
-		return newValidationError("config_missing_field", Diagnostic{Code: "config_missing_field", Path: "server.request_timeout"})
-	}
-	d := parseDuration(t.RequestTimeout)
-	if d == 0 {
-		return newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_duration", Path: "server.request_timeout"})
-	}
-	if d < time.Second || d > 5*time.Minute {
-		return newValidationError("config_invalid_value", Diagnostic{Code: "config_out_of_bounds", Path: "server.request_timeout"})
-	}
 	if t.ShutdownGracePeriod == "" {
 		return newValidationError("config_missing_field", Diagnostic{Code: "config_missing_field", Path: "server.shutdown_grace_period"})
 	}
-	d = parseDuration(t.ShutdownGracePeriod)
+	d := parseDuration(t.ShutdownGracePeriod)
 	if d == 0 {
 		return newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_duration", Path: "server.shutdown_grace_period"})
-	}
-	if t.MaxConnections < 1 || t.MaxConnections > 1024 {
-		return newValidationError("config_invalid_value", Diagnostic{Code: "config_out_of_bounds", Path: "server.max_connections"})
-	}
-	if t.MaxRequestBytes < 1024 || t.MaxRequestBytes > 16*1024*1024 {
-		return newValidationError("config_invalid_value", Diagnostic{Code: "config_out_of_bounds", Path: "server.max_request_bytes"})
 	}
 	return nil
 }

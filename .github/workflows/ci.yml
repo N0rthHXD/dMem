@@ -72,21 +72,16 @@ jobs:
       - name: Validate, initialize, and back up
         run: |
           root="$(mktemp -d)"
-          install -d -m 0700 "$root/data" "$root/runtime"
+          install -d -m 0700 "$root/data"
           cat > "$root/config.toml" <<EOF
           config_version = 1
 
           [instance]
           data_dir = "$root/data"
-          runtime_dir = "$root/runtime"
           database_filename = "dmem.db"
-          socket_filename = "dmem.sock"
 
           [server]
-          request_timeout = "30s"
           shutdown_grace_period = "15s"
-          max_connections = 4
-          max_request_bytes = 4194304
 
           [jobs]
           worker_count = 1

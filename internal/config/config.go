@@ -2,7 +2,6 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -20,16 +19,10 @@ type Config struct {
 	EffectiveIdentity string
 
 	DataDir          string
-	RuntimeDir       string
 	DatabaseFilename string
-	SocketFilename   string
 	DatabasePath     string
-	Endpoint         string
 
-	RequestTimeout      time.Duration
 	ShutdownGracePeriod time.Duration
-	MaxConnections      int
-	MaxRequestSize      int64
 
 	WorkerCount         int
 	QueueSoftLimit      int
@@ -61,22 +54,12 @@ func Default() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	runtimeDir, err := defaultRuntimeDir()
-	if err != nil {
-		return Config{}, err
-	}
 	return Config{
 		ConfigVersion:       1,
 		DataDir:             dataDir,
-		RuntimeDir:          runtimeDir,
 		DatabaseFilename:    "dmem.db",
-		SocketFilename:      "dmem.sock",
 		DatabasePath:        filepath.Join(dataDir, "dmem.db"),
-		Endpoint:            filepath.Join(runtimeDir, "dmem.sock"),
-		RequestTimeout:      30 * time.Second,
 		ShutdownGracePeriod: 15 * time.Second,
-		MaxConnections:      64,
-		MaxRequestSize:      4 * 1024 * 1024,
 		WorkerCount:         2,
 		QueueSoftLimit:      10000,
 		QueueHardLimit:      20000,
@@ -136,16 +119,4 @@ func defaultDataDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".local", "share", "dmem"), nil
-}
-
-func defaultRuntimeDir() (string, error) {
-	xdg := os.Getenv("XDG_RUNTIME_DIR")
-	if xdg != "" {
-		if !filepath.IsAbs(xdg) {
-			return "", errors.New("XDG_RUNTIME_DIR must be absolute when set")
-		}
-		return filepath.Join(xdg, "dmem"), nil
-	}
-	uid := os.Getuid()
-	return fmt.Sprintf("/tmp/dmem-%d/dmem", uid), nil
 }

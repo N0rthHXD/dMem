@@ -21,7 +21,6 @@ var forbiddenImports = []string{
 	modulePrefix + "internal/protocol",
 	modulePrefix + "internal/storage",
 	modulePrefix + "internal/jobs",
-	modulePrefix + "internal/api",
 }
 
 // gatewayPackages is the expected set of direct gateway module packages. The

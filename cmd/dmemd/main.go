@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,14 +29,6 @@ var (
 	errCommandFailed  = errors.New("maintenance command failed")
 	errDatabaseExists = errors.New("database already exists")
 )
-
-type commandError struct {
-	code int
-	err  error
-}
-
-func (e commandError) Error() string { return e.err.Error() }
-func (e commandError) Unwrap() error { return e.err }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -63,29 +53,15 @@ func main() {
 			runDaemon(ctx, configPath)
 			return
 		case "config":
-			if err := runConfig(ctx, configPath, rest[1:], os.Stdout); err != nil {
+			if err := runConfig(configPath, rest[1:], os.Stdout); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(2)
-			}
-			return
-		case "status", "reload":
-			if err := runConfig(ctx, configPath, rest, os.Stdout); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(commandExitCode(err))
 			}
 			return
 		}
 	}
 	fmt.Fprintln(os.Stderr, errUsage)
 	os.Exit(2)
-}
-
-func commandExitCode(err error) int {
-	var commandErr commandError
-	if errors.As(err, &commandErr) {
-		return commandErr.code
-	}
-	return 1
 }
 
 func extractGlobalConfig(args []string) (configPath string, rest []string, err error) {
@@ -147,63 +123,18 @@ func handleSIGHUPReloads(signals <-chan os.Signal, d *daemon.Daemon) {
 	}
 }
 
-func runConfig(ctx context.Context, configPath string, args []string, output io.Writer) error {
-	if len(args) != 1 {
+func runConfig(configPath string, args []string, output io.Writer) error {
+	if len(args) != 1 || args[0] != "validate" {
 		return errUsage
 	}
-	switch args[0] {
-	case "validate":
-		cfg, err := config.Load(configPath)
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(output).Encode(struct {
-			SourceIdentity    string `json:"source_identity"`
-			EffectiveIdentity string `json:"effective_identity"`
-		}{cfg.SourceIdentity, cfg.EffectiveIdentity})
-	case "status", "reload":
-		cfg, err := config.Load(configPath)
-		if err != nil {
-			return err
-		}
-		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", cfg.Endpoint)
-		}}}
-		defer client.CloseIdleConnections()
-		method, path := http.MethodGet, "/v1/config"
-		if args[0] == "reload" {
-			method, path = http.MethodPost, "/v1/config/reload"
-		}
-		req, err := http.NewRequestWithContext(ctx, method, "http://localhost"+path, strings.NewReader("{}"))
-		if err != nil {
-			return err
-		}
-		req.Header.Set("X-Caller-ID", "dmemd")
-		if method == http.MethodPost {
-			req.Header.Set("Idempotency-Key", fmt.Sprintf("config-reload-%d", time.Now().UnixNano()))
-			req.Header.Set("Content-Type", "application/json")
-		}
-		response, err := client.Do(req)
-		if err != nil {
-			return commandError{code: 3, err: fmt.Errorf("daemon unavailable: %w", err)}
-		}
-		defer response.Body.Close()
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			body, _ := io.ReadAll(response.Body)
-			code := 1
-			switch response.StatusCode {
-			case http.StatusConflict, http.StatusUnprocessableEntity:
-				code = 4
-			case http.StatusTooManyRequests, http.StatusServiceUnavailable:
-				code = 5
-			}
-			return commandError{code: code, err: fmt.Errorf("configuration request failed: %s", strings.TrimSpace(string(body)))}
-		}
-		_, err = io.Copy(output, response.Body)
+	cfg, err := config.Load(configPath)
+	if err != nil {
 		return err
-	default:
-		return errUsage
 	}
+	return json.NewEncoder(output).Encode(struct {
+		SourceIdentity    string `json:"source_identity"`
+		EffectiveIdentity string `json:"effective_identity"`
+	}{cfg.SourceIdentity, cfg.EffectiveIdentity})
 }
 
 type localConfig struct {

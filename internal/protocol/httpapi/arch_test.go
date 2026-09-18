@@ -23,13 +23,12 @@ var forbiddenProtocolImports = []string{
 }
 
 // forbiddenProtocolImportPrefixes are package trees a protocol adapter must
-// never import: persistence, job runtime, the removed API package, runtime
-// adapters, and the pure retrieval algorithm implementation. The adapter
-// depends on gateway module contracts, not their runtime implementations.
+// never import: persistence, job runtime, runtime adapters, and the pure
+// retrieval algorithm implementation. The adapter depends on gateway module
+// contracts, not their runtime implementations.
 var forbiddenProtocolImportPrefixes = []string{
 	archModulePrefix + "internal/storage",
 	archModulePrefix + "internal/jobs",
-	archModulePrefix + "internal/api",
 	archModulePrefix + "internal/provider",
 	archModulePrefix + "internal/config",
 	archModulePrefix + "internal/retrieval",

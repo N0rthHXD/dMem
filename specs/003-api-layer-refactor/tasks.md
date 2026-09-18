@@ -322,26 +322,26 @@ remove UDS/server ownership.
 
 **Dependencies**: Phase 4.
 
-- [ ] T064 [RUNTIME] Recompose startup around SQLite capability adapters,
+- [X] T064 [RUNTIME] Recompose startup around SQLite capability adapters,
   gateway services, providers, workers, and the HTTP protocol handler
-- [ ] T065 [RUNTIME] Expose the HTTP handler from runtime assembly without
+- [X] T065 [RUNTIME] Expose the HTTP handler from runtime assembly without
   creating a production listener
-- [ ] T066 [RUNTIME] Preserve worker startup/shutdown, configuration snapshots,
+- [X] T066 [RUNTIME] Preserve worker startup/shutdown, configuration snapshots,
   provider updates, generation fences, integrity checks, and graceful close
-- [ ] T067 [CLEAN] Remove `internal/api` after all replacement routes and gateway
+- [X] T067 [CLEAN] Remove `internal/api` after all replacement routes and gateway
   tests pass
-- [ ] T068 [CLEAN] Remove Unix listener creation, socket permission management,
+- [X] T068 [CLEAN] Remove Unix listener creation, socket permission management,
   stale socket cleanup, socket identity tracking, connection limiter, and UDS
   client helpers
-- [ ] T069 [CLEAN] Remove `http.Server` ownership and old API handler fields from
+- [X] T069 [CLEAN] Remove `http.Server` ownership and old API handler fields from
   the daemon/runtime
-- [ ] T070 [CLEAN] Remove socket-only and old server-only configuration fields,
+- [X] T070 [CLEAN] Remove socket-only and old server-only configuration fields,
   validation, examples, and command behavior without compatibility aliases
-- [ ] T071 [TEST] Replace daemon API/OpenAPI/UDS tests with runtime composition,
+- [X] T071 [TEST] Replace daemon API/OpenAPI/UDS tests with runtime composition,
   Gateway integration, and HTTP adapter tests, then delete obsolete tests
-- [ ] T072 [TEST] Update maintenance, portability, configuration, and release
+- [X] T072 [TEST] Update maintenance, portability, configuration, and release
   smoke tests so they call stable runtime/gateway boundaries rather than UDS
-- [ ] T073 [CLEAN] Remove dependencies used only by old OpenAPI runtime tests or
+- [X] T073 [CLEAN] Remove dependencies used only by old OpenAPI runtime tests or
   the deleted UDS API, then run `go mod tidy`
 
 **Checkpoint**:

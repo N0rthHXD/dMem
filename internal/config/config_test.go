@@ -247,15 +247,10 @@ func TestGraphEnabledExplicitFalse(t *testing.T) {
 
 [instance]
 data_dir = "/tmp/dmem-test/data"
-runtime_dir = "/tmp/dmem-test/run"
 database_filename = "dmem.db"
-socket_filename = "dmem.sock"
 
 [server]
-request_timeout = "30s"
 shutdown_grace_period = "15s"
-max_connections = 64
-max_request_bytes = 4194304
 
 [jobs]
 worker_count = 2
@@ -302,15 +297,10 @@ func TestGraphEnabledChangesEffectiveIdentity(t *testing.T) {
 
 [instance]
 data_dir = "/tmp/dmem-test/data"
-runtime_dir = "/tmp/dmem-test/run"
 database_filename = "dmem.db"
-socket_filename = "dmem.sock"
 
 [server]
-request_timeout = "30s"
 shutdown_grace_period = "15s"
-max_connections = 64
-max_request_bytes = 4194304
 
 [jobs]
 worker_count = 2
@@ -361,9 +351,6 @@ func TestDurationsParsed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RequestTimeout != 30*time.Second {
-		t.Errorf("RequestTimeout = %v", cfg.RequestTimeout)
-	}
 	if cfg.ShutdownGracePeriod != 15*time.Second {
 		t.Errorf("ShutdownGracePeriod = %v", cfg.ShutdownGracePeriod)
 	}
@@ -380,9 +367,6 @@ func TestDerivedPaths(t *testing.T) {
 	}
 	if cfg.DatabasePath != filepath.Join(cfg.DataDir, "dmem.db") {
 		t.Errorf("DatabasePath = %q", cfg.DatabasePath)
-	}
-	if cfg.Endpoint != filepath.Join(cfg.RuntimeDir, "dmem.sock") {
-		t.Errorf("Endpoint = %q", cfg.Endpoint)
 	}
 }
 

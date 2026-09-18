@@ -1,3 +1,10 @@
+// Package daemon is the runtime composition root. It assembles the SQLite
+// capability adapters, the Memory Gateway services, provider adapters, workers,
+// and the HTTP protocol handler from one immutable configuration snapshot.
+//
+// The runtime exposes the assembled http.Handler but never creates a listener:
+// transport, TLS, authentication, and network exposure are deliberately out of
+// scope for this refactor.
 package daemon
 
 import (
@@ -7,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,22 +23,27 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/aggregate"
-	"github.com/N0rthHXD/dMem/internal/api"
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
 	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
+	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/internal/identity"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/jobs"
+	"github.com/N0rthHXD/dMem/internal/protocol/httpapi"
 	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
+// Daemon is the assembled runtime. It owns the storage adapters, gateway
+// services, job workers, provider clients, and the protocol handler. It does
+// not own a listener or an http.Server.
 type Daemon struct {
 	lock             *instance.Lock
 	store            *storage.Store
@@ -40,12 +51,8 @@ type Daemon struct {
 	aggregateService *aggregate.Service
 	manager          *config.Manager
 	retrievalService *gwretrieval.ServiceImpl
-	listener         net.Listener
-	server           *http.Server
-	handler          *api.Handler
+	handler          http.Handler
 	jobs             *jobs.Service
-	endpoint         string
-	socketInfo       os.FileInfo
 	reloadMu         sync.Mutex
 	lastAttempt      config.ActivationResult
 	closeOnce        sync.Once
@@ -115,19 +122,22 @@ func StartStaging(ctx context.Context, cfg config.Config) (_ *Daemon, err error)
 	return startService(ctx, cfg, jobs.NoopProcessor{}, nil, false)
 }
 
+// Handler returns the protocol handler assembled from the gateway modules. The
+// runtime does not create a listener; the caller owns transport and lifecycle.
+func (d *Daemon) Handler() http.Handler {
+	return d.handler
+}
+
 func startService(ctx context.Context, cfg config.Config, processor jobs.Processor, aggregateProvider domain.AggregateProvider, startWorkers bool) (_ *Daemon, err error) {
 	if err := prepareDir(cfg.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("prepare data directory: %w", err)
-	}
-	if err := prepareDir(cfg.RuntimeDir, 0o700); err != nil {
-		return nil, fmt.Errorf("prepare runtime directory: %w", err)
 	}
 
 	lock, err := instance.Acquire(filepath.Join(cfg.DataDir, "daemon.lock"))
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{lock: lock, endpoint: cfg.Endpoint}
+	d := &Daemon{lock: lock}
 	defer func() {
 		if err != nil {
 			_ = d.cleanup()
@@ -147,10 +157,6 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 			slog.Error("storage integrity check failed", "error", err)
 		}
 	}()
-	ftsState, err := d.store.IndexState(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read FTS state: %w", err)
-	}
 	repository := storage.NewRepository(d.store, domain.Runtime{Now: time.Now, ID: identity.UUID}, cfg.QueueSoftLimit, cfg.QueueHardLimit, cfg.MaxAttempts, cfg.ProcessingVersion)
 	d.repository = repository
 	repository.SetDiskFreeThresholds(cfg.DiskSoftFree, cfg.DiskHardFree)
@@ -187,46 +193,22 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 			return nil, err
 		}
 	}
-	if err := clearStaleSocket(cfg.Endpoint); err != nil {
-		return nil, err
-	}
-	d.listener, err = net.Listen("unix", cfg.Endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("listen on Unix socket: %w", err)
-	}
-	if err := os.Chmod(cfg.Endpoint, 0o600); err != nil {
-		return nil, fmt.Errorf("set socket permissions: %w", err)
-	}
-	d.socketInfo, err = os.Lstat(cfg.Endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("inspect Unix socket: %w", err)
-	}
-	d.listener = limitListener(d.listener, cfg.MaxConnections)
 	recall := storage.NewRecallCapability(repository)
 	d.retrievalService = gwretrieval.NewService(gwretrieval.Ports{
 		ReferenceTime: recall, Capabilities: recall, Candidates: recall, Telemetry: recall,
 		Policy: retrievalPolicyAuthorizer{authorizer: policyService},
 	}, recallDefaults(cfg))
-	d.handler = api.NewHandler(ftsState, api.HandlerDependencies{
-		Repository: repository, AggregateService: aggregateService, ProcessorHealth: d.jobs,
-		MemoryGateway:    memory.NewService(storage.NewMemoryCapability(repository)),
-		FeedbackGateway:  feedback.NewService(storage.NewFeedbackCapability(repository)),
-		RetrievalGateway: d.retrievalService,
-		MaxRequestSize:   cfg.MaxRequestSize, ID: identity.UUID, Configuration: d,
+	handler, err := httpapi.New(httpapi.Dependencies{
+		Memory:   memory.NewService(storage.NewMemoryCapability(repository)),
+		Recall:   d.retrievalService,
+		Feedback: feedback.NewService(storage.NewFeedbackCapability(repository)),
+		Events:   extraction.NewService(storage.NewEventCapability(repository)),
+		Scopes:   scope.NewService(storage.NewScopeCapability(repository)),
 	})
-	d.server = &http.Server{
-		Handler:           d.handler.Routes(),
-		ReadHeaderTimeout: cfg.RequestTimeout,
-		ReadTimeout:       cfg.RequestTimeout,
-		WriteTimeout:      cfg.RequestTimeout,
-		IdleTimeout:       cfg.RequestTimeout,
+	if err != nil {
+		return nil, err
 	}
-	listener := d.listener
-	go func() {
-		if serveErr := d.server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			d.handler.SetReady(false)
-		}
-	}()
+	d.handler = handler
 	return d, nil
 }
 
@@ -272,10 +254,6 @@ func (d *Daemon) ConfigurationStatus() (*config.Snapshot, config.ActivationResul
 		return nil, config.ActivationResult{}
 	}
 	return d.manager.Snapshot(), d.lastAttempt
-}
-
-func (d *Daemon) ReloadConfiguration(ctx context.Context) (config.ActivationResult, error) {
-	return d.Reload(ctx, config.TriggerAPI)
 }
 
 func (d *Daemon) recordActivation(ctx context.Context, result config.ActivationResult, previous, snapshot *config.Snapshot) error {
@@ -608,12 +586,6 @@ func recallDefaults(cfg config.Config) gwretrieval.Defaults {
 
 func (d *Daemon) Close(ctx context.Context) error {
 	d.closeOnce.Do(func() {
-		if d.handler != nil {
-			d.handler.SetReady(false)
-		}
-		if d.server != nil {
-			d.closeErr = d.server.Shutdown(ctx)
-		}
 		if d.jobs != nil {
 			d.closeErr = errors.Join(d.closeErr, d.jobs.Shutdown(ctx))
 			d.jobs = nil
@@ -625,12 +597,6 @@ func (d *Daemon) Close(ctx context.Context) error {
 
 func (d *Daemon) cleanup() error {
 	var errs []error
-	if d.listener != nil {
-		if err := d.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			errs = append(errs, err)
-		}
-		d.listener = nil
-	}
 	if d.jobs != nil {
 		errs = append(errs, d.jobs.Shutdown(context.Background()))
 		d.jobs = nil
@@ -638,12 +604,6 @@ func (d *Daemon) cleanup() error {
 	if d.store != nil {
 		errs = append(errs, d.store.Close())
 		d.store = nil
-	}
-	if d.socketInfo != nil {
-		if current, err := os.Lstat(d.endpoint); err == nil && os.SameFile(current, d.socketInfo) {
-			errs = append(errs, os.Remove(d.endpoint))
-		}
-		d.socketInfo = nil
 	}
 	if d.lock != nil {
 		errs = append(errs, d.lock.Close())
@@ -696,72 +656,4 @@ func rejectSymlinkComponents(path string) error {
 		}
 	}
 	return nil
-}
-
-func clearStaleSocket(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect existing endpoint: %w", err)
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return errors.New("existing endpoint is not a Unix socket")
-	}
-	conn, dialErr := net.DialTimeout("unix", path, 250*time.Millisecond)
-	if dialErr == nil {
-		conn.Close()
-		return errors.New("Unix socket is already served by an active process")
-	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("remove stale Unix socket: %w", err)
-	}
-	return nil
-}
-
-type limitedListener struct {
-	net.Listener
-	sem       chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
-}
-
-func limitListener(listener net.Listener, maximum int) net.Listener {
-	return &limitedListener{
-		Listener: listener,
-		sem:      make(chan struct{}, maximum),
-		done:     make(chan struct{}),
-	}
-}
-
-func (l *limitedListener) Accept() (net.Conn, error) {
-	select {
-	case l.sem <- struct{}{}:
-	case <-l.done:
-		return nil, net.ErrClosed
-	}
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		<-l.sem
-		return nil, err
-	}
-	return &limitedConn{Conn: conn, release: func() { <-l.sem }}, nil
-}
-
-func (l *limitedListener) Close() error {
-	l.closeOnce.Do(func() { close(l.done) })
-	return l.Listener.Close()
-}
-
-type limitedConn struct {
-	net.Conn
-	releaseOnce sync.Once
-	release     func()
-}
-
-func (c *limitedConn) Close() error {
-	err := c.Conn.Close()
-	c.releaseOnce.Do(c.release)
-	return err
 }

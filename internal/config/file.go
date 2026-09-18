@@ -65,16 +65,11 @@ type contextTable struct {
 
 type instanceTable struct {
 	DataDir          string `toml:"data_dir"`
-	RuntimeDir       string `toml:"runtime_dir"`
 	DatabaseFilename string `toml:"database_filename"`
-	SocketFilename   string `toml:"socket_filename"`
 }
 
 type serverTable struct {
-	RequestTimeout      string `toml:"request_timeout"`
 	ShutdownGracePeriod string `toml:"shutdown_grace_period"`
-	MaxConnections      int    `toml:"max_connections"`
-	MaxRequestBytes     int64  `toml:"max_request_bytes"`
 }
 
 type jobsTable struct {

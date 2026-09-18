@@ -9,14 +9,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -558,14 +560,6 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 }
 
 func probeStagingDaemon(ctx context.Context, staging, databaseFilename string) error {
-	runtimeDir, err := os.MkdirTemp("", ".dmem-restore-runtime-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(runtimeDir)
-	if err := os.Chmod(runtimeDir, 0o700); err != nil {
-		return err
-	}
 	databasePath := filepath.Join(staging, databaseFilename)
 	pristinePath := filepath.Join(staging, ".restore-probe-pristine.sqlite")
 	if err := copyRegularFile(databasePath, pristinePath); err != nil {
@@ -581,8 +575,6 @@ func probeStagingDaemon(ctx context.Context, staging, databaseFilename string) e
 	}
 	cfg.DataDir = staging
 	cfg.DatabasePath = databasePath
-	cfg.RuntimeDir = runtimeDir
-	cfg.Endpoint = filepath.Join(runtimeDir, "staging.sock")
 	cfg.ProcessingProvider = config.ProviderConfig{}
 	cfg.EmbeddingProvider = config.ProviderConfig{}
 	cfg.DiskSoftFree, cfg.DiskHardFree = 0, 0
@@ -590,7 +582,7 @@ func probeStagingDaemon(ctx context.Context, staging, databaseFilename string) e
 	if err != nil {
 		return err
 	}
-	probeErr := probeStagingHTTP(ctx, cfg.Endpoint)
+	probeErr := probeStagingHandler(ctx, daemonInstance.Handler())
 	closeCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGracePeriod)
 	closeErr := daemonInstance.Close(closeCtx)
 	cancel()
@@ -661,65 +653,50 @@ func addProbeCanaries(ctx context.Context, databasePath string) error {
 	return tx.Commit()
 }
 
-func probeStagingHTTP(ctx context.Context, endpoint string) error {
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", endpoint)
-	}}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/v1/health", nil)
-	if err != nil {
-		return err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	var health struct {
-		Ready               bool   `json:"ready"`
-		ProcessAlive        bool   `json:"process_alive"`
-		StorageState        string `json:"storage_state"`
-		SchemaCompatibility string `json:"schema_compatibility"`
-		FTSState            string `json:"fts_state"`
-		ProcessorState      string `json:"processor_state"`
-		SemanticIndexState  string `json:"semantic_index_state"`
-		EntityIndexState    string `json:"entity_index_state"`
-		RelationIndexState  string `json:"relation_index_state"`
-		FeedbackState       string `json:"feedback_aggregate_state"`
-		AggregateState      string `json:"aggregate_state"`
-	}
-	err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&health)
-	closeErr := response.Body.Close()
-	if err != nil || closeErr != nil || response.StatusCode != http.StatusOK || !health.Ready || !health.ProcessAlive || health.StorageState != "ready" || health.SchemaCompatibility != "compatible" || health.FTSState != "ready" || health.ProcessorState != "not_configured" || health.SemanticIndexState != "rebuild_required" || health.EntityIndexState != "ready" || health.RelationIndexState != "ready" || health.FeedbackState != "ready" || health.AggregateState != "ready" {
-		return errors.New("staging daemon is not ready")
-	}
+// probeStagingHandler drives the restored database through the assembled
+// runtime protocol handler without creating a listener. It proves the restored
+// authority is queryable and that lexical recall executes against the rebuilt
+// index before the staging database is published.
+func probeStagingHandler(ctx context.Context, handler http.Handler) error {
 	for _, probe := range []struct {
-		query        string
-		capabilities []string
-		executed     []string
-		degraded     bool
-		reasons      []string
-		wantID       string
+		query  string
+		wantID string
 	}{
-		{"firstonly", []string{"keyword"}, []string{"keyword"}, false, []string{}, "00000000-0000-4000-8000-000000000064"},
-		{"common", []string{"keyword", "semantic"}, []string{"keyword"}, true, []string{"semantic_unavailable"}, "00000000-0000-4000-8000-000000000064"},
+		{"firstonly", "00000000-0000-4000-8000-000000000064"},
+		{"common", "00000000-0000-4000-8000-000000000064"},
 	} {
-		body, _ := json.Marshal(map[string]any{"query": probe.query, "space_ids": []string{"00000000-0000-4000-8000-000000000062"}, "debug": map[string]any{"capabilities": probe.capabilities}, "max_results": 10})
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/v1/recall", bytes.NewReader(body))
+		body, err := json.Marshal(map[string]any{
+			"query":       probe.query,
+			"scope_ids":   []string{"00000000-0000-4000-8000-000000000062"},
+			"max_results": 10,
+		})
+		if err != nil {
+			return err
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/recall", bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("X-Caller-ID", "restore-probe")
-		response, err := client.Do(request)
-		if err != nil {
-			return err
+		request.Header.Set("X-Caller-Subject-ID", "restore-probe")
+		request.Header.Set("Idempotency-Key", "restore-probe-"+probe.query)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			return fmt.Errorf("staging retrieval probe %q status %d: %s", probe.query, recorder.Code, strings.TrimSpace(recorder.Body.String()))
 		}
 		var result domain.RecallResponse
-		err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result)
-		closeErr = response.Body.Close()
-		if err != nil || closeErr != nil || response.StatusCode != http.StatusOK || !reflect.DeepEqual(result.Execution.RequestedCapabilities, probe.capabilities) || !reflect.DeepEqual(result.Execution.ExecutedCapabilities, probe.executed) || result.Execution.Degraded != probe.degraded || !reflect.DeepEqual(result.Execution.DegradationReasons, probe.reasons) || len(result.Context.Items) != 1 || result.Context.Items[0].MemoryID != probe.wantID {
+		if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+			return err
+		}
+		if len(result.Context.Items) != 1 || result.Context.Items[0].MemoryID != probe.wantID {
 			return errors.New("staging retrieval probe failed")
+		}
+		if !slices.Contains(result.Execution.ExecutedCapabilities, "keyword") {
+			return errors.New("staging retrieval probe did not execute the keyword capability")
+		}
+		if !result.Execution.Degraded || slices.Contains(result.Execution.ExecutedCapabilities, "semantic") {
+			return errors.New("staging retrieval probe did not report provider-free semantic degradation")
 		}
 	}
 	return nil

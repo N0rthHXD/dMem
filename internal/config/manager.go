@@ -189,23 +189,11 @@ func restartFieldsChanged(candidate, previous Config) []string {
 	if candidate.DataDir != previous.DataDir {
 		changed = append(changed, "instance.data_dir")
 	}
-	if candidate.RuntimeDir != previous.RuntimeDir {
-		changed = append(changed, "instance.runtime_dir")
-	}
 	if candidate.DatabaseFilename != previous.DatabaseFilename {
 		changed = append(changed, "instance.database_filename")
 	}
-	if candidate.SocketFilename != previous.SocketFilename {
-		changed = append(changed, "instance.socket_filename")
-	}
 	if candidate.WorkerCount != previous.WorkerCount {
 		changed = append(changed, "jobs.worker_count")
-	}
-	if candidate.MaxConnections != previous.MaxConnections {
-		changed = append(changed, "server.max_connections")
-	}
-	if candidate.RequestTimeout != previous.RequestTimeout {
-		changed = append(changed, "server.request_timeout")
 	}
 	return changed
 }

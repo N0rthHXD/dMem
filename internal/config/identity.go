@@ -90,13 +90,8 @@ func PolicyIdentity(policy provider.Policy) string {
 type canonicalConfigStruct struct {
 	ConfigVersion       int               `json:"config_version"`
 	DataDir             string            `json:"data_dir"`
-	RuntimeDir          string            `json:"runtime_dir"`
 	DatabaseFilename    string            `json:"database_filename"`
-	SocketFilename      string            `json:"socket_filename"`
-	RequestTimeout      string            `json:"request_timeout"`
 	ShutdownGracePeriod string            `json:"shutdown_grace_period"`
-	MaxConnections      int               `json:"max_connections"`
-	MaxRequestBytes     int64             `json:"max_request_bytes"`
 	WorkerCount         int               `json:"worker_count"`
 	QueueSoftLimit      int               `json:"queue_soft_limit"`
 	QueueHardLimit      int               `json:"queue_hard_limit"`
@@ -176,13 +171,8 @@ func canonicalConfig(cfg Config) canonicalConfigStruct {
 	c := canonicalConfigStruct{
 		ConfigVersion:       cfg.ConfigVersion,
 		DataDir:             cfg.DataDir,
-		RuntimeDir:          cfg.RuntimeDir,
 		DatabaseFilename:    cfg.DatabaseFilename,
-		SocketFilename:      cfg.SocketFilename,
-		RequestTimeout:      cfg.RequestTimeout.String(),
 		ShutdownGracePeriod: cfg.ShutdownGracePeriod.String(),
-		MaxConnections:      cfg.MaxConnections,
-		MaxRequestBytes:     cfg.MaxRequestSize,
 		WorkerCount:         cfg.WorkerCount,
 		QueueSoftLimit:      cfg.QueueSoftLimit,
 		QueueHardLimit:      cfg.QueueHardLimit,
