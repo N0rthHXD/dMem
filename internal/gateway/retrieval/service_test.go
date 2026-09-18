@@ -437,3 +437,63 @@ func TestBuildResultAppliesExplainPolicyAndBounds(t *testing.T) {
 }
 
 func stringPointer(value string) *string { return &value }
+
+type fakePolicyAuthorizer struct {
+	decisions map[string]PolicyDecision
+	err       error
+	requests  []PolicyRequest
+}
+
+func (f *fakePolicyAuthorizer) Authorize(_ context.Context, _ gateway.CallContext, request PolicyRequest) (PolicyDecision, error) {
+	f.requests = append(f.requests, request)
+	if f.err != nil {
+		return PolicyDecision{}, f.err
+	}
+	return f.decisions[request.Capability], nil
+}
+
+func TestRecallRoutesRecallAndSemanticQueryThroughPolicyPort(t *testing.T) {
+	authorizer := &fakePolicyAuthorizer{decisions: map[string]PolicyDecision{
+		PolicyCapabilityRecall: {Allowed: false, ReasonCode: "space_assignment"},
+	}}
+	store := &fakeRecallStore{}
+	ports := fakePorts(store)
+	ports.Policy = authorizer
+	if _, err := NewService(ports, recallDefaults()).Recall(context.Background(), gateway.CallContext{}, Query{Query: "query", SpaceIDs: []string{"space-1"}}); !gateway.IsCode(err, gateway.ErrorPermissionDenied) {
+		t.Fatalf("error = %v, want permission_denied", err)
+	}
+	if store.calls != 0 || store.statusRequest.Requested != nil {
+		t.Fatalf("recall reached the store after a recall denial: calls=%d", store.calls)
+	}
+
+	authorizer = &fakePolicyAuthorizer{decisions: map[string]PolicyDecision{
+		PolicyCapabilityRecall:        {Allowed: true},
+		PolicyCapabilitySemanticQuery: {Allowed: false, ReasonCode: "default_deny"},
+	}}
+	store = &fakeRecallStore{}
+	ports = fakePorts(store)
+	ports.Policy = authorizer
+	result, err := NewService(ports, recallDefaults()).Recall(context.Background(), gateway.CallContext{}, Query{
+		Query: "query", SpaceIDs: []string{"space-1"}, Channels: []string{"keyword", "semantic"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(store.params.EffectiveChannels, []string{"keyword"}) {
+		t.Fatalf("effective capabilities = %v", store.params.EffectiveChannels)
+	}
+	if !result.Execution.Degraded || !reflect.DeepEqual(result.Execution.DegradationReasons, []string{"semantic_policy_denied"}) {
+		t.Fatalf("degradation = %+v", result.Execution)
+	}
+	if len(authorizer.requests) != 2 || authorizer.requests[1].Capability != PolicyCapabilitySemanticQuery {
+		t.Fatalf("policy requests = %+v", authorizer.requests)
+	}
+}
+
+func TestRecallClassifiesPolicyPortFailure(t *testing.T) {
+	ports := fakePorts(&fakeRecallStore{})
+	ports.Policy = &fakePolicyAuthorizer{err: errors.New("policy store failed")}
+	if _, err := NewService(ports, recallDefaults()).Recall(context.Background(), gateway.CallContext{}, Query{Query: "query", SpaceIDs: []string{"space-1"}}); !gateway.IsCode(err, gateway.ErrorInternal) {
+		t.Fatalf("error = %v, want internal", err)
+	}
+}

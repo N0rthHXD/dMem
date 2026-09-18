@@ -7,7 +7,38 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 )
+
+// workClaim maps a claimed job onto the extraction-owned work identity used by
+// the worker-facing contract under test.
+func workClaim(claim ClaimedJob) extraction.WorkClaim {
+	return extraction.WorkClaim{
+		JobID:             claim.Job.JobID,
+		OperationID:       claim.Job.OperationID,
+		JobType:           claim.Job.JobType,
+		TargetType:        claim.Job.TargetType,
+		TargetID:          claim.Job.TargetID,
+		Attempt:           claim.Job.AttemptCount,
+		MaxAttempts:       claim.Job.MaxAttempts,
+		ProcessingVersion: claim.ProcessingVersion,
+		LeaseOwner:        claim.LeaseOwner,
+		LeaseGeneration:   claim.LeaseGeneration,
+	}
+}
+
+// commitProcessing exercises the extraction-owned fenced commit contract rather
+// than the repository routine directly.
+func commitProcessing(t *testing.T, repository *Repository, claim ClaimedJob, input domain.ProcessingInput, result domain.ProcessingResult) error {
+	t.Helper()
+	return NewExtractionWorkCapability(repository).Commit(context.Background(), workClaim(claim), input, extraction.CommitRequest{Result: result})
+}
+
+// failProcessing exercises the extraction-owned failure contract.
+func failProcessing(t *testing.T, repository *Repository, claim ClaimedJob, input domain.ProcessingInput, failure JobFailure) error {
+	t.Helper()
+	return NewExtractionWorkCapability(repository).Fail(context.Background(), workClaim(claim), input, extraction.Failure{Code: failure.Code, Message: failure.Message, Transient: failure.Transient, Backoff: failure.Backoff})
+}
 
 func claimProcessingJob(t *testing.T, repository *Repository, maxAttempts int) (ClaimedJob, domain.ProcessingInput) {
 	t.Helper()
@@ -19,7 +50,7 @@ func claimProcessingJob(t *testing.T, repository *Repository, maxAttempts int) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := repository.PrepareProcessing(context.Background(), claim, ProcessingPreparationParams{ProcessorIdentity: "processor/test", AllowedMemoryTypes: []string{"fact"}, MaxCandidates: 2, MaxContentChars: 100, MaxContextEvents: 2, MaxContextMemories: 2})
+	input, err := NewExtractionWorkCapability(repository).Prepare(context.Background(), workClaim(claim), extraction.PrepareRequest{ProcessorIdentity: "processor/test", AllowedMemoryTypes: []string{"fact"}, MaxCandidates: 2, MaxContentChars: 100, MaxContextEvents: 2, MaxContextMemories: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +73,7 @@ func TestProcessingCommitAtomicallyStoresCandidatesEvidenceAuditAttemptAndStatus
 	repository, _ := newMemoryTestRepository(t)
 	claim, input := claimProcessingJob(t, repository, 3)
 	result := domain.ProcessingResult{Code: "candidates_extracted", Proposals: []domain.MemoryCandidateProposal{processingCandidate("remember this")}, ProviderIdentity: "provider/test", ModelIdentity: "model-test", ProviderRequestID: "request-1", PolicyVersion: "policy-1", Usage: domain.ProcessingUsage{InputTokens: 2, OutputTokens: 3}}
-	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); err != nil {
+	if err := commitProcessing(t, repository, claim, input, result); err != nil {
 		t.Fatal(err)
 	}
 	var jobStatus, eventStatus, resultCode, attemptOutcome string
@@ -59,7 +90,7 @@ func TestProcessingCommitRejectsNonCreateProposal(t *testing.T) {
 	proposal := processingCandidate("supplemented memory")
 	proposal.Action = domain.ConsolidationRefine
 	result := domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted, Proposals: []domain.MemoryCandidateProposal{proposal}}
-	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); !errors.Is(err, ErrInvalidEvolutionProposal) {
+	if err := commitProcessing(t, repository, claim, input, result); !errors.Is(err, ErrInvalidEvolutionProposal) {
 		t.Fatalf("CommitProcessing() error = %v, want ErrInvalidEvolutionProposal", err)
 	}
 	var candidates int
@@ -73,7 +104,7 @@ func TestProcessingCommitPersistsSafeOmissionSummary(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	claim, input := claimProcessingJob(t, repository, 3)
 	result := domain.ProcessingResult{Code: domain.ProcessingNoMemory, OmittedContextCount: 2, OmissionSummary: map[string]int{"context_limit": 1, "context_memory_policy_denied": 1}}
-	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result}); err != nil {
+	if err := commitProcessing(t, repository, claim, input, result); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -121,7 +152,7 @@ func TestProcessingCommitLeaseLossAndTransactionFailureLeaveNoPartialResult(t *t
 			claim, input := claimProcessingJob(t, repository, 3)
 			result := domain.ProcessingResult{Code: "candidates_extracted", Proposals: []domain.MemoryCandidateProposal{processingCandidate("first")}}
 			test.mutate(repository, &claim, &result)
-			err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: result})
+			err := commitProcessing(t, repository, claim, input, result)
 			if err == nil {
 				t.Fatal("commit succeeded")
 			}
@@ -143,7 +174,7 @@ func TestProcessingCommitRejectsStaleConfigurationGeneration(t *testing.T) {
 	claim, input := claimProcessingJob(t, repository, 3)
 	repository.SetProcessingGeneration(2, 0, "processing-v2")
 
-	err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: domain.ProcessingResult{Code: domain.ProcessingNoMemory}})
+	err := commitProcessing(t, repository, claim, input, domain.ProcessingResult{Code: domain.ProcessingNoMemory})
 	if !errors.Is(err, ErrStaleGeneration) {
 		t.Fatalf("CommitProcessing() error = %v, want ErrStaleGeneration", err)
 	}
@@ -162,10 +193,10 @@ func TestProcessingCommitAndFailRejectExpiredLeaseBeforeRecovery(t *testing.T) {
 		run  func(*Repository, ClaimedJob, domain.ProcessingInput) error
 	}{
 		{name: "commit", run: func(repository *Repository, claim ClaimedJob, input domain.ProcessingInput) error {
-			return repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: domain.ProcessingResult{Code: domain.ProcessingNoMemory}})
+			return commitProcessing(t, repository, claim, input, domain.ProcessingResult{Code: domain.ProcessingNoMemory})
 		}},
 		{name: "fail", run: func(repository *Repository, claim ClaimedJob, input domain.ProcessingInput) error {
-			return repository.FailProcessing(context.Background(), claim, input, JobFailure{Code: "failed", Message: "safe failure", Transient: false})
+			return failProcessing(t, repository, claim, input, JobFailure{Code: "failed", Message: "safe failure", Transient: false})
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -196,7 +227,7 @@ func TestProcessingOutcomeStatusesAndTransientExhaustion(t *testing.T) {
 		t.Run(test.code, func(t *testing.T) {
 			repository, _ := newMemoryTestRepository(t)
 			claim, input := claimProcessingJob(t, repository, 3)
-			if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: domain.ProcessingResult{Code: domain.ProcessingOutcome(test.code), ReasonCode: "reason"}}); err != nil {
+			if err := commitProcessing(t, repository, claim, input, domain.ProcessingResult{Code: domain.ProcessingOutcome(test.code), ReasonCode: "reason"}); err != nil {
 				t.Fatal(err)
 			}
 			var jobStatus, eventStatus string
@@ -207,14 +238,14 @@ func TestProcessingOutcomeStatusesAndTransientExhaustion(t *testing.T) {
 	}
 	repository, _ := newMemoryTestRepository(t)
 	claim, input := claimProcessingJob(t, repository, 1)
-	if err := repository.FailProcessing(context.Background(), claim, input, JobFailure{Code: "transient_failure", Message: "busy", Transient: true, Backoff: time.Second}); err != nil {
+	if err := failProcessing(t, repository, claim, input, JobFailure{Code: "transient_failure", Message: "busy", Transient: true, Backoff: time.Second}); err != nil {
 		t.Fatal(err)
 	}
 	var jobStatus, eventStatus string
 	if err := repository.store.reader.QueryRow(`SELECT (SELECT status FROM jobs WHERE job_id='process-job'),(SELECT processing_status FROM raw_events WHERE event_id='event-1')`).Scan(&jobStatus, &eventStatus); err != nil || jobStatus != "failed" || eventStatus != "failed" {
 		t.Fatalf("terminal transient = %s/%s err=%v", jobStatus, eventStatus, err)
 	}
-	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: domain.ProcessingResult{Code: "no_memory"}}); !errors.Is(err, ErrLeaseLost) {
+	if err := commitProcessing(t, repository, claim, input, domain.ProcessingResult{Code: "no_memory"}); !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("late commit error = %v", err)
 	}
 }
@@ -222,7 +253,7 @@ func TestProcessingOutcomeStatusesAndTransientExhaustion(t *testing.T) {
 func TestProcessingReplayUsesExistingResultForSameVersionAndCreatesForNewVersion(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	claim, input := claimProcessingJob(t, repository, 3)
-	if err := repository.CommitProcessing(context.Background(), claim, input, ProcessingCommit{Result: domain.ProcessingResult{Code: domain.ProcessingNoMemory}}); err != nil {
+	if err := commitProcessing(t, repository, claim, input, domain.ProcessingResult{Code: domain.ProcessingNoMemory}); err != nil {
 		t.Fatal(err)
 	}
 	identity := WriteIdentity{CallerID: "caller", IdempotencyKey: "same-version", RequestID: "request", Method: "POST", Route: "/v1/events/{event_id}/replay", RequestHash: HashRequest("event-1")}

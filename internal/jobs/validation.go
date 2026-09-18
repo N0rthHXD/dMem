@@ -147,7 +147,7 @@ func validateCandidateEntities(revision domain.MemoryRevision) error {
 
 func validOmissionReason(value string) bool {
 	switch value {
-	case "context_limit", "context_space_not_allowed", "context_content_type_not_allowed", "context_source_type_not_allowed", "context_sensitivity_not_allowed", "invalid_context_event", "context_input_limit", "context_memory_sensitivity_not_allowed", "invalid_context_memory", "context_memory_policy_denied":
+	case "context_limit", "context_space_not_allowed", "context_content_type_not_allowed", "context_source_type_not_allowed", "context_sensitivity_not_allowed", "invalid_context_event", "context_input_limit", "context_memory_sensitivity_not_allowed", "invalid_context_memory", "context_memory_policy_denied", "context_memory_disclosure_denied":
 		return true
 	}
 	return false

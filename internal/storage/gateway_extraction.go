@@ -20,7 +20,8 @@ func NewEventCapability(repo *Repository) *EventCapability {
 }
 
 // IngestEvent atomically persists the raw event, its extraction job, audit
-// record, and idempotency result.
+// record, and idempotency result. Storage failures are translated into stable
+// gateway error codes while the original cause is retained.
 func (c *EventCapability) IngestEvent(ctx context.Context, identity gateway.WriteIdentity, params extraction.IngestParams) (extraction.IngestRecord, bool, error) {
 	result, replay, err := c.repo.IngestEvent(ctx, gatewayWriteIdentity(identity), IngestParams{
 		SpaceID:         params.SpaceID,
@@ -34,19 +35,24 @@ func (c *EventCapability) IngestEvent(ctx context.Context, identity gateway.Writ
 		Metadata:        params.Metadata,
 	})
 	if err != nil {
-		return extraction.IngestRecord{}, replay, err
+		return extraction.IngestRecord{}, replay, gatewayError(err)
 	}
 	return extraction.IngestRecord{
-		EventID:    result.EventID,
-		Status:     result.Status,
-		JobIDs:     result.JobIDs,
-		AcceptedAt: result.AcceptedAt,
+		OperationID: result.OperationID,
+		EventID:     result.EventID,
+		Status:      result.Status,
+		JobIDs:      result.JobIDs,
+		AcceptedAt:  result.AcceptedAt,
 	}, replay, nil
 }
 
 // GetEvent returns one raw event by identifier.
 func (c *EventCapability) GetEvent(ctx context.Context, eventID string) (domain.RawEvent, error) {
-	return c.repo.GetEvent(ctx, eventID)
+	event, err := c.repo.GetEvent(ctx, eventID)
+	if err != nil {
+		return domain.RawEvent{}, gatewayError(err)
+	}
+	return event, nil
 }
 
 // ExtractionWorkCapability adapts the SQLite job/processing routines to the

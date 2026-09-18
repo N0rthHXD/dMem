@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -18,6 +22,7 @@ type fakeJob struct {
 	job             domain.Job
 	generation      int
 	cancelRequested bool
+	embeddingSpace  string
 	failure         storage.JobFailure
 }
 
@@ -31,7 +36,60 @@ type fakeRepository struct {
 	heartbeatErr error
 	failures     []storage.JobFailure
 	maintenance  chan struct{}
-	processing   *domain.ProcessingInput
+	work         *fakeWorkStore
+}
+
+// workStore lazily binds the extraction work port to this repository double.
+func (r *fakeRepository) workStore() *fakeWorkStore {
+	if r.work == nil {
+		r.work = &fakeWorkStore{repository: r}
+	}
+	return r.work
+}
+
+// fakeWorkStore is the narrow extraction work port used by the job worker. It
+// implements only preparation, fenced commit, block, and failure, and keeps
+// provider-visible state out of the job lifecycle fake.
+type fakeWorkStore struct {
+	repository *fakeRepository
+	processing *domain.ProcessingInput
+}
+
+func (w *fakeWorkStore) Prepare(_ context.Context, claim extraction.WorkClaim, params extraction.PrepareRequest) (domain.ProcessingInput, error) {
+	w.repository.mu.Lock()
+	defer w.repository.mu.Unlock()
+	item := w.repository.find(claim.JobID)
+	if !validWorkClaim(item, claim) {
+		return domain.ProcessingInput{}, storage.ErrLeaseLost
+	}
+	if w.processing != nil {
+		input := *w.processing
+		input.ProcessorIdentity = params.ProcessorIdentity
+		input.ProcessingVersion = claim.ProcessingVersion
+		input.JobID = claim.JobID
+		input.Attempt = claim.Attempt
+		return input, nil
+	}
+	return domain.ProcessingInput{ProcessorIdentity: params.ProcessorIdentity, ProcessingVersion: claim.ProcessingVersion, JobID: claim.JobID, Attempt: claim.Attempt, Target: domain.ProcessingEvent{EventID: claim.TargetID}, Policy: domain.ProcessingPolicy{AllowedMemoryTypes: params.AllowedMemoryTypes, MaxCandidates: params.MaxCandidates, MaxContentChars: params.MaxContentChars}}, nil
+}
+
+func (w *fakeWorkStore) Commit(_ context.Context, claim extraction.WorkClaim, _ domain.ProcessingInput, commit extraction.CommitRequest) error {
+	return w.repository.complete(claim, storage.JobResult{Code: string(commit.Result.Code)})
+}
+
+func (w *fakeWorkStore) Block(_ context.Context, claim extraction.WorkClaim, reason string) error {
+	w.repository.mu.Lock()
+	defer w.repository.mu.Unlock()
+	item := w.repository.find(claim.JobID)
+	if !validWorkClaim(item, claim) {
+		return storage.ErrLeaseLost
+	}
+	item.job.Status, item.job.BlockedReasonCode = "blocked_policy", reason
+	return nil
+}
+
+func (w *fakeWorkStore) Fail(_ context.Context, claim extraction.WorkClaim, _ domain.ProcessingInput, failure extraction.Failure) error {
+	return w.repository.fail(claim, storage.JobFailure{Code: failure.Code, Message: failure.Message, Transient: failure.Transient, Backoff: failure.Backoff})
 }
 
 type capturedLog struct {
@@ -95,45 +153,25 @@ func (r *fakeRepository) HeartbeatJob(_ context.Context, claim storage.ClaimedJo
 	return item.cancelRequested, nil
 }
 
-func (r *fakeRepository) PrepareProcessing(_ context.Context, claim storage.ClaimedJob, params storage.ProcessingPreparationParams) (domain.ProcessingInput, error) {
+func (r *fakeRepository) EmbeddingScope(_ context.Context, claim storage.ClaimedJob) (string, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item := r.find(claim.Job.JobID)
-	if !validClaim(item, claim) {
-		return domain.ProcessingInput{}, storage.ErrLeaseLost
+	if item == nil || item.embeddingSpace == "" {
+		return "", false, nil
 	}
-	if r.processing != nil {
-		input := *r.processing
-		input.ProcessorIdentity = params.ProcessorIdentity
-		input.ProcessingVersion = claim.ProcessingVersion
-		input.JobID = claim.Job.JobID
-		input.Attempt = claim.Job.AttemptCount
-		return input, nil
-	}
-	return domain.ProcessingInput{ProcessorIdentity: params.ProcessorIdentity, ProcessingVersion: claim.ProcessingVersion, JobID: claim.Job.JobID, Attempt: claim.Job.AttemptCount, Target: domain.ProcessingEvent{EventID: claim.Job.TargetID}, Policy: domain.ProcessingPolicy{AllowedMemoryTypes: params.AllowedMemoryTypes, MaxCandidates: params.MaxCandidates, MaxContentChars: params.MaxContentChars}}, nil
-}
-
-func (r *fakeRepository) CommitProcessing(_ context.Context, claim storage.ClaimedJob, _ domain.ProcessingInput, commit storage.ProcessingCommit) error {
-	return r.CompleteJob(context.Background(), claim, storage.JobResult{Code: string(commit.Result.Code)})
-}
-
-func (r *fakeRepository) BlockJob(_ context.Context, claim storage.ClaimedJob, reason string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item := r.find(claim.Job.JobID)
-	item.job.Status, item.job.BlockedReasonCode = "blocked_policy", reason
-	return nil
-}
-
-func (r *fakeRepository) FailProcessing(_ context.Context, claim storage.ClaimedJob, _ domain.ProcessingInput, failure storage.JobFailure) error {
-	return r.FailJob(context.Background(), claim, failure)
+	return item.embeddingSpace, true, nil
 }
 
 func (r *fakeRepository) CompleteJob(_ context.Context, claim storage.ClaimedJob, result storage.JobResult) error {
+	return r.complete(workClaim(claim), result)
+}
+
+func (r *fakeRepository) complete(claim extraction.WorkClaim, result storage.JobResult) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	item := r.find(claim.Job.JobID)
-	if !validClaim(item, claim) {
+	item := r.find(claim.JobID)
+	if !validWorkClaim(item, claim) {
 		return storage.ErrLeaseLost
 	}
 	item.job.Status = "succeeded"
@@ -143,10 +181,14 @@ func (r *fakeRepository) CompleteJob(_ context.Context, claim storage.ClaimedJob
 }
 
 func (r *fakeRepository) FailJob(_ context.Context, claim storage.ClaimedJob, failure storage.JobFailure) error {
+	return r.fail(workClaim(claim), failure)
+}
+
+func (r *fakeRepository) fail(claim extraction.WorkClaim, failure storage.JobFailure) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	item := r.find(claim.Job.JobID)
-	if !validClaim(item, claim) {
+	item := r.find(claim.JobID)
+	if !validWorkClaim(item, claim) {
 		return storage.ErrLeaseLost
 	}
 	item.failure = failure
@@ -223,6 +265,21 @@ func validClaim(item *fakeJob, claim storage.ClaimedJob) bool {
 	return item != nil && item.job.Status == "running" && item.generation == claim.LeaseGeneration
 }
 
+func validWorkClaim(item *fakeJob, claim extraction.WorkClaim) bool {
+	return item != nil && item.job.Status == "running" && item.generation == claim.LeaseGeneration
+}
+
+// newService builds a job service and injects the extraction work port for the
+// fake repository, so tests keep one repository double for lifecycle and work.
+func newService(repository Repository, cfg config.Config, processor Processor, dependencies Dependencies) (*Service, error) {
+	if dependencies.Processing == nil {
+		if fake, ok := repository.(*fakeRepository); ok {
+			dependencies.Processing = fake.workStore()
+		}
+	}
+	return NewService(repository, cfg, processor, dependencies)
+}
+
 func testConfig() config.Config {
 	return config.Config{
 		WorkerCount:         1,
@@ -237,9 +294,13 @@ func pendingJob(id string, maxAttempts int) *fakeJob {
 	return &fakeJob{job: domain.Job{JobID: id, Status: "pending", MaxAttempts: maxAttempts}}
 }
 
-func startService(t *testing.T, repository Repository, processor Processor) *Service {
+func startService(t *testing.T, repository *fakeRepository, processor Processor, options ...func(*Dependencies)) *Service {
 	t.Helper()
-	service, err := NewService(repository, testConfig(), processor, Dependencies{})
+	dependencies := Dependencies{}
+	for _, option := range options {
+		option(&dependencies)
+	}
+	service, err := newService(repository, testConfig(), processor, dependencies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +341,7 @@ func TestNoopProcessorCompletesWithoutMemoryOutput(t *testing.T) {
 }
 
 func TestProcessorHealthTracksConfiguredOutcomes(t *testing.T) {
-	service, err := NewService(&fakeRepository{}, testConfig(), processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+	service, err := newService(&fakeRepository{}, testConfig(), processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
 		return domain.ProcessingResult{Code: domain.ProcessingNoMemory}
 	}), Dependencies{})
 	if err != nil {
@@ -302,7 +363,7 @@ func TestProcessorHealthTracksConfiguredOutcomes(t *testing.T) {
 		t.Fatalf("invalid-output health = %q", state)
 	}
 
-	noop, err := NewService(&fakeRepository{}, testConfig(), NoopProcessor{}, Dependencies{})
+	noop, err := newService(&fakeRepository{}, testConfig(), NoopProcessor{}, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +400,7 @@ func TestProcessClaimCapturesOneProcessingRuntime(t *testing.T) {
 	item.generation = 1
 	claim := storage.ClaimedJob{Job: item.job, ProcessingVersion: "v1", LeaseOwner: "worker", LeaseGeneration: 1}
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	service, err := NewService(repository, testConfig(), nil, Dependencies{})
+	service, err := newService(repository, testConfig(), nil, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +449,8 @@ func TestProcessingAllowsTargetWithFilteredContextAndReadOnlyAncestor(t *testing
 		OmissionSummary: map[string]int{"context_sensitivity_not_allowed": 1, "context_memory_sensitivity_not_allowed": 1},
 		Policy:          domain.ProcessingPolicy{AllowedMemoryTypes: []string{"fact"}, MaxCandidates: 1, MaxContentChars: 100},
 	}
-	repository := &fakeRepository{jobs: []*fakeJob{item}, processing: prepared}
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	repository.workStore().processing = prepared
 	startService(t, repository, processorFunc(func(_ context.Context, input domain.ProcessingInput) domain.ProcessingResult {
 		if input.Target.EventID != "target" || len(input.ContextEvents) != 1 || len(input.ContextMemories) != 1 || input.ContextMemories[0].ProposalCapable {
 			t.Fatalf("processing input = %+v", input)
@@ -460,7 +522,7 @@ func (graphExtractorStub) CommitGraphExtraction(context.Context, storage.Claimed
 func TestGraphInvalidOutputRetriesTransiently(t *testing.T) {
 	item := pendingJob("graph-invalid-output", 3)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	service, err := NewService(repository, testConfig(), NoopProcessor{}, Dependencies{})
+	service, err := newService(repository, testConfig(), NoopProcessor{}, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +544,7 @@ func TestGraphInvalidOutputRetriesTransiently(t *testing.T) {
 func TestGraphPermanentFailureDoesNotRetry(t *testing.T) {
 	item := pendingJob("graph-permanent", 3)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	service, err := NewService(repository, testConfig(), NoopProcessor{}, Dependencies{})
+	service, err := newService(repository, testConfig(), NoopProcessor{}, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,6 +560,76 @@ func TestGraphPermanentFailureDoesNotRetry(t *testing.T) {
 	}
 	if item.job.Status != "failed" {
 		t.Fatalf("job status=%s, want failed", item.job.Status)
+	}
+}
+
+type graphProcessorFunc func(context.Context, domain.GraphExtractionInput) domain.GraphExtractionResult
+
+func (graphProcessorFunc) Enabled() bool    { return true }
+func (graphProcessorFunc) Identity() string { return "processor/graph" }
+
+func (graphProcessorFunc) Process(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+	return domain.ProcessingResult{Code: domain.ProcessingNoProcessor}
+}
+
+func (f graphProcessorFunc) ProcessGraph(ctx context.Context, input domain.GraphExtractionInput) domain.GraphExtractionResult {
+	return f(ctx, input)
+}
+
+// graphWorkRepository implements the optional graph extraction path on top of the
+// job lifecycle fake so the worker can be driven through processGraphClaim.
+type graphWorkRepository struct {
+	*fakeRepository
+	prepared  domain.GraphExtractionInput
+	committed int32
+}
+
+func (r *graphWorkRepository) PrepareGraphExtraction(context.Context, storage.ClaimedJob, storage.ProcessingPreparationParams) (domain.GraphExtractionInput, error) {
+	return r.prepared, nil
+}
+
+func (r *graphWorkRepository) CommitGraphExtraction(context.Context, storage.ClaimedJob, domain.GraphExtractionInput, storage.GraphExtractionCommit) error {
+	atomic.AddInt32(&r.committed, 1)
+	return nil
+}
+
+func TestGraphPolicyDenialBlocksBeforeProviderCall(t *testing.T) {
+	item := pendingJob("policy-graph", 3)
+	item.job.JobType, item.job.TargetType, item.job.TargetID = "extract_graph", "memory_revision", "revision-1"
+	fake := &fakeRepository{jobs: []*fakeJob{item}}
+	repository := &graphWorkRepository{fakeRepository: fake, prepared: domain.GraphExtractionInput{SpaceID: "space-1", JobID: item.job.JobID}}
+	authorizer := &fakePolicyAuthorizer{allowed: map[policy.Capability]bool{}}
+	called := make(chan struct{}, 1)
+	service, err := NewService(repository, testConfig(), graphProcessorFunc(func(context.Context, domain.GraphExtractionInput) domain.GraphExtractionResult {
+		called <- struct{}{}
+		return domain.GraphExtractionResult{Code: domain.GraphExtractionEmpty}
+	}), Dependencies{Processing: &fakeWorkStore{repository: fake}, Authorizer: authorizer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	waitFor(t, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return item.job.Status == "blocked_policy"
+	})
+	select {
+	case <-called:
+		t.Fatal("graph provider was called after policy denial")
+	default:
+	}
+	if atomic.LoadInt32(&repository.committed) != 0 {
+		t.Fatal("graph commit ran after policy denial")
+	}
+	if len(authorizer.calls) != 1 || authorizer.calls[0].Capability != policy.CapabilityProcessing || authorizer.calls[0].SpaceIDs[0] != "space-1" {
+		t.Fatalf("policy calls = %+v", authorizer.calls)
 	}
 }
 
@@ -523,7 +655,7 @@ func TestInvalidProcessorResultPreservesValidationCode(t *testing.T) {
 	item := pendingJob("invalid-output", 1)
 	item.job.Status, item.job.AttemptCount = "running", 1
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	service, err := NewService(repository, testConfig(), nil, Dependencies{})
+	service, err := newService(repository, testConfig(), nil, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +713,7 @@ func TestEmbeddingPolicyRejectionBlocksWithoutRetry(t *testing.T) {
 	item := pendingJob("embedding-policy", 3)
 	item.job.JobType, item.job.TargetType, item.job.TargetID = "embed_memory", "memory_revision", "revision-1"
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	service, err := NewService(repository, testConfig(), nil, Dependencies{Indexes: failingIndexRepository{err: storage.ErrEmbeddingPolicy}})
+	service, err := newService(repository, testConfig(), nil, Dependencies{Indexes: failingIndexRepository{err: storage.ErrEmbeddingPolicy}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,6 +737,164 @@ func TestEmbeddingPolicyRejectionBlocksWithoutRetry(t *testing.T) {
 	}
 }
 
+type fakePolicyAuthorizer struct {
+	allowed map[policy.Capability]bool
+	err     error
+	calls   []policy.Request
+}
+
+func (f *fakePolicyAuthorizer) Authorize(_ context.Context, _ gateway.CallContext, request policy.Request) (policy.Decision, error) {
+	f.calls = append(f.calls, request)
+	if f.err != nil {
+		return policy.Decision{}, f.err
+	}
+	if f.allowed[request.Capability] {
+		return policy.Decision{Allowed: true, ReasonCode: "allowed"}, nil
+	}
+	return policy.Decision{Allowed: false, ReasonCode: "default_deny"}, nil
+}
+
+type fakeDisclosureFilter struct {
+	deny  map[string]bool
+	calls []policy.DisclosureRequest
+}
+
+func (f *fakeDisclosureFilter) Filter(_ context.Context, _ gateway.CallContext, request policy.DisclosureRequest) (policy.DisclosureResult, error) {
+	f.calls = append(f.calls, request)
+	result := policy.DisclosureResult{Allowed: []policy.DisclosureItem{}, Denied: []policy.DisclosureDenial{}}
+	for _, item := range request.Items {
+		if f.deny[item.MemoryID] {
+			result.Denied = append(result.Denied, policy.DisclosureDenial{Item: item, ReasonCode: "evidence_disclosure_denied"})
+			continue
+		}
+		result.Allowed = append(result.Allowed, item)
+	}
+	return result, nil
+}
+
+func TestProcessingPolicyDenialBlocksBeforeProviderCall(t *testing.T) {
+	item := pendingJob("policy-processing", 3)
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	repository.workStore().processing = &domain.ProcessingInput{Target: domain.ProcessingEvent{EventID: "event-1", SpaceID: "space-1"}}
+	called := make(chan struct{}, 1)
+	authorizer := &fakePolicyAuthorizer{allowed: map[policy.Capability]bool{}}
+	service, err := newService(repository, testConfig(), processorFunc(func(context.Context, domain.ProcessingInput) domain.ProcessingResult {
+		called <- struct{}{}
+		return domain.ProcessingResult{Code: domain.ProcessingNoMemory}
+	}), Dependencies{Authorizer: authorizer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "blocked_policy"
+	})
+	select {
+	case <-called:
+		t.Fatal("provider was called after processing policy denial")
+	default:
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if item.job.BlockedReasonCode != "processing_policy_denied" || item.job.AttemptCount != 1 {
+		t.Fatalf("job = %+v", item.job)
+	}
+	if len(authorizer.calls) != 1 || authorizer.calls[0].Capability != policy.CapabilityProcessing || len(authorizer.calls[0].SpaceIDs) != 1 || authorizer.calls[0].SpaceIDs[0] != "space-1" {
+		t.Fatalf("policy calls = %+v", authorizer.calls)
+	}
+}
+
+type embeddingCallRecorder struct{ calls int32 }
+
+func (r *embeddingCallRecorder) RebuildFTSClaimed(context.Context, storage.ClaimedJob) error {
+	return nil
+}
+
+func (r *embeddingCallRecorder) EmbedMemoryClaimed(context.Context, storage.ClaimedJob, string) error {
+	atomic.AddInt32(&r.calls, 1)
+	return nil
+}
+
+func (r *embeddingCallRecorder) RebuildSemanticClaimed(context.Context, storage.ClaimedJob) error {
+	return nil
+}
+
+func TestEmbeddingPolicyDenialBlocksBeforeProviderCall(t *testing.T) {
+	item := pendingJob("policy-embedding", 3)
+	item.job.JobType, item.job.TargetType, item.job.TargetID = "embed_memory", "memory_revision", "revision-1"
+	item.embeddingSpace = "space-1"
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	recorder := &embeddingCallRecorder{}
+	authorizer := &fakePolicyAuthorizer{allowed: map[policy.Capability]bool{}}
+	service, err := newService(repository, testConfig(), nil, Dependencies{Indexes: recorder, Authorizer: authorizer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "blocked_policy"
+	})
+	if atomic.LoadInt32(&recorder.calls) != 0 {
+		t.Fatal("embedding provider was called after policy denial")
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if item.job.BlockedReasonCode != "embedding_policy_denied" {
+		t.Fatalf("job = %+v", item.job)
+	}
+	if len(authorizer.calls) != 1 || authorizer.calls[0].Capability != policy.CapabilityEmbedding {
+		t.Fatalf("policy calls = %+v", authorizer.calls)
+	}
+}
+
+func TestDisclosureFilterRemovesDeniedContextBeforeProviderCall(t *testing.T) {
+	item := pendingJob("disclosure-context", 1)
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	repository.workStore().processing = &domain.ProcessingInput{
+		Target: domain.ProcessingEvent{EventID: "event-1", SpaceID: "space-1"},
+		ContextMemories: []domain.ProcessingMemory{
+			{MemoryID: "memory-1", RevisionID: "revision-1", SpaceID: "space-1", Sensitivity: "normal"},
+			{MemoryID: "memory-2", RevisionID: "revision-2", SpaceID: "space-1", Sensitivity: "sensitive"},
+		},
+	}
+	filter := &fakeDisclosureFilter{deny: map[string]bool{"memory-2": true}}
+	startService(t, repository, processorFunc(func(_ context.Context, input domain.ProcessingInput) domain.ProcessingResult {
+		if len(input.ContextMemories) != 1 || input.ContextMemories[0].MemoryID != "memory-1" {
+			t.Errorf("provider context = %+v", input.ContextMemories)
+		}
+		if input.OmissionSummary["context_memory_disclosure_denied"] != 1 {
+			t.Errorf("omissions = %#v", input.OmissionSummary)
+		}
+		return domain.ProcessingResult{Code: domain.ProcessingNoMemory, OmittedContextCount: 1, OmissionSummary: input.OmissionSummary}
+	}), func(dependencies *Dependencies) { dependencies.Disclosure = filter })
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "succeeded"
+	})
+	if len(filter.calls) != 1 || filter.calls[0].SpaceID != "space-1" {
+		t.Fatalf("disclosure calls = %+v", filter.calls)
+	}
+}
+
 func TestExplicitRebuildDependenciesDispatchIndependently(t *testing.T) {
 	tests := []struct {
 		name, jobType, targetType, targetID, call string
@@ -622,7 +912,7 @@ func TestExplicitRebuildDependenciesDispatchIndependently(t *testing.T) {
 			item.job.JobType, item.job.TargetType, item.job.TargetID = test.jobType, test.targetType, test.targetID
 			repository := &fakeRepository{jobs: []*fakeJob{item}}
 			calls := make(chan string, 1)
-			service, err := NewService(repository, testConfig(), nil, test.dependencies(rebuildRecorder{calls: calls}))
+			service, err := newService(repository, testConfig(), nil, test.dependencies(rebuildRecorder{calls: calls}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -676,7 +966,7 @@ func TestIndexClaimHeartbeatsAndCancellationStopsOperation(t *testing.T) {
 	item.cancelRequested = true
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
 	indexes := &blockingIndexRepository{started: make(chan struct{}), cancelled: make(chan struct{})}
-	service, err := NewService(repository, testConfig(), nil, Dependencies{Indexes: indexes})
+	service, err := newService(repository, testConfig(), nil, Dependencies{Indexes: indexes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +996,7 @@ func TestIndexClaimLeaseLossCancelsWithoutTerminalMutation(t *testing.T) {
 	item.job.JobType, item.job.TargetType, item.job.TargetID = "embed_memory", "memory_revision", "revision-1"
 	repository := &fakeRepository{jobs: []*fakeJob{item}, heartbeatErr: storage.ErrLeaseLost}
 	indexes := &blockingIndexRepository{started: make(chan struct{}), cancelled: make(chan struct{})}
-	service, err := NewService(repository, testConfig(), nil, Dependencies{Indexes: indexes})
+	service, err := newService(repository, testConfig(), nil, Dependencies{Indexes: indexes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +1097,7 @@ func TestStartupAndPeriodicMaintenance(t *testing.T) {
 
 func TestPersistenceErrorLoggingIsStructured(t *testing.T) {
 	handler := &captureHandler{}
-	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{Logger: slog.New(handler)})
+	service, err := newService(&fakeRepository{}, testConfig(), nil, Dependencies{Logger: slog.New(handler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,7 +1137,7 @@ func TestPersistenceErrorLoggingIsStructured(t *testing.T) {
 
 func TestPersistenceErrorLoggingSuppressesExpectedErrors(t *testing.T) {
 	handler := &captureHandler{}
-	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{Logger: slog.New(handler)})
+	service, err := newService(&fakeRepository{}, testConfig(), nil, Dependencies{Logger: slog.New(handler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,7 +1181,8 @@ func TestServiceAcceptsFullyStructuredCandidateFields(t *testing.T) {
 		}}}
 	})
 	item := pendingJob("structured", 1)
-	repository := &fakeRepository{jobs: []*fakeJob{item}, processing: &input}
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	repository.workStore().processing = &input
 	startService(t, repository, processor)
 	waitFor(t, func() bool {
 		repository.mu.Lock()
@@ -904,7 +1195,7 @@ func TestServiceAcceptsFullyStructuredCandidateFields(t *testing.T) {
 }
 
 func TestProcessingAllowsOnlyStructuredExtractionKinds(t *testing.T) {
-	service, err := NewService(&fakeRepository{}, testConfig(), nil, Dependencies{})
+	service, err := newService(&fakeRepository{}, testConfig(), nil, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}

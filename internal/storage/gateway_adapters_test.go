@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
@@ -210,7 +211,7 @@ func TestEventCapabilityIngestIsAtomicAndIdempotent(t *testing.T) {
 	identity := gatewayIdentity(t, call, extraction.OperationIngest, command)
 
 	record, replay, err := capability.IngestEvent(ctx, identity, extraction.IngestParams{SpaceID: command.SpaceID, SourceType: command.SourceType, SourceName: command.SourceName, OccurredAt: command.OccurredAt, Content: command.Content})
-	if err != nil || replay || record.EventID == "" || len(record.JobIDs) != 1 {
+	if err != nil || replay || record.EventID == "" || record.OperationID == "" || len(record.JobIDs) != 1 {
 		t.Fatalf("IngestEvent() = %+v replay=%t error=%v", record, replay, err)
 	}
 	var audits, jobs int
@@ -231,7 +232,7 @@ func TestExtractionWorkCapabilityPrepareCommitAndFencing(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	claim, input := claimProcessingJob(t, repository, 3)
 	capability := NewExtractionWorkCapability(repository)
-	work := extraction.WorkClaim{JobID: claim.Job.JobID, OperationID: claim.Job.OperationID, JobType: claim.Job.JobType, TargetType: claim.Job.TargetType, TargetID: claim.Job.TargetID, Attempt: claim.Job.AttemptCount, MaxAttempts: claim.Job.MaxAttempts, ProcessingVersion: claim.ProcessingVersion, LeaseOwner: claim.LeaseOwner, LeaseGeneration: claim.LeaseGeneration}
+	work := workClaim(claim)
 
 	prepared, err := capability.Prepare(ctx, work, extraction.PrepareRequest{ProcessorIdentity: "processor/test", AllowedMemoryTypes: []string{"fact"}, MaxCandidates: 2, MaxContentChars: 100})
 	if err != nil || prepared.JobID != claim.Job.JobID {
@@ -252,6 +253,47 @@ func TestExtractionWorkCapabilityPrepareCommitAndFencing(t *testing.T) {
 	}
 }
 
+func TestExtractionWorkCapabilityBlockAndFailureAreFenced(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	claim, input := claimProcessingJob(t, repository, 3)
+	capability := NewExtractionWorkCapability(repository)
+	work := workClaim(claim)
+
+	if err := capability.Block(ctx, work, "private content\nleak"); !errors.Is(err, ErrInvalidJobState) {
+		t.Fatalf("unsafe Block() error = %v, want ErrInvalidJobState", err)
+	}
+	stale := work
+	stale.LeaseGeneration++
+	if err := capability.Block(ctx, stale, "target_policy_denied"); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale Block() error = %v, want ErrLeaseLost", err)
+	}
+	if err := capability.Block(ctx, work, "target_policy_denied"); err != nil {
+		t.Fatalf("Block() error = %v", err)
+	}
+	var status, blockedReason, eventStatus, attemptOutcome string
+	if err := repository.store.reader.QueryRow(`SELECT (SELECT status FROM jobs WHERE job_id=?), (SELECT blocked_reason_code FROM jobs WHERE job_id=?), (SELECT processing_status FROM raw_events WHERE event_id='event-1'), (SELECT outcome FROM job_attempts WHERE job_id=?)`, work.JobID, work.JobID, work.JobID).Scan(&status, &blockedReason, &eventStatus, &attemptOutcome); err != nil {
+		t.Fatal(err)
+	}
+	if status != "blocked_policy" || blockedReason != "target_policy_denied" || eventStatus != "stored" || attemptOutcome != "blocked_policy" {
+		t.Fatalf("blocked state = %s/%s/%s/%s", status, blockedReason, eventStatus, attemptOutcome)
+	}
+
+	repository, _ = newMemoryTestRepository(t)
+	capability = NewExtractionWorkCapability(repository)
+	claim, input = claimProcessingJob(t, repository, 3)
+	work = workClaim(claim)
+	if err := capability.Fail(ctx, work, input, extraction.Failure{Code: "request_timeout_or_cancelled", Message: "processor transient failure", Transient: true, Backoff: time.Second}); err != nil {
+		t.Fatalf("Fail() error = %v", err)
+	}
+	var errorCode, lastMessage string
+	if err := repository.store.reader.QueryRow(`SELECT (SELECT status FROM jobs WHERE job_id=?), (SELECT last_error_code FROM jobs WHERE job_id=?), (SELECT last_error_message FROM jobs WHERE job_id=?), (SELECT processing_status FROM raw_events WHERE event_id='event-1')`, work.JobID, work.JobID, work.JobID).Scan(&status, &errorCode, &lastMessage, &eventStatus); err != nil {
+		t.Fatal(err)
+	}
+	if status != "retrying" || errorCode != "request_timeout_or_cancelled" || eventStatus != "processing" {
+		t.Fatalf("failed state = %s/%s/%s message=%q", status, errorCode, eventStatus, lastMessage)
+	}
+}
 func TestPolicyCapabilityEffectivePolicy(t *testing.T) {
 	ctx := context.Background()
 	repository := newConfigTestRepository(t)
@@ -266,6 +308,38 @@ func TestPolicyCapabilityEffectivePolicy(t *testing.T) {
 	}
 	if decision.Capability != policy.CapabilityProcessing || decision.SpaceID != "project" {
 		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestPolicyCapabilityReportsUnconfiguredAndServiceDecides(t *testing.T) {
+	ctx := context.Background()
+	repository := newConfigTestRepository(t)
+	commitPolicy(t, repository, []PolicyAssignmentRecord{{AssignmentID: "project-allow", PolicyIdentity: "policy-1", Capability: "processing", SelectorKind: "space", SpaceID: "project", Effect: "allow"}})
+	insertPolicySpace(t, repository, "root", "", "user", "owner")
+	insertPolicySpace(t, repository, "project", "root", "project", "project-a")
+	insertPolicySpace(t, repository, "other", "root", "project", "other")
+	capability := NewPolicyCapability(repository)
+	service := policy.NewService(capability)
+	call := gatewayCall("gateway-caller", "policy-key", "request-policy")
+
+	if _, err := capability.EffectivePolicy(ctx, policy.CapabilityRecall, "project"); !errors.Is(err, policy.ErrUnconfigured) {
+		t.Fatalf("unconfigured capability error = %v, want policy.ErrUnconfigured", err)
+	}
+	if _, err := capability.EffectivePolicy(ctx, policy.CapabilityProcessing, "missing"); !errors.Is(err, policy.ErrUnconfigured) {
+		t.Fatalf("unconfigured scope error = %v, want policy.ErrUnconfigured", err)
+	}
+
+	decision, err := service.Authorize(ctx, call, policy.Request{Capability: policy.CapabilityRecall, SpaceIDs: []string{"project"}})
+	if err != nil || !decision.Allowed {
+		t.Fatalf("offline default Authorize() = %+v error=%v", decision, err)
+	}
+	decision, err = service.Authorize(ctx, call, policy.Request{Capability: policy.CapabilityProcessing, SpaceIDs: []string{"project"}})
+	if err != nil || !decision.Allowed || decision.PolicyGeneration != 1 {
+		t.Fatalf("inherited Authorize() = %+v error=%v", decision, err)
+	}
+	decision, err = service.Authorize(ctx, call, policy.Request{Capability: policy.CapabilityProcessing, SpaceIDs: []string{"other"}})
+	if err != nil || decision.Allowed || decision.ReasonCode != "default_deny" {
+		t.Fatalf("default-deny Authorize() = %+v error=%v", decision, err)
 	}
 }
 

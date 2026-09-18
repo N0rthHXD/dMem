@@ -11,18 +11,22 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
 const maintenanceInterval = time.Second
 
+// Repository is the job-lifecycle port the worker owns. Extraction preparation
+// and fenced commit are deliberately absent: they are consumed through the
+// extraction-owned WorkStore contract so provider calls stay outside write
+// transactions and outside this port.
 type Repository interface {
 	ClaimJob(context.Context, storage.ClaimJobParams) (storage.ClaimedJob, error)
 	HeartbeatJob(context.Context, storage.ClaimedJob, time.Duration) (bool, error)
-	PrepareProcessing(context.Context, storage.ClaimedJob, storage.ProcessingPreparationParams) (domain.ProcessingInput, error)
-	CommitProcessing(context.Context, storage.ClaimedJob, domain.ProcessingInput, storage.ProcessingCommit) error
-	BlockJob(context.Context, storage.ClaimedJob, string) error
-	FailProcessing(context.Context, storage.ClaimedJob, domain.ProcessingInput, storage.JobFailure) error
+	EmbeddingScope(context.Context, storage.ClaimedJob) (string, bool, error)
 	CompleteJob(context.Context, storage.ClaimedJob, storage.JobResult) error
 	FailJob(context.Context, storage.ClaimedJob, storage.JobFailure) error
 	CancelClaimedJob(context.Context, storage.ClaimedJob) error
@@ -33,6 +37,9 @@ type Repository interface {
 
 type Service struct {
 	repository         Repository
+	work               extraction.WorkStore
+	authorizer         policy.Authorizer
+	disclosure         policy.DisclosureFilter
 	processing         atomic.Pointer[processingRuntime]
 	workerCount        int
 	leaseDuration      time.Duration
@@ -144,6 +151,9 @@ func (s *Service) SetProcessing(cfg ProcessingConfig) {
 var nextServiceID atomic.Uint64
 
 type Dependencies struct {
+	Processing         extraction.WorkStore
+	Authorizer         policy.Authorizer
+	Disclosure         policy.DisclosureFilter
 	Indexes            IndexRepository
 	EntityIndexes      EntityIndexRepository
 	RelationIndexes    RelationIndexRepository
@@ -157,6 +167,9 @@ type Dependencies struct {
 func NewService(repository Repository, cfg config.Config, processor Processor, dependencies Dependencies) (*Service, error) {
 	if repository == nil {
 		return nil, errors.New("job repository is required")
+	}
+	if dependencies.Processing == nil {
+		return nil, errors.New("extraction work store is required")
 	}
 	if cfg.WorkerCount <= 0 || cfg.LeaseDuration <= 0 || cfg.PerJobTimeout <= 0 || cfg.RetryInitialBackoff <= 0 || cfg.RetryMaxBackoff < cfg.RetryInitialBackoff {
 		return nil, errors.New("invalid job service configuration")
@@ -189,6 +202,9 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 	}
 	s := &Service{
 		repository:         repository,
+		work:               dependencies.Processing,
+		authorizer:         dependencies.Authorizer,
+		disclosure:         dependencies.Disclosure,
 		workerCount:        cfg.WorkerCount,
 		leaseDuration:      cfg.LeaseDuration,
 		perJobTimeout:      cfg.PerJobTimeout,
@@ -395,17 +411,37 @@ func (s *Service) processClaim(serviceCtx context.Context, claim storage.Claimed
 		return
 	}
 	runtime := s.currentProcessing()
-	input, err := s.repository.PrepareProcessing(processCtx, claim, runtime.preparation)
+	input, err := s.work.Prepare(processCtx, workClaim(claim), extraction.PrepareRequest{
+		ProcessorIdentity:      runtime.preparation.ProcessorIdentity,
+		AllowedMemoryTypes:     runtime.preparation.AllowedMemoryTypes,
+		MaxCandidates:          runtime.preparation.MaxCandidates,
+		MaxCandidateChars:      runtime.preparation.MaxCandidateChars,
+		MaxTotalCandidateChars: runtime.preparation.MaxTotalCandidateChars,
+		MaxContentChars:        runtime.preparation.MaxContentChars,
+		MaxContextEvents:       runtime.preparation.MaxContextEvents,
+		MaxContextMemories:     runtime.preparation.MaxContextMemories,
+	})
 	if err != nil {
 		if errors.Is(err, storage.ErrLeaseLost) {
 			return
 		}
 		if errors.Is(err, storage.ErrPolicyDenied) {
-			s.logPersistenceError(context.Background(), "block_processing_job", claim, s.repository.BlockJob(context.Background(), claim, "target_policy_denied"))
+			s.logPersistenceError(context.Background(), "block_processing_job", claim, s.work.Block(context.Background(), workClaim(claim), "target_policy_denied"))
 			return
 		}
 		input = domain.ProcessingInput{ProcessorIdentity: runtime.preparation.ProcessorIdentity, ProcessingVersion: claim.ProcessingVersion, JobID: claim.Job.JobID, Target: domain.ProcessingEvent{EventID: claim.Job.TargetID}}
 		s.failProcessing(claim, input, "preparation_failed", "processing preparation failed", true)
+		return
+	}
+	if denied, err := s.policyDenied(processCtx, policy.CapabilityProcessing, input.Target.SpaceID); err != nil {
+		s.failProcessing(claim, input, "policy_check_failed", "policy authorization failed", true)
+		return
+	} else if denied {
+		s.logPersistenceError(context.Background(), "block_processing_job", claim, s.work.Block(context.Background(), workClaim(claim), "processing_policy_denied"))
+		return
+	}
+	if err := s.filterContextMemories(processCtx, &input); err != nil {
+		s.failProcessing(claim, input, "disclosure_filter_failed", "disclosure filtering failed", true)
 		return
 	}
 	results := make(chan domain.ProcessingResult, 1)
@@ -491,14 +527,14 @@ func (s *Service) applyOutcome(claim storage.ClaimedJob, input domain.Processing
 	s.recordProcessorResult(result)
 	switch result.Code {
 	case domain.ProcessingNoProcessor, domain.ProcessingNoMemory, domain.ProcessingCandidatesExtracted:
-		err := s.repository.CommitProcessing(context.Background(), claim, input, storage.ProcessingCommit{Result: result})
+		err := s.work.Commit(context.Background(), workClaim(claim), input, extraction.CommitRequest{Result: result})
 		if errors.Is(err, storage.ErrStaleGeneration) {
 			s.reevaluateStale(claim)
 			return
 		}
 		s.logPersistenceError(context.Background(), "commit_processing", claim, err)
 	case domain.ProcessingPolicyRejected:
-		s.logPersistenceError(context.Background(), "block_processing_job", claim, s.repository.BlockJob(context.Background(), claim, result.ReasonCode))
+		s.logPersistenceError(context.Background(), "block_processing_job", claim, s.work.Block(context.Background(), workClaim(claim), result.ReasonCode))
 	case domain.ProcessingTransientFailure:
 		code := result.ReasonCode
 		if code == "" {
@@ -534,7 +570,7 @@ func (s *Service) processGraphClaim(serviceCtx context.Context, claim storage.Cl
 			return
 		}
 		if errors.Is(err, storage.ErrPolicyDenied) {
-			s.logPersistenceError(context.Background(), "block_graph_job", claim, s.repository.BlockJob(context.Background(), claim, "target_policy_denied"))
+			s.logPersistenceError(context.Background(), "block_graph_job", claim, s.work.Block(context.Background(), workClaim(claim), "target_policy_denied"))
 			return
 		}
 		if errors.Is(err, storage.ErrRevisionConflict) || errors.Is(err, storage.ErrNotFound) {
@@ -542,6 +578,13 @@ func (s *Service) processGraphClaim(serviceCtx context.Context, claim storage.Cl
 			return
 		}
 		s.failTransientJob(claim, "preparation_failed", "graph extraction preparation failed")
+		return
+	}
+	if denied, err := s.policyDenied(processCtx, policy.CapabilityProcessing, input.SpaceID); err != nil {
+		s.failTransientJob(claim, "policy_check_failed", "policy authorization failed")
+		return
+	} else if denied {
+		s.logPersistenceError(context.Background(), "block_graph_job", claim, s.work.Block(context.Background(), workClaim(claim), "processing_policy_denied"))
 		return
 	}
 	if recorder, ok := s.repository.(interface {
@@ -627,7 +670,7 @@ func (s *Service) applyGraphOutcome(extractor GraphExtractor, claim storage.Clai
 		if reason == "" {
 			reason = "target_policy_denied"
 		}
-		s.logPersistenceError(context.Background(), "block_graph_job", claim, s.repository.BlockJob(context.Background(), claim, reason))
+		s.logPersistenceError(context.Background(), "block_graph_job", claim, s.work.Block(context.Background(), workClaim(claim), reason))
 	case domain.GraphExtractionTransientFailure:
 		code := result.ReasonCode
 		if code == "" {
@@ -653,12 +696,24 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 	operationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if claim.Job.JobType == "embed_memory" {
+		if spaceID, ok, err := s.repository.EmbeddingScope(operationCtx, claim); err != nil {
+			s.failTransientJob(claim, "embedding_scope_failed", "embedding scope could not be resolved")
+			return
+		} else if ok {
+			if denied, err := s.policyDenied(operationCtx, policy.CapabilityEmbedding, spaceID); err != nil {
+				s.failTransientJob(claim, "policy_check_failed", "policy authorization failed")
+				return
+			} else if denied {
+				s.logPersistenceError(context.Background(), "block_index_job", claim, s.work.Block(context.Background(), workClaim(claim), "embedding_policy_denied"))
+				return
+			}
+		}
 		if preparer, ok := s.repository.(interface {
 			PrepareEmbeddingAttempt(context.Context, storage.ClaimedJob) error
 		}); ok {
 			if err := preparer.PrepareEmbeddingAttempt(operationCtx, claim); err != nil {
 				if errors.Is(err, storage.ErrPolicyDenied) {
-					s.logPersistenceError(context.Background(), "block_index_job", claim, s.repository.BlockJob(context.Background(), claim, "embedding_policy_denied"))
+					s.logPersistenceError(context.Background(), "block_index_job", claim, s.work.Block(context.Background(), workClaim(claim), "embedding_policy_denied"))
 				} else if !errors.Is(err, storage.ErrLeaseLost) {
 					s.failTransientJob(claim, "attempt_record_failed", "provider attempt could not be recorded")
 				}
@@ -772,7 +827,7 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 			}
 			if err != nil {
 				if errors.Is(err, storage.ErrEmbeddingPolicy) || errors.Is(err, storage.ErrPolicyDenied) {
-					persistErr := s.repository.BlockJob(context.Background(), claim, "embedding_policy_denied")
+					persistErr := s.work.Block(context.Background(), workClaim(claim), "embedding_policy_denied")
 					s.logPersistenceError(context.Background(), "block_index_job", claim, persistErr)
 					return
 				}
@@ -827,13 +882,95 @@ func (s *Service) failShutdown(claim storage.ClaimedJob, input domain.Processing
 }
 
 func (s *Service) failProcessing(claim storage.ClaimedJob, input domain.ProcessingInput, code, message string, transient bool) {
-	err := s.repository.FailProcessing(context.Background(), claim, input, storage.JobFailure{
+	err := s.work.Fail(context.Background(), workClaim(claim), input, extraction.Failure{
 		Code:      code,
 		Message:   message,
 		Transient: transient,
 		Backoff:   s.backoff(claim.Job.AttemptCount),
 	})
 	s.logPersistenceError(context.Background(), "fail_processing", claim, err)
+}
+
+// policyDenied asks the Policy module whether a provider-backed capability may
+// run in the given scopes. A nil authorizer means no policy module is composed,
+// which preserves the offline default. The in-transaction policy fence in the
+// extraction adapter still runs before commit, so this is the decision point,
+// not the only enforcement.
+func (s *Service) policyDenied(ctx context.Context, capability policy.Capability, spaceIDs ...string) (bool, error) {
+	if s.authorizer == nil || len(spaceIDs) == 0 {
+		return false, nil
+	}
+	decision, err := s.authorizer.Authorize(ctx, workerCall(), policy.Request{Capability: capability, SpaceIDs: spaceIDs})
+	if err != nil {
+		return false, err
+	}
+	return !decision.Allowed, nil
+}
+
+// filterContextMemories removes context items that the Policy module forbids
+// disclosing to the provider. Filtering happens before the provider call and is
+// reported as a bounded omission instead of silent truncation.
+func (s *Service) filterContextMemories(ctx context.Context, input *domain.ProcessingInput) error {
+	if s.disclosure == nil || len(input.ContextMemories) == 0 {
+		return nil
+	}
+	groups := make(map[string][]domain.ProcessingMemory)
+	for _, memory := range input.ContextMemories {
+		groups[memory.SpaceID] = append(groups[memory.SpaceID], memory)
+	}
+	allowed := make(map[string]struct{}, len(input.ContextMemories))
+	denied := 0
+	for spaceID, memories := range groups {
+		items := make([]policy.DisclosureItem, 0, len(memories))
+		for _, memory := range memories {
+			items = append(items, policy.DisclosureItem{MemoryID: memory.MemoryID, RevisionID: memory.RevisionID, Sensitivity: memory.Sensitivity})
+		}
+		result, err := s.disclosure.Filter(ctx, workerCall(), policy.DisclosureRequest{SpaceID: spaceID, Items: items})
+		if err != nil {
+			return err
+		}
+		denied += len(result.Denied)
+		for _, item := range result.Allowed {
+			allowed[item.MemoryID+"\x00"+item.RevisionID] = struct{}{}
+		}
+	}
+	if denied == 0 {
+		return nil
+	}
+	kept := input.ContextMemories[:0]
+	for _, memory := range input.ContextMemories {
+		if _, ok := allowed[memory.MemoryID+"\x00"+memory.RevisionID]; ok {
+			kept = append(kept, memory)
+		}
+	}
+	input.ContextMemories = kept
+	if input.OmissionSummary == nil {
+		input.OmissionSummary = make(map[string]int)
+	}
+	input.OmissionSummary["context_memory_disclosure_denied"] += denied
+	return nil
+}
+
+func workerCall() gateway.CallContext {
+	return gateway.CallContext{Caller: gateway.CallerIdentity{SubjectID: "jobs/worker"}}
+}
+
+// workClaim maps a claimed job onto the extraction-owned, transport-free work
+// identity. Provider calls happen outside the commit transaction and every
+// commit, block, and failure is fenced by this claim.
+func workClaim(claim storage.ClaimedJob) extraction.WorkClaim {
+	return extraction.WorkClaim{
+		JobID:             claim.Job.JobID,
+		OperationID:       claim.Job.OperationID,
+		JobType:           claim.Job.JobType,
+		TargetType:        claim.Job.TargetType,
+		TargetID:          claim.Job.TargetID,
+		Attempt:           claim.Job.AttemptCount,
+		MaxAttempts:       claim.Job.MaxAttempts,
+		ProcessingVersion: claim.ProcessingVersion,
+		LeaseOwner:        claim.LeaseOwner,
+		LeaseGeneration:   claim.LeaseGeneration,
+	}
 }
 
 func (s *Service) failTransientJob(claim storage.ClaimedJob, code, message string) {

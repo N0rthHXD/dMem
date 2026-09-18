@@ -20,8 +20,10 @@ import (
 	"github.com/N0rthHXD/dMem/internal/api"
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
 	"github.com/N0rthHXD/dMem/internal/gateway/memory"
+	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/identity"
 	"github.com/N0rthHXD/dMem/internal/instance"
@@ -169,8 +171,12 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	}
 	aggregateService := aggregate.NewService(repository, aggregateProvider, "aggregate/provider", policyIdentity, cfg.ProcessingVersion, cfg.ProcessingProvider.Limits.MaxContextItems)
 	d.aggregateService = aggregateService
+	policyService := policy.NewService(storage.NewPolicyCapability(repository))
 	d.jobs, err = jobs.NewService(repository, cfg, processor, jobs.Dependencies{
-		Indexes: repository, EntityIndexes: repository, RelationIndexes: repository, GraphIndexes: repository,
+		Processing: storage.NewExtractionWorkCapability(repository),
+		Authorizer: policyService,
+		Disclosure: policyService,
+		Indexes:    repository, EntityIndexes: repository, RelationIndexes: repository, GraphIndexes: repository,
 		FeedbackAggregates: repository, AggregateRebuilder: aggregateService, DiskPressure: repository,
 	})
 	if err != nil {
@@ -197,7 +203,10 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	}
 	d.listener = limitListener(d.listener, cfg.MaxConnections)
 	recall := storage.NewRecallCapability(repository)
-	d.retrievalService = gwretrieval.NewService(gwretrieval.Ports{ReferenceTime: recall, Capabilities: recall, Candidates: recall, Telemetry: recall}, recallDefaults(cfg))
+	d.retrievalService = gwretrieval.NewService(gwretrieval.Ports{
+		ReferenceTime: recall, Capabilities: recall, Candidates: recall, Telemetry: recall,
+		Policy: retrievalPolicyAuthorizer{authorizer: policyService},
+	}, recallDefaults(cfg))
 	d.handler = api.NewHandler(ftsState, api.HandlerDependencies{
 		Repository: repository, AggregateService: aggregateService, ProcessorHealth: d.jobs,
 		MemoryGateway:    memory.NewService(storage.NewMemoryCapability(repository)),
@@ -563,6 +572,19 @@ func retrievalContracts(cfg config.Config) (retrieval.Weights, retrieval.Calibra
 		ByQuestionType: map[string]float64{},
 	}
 	return weights, calibration, retrieval.GraphPolicy(cfg.Graph.Policy)
+}
+
+// retrievalPolicyAuthorizer adapts the Policy module's authorization contract to
+// the Retrieval module's consumer-owned port. Neither module imports the other;
+// the composition root owns this translation.
+type retrievalPolicyAuthorizer struct{ authorizer policy.Authorizer }
+
+func (a retrievalPolicyAuthorizer) Authorize(ctx context.Context, call gateway.CallContext, request gwretrieval.PolicyRequest) (gwretrieval.PolicyDecision, error) {
+	decision, err := a.authorizer.Authorize(ctx, call, policy.Request{Capability: policy.Capability(request.Capability), SpaceIDs: request.SpaceIDs})
+	if err != nil {
+		return gwretrieval.PolicyDecision{}, err
+	}
+	return gwretrieval.PolicyDecision{Allowed: decision.Allowed, ReasonCode: decision.ReasonCode}, nil
 }
 
 func recallDefaults(cfg config.Config) gwretrieval.Defaults {

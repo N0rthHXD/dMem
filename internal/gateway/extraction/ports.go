@@ -31,8 +31,9 @@ type IngestParams struct {
 
 // IngestRecord is the persisted result of an event ingestion.
 type IngestRecord struct {
-	EventID    string
-	Status     string
-	JobIDs     []string
-	AcceptedAt string
+	OperationID string
+	EventID     string
+	Status      string
+	JobIDs      []string
+	AcceptedAt  string
 }

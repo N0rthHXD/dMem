@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
@@ -24,13 +25,36 @@ type TelemetrySink interface {
 	RecordRecallTelemetry(context.Context, TelemetryRecord) error
 }
 
+// PolicyAuthorizer is the Retrieval-owned authorization port. It keeps recall
+// and semantic-query decisions behind a narrow interface so the module never
+// reads policy state directly and never retains another module's concrete
+// service.
+type PolicyAuthorizer interface {
+	Authorize(context.Context, gateway.CallContext, PolicyRequest) (PolicyDecision, error)
+}
+
+// PolicyRequest is one retrieval authorization question.
+type PolicyRequest struct {
+	Capability string
+	SpaceIDs   []string
+}
+
+// PolicyDecision is the resolved authorization outcome.
+type PolicyDecision struct {
+	Allowed    bool
+	ReasonCode string
+}
+
 // Ports groups narrow, consumer-owned Retrieval dependencies. One SQLite
-// adapter may implement all four without widening any individual contract.
+// adapter may implement all four without widening any individual contract. The
+// Policy port is optional; when absent, retrieval keeps the offline default of
+// allowing recall and semantic queries.
 type Ports struct {
 	ReferenceTime ReferenceTimeSource
 	Capabilities  CapabilityInspector
 	Candidates    CandidateStore
 	Telemetry     TelemetrySink
+	Policy        PolicyAuthorizer
 }
 
 // RecallProcessor owns the persistence-independent stages run inside the

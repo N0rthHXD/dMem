@@ -334,6 +334,22 @@ func (r *Repository) MarkProviderAttempt(ctx context.Context, claim ClaimedJob) 
 	return tx.Commit()
 }
 
+// EmbeddingScope returns the scope of the searchable memory projection targeted
+// by an embedding job. The bool reports whether such a projection exists; the
+// worker uses it to route the provider-egress decision through the policy
+// interface before any embedding call.
+func (r *Repository) EmbeddingScope(ctx context.Context, claim ClaimedJob) (string, bool, error) {
+	var spaceID string
+	err := r.store.reader.QueryRowContext(ctx, `SELECT space_id FROM memory_projections WHERE revision_id=? AND searchable=1`, claim.Job.TargetID).Scan(&spaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return spaceID, true, nil
+}
+
 func (r *Repository) PrepareEmbeddingAttempt(ctx context.Context, claim ClaimedJob) error {
 	var spaceID string
 	err := r.store.reader.QueryRowContext(ctx, `SELECT space_id FROM memory_projections WHERE revision_id=? AND searchable=1`, claim.Job.TargetID).Scan(&spaceID)

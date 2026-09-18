@@ -240,15 +240,15 @@ and the repository-shaped application path.
 
 ### Extraction And Policy
 
-- [ ] T041 [EXTRACT] Implement raw-event ingestion with atomic durable job
+- [X] T041 [EXTRACT] Implement raw-event ingestion with atomic durable job
   creation through the unit of work
-- [ ] T042 [EXTRACT] Adapt job preparation and fenced commit to extraction-owned
+- [X] T042 [EXTRACT] Adapt job preparation and fenced commit to extraction-owned
   contracts while keeping provider calls outside transactions
-- [ ] T043 [POLICY] Implement policy authorization and disclosure services over
+- [X] T043 [POLICY] Implement policy authorization and disclosure services over
   current effective-policy data
-- [ ] T044 [POLICY] Route processing, embedding, semantic query, and disclosure
+- [X] T044 [POLICY] Route processing, embedding, semantic query, and disclosure
   decisions through narrow policy interfaces without changing offline defaults
-- [ ] T045 [TEST] Migrate processing, graph extraction, policy, blocked-work,
+- [X] T045 [TEST] Migrate processing, graph extraction, policy, blocked-work,
   reconciliation, and provider-isolation tests
 
 ### Consolidation And Knowledge

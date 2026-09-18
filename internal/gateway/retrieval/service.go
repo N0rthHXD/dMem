@@ -21,6 +21,13 @@ const (
 	maxExplainItems  = 64
 )
 
+// Capability names used for retrieval policy decisions. They are stable
+// identifiers, not wire values.
+const (
+	PolicyCapabilityRecall        = "recall"
+	PolicyCapabilitySemanticQuery = "semantic_query"
+)
+
 // Defaults contains deployment-selected recall budgets. Retrieval applies them
 // when a protocol omits the corresponding fields.
 type Defaults struct {
@@ -72,6 +79,15 @@ func (s *ServiceImpl) Recall(ctx context.Context, call gateway.CallContext, quer
 	if err := validateQuery(prepared); err != nil {
 		return Result{}, gateway.NewError(gateway.ErrorInvalidInput, err.Error())
 	}
+	if s.ports.Policy != nil {
+		decision, err := s.ports.Policy.Authorize(ctx, call, PolicyRequest{Capability: PolicyCapabilityRecall, SpaceIDs: prepared.SpaceIDs})
+		if err != nil {
+			return Result{}, classifyRecallError(err)
+		}
+		if !decision.Allowed {
+			return Result{}, gateway.NewError(gateway.ErrorPermissionDenied, "recall denied by policy")
+		}
+	}
 
 	params := recallParams(prepared)
 	params.Telemetry = NewTelemetry()
@@ -115,6 +131,16 @@ func (s *ServiceImpl) Recall(ctx context.Context, call gateway.CallContext, quer
 	}
 	var reasons []string
 	params.EffectiveChannels, params.SemanticVersion, reasons = selectCapabilities(params.Channels, status)
+	if hasCapability(params.EffectiveChannels, "semantic") && s.ports.Policy != nil {
+		decision, err := s.ports.Policy.Authorize(ctx, call, PolicyRequest{Capability: PolicyCapabilitySemanticQuery, SpaceIDs: params.SpaceIDs})
+		if err != nil {
+			return Result{}, classifyRecallError(err)
+		}
+		if !decision.Allowed {
+			params.EffectiveChannels = withoutCapability(params.EffectiveChannels, "semantic")
+			reasons = appendReason(reasons, "semantic_policy_denied")
+		}
+	}
 	if status.SemanticStale && hasCapability(params.EffectiveChannels, "semantic") {
 		reasons = appendReason(reasons, "semantic_stale")
 	}
