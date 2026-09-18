@@ -30,8 +30,7 @@ var (
 
 	_ policy.Store = (*PolicyCapability)(nil)
 
-	_ consolidation.Store     = (*ConsolidationCapability)(nil)
-	_ ConsolidationClassifier = (*ConsolidationClassifierBridge)(nil)
+	_ consolidation.Store = (*ConsolidationCapability)(nil)
 
 	_ knowledge.ReadStore   = (*KnowledgeReadCapability)(nil)
 	_ knowledge.ReviewStore = (*KnowledgeReviewCapability)(nil)

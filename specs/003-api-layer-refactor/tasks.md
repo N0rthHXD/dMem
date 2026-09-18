@@ -253,14 +253,14 @@ and the repository-shaped application path.
 
 ### Consolidation And Knowledge
 
-- [ ] T046 [CONSOL] Extract deterministic consolidation classification and
+- [X] T046 [CONSOL] Extract deterministic consolidation classification and
   provider-result validation from storage implementation details
-- [ ] T047 [CONSOL] Implement atomic candidate confirmation and evolution
+- [X] T047 [CONSOL] Implement atomic candidate confirmation and evolution
   behavior through the consolidation unit-of-work port
-- [ ] T048 [KNOW] Implement entity, relation, fact, and graph read services
-- [ ] T049 [KNOW] Implement separate proposal review and conflict-resolution
+- [X] T048 [KNOW] Implement entity, relation, fact, and graph read services
+- [X] T049 [KNOW] Implement separate proposal review and conflict-resolution
   services without exposing them through the initial Agent HTTP surface
-- [ ] T050 [TEST] Migrate consolidation, candidate, entity, relation, graph,
+- [X] T050 [TEST] Migrate consolidation, candidate, entity, relation, graph,
   evolution, and conflict tests to the new service and adapter boundaries
 
 **Checkpoint**:

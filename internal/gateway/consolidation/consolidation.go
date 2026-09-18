@@ -19,9 +19,12 @@ const (
 )
 
 // Service is the inbound, protocol-facing Consolidation module surface.
+// Confirmation and rejection are the only authority mutations; the recorded
+// decision is read-only.
 type Service interface {
 	Confirm(context.Context, gateway.CallContext, ConfirmCommand) (ConfirmResult, error)
 	Reject(context.Context, gateway.CallContext, RejectCommand) (RejectResult, error)
+	Decision(context.Context, gateway.CallContext, string) (domain.ConsolidationDecision, error)
 }
 
 // ConfirmCommand confirms one candidate, publishing its revision and any
@@ -62,20 +65,6 @@ type Classifier interface {
 type ClassifyRequest struct {
 	Candidate domain.MemoryRevision
 	Neighbors []Neighbor
-}
-
-// Neighbor is one bounded consolidation recall hit.
-type Neighbor struct {
-	MemoryID         string
-	RevisionID       string
-	Kind             domain.MemoryKind
-	CanonicalHash    string
-	CanonicalContent string
-	Subjects         []string
-	Objects          []string
-	Attributes       map[string]string
-	EvidenceEventIDs []string
-	Similarity       *float64
 }
 
 // Classification is a provider-proposed consolidation decision.

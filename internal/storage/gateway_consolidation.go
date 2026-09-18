@@ -25,61 +25,34 @@ func NewConsolidationCapability(repo *Repository) *ConsolidationCapability {
 // ConfirmCandidate atomically publishes the candidate revision and records its
 // review, consolidation decision, audit history, and idempotency result.
 func (c *ConsolidationCapability) ConfirmCandidate(ctx context.Context, identity gateway.WriteIdentity, candidateID string, params consolidation.ReviewParams) (domain.Memory, bool, error) {
-	return c.repo.ConfirmCandidate(ctx, gatewayWriteIdentity(identity), candidateID, ReviewCandidateParams{
+	memory, replay, err := c.repo.ConfirmCandidate(ctx, gatewayWriteIdentity(identity), candidateID, ReviewCandidateParams{
 		ReasonCode: params.ReasonCode,
 		Note:       params.Note,
 	})
+	if err != nil {
+		return domain.Memory{}, replay, gatewayError(err)
+	}
+	return memory, replay, nil
 }
 
 // RejectCandidate atomically records the candidate rejection, audit history, and
 // idempotency result.
 func (c *ConsolidationCapability) RejectCandidate(ctx context.Context, identity gateway.WriteIdentity, candidateID string, params consolidation.ReviewParams) (domain.Candidate, bool, error) {
-	return c.repo.RejectCandidate(ctx, gatewayWriteIdentity(identity), candidateID, ReviewCandidateParams{
+	candidate, replay, err := c.repo.RejectCandidate(ctx, gatewayWriteIdentity(identity), candidateID, ReviewCandidateParams{
 		ReasonCode: params.ReasonCode,
 		Note:       params.Note,
 	})
+	if err != nil {
+		return domain.Candidate{}, replay, gatewayError(err)
+	}
+	return candidate, replay, nil
 }
 
 // GetConsolidationDecision returns the recorded decision for a candidate.
 func (c *ConsolidationCapability) GetConsolidationDecision(ctx context.Context, candidateID string) (domain.ConsolidationDecision, error) {
-	return c.repo.GetConsolidationDecision(ctx, candidateID)
-}
-
-// ConsolidationClassifierBridge adapts a protocol-neutral, provider-backed
-// classifier to the repository's internal consolidation classifier hook. It
-// translates the classifier data shape without moving authority decisions out of
-// the deterministic confirmation path.
-type ConsolidationClassifierBridge struct {
-	Classifier consolidation.Classifier
-}
-
-// ClassifyConsolidation maps the bounded neighbor set and delegates one provider
-// classification.
-func (b *ConsolidationClassifierBridge) ClassifyConsolidation(ctx context.Context, candidate domain.MemoryRevision, neighbors []ConsolidationNeighbor) (ConsolidationProviderProposal, error) {
-	bounded := make([]consolidation.Neighbor, 0, len(neighbors))
-	for _, neighbor := range neighbors {
-		bounded = append(bounded, consolidation.Neighbor{
-			MemoryID:         neighbor.MemoryID,
-			RevisionID:       neighbor.RevisionID,
-			Kind:             neighbor.Kind,
-			CanonicalHash:    neighbor.CanonicalHash,
-			CanonicalContent: neighbor.CanonicalContent,
-			Subjects:         neighbor.Subjects,
-			Objects:          neighbor.Objects,
-			Attributes:       neighbor.Attributes,
-			EvidenceEventIDs: neighbor.EvidenceEventIDs,
-			Similarity:       neighbor.Similarity,
-		})
-	}
-	classification, err := b.Classifier.Classify(ctx, consolidation.ClassifyRequest{Candidate: candidate, Neighbors: bounded})
+	decision, err := c.repo.GetConsolidationDecision(ctx, candidateID)
 	if err != nil {
-		return ConsolidationProviderProposal{}, err
+		return domain.ConsolidationDecision{}, gatewayError(err)
 	}
-	return ConsolidationProviderProposal{
-		Action:     classification.Action,
-		ReasonCode: classification.ReasonCode,
-		MemoryID:   classification.MemoryID,
-		RevisionID: classification.RevisionID,
-		Similarity: classification.Similarity,
-	}, nil
+	return decision, nil
 }

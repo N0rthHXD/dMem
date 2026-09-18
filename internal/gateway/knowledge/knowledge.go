@@ -11,6 +11,17 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway"
 )
 
+// Operation names published by the Knowledge review surface. They are stable
+// and transport-independent, so idempotency never depends on an HTTP route.
+const (
+	OperationReviewEntityProposal    gateway.OperationName = "knowledge.review_entity"
+	OperationReviewRelationProposal  gateway.OperationName = "knowledge.review_relation"
+	OperationReviewFactProposal      gateway.OperationName = "knowledge.review_fact"
+	OperationReviewEvolutionProposal gateway.OperationName = "knowledge.review_evolution"
+	OperationReviewAggregateProposal gateway.OperationName = "knowledge.review_aggregate"
+	OperationResolveConflict         gateway.OperationName = "knowledge.resolve_conflict"
+)
+
 // Reader is the read-only Knowledge surface.
 type Reader interface {
 	GetEntity(context.Context, gateway.CallContext, GetEntityQuery) (domain.Entity, error)
@@ -26,17 +37,54 @@ type Reader interface {
 // Reviewer is the mutation surface for proposal review and conflict resolution.
 // It is never exposed through the initial Agent HTTP API.
 type Reviewer interface {
-	ReviewEntityProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (domain.EntityProposal, error)
-	ReviewRelationProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (domain.RelationProposal, error)
-	ReviewFactProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (domain.FactProposal, error)
-	ReviewEvolutionProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (domain.EvolutionProposal, error)
-	ReviewAggregateProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (domain.AggregateProposal, error)
-	ResolveConflict(context.Context, gateway.CallContext, ResolveConflictCommand) (domain.ConflictCase, error)
+	ReviewEntityProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (ReviewEntityResult, error)
+	ReviewRelationProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (ReviewRelationResult, error)
+	ReviewFactProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (ReviewFactResult, error)
+	ReviewEvolutionProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (ReviewEvolutionResult, error)
+	ReviewAggregateProposal(context.Context, gateway.CallContext, ReviewProposalCommand) (ReviewAggregateResult, error)
+	ResolveConflict(context.Context, gateway.CallContext, ResolveConflictCommand) (ResolveConflictResult, error)
 }
 
-// GetEntityQuery reads one entity.
+// ReviewEntityResult is the outcome of reviewing one entity proposal.
+type ReviewEntityResult struct {
+	gateway.WriteResult
+	Proposal domain.EntityProposal
+}
+
+// ReviewRelationResult is the outcome of reviewing one relation proposal.
+type ReviewRelationResult struct {
+	gateway.WriteResult
+	Proposal domain.RelationProposal
+}
+
+// ReviewFactResult is the outcome of reviewing one fact proposal.
+type ReviewFactResult struct {
+	gateway.WriteResult
+	Proposal domain.FactProposal
+}
+
+// ReviewEvolutionResult is the outcome of reviewing one evolution proposal.
+type ReviewEvolutionResult struct {
+	gateway.WriteResult
+	Proposal domain.EvolutionProposal
+}
+
+// ReviewAggregateResult is the outcome of reviewing one aggregate proposal.
+type ReviewAggregateResult struct {
+	gateway.WriteResult
+	Proposal domain.AggregateProposal
+}
+
+// ResolveConflictResult is the outcome of resolving one conflict case.
+type ResolveConflictResult struct {
+	gateway.WriteResult
+	Case domain.ConflictCase
+}
+
+// GetEntityQuery reads one entity, optionally narrowed to a scope.
 type GetEntityQuery struct {
 	EntityID        string
+	SpaceID         string
 	IncludeMentions bool
 }
 
@@ -66,9 +114,10 @@ type ListRelationsQuery struct {
 	Page         gateway.PageRequest
 }
 
-// GetEntityFactQuery reads one entity fact.
+// GetEntityFactQuery reads one entity fact, optionally narrowed to a scope.
 type GetEntityFactQuery struct {
-	FactID string
+	FactID  string
+	SpaceID string
 }
 
 // ListEntityFactsQuery lists entity facts in a scope.

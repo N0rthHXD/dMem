@@ -20,14 +20,25 @@ func NewKnowledgeReadCapability(repo *Repository) *KnowledgeReadCapability {
 	return &KnowledgeReadCapability{repo: repo}
 }
 
-// GetEntity reads one entity.
+// GetEntity reads one entity, optionally narrowed to a scope.
 func (c *KnowledgeReadCapability) GetEntity(ctx context.Context, query knowledge.GetEntityQuery) (domain.Entity, error) {
-	return c.repo.GetEntity(ctx, query.EntityID, query.IncludeMentions)
+	if query.SpaceID != "" {
+		entity, err := c.repo.GetEntityInSpace(ctx, query.EntityID, query.SpaceID, query.IncludeMentions)
+		if err != nil {
+			return domain.Entity{}, gatewayError(err)
+		}
+		return entity, nil
+	}
+	entity, err := c.repo.GetEntity(ctx, query.EntityID, query.IncludeMentions)
+	if err != nil {
+		return domain.Entity{}, gatewayError(err)
+	}
+	return entity, nil
 }
 
 // ListEntities lists entities in a scope.
 func (c *KnowledgeReadCapability) ListEntities(ctx context.Context, query knowledge.ListEntitiesQuery) (domain.EntityPage, error) {
-	return c.repo.ListEntities(ctx, EntityFilter{
+	page, err := c.repo.ListEntities(ctx, EntityFilter{
 		SpaceID:         query.SpaceID,
 		State:           query.State,
 		EntityType:      query.EntityType,
@@ -35,19 +46,32 @@ func (c *KnowledgeReadCapability) ListEntities(ctx context.Context, query knowle
 		Limit:           query.Page.EffectiveLimit(),
 		IncludeMentions: query.IncludeMentions,
 	})
+	if err != nil {
+		return domain.EntityPage{}, gatewayError(err)
+	}
+	return page, nil
 }
 
 // GetRelation reads one relation, optionally bound to a scope.
 func (c *KnowledgeReadCapability) GetRelation(ctx context.Context, query knowledge.GetRelationQuery) (domain.MemoryRelation, error) {
+	var (
+		relation domain.MemoryRelation
+		err      error
+	)
 	if query.SpaceID != "" {
-		return c.repo.GetRelationInSpace(ctx, query.RelationID, query.SpaceID)
+		relation, err = c.repo.GetRelationInSpace(ctx, query.RelationID, query.SpaceID)
+	} else {
+		relation, err = c.repo.GetRelation(ctx, query.RelationID)
 	}
-	return c.repo.GetRelation(ctx, query.RelationID)
+	if err != nil {
+		return domain.MemoryRelation{}, gatewayError(err)
+	}
+	return relation, nil
 }
 
 // ListRelations lists relations in a scope.
 func (c *KnowledgeReadCapability) ListRelations(ctx context.Context, query knowledge.ListRelationsQuery) (domain.RelationPage, error) {
-	return c.repo.ListRelations(ctx, RelationFilter{
+	page, err := c.repo.ListRelations(ctx, RelationFilter{
 		SpaceID:      query.SpaceID,
 		State:        query.State,
 		RelationType: query.RelationType,
@@ -57,16 +81,24 @@ func (c *KnowledgeReadCapability) ListRelations(ctx context.Context, query knowl
 		Cursor:       query.Page.Cursor,
 		Limit:        query.Page.EffectiveLimit(),
 	})
+	if err != nil {
+		return domain.RelationPage{}, gatewayError(err)
+	}
+	return page, nil
 }
 
 // GetEntityFact reads one entity fact.
 func (c *KnowledgeReadCapability) GetEntityFact(ctx context.Context, query knowledge.GetEntityFactQuery) (domain.EntityFact, error) {
-	return c.repo.GetEntityFact(ctx, query.FactID)
+	fact, err := c.repo.GetEntityFact(ctx, query.FactID)
+	if err != nil {
+		return domain.EntityFact{}, gatewayError(err)
+	}
+	return fact, nil
 }
 
 // ListEntityFacts lists entity facts in a scope.
 func (c *KnowledgeReadCapability) ListEntityFacts(ctx context.Context, query knowledge.ListEntityFactsQuery) (domain.EntityFactPage, error) {
-	return c.repo.ListEntityFacts(ctx, FactFilter{
+	page, err := c.repo.ListEntityFacts(ctx, FactFilter{
 		SpaceID:         query.SpaceID,
 		SubjectEntityID: query.SubjectEntityID,
 		ObjectEntityID:  query.ObjectEntityID,
@@ -77,21 +109,33 @@ func (c *KnowledgeReadCapability) ListEntityFacts(ctx context.Context, query kno
 		Cursor:          query.Page.Cursor,
 		Limit:           query.Page.EffectiveLimit(),
 	})
+	if err != nil {
+		return domain.EntityFactPage{}, gatewayError(err)
+	}
+	return page, nil
 }
 
 // GetConflictCase reads one conflict case.
 func (c *KnowledgeReadCapability) GetConflictCase(ctx context.Context, query knowledge.GetConflictCaseQuery) (domain.ConflictCase, error) {
-	return c.repo.GetConflictCase(ctx, query.CaseID)
+	found, err := c.repo.GetConflictCase(ctx, query.CaseID)
+	if err != nil {
+		return domain.ConflictCase{}, gatewayError(err)
+	}
+	return found, nil
 }
 
 // ListConflictCases lists conflict cases in a scope.
 func (c *KnowledgeReadCapability) ListConflictCases(ctx context.Context, query knowledge.ListConflictCasesQuery) (domain.ConflictCasePage, error) {
-	return c.repo.ListConflictCases(ctx, ConflictCaseFilter{
+	page, err := c.repo.ListConflictCases(ctx, ConflictCaseFilter{
 		SpaceID: query.SpaceID,
 		State:   query.State,
 		Cursor:  query.Page.Cursor,
 		Limit:   query.Page.EffectiveLimit(),
 	})
+	if err != nil {
+		return domain.ConflictCasePage{}, gatewayError(err)
+	}
+	return page, nil
 }
 
 // KnowledgeReviewCapability adapts the SQLite repository to the Knowledge review
@@ -113,10 +157,19 @@ func (c *KnowledgeReviewCapability) ReviewEntityProposal(ctx context.Context, id
 		return domain.EntityProposal{}, false, err
 	}
 	review := ReviewEntityProposalParams{ReasonCode: params.ReasonCode, Note: params.Note}
+	var (
+		proposal domain.EntityProposal
+		replay   bool
+	)
 	if confirm {
-		return c.repo.ConfirmEntityProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+		proposal, replay, err = c.repo.ConfirmEntityProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	} else {
+		proposal, replay, err = c.repo.RejectEntityProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
 	}
-	return c.repo.RejectEntityProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	if err != nil {
+		return domain.EntityProposal{}, replay, gatewayError(err)
+	}
+	return proposal, replay, nil
 }
 
 // ReviewRelationProposal confirms or rejects one relation proposal.
@@ -126,10 +179,19 @@ func (c *KnowledgeReviewCapability) ReviewRelationProposal(ctx context.Context, 
 		return domain.RelationProposal{}, false, err
 	}
 	review := ReviewRelationProposalParams{ReasonCode: params.ReasonCode, Note: params.Note}
+	var (
+		proposal domain.RelationProposal
+		replay   bool
+	)
 	if confirm {
-		return c.repo.ConfirmRelationProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+		proposal, replay, err = c.repo.ConfirmRelationProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	} else {
+		proposal, replay, err = c.repo.RejectRelationProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
 	}
-	return c.repo.RejectRelationProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	if err != nil {
+		return domain.RelationProposal{}, replay, gatewayError(err)
+	}
+	return proposal, replay, nil
 }
 
 // ReviewFactProposal confirms or rejects one fact proposal.
@@ -139,10 +201,19 @@ func (c *KnowledgeReviewCapability) ReviewFactProposal(ctx context.Context, iden
 		return domain.FactProposal{}, false, err
 	}
 	review := ReviewFactProposalParams{ReasonCode: params.ReasonCode, Note: params.Note}
+	var (
+		proposal domain.FactProposal
+		replay   bool
+	)
 	if confirm {
-		return c.repo.ConfirmFactProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+		proposal, replay, err = c.repo.ConfirmFactProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	} else {
+		proposal, replay, err = c.repo.RejectFactProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
 	}
-	return c.repo.RejectFactProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	if err != nil {
+		return domain.FactProposal{}, replay, gatewayError(err)
+	}
+	return proposal, replay, nil
 }
 
 // ReviewEvolutionProposal confirms or rejects one evolution proposal.
@@ -152,10 +223,19 @@ func (c *KnowledgeReviewCapability) ReviewEvolutionProposal(ctx context.Context,
 		return domain.EvolutionProposal{}, false, err
 	}
 	review := ReviewEvolutionProposalParams{ReasonCode: params.ReasonCode, Note: params.Note}
+	var (
+		proposal domain.EvolutionProposal
+		replay   bool
+	)
 	if confirm {
-		return c.repo.ConfirmEvolutionProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+		proposal, replay, err = c.repo.ConfirmEvolutionProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	} else {
+		proposal, replay, err = c.repo.RejectEvolutionProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
 	}
-	return c.repo.RejectEvolutionProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	if err != nil {
+		return domain.EvolutionProposal{}, replay, gatewayError(err)
+	}
+	return proposal, replay, nil
 }
 
 // ReviewAggregateProposal confirms or rejects one aggregate proposal.
@@ -165,15 +245,28 @@ func (c *KnowledgeReviewCapability) ReviewAggregateProposal(ctx context.Context,
 		return domain.AggregateProposal{}, false, err
 	}
 	review := ReviewAggregateProposalParams{ReasonCode: params.ReasonCode, Note: params.Note}
+	var (
+		proposal domain.AggregateProposal
+		replay   bool
+	)
 	if confirm {
-		return c.repo.ConfirmAggregateProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+		proposal, replay, err = c.repo.ConfirmAggregateProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	} else {
+		proposal, replay, err = c.repo.RejectAggregateProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
 	}
-	return c.repo.RejectAggregateProposal(ctx, gatewayWriteIdentity(identity), proposalID, review)
+	if err != nil {
+		return domain.AggregateProposal{}, replay, gatewayError(err)
+	}
+	return proposal, replay, nil
 }
 
 // ResolveConflict resolves one conflict case.
 func (c *KnowledgeReviewCapability) ResolveConflict(ctx context.Context, identity gateway.WriteIdentity, caseID string, command domain.ConflictResolutionCommand) (domain.ConflictCase, bool, error) {
-	return c.repo.ResolveConflict(ctx, gatewayWriteIdentity(identity), caseID, ResolveConflictParams(command))
+	resolved, replay, err := c.repo.ResolveConflict(ctx, gatewayWriteIdentity(identity), caseID, ResolveConflictParams(command))
+	if err != nil {
+		return domain.ConflictCase{}, replay, gatewayError(err)
+	}
+	return resolved, replay, nil
 }
 
 func reviewConfirmed(decision knowledge.ReviewDecision) (bool, error) {

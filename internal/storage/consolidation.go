@@ -6,313 +6,41 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway/consolidation"
 )
 
 var ErrInvalidConsolidation = errors.New("invalid consolidation proposal")
 
-// consolidationRules are the versioned deterministic thresholds that classify a
-// structured candidate against existing memory revisions (ADR 0035).
-type consolidationRules struct {
-	Version               string
-	ExactHashEnabled      bool
-	SameSourceEventCosine float64
-	SameSubjectKindCosine float64
-}
-
-// consolidationNeighbor is one bounded recall hit for candidate consolidation.
-type consolidationNeighbor struct {
-	MemoryID         string
-	RevisionID       string
-	Kind             domain.MemoryKind
-	CanonicalHash    string
-	CanonicalContent string
-	EventType        string
-	Subjects         []string
-	Objects          []string
-	Attributes       map[string]string
-	EvidenceRanges   []evidenceRange
-	ValidFrom        *time.Time
-	ValidUntil       *time.Time
-	Specificity      float64
-	Precision        domain.TimePrecision
-	Lifecycle        string
-	Frozen           bool
-}
-
-type evidenceRange struct {
-	EventID     string
-	StartOffset *int64
-	EndOffset   *int64
-}
-
-// consolidationSimilarity carries optional semantic proximity. When ok is false
-// no cosine was computed and semantic-only rules must not fire.
-type consolidationSimilarity struct {
-	Cosine float64
-	OK     bool
-}
-
-type consolidationOutcome struct {
-	Action           domain.ConsolidationAction
-	ReasonCode       string
-	TargetMemoryID   string
-	TargetRevisionID string
-	Similarity       *float64
-	Classification   domain.ConsolidationClassification
-}
-
-// ConsolidationProviderProposal is a policy-controlled provider classification
-// for a candidate the deterministic rules could not resolve. It remains a
-// proposal until deterministic validation accepts it.
-type ConsolidationProviderProposal struct {
-	Action     domain.ConsolidationAction
-	ReasonCode string
-	MemoryID   string
-	RevisionID string
-	Similarity *float64
-}
-
-// ConsolidationClassifier is the optional provider interface for unresolved
-// candidates. It must be policy-gated by the caller.
-type ConsolidationClassifier interface {
-	ClassifyConsolidation(ctx context.Context, candidate domain.MemoryRevision, neighbors []ConsolidationNeighbor) (ConsolidationProviderProposal, error)
-}
-
-// ConsolidationNeighbor is the exported classifier view of a recall hit.
-type ConsolidationNeighbor struct {
-	MemoryID         string
-	RevisionID       string
-	Kind             domain.MemoryKind
-	CanonicalHash    string
-	CanonicalContent string
-	Subjects         []string
-	Objects          []string
-	Attributes       map[string]string
-	EvidenceEventIDs []string
-	Similarity       *float64
-}
+// The deterministic consolidation classifier is protocol-independent and lives
+// in the gateway module. Storage keeps only the bounded recall query, the atomic
+// decision write, and the authority mutation; these aliases keep the SQL path
+// readable without duplicating classification logic.
+type (
+	consolidationRules      = consolidation.Rules
+	consolidationNeighbor   = consolidation.Neighbor
+	consolidationSimilarity = consolidation.Similarity
+	consolidationOutcome    = consolidation.Outcome
+	evidenceRange           = consolidation.EvidenceRange
+)
 
 // SetConsolidationClassifier installs the optional, policy-controlled provider
 // classifier used only for candidates the deterministic rules leave unresolved.
-func (r *Repository) SetConsolidationClassifier(classifier ConsolidationClassifier) {
+func (r *Repository) SetConsolidationClassifier(classifier consolidation.Classifier) {
 	r.consolidationClassifier = classifier
 }
 
-// classifyConsolidation applies the deterministic exact rules first. Semantic
-// similarity can only reinforce a deterministic tuple or shared-evidence match;
-// cosine alone never supersedes, contests, deletes, or attaches.
-func classifyConsolidation(rules consolidationRules, candidate domain.MemoryRevision, neighbor *consolidationNeighbor, sim consolidationSimilarity) (domain.ConsolidationAction, string) {
-	if neighbor == nil {
-		return domain.ConsolidationCreate, "novel"
-	}
-	candidateHash := candidate.CanonicalHash
-	if candidateHash == "" {
-		candidateHash = canonicalContentHash(candidate.CanonicalContent)
-	}
-	sameKind := candidate.Kind == neighbor.Kind
-	sameSubjectKind := sameKind && equalStringSets(candidate.SubjectEntityIDs, neighbor.Subjects)
-	sameEvent := sharesEvent(candidate.Evidence, neighbor)
-	attrConflict := attributesConflict(candidate.Attributes, neighbor.Attributes)
-	timeCompatible := validTimeCompatible(candidate, neighbor)
-	timeOrdered := validTimeOrdered(candidate, neighbor)
-
-	if rules.ExactHashEnabled && candidateHash != "" && candidateHash == neighbor.CanonicalHash && sameKind {
-		if attributesConflict(candidate.Attributes, neighbor.Attributes) {
-			return domain.ConsolidationRefine, "exact_hash_attribute_delta"
-		}
-		if evidenceSubset(candidate.Evidence, neighbor) {
-			return domain.ConsolidationReject, "redundant_evidence"
-		}
-		return domain.ConsolidationAttachEvidence, "exact_canonical_hash"
-	}
-
-	if sameSubjectKind && attrConflict {
-		switch {
-		case timeOrdered:
-			return domain.ConsolidationSupersede, "ordered_attribute_conflict"
-		case timeCompatible:
-			return domain.ConsolidationContest, "overlapping_attribute_conflict"
-		default:
-			return domain.ConsolidationCreate, "disjoint_attribute_conflict"
-		}
-	}
-
-	if sameEvent && sim.OK && sim.Cosine >= rules.SameSourceEventCosine {
-		if attrConflict {
-			return domain.ConsolidationCreate, "cosine_conflict_no_merge"
-		}
-		if evidenceSubset(candidate.Evidence, neighbor) {
-			return domain.ConsolidationReject, "redundant_evidence"
-		}
-		return domain.ConsolidationAttachEvidence, "same_source_event"
-	}
-
-	if sameSubjectKind && timeCompatible && sim.OK && sim.Cosine >= rules.SameSubjectKindCosine {
-		if attrConflict {
-			return domain.ConsolidationCreate, "cosine_conflict_no_merge"
-		}
-		if evidenceSubset(candidate.Evidence, neighbor) {
-			return domain.ConsolidationReject, "redundant_evidence"
-		}
-		if morePrecise(candidate, neighbor) {
-			return domain.ConsolidationRefine, "more_precise"
-		}
-		return domain.ConsolidationAttachEvidence, "subject_kind_semantic"
-	}
-
-	return domain.ConsolidationCreate, "novel"
-}
-
-// validateProviderConsolidation accepts a provider proposal only when the
-// deterministic rules left the candidate unresolved. Destructive actions
-// require an independently detected deterministic conflict; cosine alone cannot
-// authorize them.
-func validateProviderConsolidation(deterministic consolidationOutcome, proposal ConsolidationProviderProposal, conflictDetected bool) (consolidationOutcome, bool) {
-	if deterministic.Action != domain.ConsolidationCreate {
-		return consolidationOutcome{}, false
-	}
-	if !proposal.Action.Valid() || proposal.ReasonCode == "" {
-		return consolidationOutcome{}, false
-	}
-	switch proposal.Action {
-	case domain.ConsolidationSupersede, domain.ConsolidationContest:
-		if !conflictDetected {
-			return consolidationOutcome{}, false
-		}
-	}
-	return consolidationOutcome{
-		Action:           proposal.Action,
-		ReasonCode:       "provider_" + proposal.ReasonCode,
-		TargetMemoryID:   proposal.MemoryID,
-		TargetRevisionID: proposal.RevisionID,
-		Similarity:       proposal.Similarity,
-		Classification:   domain.ConsolidationProvider,
-	}, true
-}
-
 func canonicalContentHash(content string) string {
-	hash := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(hash[:])
+	return consolidation.CanonicalContentHash(content)
 }
 
-func equalStringSets(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	left, right := append([]string(nil), a...), append([]string(nil), b...)
-	sort.Strings(left)
-	sort.Strings(right)
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func attributesConflict(a, b map[string]string) bool {
-	for key, value := range a {
-		if other, ok := b[key]; ok && other != value {
-			return true
-		}
-	}
-	return false
-}
-
-func sharesEvent(evidence []domain.RevisionEvidence, neighbor *consolidationNeighbor) bool {
-	if len(evidence) == 0 || len(neighbor.EvidenceRanges) == 0 {
-		return false
-	}
-	for _, item := range evidence {
-		for _, existing := range neighbor.EvidenceRanges {
-			if existing.EventID == item.EventID {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func evidenceSubset(evidence []domain.RevisionEvidence, neighbor *consolidationNeighbor) bool {
-	if len(evidence) == 0 {
-		return false
-	}
-	for _, item := range evidence {
-		found := false
-		for _, existing := range neighbor.EvidenceRanges {
-			if existing.EventID == item.EventID && equalOptionalInt64(existing.StartOffset, item.StartOffset) && equalOptionalInt64(existing.EndOffset, item.EndOffset) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-func equalOptionalInt64(a, b *int64) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
-}
-
-func validTimeCompatible(candidate domain.MemoryRevision, neighbor *consolidationNeighbor) bool {
-	return intervalsOverlap(candidate.ValidFrom, candidate.ValidUntil, neighbor.ValidFrom, neighbor.ValidUntil)
-}
-
-func validTimeOrdered(candidate domain.MemoryRevision, neighbor *consolidationNeighbor) bool {
-	if candidate.ValidFrom != nil && neighbor.ValidUntil != nil && candidate.ValidFrom.After(*neighbor.ValidUntil) {
-		return true
-	}
-	if neighbor.ValidFrom != nil && candidate.ValidUntil != nil && neighbor.ValidFrom.After(*candidate.ValidUntil) {
-		return true
-	}
-	return false
-}
-
+// intervalsOverlap reports whether two optional valid-time intervals overlap. It
+// backs duplicate detection, which is unrelated to candidate consolidation.
 func intervalsOverlap(aStart, aEnd, bStart, bEnd *time.Time) bool {
-	if aStart != nil && bEnd != nil && !aStart.Before(*bEnd) {
-		return false
-	}
-	if bStart != nil && aEnd != nil && !bStart.Before(*aEnd) {
-		return false
-	}
-	return true
-}
-
-func morePrecise(candidate domain.MemoryRevision, neighbor *consolidationNeighbor) bool {
-	if len(candidate.Attributes) > len(neighbor.Attributes) {
-		return true
-	}
-	if candidate.Specificity > neighbor.Specificity {
-		return true
-	}
-	return timePrecisionRank(candidate.TimePrecision) > timePrecisionRank(neighbor.Precision)
-}
-
-func timePrecisionRank(precision domain.TimePrecision) int {
-	switch precision {
-	case domain.TimePrecisionExact:
-		return 5
-	case domain.TimePrecisionDay:
-		return 4
-	case domain.TimePrecisionMonth:
-		return 3
-	case domain.TimePrecisionYear:
-		return 2
-	case domain.TimePrecisionApproximate:
-		return 1
-	default:
-		return 0
-	}
+	return consolidation.IntervalsOverlap(aStart, aEnd, bStart, bEnd)
 }
 
 // boundedConsolidationRecall retrieves a bounded, deterministically ordered set
@@ -368,8 +96,9 @@ func (r *Repository) boundedConsolidationRecall(ctx context.Context, tx *sql.Tx,
 	for rows.Next() {
 		var item consolidationNeighbor
 		var validFrom, validUntil sql.NullString
-		var precision string
-		if err := rows.Scan(&item.MemoryID, &item.RevisionID, &item.Kind, &item.Lifecycle, &item.Frozen, &item.CanonicalHash, &item.CanonicalContent, &item.EventType, &validFrom, &validUntil, &item.Specificity, &precision); err != nil {
+		var precision, lifecycle, eventType string
+		var frozen bool
+		if err := rows.Scan(&item.MemoryID, &item.RevisionID, &item.Kind, &lifecycle, &frozen, &item.CanonicalHash, &item.CanonicalContent, &eventType, &validFrom, &validUntil, &item.Specificity, &precision); err != nil {
 			return nil, err
 		}
 		item.Precision = domain.TimePrecision(precision)
@@ -450,6 +179,7 @@ func loadConsolidationDetails(ctx context.Context, tx *sql.Tx, neighbor *consoli
 			return err
 		}
 		neighbor.EvidenceRanges = append(neighbor.EvidenceRanges, item)
+		neighbor.EvidenceEventIDs = append(neighbor.EvidenceEventIDs, item.EventID)
 	}
 	return rows.Close()
 }
@@ -463,19 +193,20 @@ func stringsToAny(values []string) []any {
 }
 
 // classifyCandidateForConsolidation performs bounded consolidation recall and
-// deterministic classification. The provider classifier is consulted only when
-// the deterministic rules leave the candidate unresolved, and its result remains
-// a proposal validated against the cosine-only prohibition.
+// delegates deterministic classification and provider-proposal validation to the
+// protocol-independent classifier. The provider classifier is consulted only
+// when the deterministic rules leave the candidate unresolved, and its result
+// remains a proposal validated against the cosine-only prohibition.
 func (r *Repository) classifyCandidateForConsolidation(ctx context.Context, tx *sql.Tx, candidate domain.Candidate, revision domain.MemoryRevision) (consolidationOutcome, bool, error) {
 	neighbors, err := r.boundedConsolidationRecall(ctx, tx, candidate.SpaceID, revision)
 	if err != nil {
 		return consolidationOutcome{}, false, err
 	}
 	rules := r.consolidationRules()
-	outcome := consolidationOutcome{Action: domain.ConsolidationCreate, ReasonCode: "novel", Classification: domain.ConsolidationNone}
+	outcome := consolidation.NovelOutcome()
 	matched := false
 	for i := range neighbors {
-		action, reason := classifyConsolidation(rules, revision, &neighbors[i], consolidationSimilarity{})
+		action, reason := consolidation.ClassifyDeterministic(rules, revision, &neighbors[i], consolidationSimilarity{})
 		if action == domain.ConsolidationCreate {
 			continue
 		}
@@ -488,40 +219,20 @@ func (r *Repository) classifyCandidateForConsolidation(ctx context.Context, tx *
 		break
 	}
 	if !matched && r.consolidationClassifier != nil && len(neighbors) > 0 {
-		proposal, err := r.consolidationClassifier.ClassifyConsolidation(ctx, revision, exportedNeighbors(neighbors))
+		conflict := consolidation.ConflictDetected(revision, neighbors)
+		providerNeighbors := append([]consolidation.Neighbor(nil), neighbors...)
+		proposal, err := r.consolidationClassifier.Classify(ctx, consolidation.ClassifyRequest{Candidate: revision, Neighbors: providerNeighbors})
 		if err != nil {
 			return consolidationOutcome{}, false, err
 		}
-		conflict := false
-		for i := range neighbors {
-			if revision.Kind == neighbors[i].Kind && equalStringSets(revision.SubjectEntityIDs, neighbors[i].Subjects) && attributesConflict(revision.Attributes, neighbors[i].Attributes) {
-				conflict = true
-				break
-			}
-		}
-		if classified, ok := validateProviderConsolidation(outcome, proposal, conflict); ok {
+		if classified, ok := consolidation.ValidateProviderProposal(outcome, proposal, conflict); ok {
 			outcome = classified
 		}
 	}
 	if !outcome.Action.Valid() {
-		outcome = consolidationOutcome{Action: domain.ConsolidationCreate, ReasonCode: "novel", Classification: domain.ConsolidationNone}
+		outcome = consolidation.NovelOutcome()
 	}
 	return outcome, matched, nil
-}
-
-func exportedNeighbors(neighbors []consolidationNeighbor) []ConsolidationNeighbor {
-	result := make([]ConsolidationNeighbor, len(neighbors))
-	for i := range neighbors {
-		result[i] = ConsolidationNeighbor{
-			MemoryID: neighbors[i].MemoryID, RevisionID: neighbors[i].RevisionID, Kind: neighbors[i].Kind,
-			CanonicalHash: neighbors[i].CanonicalHash, CanonicalContent: neighbors[i].CanonicalContent,
-			Subjects: neighbors[i].Subjects, Objects: neighbors[i].Objects, Attributes: neighbors[i].Attributes,
-		}
-		for _, item := range neighbors[i].EvidenceRanges {
-			result[i].EvidenceEventIDs = append(result[i].EvidenceEventIDs, item.EventID)
-		}
-	}
-	return result
 }
 
 // recordConsolidationDecision persists one immutable decision row for a

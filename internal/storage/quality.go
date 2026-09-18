@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway/consolidation"
 )
 
 const (
@@ -170,7 +171,7 @@ func (r *Repository) qualityComponents(ctx context.Context, input qualityInput) 
 	evidence := clamp01((float64(direct) + 0.5*float64(derived) + 0.15*float64(anchor)) / 2)
 	confidence := clamp01(input.confidence)
 	specificity := clamp01(input.specificity)
-	temporal := float64(timePrecisionRank(domain.TimePrecision(input.precision))) / 5
+	temporal := float64(consolidation.TimePrecisionRank(domain.TimePrecision(input.precision))) / 5
 	diversity := clamp01(float64(sourceCount) / 3)
 	review := reviewStatusValue(input.state)
 	contradiction := clamp01(float64(contradictions) * 0.7)

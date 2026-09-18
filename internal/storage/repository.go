@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/gateway/consolidation"
 	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/mattn/go-sqlite3"
@@ -100,7 +101,7 @@ type Repository struct {
 	consolidationExactHashEnabled      bool
 	consolidationSameSourceCosine      float64
 	consolidationSameSubjectKindCosine float64
-	consolidationClassifier            ConsolidationClassifier
+	consolidationClassifier            consolidation.Classifier
 }
 
 // SemanticWindowRecall is the optional approximate-nearest-neighbor extension

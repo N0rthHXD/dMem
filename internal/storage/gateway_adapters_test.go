@@ -391,6 +391,100 @@ func TestKnowledgeReviewCapabilityDispatchesDecision(t *testing.T) {
 	}
 }
 
+func TestConsolidationCapabilityRejectIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	candidate := createTestCandidate(t, repository)
+	capability := NewConsolidationCapability(repository)
+	call := gatewayCall("gateway-caller", "reject-1", "request-reject-1")
+	command := consolidation.RejectCommand{CandidateID: candidate.CandidateID, ReasonCode: "duplicate"}
+	identity := gatewayIdentity(t, call, consolidation.OperationReject, command)
+
+	rejected, replay, err := capability.RejectCandidate(ctx, identity, candidate.CandidateID, consolidation.ReviewParams{ReasonCode: command.ReasonCode})
+	if err != nil || replay || rejected.ReviewState != "rejected" {
+		t.Fatalf("RejectCandidate() = %+v replay=%t error=%v", rejected, replay, err)
+	}
+	var memories, audits int
+	if err := repository.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memories),(SELECT count(*) FROM audit_events WHERE action='reject_candidate')`).Scan(&memories, &audits); err != nil || memories != 0 || audits != 1 {
+		t.Fatalf("reject rows memories=%d audits=%d error=%v", memories, audits, err)
+	}
+}
+
+func TestKnowledgeReadCapabilityScopesEntityBySpace(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	params := CreateEntityProposalParams{EventID: "event-1", SpaceID: "space-1", ProposalKind: "entity", EntityType: "person", CanonicalName: "Scoped", Sensitivity: "normal", ProcessorIdentity: "processor/test", ProcessingVersion: "entity-v1"}
+	proposal := createEntityProposalTest(t, repository, params)
+	review := ReviewEntityProposalParams{ReasonCode: "confirmed"}
+	confirmed, _, err := repository.ConfirmEntityProposal(ctx, entityProposalIdentity("scoped-confirm", "confirm", proposal.ID, review), proposal.ID, review)
+	if err != nil || confirmed.ResultEntityID == nil {
+		t.Fatalf("ConfirmEntityProposal() = %+v error=%v", confirmed, err)
+	}
+	reader := NewKnowledgeReadCapability(repository)
+	if _, err := reader.GetEntity(ctx, knowledge.GetEntityQuery{EntityID: *confirmed.ResultEntityID, SpaceID: "space-1"}); err != nil {
+		t.Fatalf("scoped GetEntity() error = %v", err)
+	}
+	if _, err := reader.GetEntity(ctx, knowledge.GetEntityQuery{EntityID: *confirmed.ResultEntityID, SpaceID: "space-2"}); !gateway.IsCode(err, gateway.ErrorNotFound) {
+		t.Fatalf("cross-space GetEntity() error = %v, want not_found", err)
+	}
+}
+
+func TestKnowledgeCapabilitiesReadAndReviewRelations(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	source, target := createTestMemory(t, repository, "adapter-relation-source"), createTestMemory(t, repository, "adapter-relation-target")
+	proposal := createRelationProposalTest(t, repository, "adapter-relation-proposal", relationParams(source, target))
+	reviewer := NewKnowledgeReviewCapability(repository)
+	call := gatewayCall("gateway-caller", "adapter-relation-review", "request-adapter-relation-review")
+	command := knowledge.ReviewProposalCommand{ProposalID: proposal.ProposalID, Decision: knowledge.ReviewConfirm, ReasonCode: "confirmed"}
+	identity := gatewayIdentity(t, call, knowledge.OperationReviewRelationProposal, command)
+
+	reviewed, replay, err := reviewer.ReviewRelationProposal(ctx, identity, proposal.ProposalID, knowledge.ReviewParams{Decision: knowledge.ReviewConfirm, ReasonCode: "confirmed"})
+	if err != nil || replay || reviewed.ResultRelationID == nil {
+		t.Fatalf("ReviewRelationProposal() = %+v replay=%t error=%v", reviewed, replay, err)
+	}
+	reader := NewKnowledgeReadCapability(repository)
+	page, err := reader.ListRelations(ctx, knowledge.ListRelationsQuery{SpaceID: "space-1", MemoryID: source.MemoryID, Direction: "outgoing"})
+	if err != nil || len(page.Items) != 1 || page.Items[0].RelationID != *reviewed.ResultRelationID {
+		t.Fatalf("ListRelations() = %+v error=%v", page, err)
+	}
+	relation, err := reader.GetRelation(ctx, knowledge.GetRelationQuery{RelationID: *reviewed.ResultRelationID, SpaceID: "space-1"})
+	if err != nil || relation.RelationID != *reviewed.ResultRelationID {
+		t.Fatalf("GetRelation() = %+v error=%v", relation, err)
+	}
+	if _, err := reader.GetRelation(ctx, knowledge.GetRelationQuery{RelationID: *reviewed.ResultRelationID, SpaceID: "space-2"}); !gateway.IsCode(err, gateway.ErrorNotFound) {
+		t.Fatalf("cross-space GetRelation() error = %v, want not_found", err)
+	}
+}
+
+func TestKnowledgeCapabilitiesReadAndResolveConflicts(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	a, b := createTestMemory(t, repository, "adapter-conflict-a"), createTestMemory(t, repository, "adapter-conflict-b")
+	proposal := createEvolutionTest(t, repository, "adapter-conflict-proposal", evolutionParams("conflict", a, b))
+	confirmed := confirmEvolutionTest(t, repository, "adapter-conflict-confirm", proposal, nil)
+	caseID := confirmed.Reviews[0].Results[1].ResultID
+
+	reader := NewKnowledgeReadCapability(repository)
+	page, err := reader.ListConflictCases(ctx, knowledge.ListConflictCasesQuery{SpaceID: "space-1", State: "open"})
+	if err != nil || len(page.Items) != 1 || page.Items[0].CaseID != caseID {
+		t.Fatalf("ListConflictCases() = %+v error=%v", page, err)
+	}
+	if _, err := reader.GetConflictCase(ctx, knowledge.GetConflictCaseQuery{CaseID: caseID}); err != nil {
+		t.Fatalf("GetConflictCase() error = %v", err)
+	}
+
+	reviewer := NewKnowledgeReviewCapability(repository)
+	resolution := domain.ConflictResolutionCommand{ResolutionType: "keep_both", ExpectedTargets: proposal.Targets, ResultStates: map[string]string{a.MemoryID: "active", b.MemoryID: "active"}, Reason: "reviewed"}
+	command := knowledge.ResolveConflictCommand{CaseID: caseID, ConflictResolutionCommand: resolution}
+	call := gatewayCall("gateway-caller", "adapter-conflict-resolve", "request-adapter-conflict-resolve")
+	identity := gatewayIdentity(t, call, knowledge.OperationResolveConflict, command)
+	resolved, replay, err := reviewer.ResolveConflict(ctx, identity, caseID, resolution)
+	if err != nil || replay || resolved.State != "resolved" {
+		t.Fatalf("ResolveConflict() = %+v replay=%t error=%v", resolved, replay, err)
+	}
+}
+
 func TestUnitOfWorkCommitsAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	repository, _ := newMemoryTestRepository(t)
@@ -442,20 +536,38 @@ func TestUnitOfWorkCommitsAndRollsBack(t *testing.T) {
 	}
 }
 
-func TestConsolidationClassifierBridgeMapsProviderProposal(t *testing.T) {
-	candidate := domain.MemoryRevision{Kind: domain.MemoryKindFact, CanonicalContent: "bridge"}
-	bridge := &ConsolidationClassifierBridge{Classifier: fakeClassifier{}}
-	proposal, err := bridge.ClassifyConsolidation(context.Background(), candidate, []ConsolidationNeighbor{{MemoryID: "memory-1", RevisionID: "revision-1", CanonicalContent: "neighbor"}})
-	if err != nil || proposal.Action != domain.ConsolidationRefine || proposal.MemoryID != "memory-1" {
-		t.Fatalf("ClassifyConsolidation() = %+v error=%v", proposal, err)
+func TestConsolidationClassifierHookReceivesGatewayContract(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	base := createTestMemory(t, repository, "classifier-base")
+	classifier := &recordingClassifier{proposal: consolidation.Classification{
+		Action: domain.ConsolidationRefine, ReasonCode: "provider",
+		MemoryID: base.MemoryID, RevisionID: base.CurrentRevision.RevisionID,
+	}}
+	repository.SetConsolidationClassifier(classifier)
+	candidate := createTestCandidate(t, repository)
+	review := ReviewCandidateParams{ReasonCode: "accepted"}
+	if _, _, err := repository.ConfirmCandidate(ctx, candidateIdentity("classifier-confirm", "confirm", candidate.CandidateID, review), candidate.CandidateID, review); err != nil {
+		t.Fatalf("ConfirmCandidate() error = %v", err)
+	}
+	if classifier.calls != 1 || classifier.neighbors == 0 {
+		t.Fatalf("classifier calls=%d neighbors=%d; want one bounded call", classifier.calls, classifier.neighbors)
+	}
+	decision, err := repository.GetConsolidationDecision(ctx, candidate.CandidateID)
+	if err != nil || decision.Classification != domain.ConsolidationProvider || decision.Action != domain.ConsolidationRefine {
+		t.Fatalf("decision = %+v error=%v", decision, err)
 	}
 }
 
-type fakeClassifier struct{}
+type recordingClassifier struct {
+	calls     int
+	neighbors int
+	proposal  consolidation.Classification
+	err       error
+}
 
-func (fakeClassifier) Classify(_ context.Context, request consolidation.ClassifyRequest) (consolidation.Classification, error) {
-	if len(request.Neighbors) != 1 || request.Neighbors[0].MemoryID != "memory-1" {
-		return consolidation.Classification{}, errors.New("neighbor not mapped")
-	}
-	return consolidation.Classification{Action: domain.ConsolidationRefine, ReasonCode: "provider", MemoryID: "memory-1"}, nil
+func (f *recordingClassifier) Classify(_ context.Context, request consolidation.ClassifyRequest) (consolidation.Classification, error) {
+	f.calls++
+	f.neighbors = len(request.Neighbors)
+	return f.proposal, f.err
 }
