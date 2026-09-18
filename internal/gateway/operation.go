@@ -21,6 +21,10 @@ type WriteIdentity struct {
 	Operation      OperationName
 	IdempotencyKey string
 	CommandHash    string
+	// RequestID is the caller-supplied request identifier carried for audit
+	// correlation. It is not part of idempotency semantics and never affects the
+	// canonical command hash.
+	RequestID string
 }
 
 // NewWriteIdentity validates the call context and command and returns the write
@@ -47,5 +51,6 @@ func NewWriteIdentity(call CallContext, operation OperationName, command any) (W
 		Operation:      operation,
 		IdempotencyKey: key,
 		CommandHash:    hash,
+		RequestID:      call.RequestID,
 	}, nil
 }

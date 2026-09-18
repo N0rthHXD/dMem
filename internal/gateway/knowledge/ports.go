@@ -30,8 +30,10 @@ type ReviewStore interface {
 	ResolveConflict(context.Context, gateway.WriteIdentity, string, domain.ConflictResolutionCommand) (domain.ConflictCase, bool, error)
 }
 
-// ReviewParams is the transport-free review input.
+// ReviewParams is the transport-free review input. Decision selects whether the
+// review confirms or rejects the proposal.
 type ReviewParams struct {
+	Decision   ReviewDecision
 	ReasonCode string
 	Note       *string
 }

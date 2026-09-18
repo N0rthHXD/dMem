@@ -175,23 +175,23 @@ physical storage split.
 
 **Dependencies**: Phase 1.
 
-- [ ] T020 [STORE] Inventory cross-table atomic operations and define the
+- [X] T020 [STORE] Inventory cross-table atomic operations and define the
   minimal SQLite unit-of-work boundary for authority, jobs, audit, policy, and
   idempotency writers
-- [ ] T021 [STORE] Implement Memory capability ports by adapting current
+- [X] T021 [STORE] Implement Memory capability ports by adapting current
   repository behavior without exporting storage DTOs to the gateway
-- [ ] T022 [P] [STORE] Implement Scope capability ports
-- [ ] T023 [P] [STORE] Implement Feedback capability ports
-- [ ] T024 [P] [STORE] Implement the initial coarse RecallStore port while
+- [X] T022 [P] [STORE] Implement Scope capability ports
+- [X] T023 [P] [STORE] Implement Feedback capability ports
+- [X] T024 [P] [STORE] Implement the initial coarse RecallStore port while
   retaining FTS5, sqlite-vec, graph, cursor, and telemetry behavior
-- [ ] T025 [P] [STORE] Implement Event and extraction-work capability ports
-- [ ] T026 [P] [STORE] Implement Policy authorization data ports
-- [ ] T027 [P] [STORE] Implement Consolidation transaction and classifier data
+- [X] T025 [P] [STORE] Implement Event and extraction-work capability ports
+- [X] T026 [P] [STORE] Implement Policy authorization data ports
+- [X] T027 [P] [STORE] Implement Consolidation transaction and classifier data
   ports without splitting candidate confirmation atomicity
-- [ ] T028 [P] [STORE] Implement Knowledge and Review capability ports
-- [ ] T029 [STORE] Add compile-time interface assertions for the SQLite-backed
+- [X] T028 [P] [STORE] Implement Knowledge and Review capability ports
+- [X] T029 [STORE] Add compile-time interface assertions for the SQLite-backed
   adapters and remove any gateway contract dependency on `storage.*`
-- [ ] T030 [TEST] Migrate focused storage tests to prove equivalent transaction,
+- [X] T030 [TEST] Migrate focused storage tests to prove equivalent transaction,
   idempotency, audit, cursor, retrieval, policy, and fencing behavior through
   the new ports
 

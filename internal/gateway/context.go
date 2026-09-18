@@ -28,6 +28,15 @@ type CallerIdentity struct {
 	ClientID  string
 }
 
+// CallerID returns the single stable caller identifier used for audit records.
+// Subject identity takes precedence; the client identity is the fallback.
+func (c CallerIdentity) CallerID() string {
+	if c.SubjectID != "" {
+		return c.SubjectID
+	}
+	return c.ClientID
+}
+
 // Idempotency carries the caller-supplied key that makes a state-changing
 // operation replay-safe. It is nil for operations that are not idempotent.
 type Idempotency struct {
@@ -42,10 +51,7 @@ func (c CallContext) HasCaller() bool {
 // CallerID returns the single stable caller identifier used for audit records.
 // Subject identity takes precedence; the client identity is the fallback.
 func (c CallContext) CallerID() string {
-	if c.Caller.SubjectID != "" {
-		return c.Caller.SubjectID
-	}
-	return c.Caller.ClientID
+	return c.Caller.CallerID()
 }
 
 // IdempotencyKey returns the idempotency key, or an empty string when absent.

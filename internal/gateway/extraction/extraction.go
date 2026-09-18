@@ -53,6 +53,7 @@ type GetEventQuery struct {
 // runtime adapter maps its lease record to this value.
 type WorkClaim struct {
 	JobID             string
+	OperationID       string
 	JobType           string
 	TargetType        string
 	TargetID          string
