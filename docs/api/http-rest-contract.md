@@ -3,15 +3,19 @@
 ## Status
 
 This document is the frozen wire contract for the first Agent-neutral REST+JSON
-protocol adapter. It is the design source for
-`internal/protocol/httpapi` and supersedes the old Unix-socket OpenAPI surface
-for the initial Agent-facing routes. The old `docs/api/openapi.yaml` is removed
-or replaced in the documentation cleanup phase.
+protocol adapter. It is the design source for `internal/protocol/httpapi` and is
+the only HTTP contract in the repository: the previous Unix-socket
+`docs/api/openapi.yaml` has been removed. The route metadata in
+`internal/protocol/httpapi` and its conformance tests are the executable form of
+this contract.
 
-The contract is frozen before implementation. Changing a route, DTO field,
-status code, header name, or error code is a contract change and requires
-updating this document, the route metadata in `internal/protocol/httpapi`, and
-the contract tests together.
+The contract is frozen. Changing a route, DTO field, status code, header name, or
+error code is a contract change and requires updating this document, the route
+metadata in `internal/protocol/httpapi`, and the contract tests together.
+
+The adapter returns an `http.Handler`. The runtime composes it but does not
+serve it: there is no production listener, TLS, h2c, or socket lifecycle in the
+current architecture.
 
 ## Scope
 

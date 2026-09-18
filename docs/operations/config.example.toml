@@ -7,6 +7,11 @@
 #
 # Validate offline before starting the daemon:
 #   dmemd --config /absolute/path/config.toml config validate
+#
+# `dmemd daemon` assembles storage adapters, gateway services, providers,
+# workers, and the REST+JSON handler. It does not open a Unix socket or TCP
+# port: transport, TLS, authentication, and network exposure are not configured
+# here because the runtime does not start a listener yet.
 
 config_version = 1
 

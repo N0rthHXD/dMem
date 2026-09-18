@@ -1,5 +1,11 @@
 # Contract: dmemd CLI
 
+> **Historical record.** This contract was superseded by
+> `specs/003-api-layer-refactor`. The `status` and `reload` subcommands and the
+> Unix-socket API it references no longer exist; reload is requested with
+> `SIGHUP`, and the supported commands are `config validate`, `init`, `daemon`,
+> `backup`, and `restore`.
+
 ## Grammar
 
 ```text

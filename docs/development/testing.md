@@ -1,11 +1,11 @@
-# Testing And Evaluation
+# Testing
 
 Linux tests use a C compiler, `CGO_ENABLED=1`, and the `sqlite_fts5` build tag.
-Vector storage statically links sqlite-vec (`github.com/asg017/sqlite-vec-go-bindings`
-`v0.1.6`); its C source is compiled into the same binary via `sqlite3_auto_extension`,
-so no external `.so` or runtime extension loading is required. Tests use
-deterministic providers or local `httptest` servers; they do not need live
-provider credentials.
+Vector storage statically links sqlite-vec
+(`github.com/asg017/sqlite-vec-go-bindings` `v0.1.6`); its C source is compiled
+into the same binary via `sqlite3_auto_extension`, so no external `.so` or
+runtime extension loading is required. Tests use deterministic providers or
+local `httptest` servers; they do not need live provider credentials.
 
 ## Core Checks
 
@@ -17,20 +17,39 @@ make test-race
 make vet
 ```
 
-`make openapi` verifies that the daemon routes and behavior match the documented
-OpenAPI contract. `make schema-check` verifies that the documented SQL exactly
-matches the embedded schema and initializes a temporary database.
+`make schema-check` verifies that the documented SQL exactly matches the embedded
+schema and initializes a temporary database.
+
+## Gateway And Protocol Tests
+
+- Gateway module tests use narrow fake ports for only the capabilities a module
+  declares. They cover semantic validation, error classification, cancellation,
+  idempotency, orchestration, and invariants without HTTP or SQLite where
+  possible.
+- `internal/gateway/arch_test.go` enforces the gateway dependency rules: no
+  `net/http`, no protocol package, no storage or jobs import, no sibling-module
+  import, and no exported contract that exposes a `storage.*` selector.
+- `internal/protocol/httpapi` tests use fake gateway modules and cover strict
+  single-value JSON decoding, DTO conversion, route conformance (caller identity
+  and idempotency policy), response encoding, gateway-error mapping, panic
+  recovery, cancellation, and safe errors.
+- HTTP/2 compatibility and multiplexed concurrency are proven with a test-only
+  `httptest.Server` configured with `EnableHTTP2`. No production listener, TLS,
+  or h2c setup is added by the tests.
+- `internal/protocol/httpapi/arch_test.go` enforces that the protocol tree
+  imports no storage, jobs, provider, config, retrieval, or application package
+  and never owns a listener or inspects the HTTP protocol version.
 
 ## Recovery And Quality
 
 ```sh
-make openapi
 make schema-check
 make restore-drill
 make portability-drill
 make quality
 make performance
 make offline-default
+make config-check
 ```
 
 - `restore-drill` creates and restores a real consistent snapshot, validates
@@ -46,7 +65,7 @@ make offline-default
 - Knowledge-graph tests cover graph extraction scheduling/idempotency, provider
   output validation (unknown fields, rune ranges, illegal predicates, NaN
   confidence, self relations), build-time entity resolution, auto-confirm vs
-  pending review, fact temporal evolution, entity-fact/list/proposal APIs,
+  pending review, fact temporal evolution, entity-fact/list/proposal behavior,
   query-time entity resolution (English and Chinese aliases), 0-hop/1-hop/2-hop
   and memory-relation recall, graph cursor invalidation, and concurrent fact
   confirmation.
@@ -57,6 +76,7 @@ make offline-default
   `DMEM_PERFORMANCE=1`, which the `performance` target sets.
 - `offline-default` verifies that disabled providers do not read secrets or make
   HTTP requests.
+- `config-check` verifies that `docs/operations/config.example.toml` validates.
 
 ### Configuration And Reconciliation
 
@@ -66,12 +86,13 @@ Configuration reload and reconciliation tests live in `internal/daemon` and
 files that toggle provider enablement and policy assignments without live
 provider credentials.
 
-- `TestManagedDaemonReloadsCapabilitiesAtomically` and `TestSC014ReloadBecomesEffectiveWithinTenSeconds`
-  verify atomic reload, no-change, rejection, and the 10-second SC-014 timing
-  bound.
-- `TestPolicyCorrectionRecoversBlockedProcessing` and `TestPolicyExpansionDoesNotDuplicateCompletedWork`
-  prove policy expansion flips `blocked_policy` jobs to `pending` without
-  changing the processing compatibility identity or duplicating completed work.
+- `TestManagedDaemonReloadsCapabilitiesAtomically` and
+  `TestSC014ReloadBecomesEffectiveWithinTenSeconds` verify atomic reload,
+  no-change, rejection, and the 10-second SC-014 timing bound.
+- `TestPolicyCorrectionRecoversBlockedProcessing` and
+  `TestPolicyExpansionDoesNotDuplicateCompletedWork` prove policy expansion
+  flips `blocked_policy` jobs to `pending` without changing the processing
+  compatibility identity or duplicating completed work.
 - `TestReconciliationResumesAfterDaemonRestart` proves effective configuration
   identity, blocked work, reconciliation cursor, and semantic provider state
   survive a daemon restart and resume correctly.
@@ -97,13 +118,7 @@ go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 make govulncheck
 ```
 
-For changes to retrieval or automatic processing, compare the same evaluation
-set before and after the change. At minimum track extraction accuracy and
-omissions, hallucinations, evidence coverage, scoped recall, ranking quality,
-stale-revision return rate, conflict-reference completeness, latency, and
-resource use.
-
 `make check` runs the full required suite except the separately invoked
-`performance` and `govulncheck` targets. Performance gates are
-also skipped by `test` and `test-race`; a controlled runner or CI job opts in
-with `DMEM_PERFORMANCE=1`.
+`performance` and `govulncheck` targets. Performance gates are also skipped by
+`test` and `test-race`; a controlled runner or CI job opts in with
+`DMEM_PERFORMANCE=1`.

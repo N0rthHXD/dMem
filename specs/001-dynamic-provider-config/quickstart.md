@@ -1,5 +1,10 @@
 # Quickstart: Validate Dynamic Provider Configuration
 
+> **Historical record.** This quickstart was superseded by
+> `specs/003-api-layer-refactor`. The `make openapi` target, the
+> `dmemd status`/`dmemd reload` subcommands, and the Unix-socket API it exercises
+> were removed. See `docs/development/testing.md` for the current gates.
+
 ## Prerequisites
 
 - Linux with Go 1.24+, CGO, and SQLite FTS5 prerequisites.

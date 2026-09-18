@@ -165,7 +165,7 @@ func SelectContext(input SelectInput) SelectOutput {
 // rank order without the MMR utility. It is the fixed-cutoff ablation baseline:
 // it still collapses duplicate clusters and enforces every hard budget, but it
 // never trades relevance for evidence/source coverage. It exists only for
-// evaluation/debug ablations and is bound into the selection identity.
+// diagnostic/debug ablations and is bound into the selection identity.
 func SelectContextFixedCutoff(input SelectInput) SelectOutput {
 	policy := PolicyForQuestionType(input.QuestionType)
 	policy.Version = ContextSelectionVersion + ":fixed-cutoff"

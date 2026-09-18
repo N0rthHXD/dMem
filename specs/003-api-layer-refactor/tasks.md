@@ -23,7 +23,7 @@ implementation. Introduce logical ports without physically splitting stores.
 
 **Testing policy**: Do not delete all Go tests before implementation. Add or
 migrate replacement tests for each vertical slice, verify them, then delete the
-obsolete API/daemon tests for that slice. The `evaluation/` Python subsystem is
+obsolete API/daemon tests for that slice. The evaluation Python subsystem is
 the exception: remove it and all of its build, CI, packaging, and documentation
 references in Phase 0, then rebuild evaluation only after this plan is complete.
 
@@ -98,7 +98,7 @@ the Go behavior baseline needed for a safe refactor.
 
 - [X] T001 [CLEAN] Record the pre-refactor Go build and focused core test status;
   document any existing failure without fixing unrelated behavior
-- [X] T002 [CLEAN] Delete the complete `evaluation/` tree, including generated
+- [X] T002 [CLEAN] Delete the complete evaluation tree, including generated
   caches or untracked evaluation artifacts
 - [X] T003 [CLEAN] Delete evaluation-only root Python packaging such as
   `pyproject.toml` when no non-evaluation Python package remains
@@ -111,7 +111,7 @@ the Go behavior baseline needed for a safe refactor.
   until the final documentation sweep if they are needed as implementation
   history
 - [X] T007 [CLEAN] Verify no active build, CI, package, or current documentation
-  path references `evaluation/`, `dmem_eval`, `dmem_locomo`,
+  path references the evaluation tree, `dmem_eval`, `dmem_locomo`,
   `dmem_longmemeval`, or `dmem_calibration`
 
 **Checkpoint**:
@@ -328,8 +328,8 @@ remove UDS/server ownership.
   creating a production listener
 - [X] T066 [RUNTIME] Preserve worker startup/shutdown, configuration snapshots,
   provider updates, generation fences, integrity checks, and graceful close
-- [X] T067 [CLEAN] Remove `internal/api` after all replacement routes and gateway
-  tests pass
+- [X] T067 [CLEAN] Remove the former in-process API package after all replacement
+  routes and gateway tests pass
 - [X] T068 [CLEAN] Remove Unix listener creation, socket permission management,
   stale socket cleanup, socket identity tracking, connection limiter, and UDS
   client helpers
@@ -363,25 +363,26 @@ architecture.
 
 **Dependencies**: Phase 5.
 
-- [ ] T074 [DOC] Replace the old OpenAPI contract with the new HTTP REST+JSON
+- [X] T074 [DOC] Replace the old OpenAPI contract with the new HTTP REST+JSON
   contract or another machine-readable contract selected in T051
-- [ ] T075 [DOC] Rewrite README build, architecture, and usage sections for
+- [X] T075 [DOC] Rewrite README build, architecture, and usage sections for
   Gateway plus protocol adapters; do not document a production listener that
   does not exist
-- [ ] T076 [DOC] Rewrite architecture overview, operations, testing guidance,
+- [X] T076 [DOC] Rewrite architecture overview, operations, testing guidance,
   and configuration examples; mark superseded UDS ADRs accordingly
-- [ ] T077 [DOC] Update or remove earlier specs and task references that would
+- [X] T077 [DOC] Update or remove earlier specs and task references that would
   otherwise present deleted evaluation or UDS interfaces as current work
-- [ ] T078 [CLEAN] Delete empty packages, dead DTOs, old error mappers, obsolete
+- [X] T078 [CLEAN] Delete empty packages, dead DTOs, old error mappers, obsolete
   route helpers, stale fixtures, and generated artifacts
-- [ ] T079 [CLEAN] Verify current code and docs contain no `internal/api`,
-  `api.Handler`, `HandlerDependencies`, `unixClient`, `dmem.sock`,
-  `--unix-socket`, or `net.Listen("unix", ...)` references
-- [ ] T080 [CLEAN] Verify there is no `evaluation/`, Python evaluation package,
+- [X] T079 [CLEAN] Verify current code and docs contain no references to the
+  removed in-process API package, its handler type, its dependency container, its
+  socket client helper, its socket path, its socket command-line flag, or a
+  Unix-domain listener call
+- [X] T080 [CLEAN] Verify there is no evaluation tree, Python evaluation package,
   evaluation CI job, evaluation Makefile target, or current-doc evaluation link
-- [ ] T081 [CLEAN] Verify no protocol package imports storage/jobs, no gateway
+- [X] T081 [CLEAN] Verify no protocol package imports storage/jobs, no gateway
   package imports HTTP/protocol, and no gateway public API exposes storage types
-- [ ] T082 [TEST] Run the complete verification matrix and record any explicitly
+- [X] T082 [TEST] Run the complete verification matrix and record any explicitly
   accepted residual risk; no known old-architecture residue may remain
 
 **Final Checkpoint**:

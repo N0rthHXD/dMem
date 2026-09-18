@@ -5,11 +5,12 @@
 This document is the design source for the interface and application-layer
 refactor tracked in `specs/003-api-layer-refactor/tasks.md`.
 
-The repository is pre-release. The refactor replaces the current UDS HTTP API
-and does not preserve its routes, transport details, OpenAPI contract, or
-socket-specific configuration for compatibility. Durable authority and
-behavioral guarantees must be preserved unless a task explicitly replaces
-them.
+The repository is pre-release. This refactor replaced the former UDS HTTP API
+without preserving its routes, transport details, OpenAPI contract, or
+socket-specific configuration for compatibility. Phases 0-6 are implemented:
+the Memory Gateway is the semantic core and `internal/protocol/httpapi` is the
+first Agent-neutral REST+JSON adapter. Durable authority and behavioral
+guarantees were preserved.
 
 ## Goals
 
@@ -470,8 +471,8 @@ shutdown, and the absence of UDS/socket lifecycle behavior.
 
 ### Evaluation
 
-The current `evaluation/` tree, its Python package metadata, CI job, Makefile
-target, and documentation links are removed before the refactor. No benchmark
+The former evaluation tree, its Python package metadata, CI job, Makefile
+target, and documentation links were removed before the refactor. No benchmark
 or evaluation compatibility layer is retained. A new evaluation subsystem is a
 post-refactor project and must consume the new HTTP contract rather than the old
 UDS API.
@@ -493,9 +494,9 @@ UDS API.
 
 The refactor is complete only when all of the following hold:
 
-- `internal/api` is absent.
-- No Unix socket listener, socket cleanup, socket permission, or UDS client code
-  remains.
+- The former in-process HTTP API package is absent.
+- No Unix socket listener, socket cleanup, socket permission, socket client
+  helper, or socket path constant remains.
 - No protocol package imports `internal/storage` or `internal/jobs`.
 - No gateway package imports `net/http` or a protocol package.
 - No gateway public interface exposes a `storage.*` type.
@@ -505,14 +506,14 @@ The refactor is complete only when all of the following hold:
 - Gateway modules have focused tests against narrow fake ports.
 - SQLite integration tests preserve authority, idempotency, audit, recovery,
   retrieval, policy, and transaction guarantees.
-- `evaluation/`, its CI job, Python project metadata, Makefile targets, and docs
-  references are absent.
+- The evaluation subsystem, its CI job, Python project metadata, Makefile
+  targets, and docs references are absent.
 - Old UDS/OpenAPI docs and tests are absent or replaced with the new HTTP
   contract.
 - README, architecture, operations, configuration examples, and CI describe
   only the completed architecture.
-- Repository-wide searches for old route names, `unixClient`, `dmem.sock`,
-  `--unix-socket`, and `net.Listen("unix", ...)` return no current-code or
-  current-documentation references.
+- Repository-wide searches for the former socket client helper, socket path,
+  socket CLI flag, Unix listener call, and removed API handler types return no
+  current-code or current-documentation references.
 - Formatting, build, focused tests, full tests, race tests, vet, and
   `git diff --check` pass under the supported build profile.

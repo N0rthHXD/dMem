@@ -5,6 +5,12 @@ description: "Implementation tasks for dynamic provider configuration"
 
 # Tasks: Dynamic Provider Configuration
 
+> **Historical record.** These tasks document the completed feature 001. The
+> Unix-socket API, OpenAPI contract, former API package, `status`/`reload`
+> subcommands, and `make openapi` target they reference were removed by
+> `specs/003-api-layer-refactor`. Current contracts live in
+> `docs/api/http-rest-contract.md`.
+
 **Input**: Design documents from `specs/001-dynamic-provider-config/`
 
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`
@@ -172,19 +178,19 @@ description: "Implementation tasks for dynamic provider configuration"
 
 - [X] T057 [P] [US5] Add failing CLI tests for required commands, XDG default, one `--config`, removed setting flags/env, maintenance operation arguments, validate/status/reload, and exit codes in `cmd/dmemd/main_test.go`
 - [X] T058 [P] [US5] Add failing API handler tests for config status, idempotent reload, expected identity conflict, strict bodies, safe diagnostics, and error mapping in `internal/daemon/config_api_test.go`
-- [X] T059 [P] [US5] Add failing OpenAPI contract assertions for `/v1/config` and `/v1/config/reload` in `internal/daemon/openapi_test.go`
+- [X] T059 [P] [US5] Add failing OpenAPI contract assertions for `/v1/config` and `/v1/config/reload` in the former `internal/daemon/openapi_test.go` (removed by `specs/003-api-layer-refactor`)
 - [X] T060 [P] [US5] Add failing SIGHUP and secret/content leak tests for activation attempts, coalescing, health summary, logs, and status in `internal/daemon/daemon_test.go`
 
 ### Implementation for User Story 5
 
 - [X] T061 [US5] Replace implicit daemon and setting-specific CLI parsing with explicit commands, one global locator, offline validation, status, reload, and documented exit codes in `cmd/dmemd/main.go`
-- [X] T062 [US5] Implement authenticated redacted status and idempotent reload handlers with expected-identity conflict handling in `internal/api/config.go` and register routes in `internal/api/api.go`
-- [X] T063 [US5] Add minimal non-secret configuration state to health without exposing paths or references in `internal/api/health.go`
+- [X] T062 [US5] Implement authenticated redacted status and idempotent reload handlers with expected-identity conflict handling in the former API package (removed by `specs/003-api-layer-refactor`)
+- [X] T063 [US5] Add minimal non-secret configuration state to health without exposing paths or references in the former API health handler (removed by `specs/003-api-layer-refactor`)
 - [X] T064 [US5] Wire SIGHUP to the serialized manager pipeline with bounded coalescing and current shutdown grace in `cmd/dmemd/main.go` and `internal/daemon/daemon.go`
-- [X] T065 [US5] Merge the configuration API schemas and error responses into `docs/api/openapi.yaml` and update API usage in `docs/api/usage.md`
+- [X] T065 [US5] Merge the configuration API schemas and error responses into the former OpenAPI contract (removed by `specs/003-api-layer-refactor`) and update API usage in `docs/api/usage.md`
 - [X] T066 [US5] Document the TOML grammar, atomic file publication, reload/status/SIGHUP, secret rotation, restart-required fields, and failure recovery in `docs/operations/runbook.md`
 - [X] T067 [US5] Replace flag-based startup examples with default and `--config` workflows in `README.md`
-- [X] T068 [US5] Complete US5 CLI, API, OpenAPI, SIGHUP, health, and leak tests in `cmd/dmemd/main_test.go`, `internal/daemon/config_api_test.go`, `internal/daemon/openapi_test.go`, and `internal/daemon/daemon_test.go`
+- [X] T068 [US5] Complete US5 CLI, API, OpenAPI, SIGHUP, health, and leak tests in `cmd/dmemd/main_test.go`, `internal/daemon/config_api_test.go`, the former `internal/daemon/openapi_test.go`, and `internal/daemon/daemon_test.go`
 
 **Checkpoint**: Operators use one file, one optional locator, and explicit reload/status workflows; all inspection is actionable and redacted.
 
@@ -195,12 +201,12 @@ description: "Implementation tasks for dynamic provider configuration"
 **Purpose**: Complete documentation synchronization, recovery validation, performance checks, and repository-wide quality gates.
 
 - [X] T069 [P] Add configuration and policy architecture documentation plus accepted ADR updates in `docs/architecture/overview.md`, `docs/adr/0022-explicit-openai-compatible-providers.md`, and a new ADR under `docs/adr/`
-- [X] T070 [P] Update testing guidance and deterministic provider/reconciliation drill documentation in `docs/development/testing-and-evaluation.md`
+- [X] T070 [P] Update testing guidance and deterministic provider/reconciliation drill documentation in `docs/development/testing.md`
 - [X] T071 Add a restart drill proving active configuration identity, blocked work, reconciliation cursor, and semantic generation recover correctly in `internal/daemon/config_reconciliation_test.go`
 - [X] T072 Add target-scale reload and policy reconciliation performance assertions matching SC-004 and SC-014 in `internal/storage/configuration_test.go` and `internal/daemon/config_reload_test.go`
 - [X] T073 Run the end-to-end scenarios in `specs/001-dynamic-provider-config/quickstart.md` and record any implementation-specific command corrections in that file
-- [X] T074 Run `make build`, `make test`, `make test-race`, `make vet`, `make openapi`, `make schema-check`, `make restore-drill`, `make portability-drill`, `make quality`, and `make offline-default`, fixing failures only in feature-touched files
-- [X] T075 Verify `docs/storage/schema-v1.sql` matches `internal/storage/schema-v1.sql`, `docs/api/openapi.yaml` matches implemented routes, and all secret/content leak assertions pass in `internal/storage/schema_contract_test.go` and `internal/daemon/openapi_test.go`
+- [X] T074 Run `make build`, `make test`, `make test-race`, `make vet`, `make schema-check`, `make restore-drill`, `make portability-drill`, `make quality`, and `make offline-default`, fixing failures only in feature-touched files
+- [X] T075 Verify `docs/storage/schema-v1.sql` matches `internal/storage/schema-v1.sql`, `docs/api/http-rest-contract.md` matches implemented routes, and all secret/content leak assertions pass in `internal/storage/schema_contract_test.go` and `internal/protocol/httpapi`
 
 ---
 
@@ -301,7 +307,7 @@ Task T051: Complete-scope semantic tests in internal/storage/semantic_test.go
 ```text
 Task T057: CLI contract tests in cmd/dmemd/main_test.go
 Task T058: Config API tests in internal/daemon/config_api_test.go
-Task T059: OpenAPI contract tests in internal/daemon/openapi_test.go
+Task T059: OpenAPI contract tests in the former `internal/daemon/openapi_test.go` (removed by `specs/003-api-layer-refactor`)
 Task T060: SIGHUP and leak tests in internal/daemon/daemon_test.go
 ```
 
@@ -352,9 +358,9 @@ Task T060: SIGHUP and leak tests in internal/daemon/daemon_test.go
 - [X] T084 Add processing integration tests for mixed allowed and denied event/memory context and ancestor read-only context, proving safe omissions and allowed-target processing in `internal/jobs/service_test.go` per US4/AC1-2 (missing)
 - [X] T085 Add semantic tests for normalized duplicate/order-invariant scopes, all-or-nothing `semantic_query` authorization, query/source-classification separation, and explicit hybrid degradation reasons in `internal/storage/semantic_test.go` per US4/AC3-4 (missing)
 - [X] T086 Implement documented CLI exit-code classification for daemon-unavailable, rejected/conflict, and temporary-overload outcomes, and complete command/XDG/locator/removed-settings/status/reload tests in `cmd/dmemd/main.go` and `cmd/dmemd/main_test.go` per FR-027, FR-033, and FR-034 (partial)
-- [X] T087 Expose redacted per-capability health, configuration and policy generations, blocked-work counts, and durable reconciliation state from storage through `/v1/config`, with API and contract redaction tests in `internal/api/config.go`, `internal/config/snapshot.go`, `internal/daemon/config_api_test.go`, and `internal/daemon/openapi_test.go` per FR-023 and FR-028 (partial)
+- [X] T087 Expose redacted per-capability health, configuration and policy generations, blocked-work counts, and durable reconciliation state from storage through the former `/v1/config` API, with API and contract redaction tests in the former API package, `internal/config/snapshot.go`, `internal/daemon/config_api_test.go`, and the former `internal/daemon/openapi_test.go` per FR-023 and FR-028 (partial)
 - [X] T088 Add SIGHUP reload, repeated-signal coalescing, shutdown-grace, activation-diagnostic, and secret/content/query non-leak tests in `internal/daemon/daemon_test.go` per US5/AC2 (missing)
-- [X] T089 Synchronize architecture and ADR documentation with strict file activation and removal of setting-specific flags, document deterministic provider/reconciliation drills, add SC-004/SC-014 restart and timing assertions, and execute quickstart and required feature quality gates in `docs/architecture/overview.md`, `docs/adr/0022-explicit-openai-compatible-providers.md`, `docs/adr/`, `docs/development/testing-and-evaluation.md`, `internal/storage/configuration_test.go`, `internal/daemon/config_reload_test.go`, and `specs/001-dynamic-provider-config/quickstart.md` per plan: documentation and SC-004 and SC-014 (partial)
+- [X] T089 Synchronize architecture and ADR documentation with strict file activation and removal of setting-specific flags, document deterministic provider/reconciliation drills, add SC-004/SC-014 restart and timing assertions, and execute quickstart and required feature quality gates in `docs/architecture/overview.md`, `docs/adr/0022-explicit-openai-compatible-providers.md`, `docs/adr/`, `docs/development/testing.md`, `internal/storage/configuration_test.go`, `internal/daemon/config_reload_test.go`, and `specs/001-dynamic-provider-config/quickstart.md` per plan: documentation and SC-004 and SC-014 (partial)
 
 ---
 

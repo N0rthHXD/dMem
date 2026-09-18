@@ -1,5 +1,11 @@
 # Contract: Configuration File
 
+> **Historical record.** This contract was superseded by
+> `specs/003-api-layer-refactor`. The `runtime_dir`, `socket_filename`,
+> `request_timeout`, `max_connections`, and `max_request_bytes` settings it
+> lists were removed. The current grammar is
+> `docs/operations/config.example.toml` plus `internal/config`.
+
 ## Locator
 
 - Default: `${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`.

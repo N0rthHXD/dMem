@@ -62,7 +62,7 @@ confidence
 
 检索前由确定性规则生成带版本的 `QueryPlan`：normalized_query、language、exact_terms、resolved_entities、entity_ambiguities、time_expression、reference_time、question_type、target_memory_kinds、target_predicates、requested_scope、graph_policy、candidate_budget、context_budget。provider query analysis 可选且只能在 egress policy 与严格边界内增强。
 
-`POST /v1/recall` 以 `intent` 与 `budget` 为主抽象：`reference_time`、`intent`、`max_results`、`max_context_tokens`、`include_evidence`、`explain`。内部通道/特性 override 仅作为明确命名的 evaluation/debug 契约存在，生产默认来自 query planning。响应默认返回 selected context package 与 execution metadata；原始候选与拒绝原因仅在调试时显式请求。
+`POST /v1/recall` 以 `intent` 与 `budget` 为主抽象：`reference_time`、`intent`、`max_results`、`max_context_tokens`、`include_evidence`、`explain`。内部通道/特性 override 仅作为明确命名的 diagnostic/debug 契约存在，生产默认来自 query planning。响应默认返回 selected context package 与 execution metadata；原始候选与拒绝原因仅在调试时显式请求。
 
 ### 6. 独立 primary recall 与校准
 

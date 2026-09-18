@@ -2,6 +2,12 @@
 
 <!-- markdownlint-disable MD013 -->
 
+> **Historical record.** This plan documents the design as it was implemented for
+> feature 002. The evaluation harness and the old HTTP API/OpenAPI references it
+> contains were removed by `specs/003-api-layer-refactor`. The memory, retrieval,
+> graph, context, and feedback boundaries it defines remain current; see
+> `docs/architecture/memory-gateway-refactor.md` for the current layering.
+
 ## Status And Scope
 
 This document is the implementation plan for replacing dMem's current memory
@@ -783,7 +789,7 @@ channel composition as the primary user abstraction:
 }
 ```
 
-Internal channel overrides may exist behind an evaluation/debug field, but
+Internal channel overrides may exist behind an internal diagnostics field, but
 production defaults come from query planning. The response distinguishes raw
 ranked candidates from selected context only when explicitly requested for
 debugging; normal callers receive the selected context package and execution
@@ -993,10 +999,9 @@ internal/storage/graph_facts.go
 internal/storage/graph_recall.go
 internal/storage/feedback.go
 internal/aggregate/
-internal/api/
-docs/api/openapi.yaml
-evaluation/locomo/
-evaluation/longmemeval/
+# removed by specs/003-api-layer-refactor:
+#   the former API package, the former OpenAPI contract, and the
+#   evaluation harness
 internal/storage/testdata/
 ```
 
@@ -1062,14 +1067,12 @@ raw gate output, is the Final Completion Record in
 ### Accepted Evidence
 
 No end-to-end LoCoMo or LongMemEval provider run is committed. Accepted
-evidence is the deterministic quality and performance gates plus the versioned
-calibration report `evaluation/calibration/records/calibration-report-v1.json`.
-Its holdout paired interval `[0.0, 0.0]` does not exclude zero, so calibrated
-promotion is rejected and the deterministic default weights above remain
-authoritative. Reproducible external benchmark commands, shared-corpus rules,
-and required identities are documented in `evaluation/locomo/README.md` and
-`evaluation/longmemeval/README.md`; benchmark test-set labels remain
-holdout-only and never enter runtime feedback or weight fitting.
+evidence is the deterministic quality and performance gates. The former
+evaluation calibration report and the removed evaluation harness documentation
+are not part of the current repository. Calibrated promotion remains rejected and
+the deterministic default weights above remain authoritative; benchmark
+test-set labels remain holdout-only and never enter runtime feedback or weight
+fitting.
 
 ### Capacity Bounds
 
@@ -1087,7 +1090,7 @@ capped at 0.001 global and 0.0005 query-conditioned.
 - Exact cosine search remains the only semantic implementation. The ANN
   extension point and exact rerank are tested, but ANN is not implemented
   because measured scale did not require it.
-- The learned reranker is evaluation-only; production uses the deterministic
+- The learned reranker is diagnostic-only; production uses the deterministic
   ranker and its fallback.
 - Calibration promotion is not met on the fixed synthetic development set, so
   weights remain the deterministic defaults rather than fitted values.

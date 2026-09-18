@@ -139,24 +139,6 @@ func TestDegradedSemanticRecallPersistsOneCompleteTelemetryRecord(t *testing.T) 
 	}
 }
 
-// TestDecisionHealthExposesStages pins the decision-stage health contract for
-// consolidation, quality/duplicate projections, calibration, graph, ranker,
-// context, and feedback.
-func TestDecisionHealthExposesStages(t *testing.T) {
-	repository, _ := newMemoryTestRepository(t)
-	health := repository.DecisionHealth(context.Background())
-	stages := map[string]DecisionIdentity{
-		"consolidation": health.Consolidation, "quality": health.Quality, "duplicate": health.Duplicate,
-		"semantic_calibration": health.SemanticCalibration, "graph": health.Graph, "ranker": health.Ranker,
-		"context": health.Context, "feedback": health.Feedback,
-	}
-	for name, stage := range stages {
-		if stage.Identity == "" || stage.State == "" {
-			t.Fatalf("decision health %q incomplete: %+v", name, stage)
-		}
-	}
-}
-
 type telemetryRow struct {
 	planVersion           string
 	planIdentity          string

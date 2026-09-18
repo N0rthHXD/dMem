@@ -1,9 +1,12 @@
 # Architecture And Data Model
 
 dMem runs as one Go process owned by one Linux user. A file lock permits one
-writer per data directory. The API is HTTP/JSON over a user-only Unix socket,
-and SQLite is the authority for domain data, idempotency, audit history, jobs,
-and index metadata.
+writer per data directory. SQLite is the authority for domain data,
+idempotency, audit history, jobs, and index metadata. Application semantics live
+in protocol-independent Memory Gateway modules, and the first inbound protocol
+adapter is an Agent-neutral REST+JSON `http.Handler`. The runtime composes that
+handler but does not start a listener; transport, TLS, authentication, and
+network exposure are separate future work.
 
 ## Authority And Derivation
 
@@ -61,13 +64,13 @@ removed. The file stores provider endpoints, models, secret references, limits,
 policies, queue thresholds, and paths. Secret values never enter the file,
 database, status, or logs; only typed environment references are persisted.
 
-A reload (API `POST /v1/config/reload`, `dmemd reload`, or `SIGHUP`) reads,
-strictly decodes, and atomically activates one complete file revision. A valid
+A reload (`SIGHUP` or an in-process reload request) reads, strictly decodes, and
+atomically activates one complete file revision. A valid
 change publishes one immutable effective snapshot with monotonic activation,
 configuration, and policy generations. An invalid or no-op change leaves the
-previous snapshot untouched. Restart-bound fields (paths, worker count, server
-timeout, connection limit) reject the whole candidate rather than being silently
-ignored.
+previous snapshot untouched. Restart-bound fields (`instance.data_dir`,
+`instance.database_filename`, and `jobs.worker_count`) reject the whole candidate
+rather than being silently ignored.
 
 Provider policy is a versioned set of egress decisions. Assignments target exact
 spaces, stable space attributes, or ancestors with descendant inheritance.
@@ -113,8 +116,8 @@ plan selects graph `off`, `features_only`, `direct`, or `bounded_path`; graph
 uses only ready compatible snapshots and calibrated primary seeds. A versioned
 deterministic feature ranker preserves raw and calibrated scores, applies a
 capped graph boost, and uses a separate admission formula for graph-only
-candidates. Explicit capability overrides are limited to evaluation and
-debugging.
+candidates. Explicit capability overrides are limited to internal diagnostics
+and debugging and are not exposed by the Agent HTTP contract.
 
 Cursors bind the authority corpus generation, live semantic corpus generation,
 and relevant ranking/index versions and generations. A generation change
@@ -139,10 +142,11 @@ sensitivity rules as normal recall: it cannot expose a denied space, sensitive
 content, or hidden evidence, and rejected context candidates are returned as
 bounded id/reason records only.
 
-`GET /v1/health` reports the effective identity and state of every decision
-stage: consolidation, quality and duplicate projections, semantic calibration,
-graph scoring, the feature ranker, context selection, and feedback aggregation,
-in addition to FTS, semantic, entity, relation, and aggregate health.
+Health is observed through logs and durable state, not the initial Agent HTTP
+contract. Recall records the effective identity of consolidation, quality and
+duplicate projections, semantic calibration, graph scoring, the feature ranker,
+context selection, and feedback aggregation as part of its bounded decision
+telemetry, alongside FTS, semantic, entity, relation, and aggregate state.
 
 See [evolution](evolution.md) for reviewed entity/relation/conflict changes and
 [feedback and aggregation](feedback-and-aggregation.md) for ranking feedback and

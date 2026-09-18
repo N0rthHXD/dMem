@@ -5,6 +5,14 @@ description: "Phased implementation tasks for memory and retrieval optimization"
 
 # Tasks: Memory And Retrieval Optimization
 
+> **Historical record.** These tasks document the completed feature 002. The
+> Python evaluation harness, its pytest commands, the former API package, the
+> OpenAPI contract, and the former `make openapi` target they reference were
+> removed by `specs/003-api-layer-refactor`. The retained memory, retrieval,
+> graph, context, and feedback work is current; the evaluation tooling and old
+> HTTP interfaces are not. Current contracts live in
+> `docs/api/http-rest-contract.md`.
+
 **Design source**:
 `docs/architecture/memory-retrieval-optimization-plan.md`
 
@@ -99,38 +107,38 @@ changing algorithms. This phase does not change production ranking.
 - [X] T001 [P] [EVAL] Add failing LoCoMo tests for correct
   `gold <= set(top_k)` recall-all semantics, empty rankings, multiple gold
   evidence, irrelevant additions, and monotonicity in
-  `evaluation/locomo/tests/test_metrics.py`
+  `[removed evaluation harness]`
 - [X] T002 [P] [EVAL] Add failing LoCoMo nDCG tests proving missing gold evidence
   lowers the score and ideal DCG uses `min(k, len(gold))` in
-  `evaluation/locomo/tests/test_metrics.py`
+  `[removed evaluation harness]`
 - [X] T003 [P] [EVAL] Add failing MRR tests for one explicitly named full-list
   metric or cutoff-specific `MRR@k`, and reject the current repeated ambiguous
-  values in `evaluation/locomo/tests/test_metrics.py`
+  values in `[removed evaluation harness]`
 - [X] T004 [P] [EVAL] Add failing evidence-mapping tests for multiple evidence
   events, stable chronological ordering, unmapped results, duplicate source
-  turns, and session promotion in `evaluation/locomo/tests/test_runner.py`
+  turns, and session promotion in `[removed evaluation harness]`
 - [X] T005 [P] [EVAL] Add failing dataset-validation tests that enforce expected
   corpus counts and reject malformed or partially unresolved evidence in
-  `evaluation/locomo/tests/test_dataset.py`
+  `[removed evaluation harness]`
 
 ### Metric Implementation
 
 - [X] T006 [EVAL] Correct recall-all, nDCG, and MRR semantics in
-  `evaluation/locomo/dmem_locomo/metrics.py` and assign a new retrieval metric
+  `[removed evaluation harness]` and assign a new retrieval metric
   schema identity
 - [X] T007 [EVAL] Replace first-evidence-only mapping with complete ordered
-  evidence sets in `evaluation/locomo/dmem_locomo/runner.py` and checkpoint
+  evidence sets in `[removed evaluation harness]` and checkpoint
   records
 - [X] T008 [EVAL] Report memory-level, unique-evidence-level, and session-level
   metrics separately, including duplicate and unmapped rates, in
-  `evaluation/locomo/dmem_locomo/runner.py` and
-  `evaluation/locomo/dmem_locomo/cli.py`
+  `[removed evaluation harness]` and
+  `[removed evaluation harness]`
 - [X] T009 [EVAL] Add extraction coverage metrics that distinguish “gold source
   absent from every indexed memory” from retrieval failure in
-  `evaluation/locomo/dmem_locomo/runner.py`
+  `[removed evaluation harness]`
 - [X] T010 [EVAL] Enforce dataset SHA, subset, metric schema, run configuration,
   and model/prompt compatibility for retrieval, generation, judge, and summarize
-  checkpoints under `evaluation/locomo/dmem_locomo/`
+  checkpoints under `[removed evaluation harness]`
 - [X] T011 [EVAL] Make a non-resume run reject non-empty result checkpoints and
   make summarize recompute retrieval metrics from sufficient raw records instead
   of trusting stored metric dictionaries
@@ -139,14 +147,14 @@ changing algorithms. This phase does not change production ranking.
 
 - [X] T012 [P] [EVAL] Add failing tests for graph-ready barriers, per-query
   degraded responses, and fail-on-degraded behavior in
-  `evaluation/locomo/tests/test_runner.py`
+  `[removed evaluation harness]`
 - [X] T013 [P] [EVAL] Add failing manifest tests for daemon build/commit, schema,
   processing, embedding, graph, keyword, ranking, context, and metric identities
-  in `evaluation/locomo/tests/test_checkpoint.py`
+  in `[removed evaluation harness]`
 - [X] T014 [EVAL] Implement an explicit graph completion/readiness barrier for
   graph and graph-using evaluation modes in
-  `evaluation/locomo/dmem_locomo/runner.py` and
-  `evaluation/locomo/dmem_locomo/api.py`
+  `[removed evaluation harness]` and
+  `[removed evaluation harness]`
 - [X] T015 [EVAL] Persist all effective identities and degradation counts in
   evaluation manifests and records, and reject incompatible resume or summarize
   operations
@@ -159,15 +167,15 @@ changing algorithms. This phase does not change production ranking.
 - [X] T017 [P] [EVAL] Define versioned baseline files for extraction count,
   duplicate density, recall, ranking, graph promotion harm, context utilization,
   latency, allocation, storage, and provider-cost proxies under
-  `internal/storage/testdata/` and `evaluation/`
+  `internal/storage/testdata/` and `[removed evaluation harness]`
 - [X] T018 [EVAL] Run and record fresh keyword, semantic, graph, and current
   hybrid baselines on one shared corpus; document exact commands and immutable
-  identities in `evaluation/locomo/README.md`
+  identities in `[removed evaluation harness]`
 
 **Checkpoint**:
 
 ```sh
-~/miniforge3/envs/agent/bin/python -m pytest evaluation/locomo/tests
+# Python evaluation harness removed by specs/003-api-layer-refactor
 make quality
 git diff --check
 ```
@@ -253,12 +261,12 @@ directly and use fresh databases. Do not write a migration.
   maximum results, context-token budget, evidence, explain mode, execution
   metadata, and structured context in `internal/daemon/search_api_test.go`
 - [X] T035 [P] [CONTRACT] Define replacement recall request/response and explain
-  models in `internal/domain/models.go` and `docs/api/openapi.yaml`
+  models in `internal/domain/models.go` and `docs/api/http-rest-contract.md`
 - [X] T036 [CONTRACT] Replace recall request validation and response serialization
-  in `internal/api/agent.go`, `internal/api/search.go`, and daemon route tests
+  in `[removed API package]`, `[removed API package]`, and daemon route tests
 - [X] T037 [CONTRACT] Remove production channel selection as the primary API
   abstraction; retain explicit channel/feature overrides only in a clearly named
-  evaluation/debug contract
+  internal diagnostics contract
 - [X] T038 [CONTRACT] Replace cursor payload and validation so it accepts only the
   new schema, query-plan, candidate-membership, ranking, graph, context, and
   feedback identities
@@ -276,7 +284,7 @@ directly and use fresh databases. Do not write a migration.
 
 ```sh
 make schema-check
-make openapi
+# make openapi (removed by specs/003-api-layer-refactor)
 make build
 make test
 git diff --check
@@ -411,7 +419,7 @@ pollution, and replace equal rank-only RRF with calibrated deterministic ranking
 CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/retrieval ./internal/storage ./internal/daemon
 make quality
 make performance
-make openapi
+# make openapi (removed by specs/003-api-layer-refactor)
 git diff --check
 ```
 
@@ -618,7 +626,7 @@ domain-independent, evidence-backed entity and event knowledge.
 go test ./internal/domain ./internal/provider ./internal/storage ./internal/daemon
 make quality
 make performance
-make openapi
+# make openapi (removed by specs/003-api-layer-refactor)
 git diff --check
 ```
 
@@ -704,10 +712,10 @@ provide compact, diverse, source-grounded context.
 
 ```sh
 go test ./internal/retrieval ./internal/aggregate ./internal/storage ./internal/daemon
-~/miniforge3/envs/agent/bin/python -m pytest evaluation/locomo/tests evaluation/longmemeval/tests
+# Python evaluation harness removed by specs/003-api-layer-refactor
 make quality
 make performance
-make openapi
+# make openapi (removed by specs/003-api-layer-refactor)
 git diff --check
 ```
 
@@ -758,7 +766,7 @@ and context behavior are stable.
 
 - [X] T151 [P] [FEEDBACK] Add deterministic calibration tooling for semantic
   thresholds, keyword weights, temporal features, graph gates/boosts, penalties,
-  and context utility under `evaluation/`
+  and context utility under `[removed evaluation harness]`
 - [X] T152 [FEEDBACK] Define train/development/holdout boundaries and prevent
   benchmark test-set labels from entering runtime feedback or weight fitting
 - [X] T153 [FEEDBACK] Calibrate and record deterministic weights on fixed
@@ -773,7 +781,7 @@ and context behavior are stable.
   complete model/prompt/feature/calibration identity
 - [X] T156 [P] [FEEDBACK] Add tests proving reranking cannot add candidates,
   bypass filters, cross scope, exceed budgets, or publish under a stale identity
-- [X] T157 [FEEDBACK] Implement an evaluation-only reranker adapter after T155 and
+- [X] T157 [FEEDBACK] Implement a diagnostic-only reranker adapter after T155 and
   T156; do not enable it in production defaults
 - [X] T158 [FEEDBACK] Compare learned and deterministic reranking on the same
   candidate windows and promote only if gains exceed cost, latency, variance,
@@ -892,7 +900,7 @@ make performance
 make restore-drill
 make portability-drill
 make offline-default
-~/miniforge3/envs/agent/bin/python -m pytest evaluation/locomo/tests evaluation/longmemeval/tests
+# Python evaluation harness removed by specs/003-api-layer-refactor
 git diff --check
 ```
 
@@ -974,15 +982,15 @@ Feedback identity: v2 (window 90d, min_support 3, half_life 45d; bounded global
   0.001 and query-conditioned 0.0005).
 Evaluation metric identity: locomo-retrieval-metrics-v2 and
   longmemeval-retrieval-metrics-v2 under baseline schema
-  evaluation-baseline-v1.
+  [removed evaluation baseline].
 
 Accepted benchmark reports: no end-to-end LoCoMo/LongMemEval provider run is
   committed. Accepted evidence is the deterministic quality/performance gates
-  below plus evaluation/calibration/records/calibration-report-v1.json. Its
+  below plus [removed evaluation harness] Its
   holdout paired CI [0.0, 0.0] does not exclude zero, so promotion is rejected
   and the deterministic default weight identities above remain authoritative.
   External benchmark commands and identity requirements are in
-  evaluation/locomo/README.md and evaluation/longmemeval/README.md; benchmark
+  [removed evaluation harness] and [removed evaluation harness]; benchmark
   test-set labels are holdout-only and never enter runtime feedback or fitting.
 Quality gate result: make quality passed 2026-09-16. Graph promotion precision
   0.750 (gate >= 0.50), graph-caused rank harm 0.0000 (gate <= 0.005), one-hop
@@ -1005,7 +1013,7 @@ Recovery and portability result: make restore-drill and make portability-drill
 Known limitations:
   - exact cosine search only; the ANN extension point and exact rerank are
     tested, but ANN is not implemented because measured scale did not require it;
-  - the learned reranker is evaluation-only (RerankerModeEvaluation); production
+  - the learned reranker is diagnostic-only (removed evaluation reranker mode); production
     uses the deterministic ranker and its fallback;
   - calibration promotion is not met on the fixed synthetic development set, so
     weights remain the deterministic defaults rather than fitted values;

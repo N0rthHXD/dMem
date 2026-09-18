@@ -48,6 +48,6 @@ evidence. Aggregate generation never crosses spaces implicitly.
 Every recall appends one bounded, content-free decision record covering the
 query plan, executed capabilities, candidate counts by source, gate rejections,
 score summaries, graph seeds/edges/paths/promotions, duplicate clusters, context
-budgets, algorithm identities, degradation, and phase latency. The same
-identities are reported by `GET /v1/health` per decision stage so an operator can
-distinguish a ready-but-empty stage from a stale one.
+budgets, algorithm identities, degradation, and phase latency. Recording the
+identities per recall lets an operator distinguish a ready-but-empty stage from a
+stale one.

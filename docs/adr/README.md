@@ -14,7 +14,7 @@
 | [0010](0010-hybrid-retrieval-and-context-budget.md) | 混合检索与上下文预算（被 0035 取代） |
 | [0011](0011-cgo-sqlite-driver.md) | 允许 CGO SQLite 驱动 |
 | [0012](0012-orm-boundaries.md) | 允许 ORM 并限制使用边界 |
-| [0013](0013-local-http-over-unix-socket.md) | HTTP/JSON over Unix Domain Socket |
+| [0013](0013-local-http-over-unix-socket.md) | HTTP/JSON over Unix Domain Socket（被 Memory Gateway 协议适配器架构取代） |
 | [0014](0014-sqlite-extension-policy.md) | SQLite 扩展白名单 |
 | [0015](0015-no-schema-migration-in-phase-one.md) | 未发布开发阶段不实现 SQLite schema migration |
 | [0016](0016-phase-two-schema-migrations.md) | 第二阶段前向事务 migration（rejected） |
@@ -39,3 +39,5 @@
 | [0035](0035-memory-retrieval-v4.md) | 结构化记忆与 v4 检索契约 |
 
 ADR 状态使用：`proposed`、`accepted`、`superseded` 或 `rejected`。
+
+ADR 记录决策历史，不覆盖当前契约。在 Memory Gateway 重构之前接受的 ADR 可能仍以 Unix Domain Socket、OpenAPI 或已删除的 HTTP 路由描述当时的接口；这些传输与路由描述已失效，当前接口以 [HTTP REST+JSON 契约](../api/http-rest-contract.md) 和 `internal/protocol/httpapi` 为准。
