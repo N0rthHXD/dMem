@@ -131,30 +131,30 @@ before moving handlers.
 
 **Dependencies**: Phase 0.
 
-- [ ] T008 [CONTRACT] Create `internal/gateway` shared call-context, caller,
+- [X] T008 [CONTRACT] Create `internal/gateway` shared call-context, caller,
   idempotency, operation identity, paging, and base result contracts without
   HTTP or storage imports
-- [ ] T009 [CONTRACT] Define the stable gateway error codes, typed error,
+- [X] T009 [CONTRACT] Define the stable gateway error codes, typed error,
   retryability metadata, safe public details, and error inspection helpers
-- [ ] T010 [CONTRACT] Define canonical command hashing and operation names that
+- [X] T010 [CONTRACT] Define canonical command hashing and operation names that
   do not depend on HTTP method or route
-- [ ] T011 [P] [CONTRACT] Define Memory service commands, queries, results, and
+- [X] T011 [P] [CONTRACT] Define Memory service commands, queries, results, and
   narrow persistence ports under `internal/gateway/memory`
-- [ ] T012 [P] [CONTRACT] Define Scope service contracts and ports under
+- [X] T012 [P] [CONTRACT] Define Scope service contracts and ports under
   `internal/gateway/scope`
-- [ ] T013 [P] [CONTRACT] Define Feedback service contracts and ports under
+- [X] T013 [P] [CONTRACT] Define Feedback service contracts and ports under
   `internal/gateway/feedback`
-- [ ] T014 [P] [CONTRACT] Define Retrieval service contracts and initial coarse
+- [X] T014 [P] [CONTRACT] Define Retrieval service contracts and initial coarse
   recall-store port under `internal/gateway/retrieval`
-- [ ] T015 [P] [CONTRACT] Define Extraction ingress and worker-facing contracts
+- [X] T015 [P] [CONTRACT] Define Extraction ingress and worker-facing contracts
   under `internal/gateway/extraction`
-- [ ] T016 [P] [CONTRACT] Define narrow Policy authorization and disclosure
+- [X] T016 [P] [CONTRACT] Define narrow Policy authorization and disclosure
   contracts under `internal/gateway/policy`
-- [ ] T017 [P] [CONTRACT] Define Consolidation confirmation and classifier
+- [X] T017 [P] [CONTRACT] Define Consolidation confirmation and classifier
   contracts under `internal/gateway/consolidation`
-- [ ] T018 [P] [CONTRACT] Define Knowledge read and separate Review mutation
+- [X] T018 [P] [CONTRACT] Define Knowledge read and separate Review mutation
   contracts under `internal/gateway/knowledge`
-- [ ] T019 [TEST] Add architecture tests or static checks proving gateway
+- [X] T019 [TEST] Add architecture tests or static checks proving gateway
   packages do not import `net/http`, protocol packages, or expose `storage.*`
   in public interfaces
 
