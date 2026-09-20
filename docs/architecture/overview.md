@@ -3,8 +3,9 @@
 dMem 以单个 Go 进程运行，由一个 Linux 用户拥有。数据目录中的文件锁保证每个
 数据目录只有一个写入者。SQLite 是领域数据、幂等、审计历史、作业与索引元数据的
 权威。应用语义位于协议无关的 Memory Gateway 模块中，第一个入站协议适配器是
-Agent 中立的 REST+JSON `http.Handler`。运行时组装该 handler，但不启动监听器；
-传输、TLS、认证与网络暴露属于后续独立工作。
+Agent 中立的 REST+JSON `http.Handler`。`internal/server` 是生产传输层：它在回环
+地址上监听，可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭；认证与网络边缘授权仍属
+后续独立工作。
 
 ## 分层与依赖方向
 
@@ -66,8 +67,8 @@ storage -> gateway service
 抽取或整合决策、provider 出网策略、事务管理与仓储调用。
 
 第一个适配器是 `internal/protocol/httpapi` 中的 Agent 中立 REST+JSON handler。
-它返回 `http.Handler`，不得创建监听器，也不得要求 `r.ProtoMajor == 2`；强制
-HTTP/2 由未来的服务层负责。
+它返回 `http.Handler`，不得创建监听器，也不得要求 `r.ProtoMajor == 2`；监听、
+TLS 与协议协商由 `internal/server` 传输层负责。
 
 ### Memory Gateway
 

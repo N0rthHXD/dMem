@@ -76,6 +76,8 @@ type RedactedConfig struct {
 	DataDir             string             `json:"data_dir"`
 	DatabaseFilename    string             `json:"database_filename"`
 	ShutdownGracePeriod string             `json:"shutdown_grace_period"`
+	ListenAddress       string             `json:"listen_address"`
+	TLSEnabled          bool               `json:"tls_enabled"`
 	WorkerCount         int                `json:"worker_count"`
 	QueueSoftLimit      int                `json:"queue_soft_limit"`
 	QueueHardLimit      int                `json:"queue_hard_limit"`
@@ -119,6 +121,8 @@ func (s Snapshot) Redacted() RedactedConfig {
 		DataDir:             s.Config.DataDir,
 		DatabaseFilename:    s.Config.DatabaseFilename,
 		ShutdownGracePeriod: s.Config.ShutdownGracePeriod.String(),
+		ListenAddress:       s.Config.ListenAddress,
+		TLSEnabled:          s.Config.TLSCertFile != "" && s.Config.TLSKeyFile != "",
 		WorkerCount:         s.Config.WorkerCount,
 		QueueSoftLimit:      s.Config.QueueSoftLimit,
 		QueueHardLimit:      s.Config.QueueHardLimit,

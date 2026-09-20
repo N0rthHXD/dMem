@@ -8,8 +8,9 @@
 #   dmemd --config /absolute/path/config.toml config validate
 #
 # `dmemd daemon` 组装存储适配器、gateway 服务、provider、worker 与 REST+JSON
-# handler。它不打开 Unix socket 或 TCP 端口：运行时尚未启动监听器，因此这里
-# 不配置传输、TLS、认证或网络暴露。
+# handler，并在回环地址上启动监听服务。默认监听 127.0.0.1:7373；设置
+# `tls_cert_file` 与 `tls_key_file` 后启用 TLS，并通过 ALPN 协商 HTTP/2。
+# 服务层不提供认证或网络安全边界，非回环绑定会在日志中产生警告。
 
 config_version = 1
 
@@ -18,6 +19,11 @@ data_dir = "/home/USER/.local/share/dmem"
 database_filename = "dmem.db"
 
 [server]
+# 监听地址，host:port。默认 127.0.0.1:7373。
+listen_address = "127.0.0.1:7373"
+# 可选 TLS。两项必须同时设置、必须是绝对路径且不是符号链接。
+# tls_cert_file = "/home/USER/.config/dmem/tls/cert.pem"
+# tls_key_file = "/home/USER/.config/dmem/tls/key.pem"
 shutdown_grace_period = "15s"
 
 [jobs]

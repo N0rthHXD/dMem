@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,12 +108,19 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	if doc.Processing.GraphEnabled != nil {
 		graphEnabled = *doc.Processing.GraphEnabled
 	}
+	listenAddress := doc.Server.ListenAddress
+	if listenAddress == "" {
+		listenAddress = DefaultListenAddress
+	}
 	cfg := Config{
 		ConfigVersion:       doc.ConfigVersion,
 		DataDir:             doc.Instance.DataDir,
 		DatabaseFilename:    doc.Instance.DatabaseFilename,
 		DatabasePath:        filepath.Join(doc.Instance.DataDir, doc.Instance.DatabaseFilename),
 		ShutdownGracePeriod: parseDuration(doc.Server.ShutdownGracePeriod),
+		ListenAddress:       listenAddress,
+		TLSCertFile:         doc.Server.TLSCertFile,
+		TLSKeyFile:          doc.Server.TLSKeyFile,
 		WorkerCount:         doc.Jobs.WorkerCount,
 		QueueSoftLimit:      doc.Jobs.QueueSoftLimit,
 		QueueHardLimit:      doc.Jobs.QueueHardLimit,
@@ -157,6 +166,39 @@ func validateServer(t *serverTable) error {
 	d := parseDuration(t.ShutdownGracePeriod)
 	if d == 0 {
 		return newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_duration", Path: "server.shutdown_grace_period"})
+	}
+	address := t.ListenAddress
+	if address == "" {
+		address = DefaultListenAddress
+	}
+	if err := validateListenAddress(address); err != nil {
+		return err
+	}
+	if (t.TLSCertFile == "") != (t.TLSKeyFile == "") {
+		return newValidationError("config_invalid_value", Diagnostic{Code: "config_tls_pair_required", Path: "server.tls_cert_file"})
+	}
+	for _, file := range []struct {
+		path  string
+		field string
+	}{{t.TLSCertFile, "server.tls_cert_file"}, {t.TLSKeyFile, "server.tls_key_file"}} {
+		if file.path != "" && !filepath.IsAbs(file.path) {
+			return newValidationError("config_invalid_value", Diagnostic{Code: "config_relative_path", Path: file.field})
+		}
+	}
+	return nil
+}
+
+func validateListenAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_address", Path: "server.listen_address"})
+	}
+	value, err := strconv.Atoi(port)
+	if err != nil || value < 1 || value > 65535 {
+		return newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_address", Path: "server.listen_address"})
+	}
+	if host != "" && net.ParseIP(host) == nil && host != "localhost" {
+		return newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_address", Path: "server.listen_address"})
 	}
 	return nil
 }

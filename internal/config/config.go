@@ -11,6 +11,10 @@ import (
 
 const DefaultProcessingVersion = "builtin-noop-v1"
 
+// DefaultListenAddress is the loopback HTTP listen address used when
+// [server].listen_address is omitted.
+const DefaultListenAddress = "127.0.0.1:7373"
+
 type ProviderConfig = provider.Config
 
 type Config struct {
@@ -23,6 +27,10 @@ type Config struct {
 	DatabasePath     string
 
 	ShutdownGracePeriod time.Duration
+
+	ListenAddress string
+	TLSCertFile   string
+	TLSKeyFile    string
 
 	WorkerCount         int
 	QueueSoftLimit      int
@@ -60,6 +68,7 @@ func Default() (Config, error) {
 		DatabaseFilename:    "dmem.db",
 		DatabasePath:        filepath.Join(dataDir, "dmem.db"),
 		ShutdownGracePeriod: 15 * time.Second,
+		ListenAddress:       DefaultListenAddress,
 		WorkerCount:         2,
 		QueueSoftLimit:      10000,
 		QueueHardLimit:      20000,

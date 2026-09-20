@@ -33,6 +33,12 @@ make vet
   证明。测试不添加任何生产监听器、TLS 或 h2c 配置。
 - `internal/protocol/httpapi/arch_test.go` 强制协议树不导入 storage、jobs、
   provider、config、retrieval 或应用包，且永不拥有监听器或检查 HTTP 协议版本。
+- `internal/server` 测试在 `127.0.0.1:0` 上启动真实监听，覆盖请求收发、绑定冲突
+  的同步报错、优雅关闭排空在途请求、请求头大小上限、自签证书 TLS 与 HTTP/2
+  协商，以及无效/符号链接 TLS 文件的拒绝。`internal/server/arch_test.go` 强制
+  传输层只依赖 `net/http`/`crypto/tls`，不导入 storage、jobs、provider、config、
+  retrieval、daemon、gateway 或 protocol。`e2e_test.go` 组合 `internal/daemon`
+  与 `internal/server`，通过真实 TCP 端口驱动一条 `/v1/scopes` 请求。
 
 ## 恢复与质量
 

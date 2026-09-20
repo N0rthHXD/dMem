@@ -69,6 +69,9 @@ type instanceTable struct {
 }
 
 type serverTable struct {
+	ListenAddress       string `toml:"listen_address"`
+	TLSCertFile         string `toml:"tls_cert_file"`
+	TLSKeyFile          string `toml:"tls_key_file"`
 	ShutdownGracePeriod string `toml:"shutdown_grace_period"`
 }
 

@@ -92,6 +92,9 @@ type canonicalConfigStruct struct {
 	DataDir             string            `json:"data_dir"`
 	DatabaseFilename    string            `json:"database_filename"`
 	ShutdownGracePeriod string            `json:"shutdown_grace_period"`
+	ListenAddress       string            `json:"listen_address"`
+	TLSCertFile         string            `json:"tls_cert_file,omitempty"`
+	TLSKeyFile          string            `json:"tls_key_file,omitempty"`
 	WorkerCount         int               `json:"worker_count"`
 	QueueSoftLimit      int               `json:"queue_soft_limit"`
 	QueueHardLimit      int               `json:"queue_hard_limit"`
@@ -173,6 +176,9 @@ func canonicalConfig(cfg Config) canonicalConfigStruct {
 		DataDir:             cfg.DataDir,
 		DatabaseFilename:    cfg.DatabaseFilename,
 		ShutdownGracePeriod: cfg.ShutdownGracePeriod.String(),
+		ListenAddress:       cfg.ListenAddress,
+		TLSCertFile:         cfg.TLSCertFile,
+		TLSKeyFile:          cfg.TLSKeyFile,
 		WorkerCount:         cfg.WorkerCount,
 		QueueSoftLimit:      cfg.QueueSoftLimit,
 		QueueHardLimit:      cfg.QueueHardLimit,

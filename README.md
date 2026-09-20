@@ -6,8 +6,8 @@ dMem 是一个面向 Agent 与应用的本地单用户记忆守护进程。它�
 provider 默认关闭。
 
 > **状态**：项目处于预发布阶段。Schema v1 没有迁移路径；schema 不兼容的数据库
-> 必须由新初始化的数据目录替代。运行时组装 HTTP handler，但**不启动监听器**：
-> 传输层、TLS、认证与网络暴露属于后续独立工作。
+> 必须由新初始化的数据目录替代。`dmemd daemon` 默认在回环地址启动 REST+JSON
+> 监听服务；TLS 可选，认证与网络边缘授权仍属后续独立工作。
 
 ## 能力
 
@@ -43,6 +43,9 @@ provider 默认关闭。
   第一个适配器是 Agent 中立的 REST+JSON `http.Handler`，覆盖冻结的九路由 `/v1`
   接口。适配器负责严格解码、请求体上限、请求头、路由与错误映射，永不拥有领域
   规则或仓储调用。
+- **传输服务层**（`internal/server`）在 `server.listen_address` 上监听 TCP，应用
+  固定传输加固、可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。它只持有
+  `http.Handler`，不拥有领域规则、认证或网络边缘授权。
 - **运行时适配器**（`internal/storage`、`internal/jobs`、`internal/provider`）
   在现有 SQLite、FTS5、sqlite-vec、关系图谱、作业、策略与元数据实现之上实现
   gateway 的能力端口。逻辑端口不意味着物理上分离的数据库。
@@ -52,11 +55,12 @@ provider 默认关闭。
 依赖方向为：
 
 ```text
-Agent 客户端 -> 协议适配器 -> gateway 模块 -> 能力端口 -> 运行时适配器
+Agent 客户端 -> 传输服务层 -> 协议适配器 -> gateway 模块 -> 能力端口 -> 运行时适配器
 ```
 
-禁止的方向包括 `protocol -> storage`、`gateway -> net/http`、`storage -> gateway
-service`，以及模块之间直接依赖具体服务。这些规则由架构测试强制。
+禁止的方向包括 `protocol -> storage`、`gateway -> net/http`、`server -> storage`、
+`storage -> gateway service`，以及模块之间直接依赖具体服务。这些规则由架构测试
+强制。
 
 ## 构建与运行
 
@@ -79,9 +83,11 @@ cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/c
 守护进程设置，是守护进程设置的唯一来源。随仓库提供的示例中 provider 处于禁用
 状态。
 
-`dmemd daemon` 启动 SQLite 适配器与持久 worker，应用配置快照，然后等待关闭。
-它不打开 socket 或 TCP 端口。`SIGHUP` 请求一次串行化的配置重载。可用子命令为
-`daemon`、`config validate`、`init`、`backup`、`restore`。
+`dmemd daemon` 启动 SQLite 适配器与持久 worker，应用配置快照，在
+`server.listen_address`（默认 `127.0.0.1:7373`）上启动 REST+JSON 监听，然后等待
+关闭。设置 `server.tls_cert_file`/`server.tls_key_file` 后启用 TLS 与 HTTP/2。
+`SIGHUP` 请求一次串行化的配置重载。可用子命令为 `daemon`、`config validate`、
+`init`、`backup`、`restore`。
 
 ## HTTP 契约
 
@@ -102,9 +108,10 @@ GET  /v1/scopes/{scope_id}
 
 每条路由都要求调用方身份（`X-Caller-Subject-ID` 和/或 `X-Caller-Client-ID`），
 每次写操作都要求 `Idempotency-Key`。请求是严格的单值 JSON，具有按路由的请求体
-上限，每个响应都携带 `X-Request-ID`。适配器返回 `http.Handler`；提供监听服务
-是未来服务层的职责。由于当前没有监听器，契约由适配器的路由、解码、错误与
-HTTP/2 兼容性测试验证，而不是由运行中的端点验证。
+上限，每个响应都携带 `X-Request-ID`。`internal/protocol/httpapi` 返回
+`http.Handler`；`internal/server` 在回环地址上提供监听、可选 TLS 与优雅关闭。
+契约由适配器的路由、解码、错误与 HTTP/2 兼容性测试，以及服务层的真实监听测试
+共同验证。服务层不提供认证。
 
 ## 文档
 

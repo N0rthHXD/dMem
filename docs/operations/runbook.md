@@ -17,10 +17,14 @@ dmemd --config /absolute/path/config.toml daemon
 ```
 
 `dmemd daemon` 组装 SQLite 能力适配器、gateway 服务、provider、持久 worker 与
-Agent 中立 REST+JSON `http.Handler`，然后等待关闭。**它不打开 Unix socket 或
-TCP 端口。** 本仓库中目前没有生产监听器、TLS、h2c、认证或网络安全边界；提供
-监听服务属于后续独立工作。因此运维可见性来自进程日志与 SQLite 中的持久状态，
-而不是健康检查端点。
+Agent 中立 REST+JSON `http.Handler`，然后在 `server.listen_address` 上启动 TCP 监听
+并等待关闭。默认监听 `127.0.0.1:7373`。服务层只负责传输：它应用固定的读/写/空闲
+超时与请求头大小上限，可选终止 TLS（TLS 1.2+，经 ALPN 协商 HTTP/2），并按关闭宽
+限期排空在途请求。**它不提供认证、网络边缘授权或限流**；非回环绑定会在日志中产生
+警告。运维可见性来自进程日志、监听日志与 SQLite 中的持久状态。
+
+启动顺序：先绑定监听地址（失败时以退出码 `2` 退出），再报告 `daemon ready`。
+关闭顺序：先停止接受新连接并排空在途请求，再关闭 worker 与存储。
 
 重要默认值：
 
@@ -38,8 +42,9 @@ HTTP 请求体上限按路由声明在冻结契约与 `internal/protocol/httpapi
 
 Provider 需要显式启用、endpoint、model、默认拒绝策略与环境变量密钥引用。禁用的
 provider 不解析密钥、不发起 HTTP 请求。`instance.data_dir`、
-`instance.database_filename` 与 `jobs.worker_count` 是重启绑定字段；改变其中任何
-一项的重载会被整体拒绝。
+`instance.database_filename`、`jobs.worker_count`、`server.listen_address` 与
+`server.tls_cert_file`/`server.tls_key_file` 是重启绑定字段；改变其中任何一项的
+重载会被整体拒绝。
 
 ## 命令行
 
@@ -61,7 +66,7 @@ offline_required`、`maintenance: unsafe_path`、`maintenance: database_exists`�
 
 ## 健康与故障
 
-由于运行时暴露 handler 但没有监听器，健康状态通过日志与持久状态观察。请区分
+由于运行时没有专用健康检查端点，健康状态通过日志与持久状态观察。请区分
 权威故障与派生索引故障：
 
 - SQLite 完整性、schema 或权威检查失败时，停止写入并保留数据目录。

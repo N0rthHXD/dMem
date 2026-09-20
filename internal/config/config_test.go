@@ -384,3 +384,140 @@ func TestNoSettingEnvironmentOverrides(t *testing.T) {
 		t.Error("DMEM_PROCESSING_VERSION env override was not ignored")
 	}
 }
+
+func TestListenAddressDefaultsToLoopback(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenAddress != DefaultListenAddress {
+		t.Errorf("ListenAddress = %q, want %q", cfg.ListenAddress, DefaultListenAddress)
+	}
+	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+		t.Errorf("TLS files = %q/%q, want empty", cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+}
+
+func TestServerListenAddressValidation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		address string
+		wantErr bool
+	}{
+		{"loopback ok", "127.0.0.1:7373", false},
+		{"localhost ok", "localhost:7373", false},
+		{"any host ok", "0.0.0.0:7373", false},
+		{"bad port", "127.0.0.1:70000", true},
+		{"missing port", "127.0.0.1", true},
+		{"empty port", "127.0.0.1:", true},
+		{"hostname rejected", "example.com:7373", true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := writeServerConfig(t, fmt.Sprintf("listen_address = %q\n", tc.address))
+			_, err := Load(path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Load() error = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestServerTLSValidation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "cert.pem")
+	key := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(cert, []byte("cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(key, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		extra   string
+		wantErr bool
+	}{
+		{"pair ok", fmt.Sprintf("tls_cert_file = %q\ntls_key_file = %q\n", cert, key), false},
+		{"cert only", fmt.Sprintf("tls_cert_file = %q\n", cert), true},
+		{"key only", fmt.Sprintf("tls_key_file = %q\n", key), true},
+		{"relative cert", "tls_cert_file = \"cert.pem\"\ntls_key_file = \"/tmp/key.pem\"\n", true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := writeServerConfig(t, tc.extra)
+			_, err := Load(path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Load() error = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestServerFieldsAreRestartBound(t *testing.T) {
+	t.Parallel()
+	base, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []func(*Config){
+		func(c *Config) { c.ListenAddress = "127.0.0.1:9999" },
+		func(c *Config) { c.TLSCertFile = "/tmp/cert.pem"; c.TLSKeyFile = "/tmp/key.pem" },
+	}
+	for i, edit := range cases {
+		candidate := base
+		edit(&candidate)
+		if changed := restartFieldsChanged(candidate, base); len(changed) == 0 {
+			t.Fatalf("case %d: server change not reported as restart-bound", i)
+		}
+	}
+	if changed := restartFieldsChanged(base, base); len(changed) != 0 {
+		t.Fatalf("identical config reported restart-bound changes: %v", changed)
+	}
+}
+
+func writeServerConfig(t *testing.T, extraServer string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	doc := fmt.Sprintf(`config_version = 1
+
+[instance]
+data_dir = "/tmp/dmem-test/data"
+database_filename = "dmem.db"
+
+[server]
+shutdown_grace_period = "15s"
+%s
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+[processing]
+version = "builtin-noop-v1"
+
+[processing.provider]
+enabled = false
+
+[embedding.provider]
+enabled = false
+`, extraServer)
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

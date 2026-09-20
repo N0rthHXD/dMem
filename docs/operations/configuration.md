@@ -40,7 +40,15 @@ dmemd --config /absolute/path/config.toml config validate
 
 | 键 | 类型 | 规则 |
 | --- | --- | --- |
+| `listen_address` | string | 可选，`host:port`，默认 `127.0.0.1:7373`。host 为空、IP 字面量或 `localhost`；端口 `1`–`65535`。 |
+| `tls_cert_file` | string | 可选，绝对路径，非符号链接；与 `tls_key_file` 同时出现。 |
+| `tls_key_file` | string | 可选，绝对路径，非符号链接；与 `tls_cert_file` 同时出现。 |
 | `shutdown_grace_period` | duration | 必需，非零。 |
+
+服务层在 `listen_address` 上启动 TCP 监听。设置 TLS 后启用 TLS 1.2+，并通过 ALPN
+协商 HTTP/2；明文监听只提供 HTTP/1.1。读头、读、写、空闲超时与请求头大小上限是
+传输加固默认值，不是配置项。服务层不提供认证、网络边缘授权或限流：非回环绑定
+会在日志中产生警告。
 
 ### `[jobs]`
 
@@ -217,7 +225,7 @@ embedding provider 使用相同的 `max_egress_input_chars`、`max_response_byte
 | `rejected` | 文件无效或包含重启绑定变更，先前快照保持不变。 |
 | `failed` | 激活后的应用失败，运行时回退到先前快照。 |
 
-重启绑定字段为 `instance.data_dir`、`instance.database_filename` 与
-`jobs.worker_count`。重载改变其中任何一项都会拒绝整个候选文件，错误码为
-`config_restart_required`。运行时没有 `reload` 子命令或重载 HTTP 路由；只使用
-`SIGHUP`。
+重启绑定字段为 `instance.data_dir`、`instance.database_filename`、`jobs.worker_count`、
+`server.listen_address` 与 `server.tls_cert_file`/`server.tls_key_file`。重载改变其中
+任何一项都会拒绝整个候选文件，错误码为 `config_restart_required`。运行时没有
+`reload` 子命令或重载 HTTP 路由；只使用 `SIGHUP`。

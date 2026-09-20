@@ -10,8 +10,9 @@ Unix socket `docs/api/openapi.yaml` 已删除。`internal/protocol/httpapi` 中�
 契约已冻结。修改路由、DTO 字段、状态码、请求头名称或错误码都属于契约变更，
 必须同时更新本文档、`internal/protocol/httpapi` 中的路由元数据和契约测试。
 
-适配器返回一个 `http.Handler`。运行时组装该 handler，但不提供监听服务：
-当前架构中不存在生产监听器、TLS、h2c 或 socket 生命周期。
+适配器返回一个 `http.Handler`。`internal/server` 是生产传输层：它在回环 TCP 地址
+上监听，可选终止 TLS 并通过 ALPN 协商 HTTP/2，并优雅关闭。本契约不定义监听地址、
+TLS 或传输加固参数；它们属于配置与运维文档。
 
 ## 范围
 
@@ -27,7 +28,7 @@ Unix socket `docs/api/openapi.yaml` 已删除。`internal/protocol/httpapi` 中�
 
 不包含，且有意从本契约中排除：
 
-- 生产监听器、TLS、h2c 或 socket 生命周期；
+- h2c 与 socket 生命周期；
 - 认证、网络边缘授权、限流或任何网络安全边界；
 - 候选审核、作业控制、索引重建、配置重载、图谱维护或任何其他管理操作；
 - 面向 Claude、OpenCode 或其他具体客户端的路由、DTO 或行为。所有路由都是
@@ -35,9 +36,10 @@ Unix socket `docs/api/openapi.yaml` 已删除。`internal/protocol/httpapi` 中�
 
 ## 传输
 
-- 协议方案：由调用方决定。handler 与传输无关。
-- 协议版本：HTTP/1.1 或 HTTP/2。handler 不得依赖 `r.ProtoMajor` 分支；强制
-  HTTP/2 是未来服务层的职责。
+- 协议方案：由调用方决定。handler 与传输无关。生产服务层默认明文监听并只提供
+  HTTP/1.1；配置 TLS 后提供 HTTP/1.1 与 HTTP/2。
+- 协议版本：HTTP/1.1 或 HTTP/2。handler 不得依赖 `r.ProtoMajor` 分支；协议协商
+  由服务层负责，不提供 h2c。
 - 基础路径：`/v1`。
 - 媒体类型：`application/json`。
 - 不使用 cookie、会话、重定向或连接相关行为。每个请求都是自描述的。
@@ -381,4 +383,4 @@ client 标识实际发起的客户端。两个请求头的名称与语义都不�
 - handler 不得创建监听器、`http.Server`、TLS 配置或 h2c 升级。
 - 所有请求状态都存在于请求、`CallContext` 或响应中。
 - 兼容性通过仅用于测试的 HTTP/2 传输（启用 `EnableHTTP2` 的 `httptest.Server`）
-  证明；本契约不添加任何生产 TLS 或监听器。
+  以及 `internal/server` 的真实 TLS 监听测试证明；本契约不定义 h2c。

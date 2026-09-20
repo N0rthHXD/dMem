@@ -4,9 +4,9 @@ dMem 通过 `internal/protocol/httpapi` 中的 Agent 中立 REST+JSON 适配器�
 确切的路径、方法、DTO 字段、状态码、请求头与错误码由
 [HTTP REST+JSON 契约](http-rest-contract.md) 定义。该文档是唯一的 HTTP 契约。
 
-适配器返回一个 `http.Handler`。运行时组装它，但不启动监听器，因此本仓库中
-目前没有可访问的线上端点。下面的行为是 handler 实现的语义，并由适配器测试
-强制。
+适配器返回一个 `http.Handler`。`internal/server` 在 `server.listen_address` 上提供
+监听（默认 `127.0.0.1:7373`），配置 TLS 后通过 ALPN 协商 HTTP/2。下面的行为是
+handler 实现的语义，并由适配器与服务层测试强制。服务层不提供认证。
 
 ## 请求规则
 

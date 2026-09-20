@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/daemon"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/maintenance"
+	"github.com/N0rthHXD/dMem/internal/server"
 	"github.com/N0rthHXD/dMem/internal/storage"
 )
 
@@ -94,19 +96,52 @@ func runDaemon(ctx context.Context, configPath string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	slog.Info("daemon ready")
+	snapshot := manager.Snapshot()
+	if snapshot == nil {
+		fmt.Fprintln(os.Stderr, "daemon has no active configuration snapshot")
+		_ = d.Close(context.Background())
+		os.Exit(2)
+	}
+	srv, err := server.New(d.Handler(), server.Config{
+		ListenAddress:       snapshot.Config.ListenAddress,
+		TLSCertFile:         snapshot.Config.TLSCertFile,
+		TLSKeyFile:          snapshot.Config.TLSKeyFile,
+		ShutdownGracePeriod: snapshot.Config.ShutdownGracePeriod,
+	})
+	if err != nil {
+		slog.Error("http server configuration failed", "error", err)
+		_ = d.Close(context.Background())
+		os.Exit(2)
+	}
+	if err := srv.Start(); err != nil {
+		slog.Error("http server failed to start", "error", err)
+		_ = d.Close(context.Background())
+		os.Exit(2)
+	}
+	slog.Info("daemon ready", "listen_address", srv.Addr())
+
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	go handleSIGHUPReloads(hup, d)
 
-	<-ctx.Done()
-	shutdownGrace := 15 * time.Second
-	if snapshot := manager.Snapshot(); snapshot != nil {
-		shutdownGrace = snapshot.Config.ShutdownGracePeriod
+	select {
+	case <-ctx.Done():
+	case serveErr := <-srv.Errors():
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			slog.Error("http server stopped", "error", serveErr)
+		}
+	}
+
+	shutdownGrace := snapshot.Config.ShutdownGracePeriod
+	if current := manager.Snapshot(); current != nil {
+		shutdownGrace = current.Config.ShutdownGracePeriod
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("http server shutdown failed", "error", err)
+	}
 	if err := d.Close(shutdownCtx); err != nil {
 		slog.Error("daemon shutdown failed", "error", err)
 		os.Exit(1)

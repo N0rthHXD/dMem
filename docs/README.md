@@ -7,8 +7,8 @@ dMem 是一个以 SQLite 为后端的本地 Linux 守护进程。当前产品面
 逻辑导入导出。
 
 语义位于协议无关的 Memory Gateway 模块中。第一个入站协议适配器是 Agent 中立的
-REST+JSON `http.Handler`。运行时组装该 handler，但不启动生产监听器；传输、TLS、
-认证与网络暴露属于后续独立工作。
+REST+JSON `http.Handler`。`internal/server` 是生产传输层：它在回环地址上监听，
+可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。认证与网络边缘授权仍属后续独立工作。
 
 Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新的数据目录，而不是
 复用不兼容的数据库。

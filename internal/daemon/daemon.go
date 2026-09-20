@@ -3,8 +3,8 @@
 // and the HTTP protocol handler from one immutable configuration snapshot.
 //
 // The runtime exposes the assembled http.Handler but never creates a listener:
-// transport, TLS, authentication, and network exposure are deliberately out of
-// scope for this refactor.
+// the transport layer (internal/server) owns sockets and TLS, and authentication
+// and network edge authorization remain out of scope.
 package daemon
 
 import (

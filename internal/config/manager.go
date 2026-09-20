@@ -195,6 +195,12 @@ func restartFieldsChanged(candidate, previous Config) []string {
 	if candidate.WorkerCount != previous.WorkerCount {
 		changed = append(changed, "jobs.worker_count")
 	}
+	if candidate.ListenAddress != previous.ListenAddress {
+		changed = append(changed, "server.listen_address")
+	}
+	if candidate.TLSCertFile != previous.TLSCertFile || candidate.TLSKeyFile != previous.TLSKeyFile {
+		changed = append(changed, "server.tls")
+	}
 	return changed
 }
 
