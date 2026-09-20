@@ -98,7 +98,7 @@ dMem Provider Route 异步处理。单个输入只能有一个模型提取所有
 Agent Tool Route 利用 Agent 当前正在进行的 LLM 推理完成“是否值得记忆”和“如何
 结构化”的判断。dMem 暴露记忆领域工具，不暴露模型任务或存储实现。
 
-Agent client 的最小职责是：
+原生集成时，薄 client 位于各个 Agent 应用或其 SDK 中。它的最小职责是：
 
 1. 向 Agent 注册工具定义；
 2. 将工具调用映射到 dMem API；
@@ -196,7 +196,7 @@ dMem 仍负责 scope、生命周期、有效时间、敏感度、预算、去重
   "entities": [
     {
       "local_id": "entity-1",
-      "type": "technology",
+      "type": "product",
       "name": "PostgreSQL",
       "aliases": ["postgres"]
     }
@@ -227,7 +227,7 @@ dMem 仍负责 scope、生命周期、有效时间、敏感度、预算、去重
 
 ### `dmem_feedback` 与 `dmem_forget`
 
-反馈采用封闭类别：
+Tool Route 反馈采用封闭类别：
 
 ```text
 used  not_used  incorrect  outdated  duplicate
@@ -235,6 +235,10 @@ used  not_used  incorrect  outdated  duplicate
 
 自由文本 reason 可选、有长度上限且不进入排序模型的未审查特征。`dmem_forget` 是
 独立工具，执行逻辑遗忘并保留审计，不把 `forget` 混入反馈类别。
+
+当前实现中按 purpose/type/reason 划分的旧 feedback DTO 将由该工具契约替换，不是
+兼容性边界。最终 authority/proposal、枚举、evidence、MCP 与 client 决策见
+[Phase 0 决策与基线](phase-0-decisions-and-baseline.md)。
 
 ### Agent 行为模式
 
@@ -258,8 +262,11 @@ feedback(input) -> FeedbackResult
 forget(input)   -> ForgetResult
 ```
 
-具体 Agent adapter 只负责把同一份 JSON Schema 转为 OpenAI、Anthropic、LangChain
-等框架的工具定义。MCP server 复用同一 application client，是薄协议适配器：
+具体 Agent adapter 位于 Agent 应用或对应 SDK 中，只负责把同一份 JSON Schema 转为
+OpenAI、Anthropic、LangChain 等框架的工具定义。其实现语言由 Agent 宿主决定，
+不要求使用 Go。支持 MCP 的 Agent 可以不实现原生 dMem client，只配置 `dmem-mcp`；
+MCP server 在自己的进程内复用 dMem 仓库提供的 Go application client，是薄协议
+适配器：
 
 ```text
 Agent -> MCP tool -> dmem-mcp -> dMem application API -> Memory Gateway
@@ -273,11 +280,15 @@ Agent 执行 dMem 内部任务。第一版使用 MCP `tools`；resources、promp
 
 ```text
 cmd/dmem-mcp/                 MCP server 进程
-pkg/client/                   可供 MCP 和原生集成复用的薄 client
+pkg/client/                   dmem-mcp 复用的 Go application client
 pkg/toolcontract/             工具 DTO、JSON Schema 与版本
 internal/protocol/httpapi/    application HTTP adapter
 internal/gateway/...          领域语义
 ```
+
+`pkg/client` 不部署进每个 Agent，也不限定外部 Agent client 的语言。原生 Agent 集成
+应在各自应用或 SDK 中基于同一 tool contract 实现薄 adapter；后续只有出现具体消费
+者时，才在 dMem 仓库提供额外语言的官方 client。
 
 具体包名可在实现阶段调整，但工具契约必须只有一个来源，禁止 MCP DTO、HTTP DTO 和
 各语言 SDK 分别演进。

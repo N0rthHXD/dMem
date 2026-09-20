@@ -19,6 +19,8 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
   配置与策略、作业与恢复。
 - [Agent Tool 与 dMem Provider 双路线架构](architecture/agent-tool-and-provider-routes.md)：
   Agent 工具、MCP server、无 provider 检索、dMem provider 处理及 API 重构边界。
+- [Phase 0 决策与基线](architecture/phase-0-decisions-and-baseline.md)：双路线重构的
+  authority/proposal、枚举、MCP/client 决策，当前九路由调用图与测试基线。
 - [领域模型与权威数据](architecture/domain-model.md)：scope、记忆与修订、结构化
   字段、证据、生命周期、实体/关系/事实、冲突、演化与聚合。
 - [处理、审核与演化](architecture/processing.md)：事件摄取、处理 provider、候选

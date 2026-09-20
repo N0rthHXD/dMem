@@ -44,17 +44,17 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### 任务
 
-- [ ] 记录当前九条 HTTP 路由到 gateway、storage、job 和 schema 的完整调用图。
-- [ ] 标记每个现有接口为 `retain`、`replace` 或 `remove`，并记录唯一消费者。
-- [ ] 确认第一版 `dmem_remember` 是创建低风险权威、创建 proposal，还是按规则混合；
+- [x] 记录当前九条 HTTP 路由到 gateway、storage、job 和 schema 的完整调用图。
+- [x] 标记每个现有接口为 `retain`、`replace` 或 `remove`，并记录唯一消费者。
+- [x] 确认第一版 `dmem_remember` 是创建低风险权威、创建 proposal，还是按规则混合；
       固化规则表，不允许 Agent 自行选择 confirmed 状态。
-- [ ] 确认第一版支持的 memory kind、entity type、predicate、relation 和 feedback 枚举。
-- [ ] 确认 Tool Route 第一版是否返回 evidence 正文；默认建议只返回有界引用和允许
+- [x] 确认第一版支持的 memory kind、entity type、predicate、relation 和 feedback 枚举。
+- [x] 确认 Tool Route 第一版是否返回 evidence 正文；默认建议只返回有界引用和允许
       披露的片段。
-- [ ] 确认 MCP transport：第一版实现 stdio；是否同时提供 streamable HTTP 单独决策。
-- [ ] 确认 client 首发语言；建议 Go client 作为 MCP 内部复用实现，随后按需求提供
-      TypeScript/Python。
-- [ ] 保存重构前测试基线，覆盖 memory、scope、feedback、recall、event 和
+- [x] 确认 MCP transport：第一版实现 stdio；是否同时提供 streamable HTTP 单独决策。
+- [x] 确认仓库内 client 首发语言为 Go，供 MCP 内部复用；原生 client 位于各 Agent
+      应用或 SDK 中且语言由宿主决定，额外官方 client 随具体需求提供。
+- [x] 保存重构前测试基线，覆盖 memory、scope、feedback、recall、event 和
       provider job。
 
 ### 交付物
@@ -68,6 +68,24 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 - 所有待删除入口都有调用图证据；
 - Tool Route 的 authority/proposal 边界无未决语义；
 - 后续阶段不需要通过保留旧 DTO 来规避产品决策。
+
+### Phase 0 实施记录
+
+- 状态：completed
+- 完成日期：2026-09-20
+- 主要变更：新增 `docs/architecture/phase-0-decisions-and-baseline.md`；同步架构、领域
+  模型与文档索引中的目标枚举和状态说明。
+- 验证命令：`CGO_ENABLED=1 go test -tags sqlite_fts5` 分别运行 gateway 五个模块、
+  `internal/protocol/httpapi`、storage 能力基线与 `internal/jobs`；`make schema-check`、
+  `make quality`、`make offline-default`、`make restore-drill`、
+  `make portability-drill`、`make vet`、`make test`、`make test-race`、`make build` 和
+  `git diff --check`，全部通过。
+- 删除内容：无。调用图确认九条路由当前均有生产 handler 消费者，restore staging
+  probe 还直接依赖 `/v1/recall`；Phase 0 提前删除会破坏当前运行时与基线。
+- 遗留问题：目标命令、JSON Schema、application API、MCP/client 和运行时迁移属于
+  Phase 1 及后续阶段；当前 purpose/type/reason feedback 与九路由仍是已实现行为。
+- 下一阶段前置条件：Phase 1 必须以 Phase 0 决策为唯一产品输入，先定义协议中立命令
+  与版本化 schema，不引用旧 HTTP DTO、storage DTO、job 或 provider 类型。
 
 ## Phase 1：领域命令与版本化工具契约
 
@@ -160,8 +178,9 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### Client 任务
 
-- [ ] 实现可复用 application client，覆盖 recall、remember、feedback、forget 和
-      scope bootstrap。
+- [ ] 在 dMem 仓库实现供 `dmem-mcp` 复用的 Go application client，覆盖 recall、
+      remember、feedback、forget 和 scope bootstrap；原生 client 位于 Agent 应用或
+      对应 SDK 中，不要求使用 Go。
 - [ ] 自动传递 caller、request/correlation 和 idempotency identity。
 - [ ] 对网络重试复用同一个 idempotency key，禁止每次 retry 重新生成。
 - [ ] 提供 tool definitions 和标准 memory policy prompt；支持 `opportunistic` 与

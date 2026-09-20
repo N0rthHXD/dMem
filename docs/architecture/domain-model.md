@@ -145,6 +145,11 @@ dMem 支持经审核的 `scene`、`topic`、`timeline` 聚合记忆，建立在�
 反馈是关于具体记忆修订的仅追加观察。权威记录包含调用方、操作、用途、类型、
 原因、时间与可选搜索上下文。
 
+目标 Agent Tool Route 只接受 `used`、`not_used`、`incorrect`、`outdated`、
+`duplicate` 五个封闭类别，具体决策见
+[Phase 0 决策与基线](phase-0-decisions-and-baseline.md)。以下 purpose/type/reason
+组合描述当前实现及待迁移的旧 HTTP DTO，不是目标工具契约：
+
 反馈按用途分离，用途/类型/原因是封闭组合：
 
 | 用途 | 允许的 type | 允许的 reason |
