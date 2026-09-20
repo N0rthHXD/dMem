@@ -2,13 +2,15 @@
 
 ## 状态
 
-本文档是第一个 Agent 中立 REST+JSON 协议适配器的冻结线上契约。它是
-`internal/protocol/httpapi` 的设计来源，也是仓库中唯一的 HTTP 契约；此前的
-Unix socket `docs/api/openapi.yaml` 已删除。`internal/protocol/httpapi` 中的路由元数据
-及其一致性测试是本文档的可执行形式。
+本文档描述当前 Agent 中立 REST+JSON 协议适配器的可执行契约。它是
+`internal/protocol/httpapi` 当前实现的设计来源；此前的 Unix socket
+`docs/api/openapi.yaml` 已删除。`internal/protocol/httpapi` 中的路由元数据及其
+一致性测试是本文档的可执行形式。
 
-契约已冻结。修改路由、DTO 字段、状态码、请求头名称或错误码都属于契约变更，
-必须同时更新本文档、`internal/protocol/httpapi` 中的路由元数据和契约测试。
+项目尚未发布，本文档不是外部兼容性承诺。目标 API 将按
+[Agent Tool 与 dMem Provider 双路线架构](../architecture/agent-tool-and-provider-routes.md)
+重构，当前路由和对应底层流程可以替换或移除。在替换完成前，修改当前实现仍必须
+同步更新本文档、路由元数据和契约测试，避免代码与文档失配。
 
 适配器返回一个 `http.Handler`。`internal/server` 是生产传输层：它在回环 TCP 地址
 上监听，可选终止 TLS 并通过 ALPN 协商 HTTP/2，并优雅关闭。本契约不定义监听地址、
@@ -368,7 +370,7 @@ client 标识实际发起的客户端。两个请求头的名称与语义都不�
 
 ## 分页
 
-本契约中没有路由返回分页。以下约定现在冻结，以便后续列表路由保持一致：
+当前契约中没有路由返回分页。以下约定由当前实现使用；目标 API 可以在重构时替换：
 
 - 查询参数：`limit`（整数，`1`–`200`，默认 `50`）与 `cursor`（不透明字符串，
   最多 512 个字符）。

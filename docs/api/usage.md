@@ -2,7 +2,10 @@
 
 dMem 通过 `internal/protocol/httpapi` 中的 Agent 中立 REST+JSON 适配器暴露其语义。
 确切的路径、方法、DTO 字段、状态码、请求头与错误码由
-[HTTP REST+JSON 契约](http-rest-contract.md) 定义。该文档是唯一的 HTTP 契约。
+[HTTP REST+JSON 契约](http-rest-contract.md) 定义。本文描述当前实现；项目预发布
+期间，接口将按
+[Agent Tool 与 dMem Provider 双路线架构](../architecture/agent-tool-and-provider-routes.md)
+替换，不构成外部兼容性承诺。
 
 适配器返回一个 `http.Handler`。`internal/server` 在 `server.listen_address` 上提供
 监听（默认 `127.0.0.1:7373`），配置 TLS 后通过 ALPN 协商 HTTP/2。下面的行为是

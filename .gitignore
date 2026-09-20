@@ -17,3 +17,4 @@ Thumbs.db
 .idea/
 dmemd
 .dmem-e2e/
+.gocache/

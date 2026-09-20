@@ -17,6 +17,8 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 
 - [架构总览](architecture/overview.md)：进程模型、模块边界、能力端口、依赖规则、
   配置与策略、作业与恢复。
+- [Agent Tool 与 dMem Provider 双路线架构](architecture/agent-tool-and-provider-routes.md)：
+  Agent 工具、MCP server、无 provider 检索、dMem provider 处理及 API 重构边界。
 - [领域模型与权威数据](architecture/domain-model.md)：scope、记忆与修订、结构化
   字段、证据、生命周期、实体/关系/事实、冲突、演化与聚合。
 - [处理、审核与演化](architecture/processing.md)：事件摄取、处理 provider、候选
@@ -26,8 +28,8 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 
 ## 接口
 
-- [HTTP REST+JSON 契约](api/http-rest-contract.md)：冻结的线上契约、路由、DTO、
-  请求头、解码规则与错误模型。
+- [HTTP REST+JSON 契约](api/http-rest-contract.md)：当前实现的路由、DTO、请求头、
+  解码规则与错误模型；预发布期间将按双路线架构替换。
 - [API 使用说明](api/usage.md)：gateway 语义如何映射到契约。
 
 ## 存储
@@ -47,12 +49,15 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 ## 开发
 
 - [测试与质量门禁](development/testing.md)：构建配置与可执行检查。
+- [双路线架构开发任务](development/tasks-agent-tool-and-provider-routes.md)：按阶段实施
+  Tool/MCP、application API、无 provider 检索、Provider Route 和旧流程清理。
 
 ## 契约优先级
 
 当散文描述与可执行契约冲突时，以可执行契约为准：
 
-- [HTTP REST+JSON 契约](api/http-rest-contract.md) 定义 `internal/protocol/httpapi`
-  实现的 Agent 中立 `/v1` 接口。
+- [HTTP REST+JSON 契约](api/http-rest-contract.md) 描述当前
+  `internal/protocol/httpapi` 实现。项目预发布期间，它将按双路线架构替换，不构成
+  外部兼容性承诺。
 - [SQLite Schema v1](storage/schema-v1.sql) 定义新数据库初始化，并由
   `internal/storage` 内嵌并校验一致。

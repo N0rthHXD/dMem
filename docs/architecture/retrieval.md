@@ -1,5 +1,10 @@
 # 检索与排序
 
+> **状态**：本文描述当前检索实现。目标架构要求 Agent Tool Route 在未配置 dMem
+> embedding provider 时，以 FTS、search hints、实体和图谱形成完整基础召回，并
+> 显式报告 semantic 降级。参见
+> [Agent Tool 与 dMem Provider 双路线架构](agent-tool-and-provider-routes.md)。
+
 检索把一次自然语言查询转化为一个有界、可复现的上下文包。它由
 `internal/gateway/retrieval` 编排，`internal/retrieval` 提供纯版本化契约。
 

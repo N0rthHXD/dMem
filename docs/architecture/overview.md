@@ -2,25 +2,29 @@
 
 dMem 以单个 Go 进程运行，由一个 Linux 用户拥有。数据目录中的文件锁保证每个
 数据目录只有一个写入者。SQLite 是领域数据、幂等、审计历史、作业与索引元数据的
-权威。应用语义位于协议无关的 Memory Gateway 模块中，第一个入站协议适配器是
-Agent 中立的 REST+JSON `http.Handler`。`internal/server` 是生产传输层：它在回环
-地址上监听，可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭；认证与网络边缘授权仍属
-后续独立工作。
+权威。应用语义位于协议无关的 Memory Gateway 模块中，HTTP 和 MCP 是入站协议
+适配器。`internal/server` 是生产传输层：它在回环地址上监听，可选 TLS 与 ALPN
+协商的 HTTP/2，并优雅关闭；认证与网络边缘授权仍属后续独立工作。
+
+模型能力采用两条路线：Agent Tool Route 让 Agent 在正常 tool loop 中直接提交
+结构化记忆；dMem Provider Route 让持久 worker 调用显式配置的 LLM/embedding
+provider。前者不要求 dMem 配置模型，后者服务于原始事件和脱离 Agent 生命周期的
+处理。完整目标见 [Agent Tool 与 dMem Provider 双路线架构](agent-tool-and-provider-routes.md)。
 
 ## 分层与依赖方向
 
 ```text
 +-------------------------------------------------------------+
-|                        Agent 客户端                          |
+|                    Agent 客户端 / MCP client                 |
 +-------------------------------+-----------------------------+
                                 |
-                     标准交互协议（后续扩展）
-             HTTP/2 REST+JSON / MCP / REST+SSE / WebSocket
+                       标准交互协议
+                       HTTP/JSON / MCP
                                 |
                                 v
 +-------------------------------------------------------------+
 |                        协议适配器                            |
-|   HTTP API（当前）   MCP（后续）   SSE（后续）   WebSocket    |
+|             Application HTTP API      MCP server            |
 +-------------------------------+-----------------------------+
                                 | 内部 Go 接口
                                 v
@@ -66,9 +70,10 @@ storage -> gateway service
 适配器不拥有领域校验、记忆生命周期规则、scope 可见性语义、检索规划与融合、
 抽取或整合决策、provider 出网策略、事务管理与仓储调用。
 
-第一个适配器是 `internal/protocol/httpapi` 中的 Agent 中立 REST+JSON handler。
-它返回 `http.Handler`，不得创建监听器，也不得要求 `r.ProtoMajor == 2`；监听、
-TLS 与协议协商由 `internal/server` 传输层负责。
+HTTP application adapter 位于 `internal/protocol/httpapi`。目标 MCP server 是建立在
+同一 application contract 和薄 client 之上的适配器，不拥有独立领域语义。handler
+不得创建监听器，也不得要求 `r.ProtoMajor == 2`；监听、TLS 与协议协商由
+`internal/server` 传输层负责。
 
 ### Memory Gateway
 
@@ -139,8 +144,9 @@ provider 网络调用位于 SQLite 写事务之外，并通过既有的租约、
 ## 配置与策略
 
 所有守护进程设置来自一个严格 TOML 文件，由 XDG 默认位置或单个 `--config`
-定位符选择。文件存储 provider 端点、模型、密钥引用、限制、策略、队列阈值与
-路径。密钥值永不进入文件、数据库、状态或日志，只持久化类型化的环境变量引用。
+定位符选择。Agent Tool Route 不要求模型配置。仅启用 dMem Provider Route 时，
+文件才需要存储 provider 端点、模型、密钥引用、限制和出网策略。密钥值永不进入
+文件、数据库、状态或日志，只持久化类型化的环境变量引用。
 
 重载（`SIGHUP` 或进程内重载请求）读取、严格解码并原子激活一个完整的文件修订。
 有效变更发布一个不可变的有效快照，并带有单调递增的激活、配置与策略 generation。
@@ -179,5 +185,6 @@ generation 可以提交结果。启动时会围栏过期工作并把它恢复到
 计数、重复聚类、上下文 token 与字符预算、排序/上下文/反馈身份、降级原因与各
 阶段延迟。遥测永不记录查询文本、记忆正文、证据片段或 provider 载荷。
 
-详见 [领域模型与权威数据](domain-model.md)、[处理、审核与演化](processing.md) 与
+详见 [Agent Tool 与 dMem Provider 双路线架构](agent-tool-and-provider-routes.md)、
+[领域模型与权威数据](domain-model.md)、[处理、审核与演化](processing.md) 与
 [检索与排序](retrieval.md)。

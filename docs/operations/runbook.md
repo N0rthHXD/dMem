@@ -37,8 +37,8 @@ Agent 中立 REST+JSON `http.Handler`，然后在 `server.listen_address` 上启
 | 磁盘软/硬空闲阈值 | 1 GiB / 256 MiB |
 | 上下文结果/token/字符预算 | 20 条 / 4,000 token / 16,000 字符 |
 
-HTTP 请求体上限按路由声明在冻结契约与 `internal/protocol/httpapi` 路由元数据中，
-它们不是守护进程设置。
+HTTP 请求体上限按路由声明在当前 HTTP 契约与 `internal/protocol/httpapi` 路由元数据
+中，它们不是守护进程设置。
 
 Provider 需要显式启用、endpoint、model、默认拒绝策略与环境变量密钥引用。禁用的
 provider 不解析密钥、不发起 HTTP 请求。`instance.data_dir`、

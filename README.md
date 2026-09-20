@@ -13,8 +13,9 @@ provider 默认关闭。
 
 - **版本化记忆权威**：稳定的逻辑 ID、不可变修订、仅追加状态事件、证据与当前
   投影；修订永不原地编辑，逻辑删除保留完整审计历史。
-- **原始事件摄取与异步处理**：事件与所需处理作业在同一事务中提交；默认处理器
-  为 no-op，因此没有外部 provider 时事件捕获依然可用。
+- **两条模型路线（目标架构）**：Agent 将通过工具或 MCP 直接召回和提交结构化
+  记忆，无需在 dMem 配置模型；独立输入可选择 dMem Provider Route 做持久异步
+  处理。当前实现正在按该架构重构。
 - **可审核的知识构建**：实体、别名、提及、类型化实体事实与记忆关系以提案形式
   产生，经确定性校验与风险分类后自动确认或进入人工审核。
 - **混合检索**：关键词（SQLite FTS5）与语义（sqlite-vec 精确余弦）作为独立的
@@ -26,8 +27,9 @@ provider 默认关闭。
   提案覆盖重复、补充、替换与冲突。
 - **聚合记忆**：经审核的 `scene`、`topic`、`timeline` 聚合，建立在显式、有界、
   去重的输入修订列表之上，并通过 `derived_from` 关系保留来源。
-- **离线优先**：处理与 embedding provider 分别配置、独立限流、默认禁用；密钥
-  只以环境变量引用形式存在，永不进入配置、数据库、状态或日志。
+- **无 Provider 可用（目标架构）**：FTS、检索辅助文本、实体和图谱将构成 Tool
+  Route 的基础召回；dMem 的处理与 embedding provider 是显式启用的增强，默认
+  关闭且独立限流。
 - **可移植与可恢复**：一致性在线备份与离线 staging 恢复、SQLite 完整性检查、
   派生索引重建，以及 Format v1 逻辑导出/导入。
 
@@ -39,10 +41,10 @@ provider 默认关闭。
   `feedback`、`retrieval`、`extraction`、`consolidation`、`policy`、`knowledge`
   八个模块。模块发布协议中立的命令、查询、结果、错误与窄能力端口，且永不导入
   `net/http`、协议包或存储实现。
-- **协议适配器**（`internal/protocol/httpapi`）把线上协议翻译为 gateway 调用。
-  第一个适配器是 Agent 中立的 REST+JSON `http.Handler`，覆盖冻结的九路由 `/v1`
-  接口。适配器负责严格解码、请求体上限、请求头、路由与错误映射，永不拥有领域
-  规则或仓储调用。
+- **协议适配器**把线上协议翻译为 gateway 调用。当前实现是
+  `internal/protocol/httpapi`；目标架构增加建立在同一 application contract 上的
+  MCP server。适配器负责严格解码、请求体上限、请求头、路由与错误映射，永不拥有
+  领域规则或仓储调用。
 - **传输服务层**（`internal/server`）在 `server.listen_address` 上监听 TCP，应用
   固定传输加固、可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。它只持有
   `http.Handler`，不拥有领域规则、认证或网络边缘授权。
@@ -89,10 +91,12 @@ cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/c
 `SIGHUP` 请求一次串行化的配置重载。可用子命令为 `daemon`、`config validate`、
 `init`、`backup`、`restore`。
 
-## HTTP 契约
+## 接口状态
 
-冻结契约见 [docs/api/http-rest-contract.md](docs/api/http-rest-contract.md)。它定义
-九条 Agent 中立路由：
+当前可执行契约见 [docs/api/http-rest-contract.md](docs/api/http-rest-contract.md)。
+项目尚未发布，当前九条路由不是外部兼容性边界，将按
+[Agent Tool 与 dMem Provider 双路线架构](docs/architecture/agent-tool-and-provider-routes.md)
+重构：
 
 ```text
 POST /v1/memories
@@ -110,13 +114,15 @@ GET  /v1/scopes/{scope_id}
 每次写操作都要求 `Idempotency-Key`。请求是严格的单值 JSON，具有按路由的请求体
 上限，每个响应都携带 `X-Request-ID`。`internal/protocol/httpapi` 返回
 `http.Handler`；`internal/server` 在回环地址上提供监听、可选 TLS 与优雅关闭。
-契约由适配器的路由、解码、错误与 HTTP/2 兼容性测试，以及服务层的真实监听测试
-共同验证。服务层不提供认证。
+当前契约由适配器的路由、解码、错误与 HTTP/2 兼容性测试，以及服务层的真实监听
+测试共同验证。服务层不提供认证。后续多阶段实施见
+[双路线架构开发任务](docs/development/tasks-agent-tool-and-provider-routes.md)。
 
 ## 文档
 
 - [文档索引](docs/README.md)
 - [架构总览](docs/architecture/overview.md)
+- [Agent Tool 与 dMem Provider 双路线架构](docs/architecture/agent-tool-and-provider-routes.md)
 - [领域模型与权威数据](docs/architecture/domain-model.md)
 - [处理、审核与演化](docs/architecture/processing.md)
 - [检索与排序](docs/architecture/retrieval.md)
@@ -127,6 +133,7 @@ GET  /v1/scopes/{scope_id}
 - [配置参考](docs/operations/configuration.md)
 - [运维手册](docs/operations/runbook.md)
 - [测试与质量门禁](docs/development/testing.md)
+- [双路线架构开发任务](docs/development/tasks-agent-tool-and-provider-routes.md)
 
 ## 许可证
 

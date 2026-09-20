@@ -37,8 +37,7 @@ make vet
   的同步报错、优雅关闭排空在途请求、请求头大小上限、自签证书 TLS 与 HTTP/2
   协商，以及无效/符号链接 TLS 文件的拒绝。`internal/server/arch_test.go` 强制
   传输层只依赖 `net/http`/`crypto/tls`，不导入 storage、jobs、provider、config、
-  retrieval、daemon、gateway 或 protocol。`e2e_test.go` 组合 `internal/daemon`
-  与 `internal/server`，通过真实 TCP 端口驱动一条 `/v1/scopes` 请求。
+  retrieval、daemon、gateway 或 protocol。
 
 ## 恢复与质量
 

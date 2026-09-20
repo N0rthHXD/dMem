@@ -1,5 +1,10 @@
 # 处理、审核与演化
 
+> **状态**：本文主要描述当前 provider/job 实现。项目尚未发布，处理入口、no-op
+> 行为和部分 job 将按
+> [Agent Tool 与 dMem Provider 双路线架构](agent-tool-and-provider-routes.md)重构；
+> 当前行为不构成兼容性承诺。
+
 dMem 把外部模型输出当作建议，而不是权威。处理在后台异步进行，产出独立可审核的
 候选或提案；只有显式确认才会改变记忆权威。
 
