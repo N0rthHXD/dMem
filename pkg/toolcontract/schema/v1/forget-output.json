@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/forget-output.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["operation_id", "replayed", "memory_id", "revision_id", "state"],
+  "properties": {
+    "operation_id": {"$ref": "#/$defs/id"}, "replayed": {"type": "boolean"}, "memory_id": {"$ref": "#/$defs/id"}, "revision_id": {"$ref": "#/$defs/id"},
+    "state": {"const": "deleted"}
+  },
+  "$defs": {"id": {"type": "string", "minLength": 1, "maxLength": 128}}
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/feedback-input.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["scope_id", "memory_id", "revision_id", "kind"],
+  "properties": {
+    "scope_id": {"$ref": "#/$defs/id"}, "memory_id": {"$ref": "#/$defs/id"}, "revision_id": {"$ref": "#/$defs/id"},
+    "kind": {"enum": ["used", "not_used", "incorrect", "outdated", "duplicate"]},
+    "reason": {"type": "string", "maxLength": 1024}, "recall_operation_id": {"$ref": "#/$defs/id"}
+  },
+  "$defs": {"id": {"type": "string", "minLength": 1, "maxLength": 128}}
+}

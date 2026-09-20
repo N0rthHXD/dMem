@@ -36,6 +36,7 @@ var gatewayPackages = []string{
 	"policy",
 	"consolidation",
 	"knowledge",
+	"agenttool",
 }
 
 func TestGatewayPackagesDoNotImportForbiddenPackages(t *testing.T) {

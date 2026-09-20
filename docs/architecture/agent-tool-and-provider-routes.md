@@ -213,7 +213,10 @@ dMem 仍负责 scope、生命周期、有效时间、敏感度、预算、去重
 }
 ```
 
-具体字段以实施阶段形成的版本化 JSON Schema 为准。核心语义是：
+具体字段以实施阶段形成的版本化 JSON Schema 为准。Phase 1 已形成
+[Agent Tool Contract v1](agent-tool-contract-v1.md)，当前只提供协议中立 gateway
+命令和嵌入式 schema；HTTP、MCP、原生 client 与原子存储提交仍属于后续阶段。
+核心语义是：
 
 - `source` 与 memory/knowledge 建议在一个幂等事务中提交；
 - `local_id` 只在本次命令中解析引用，不成为长期外部 ID；

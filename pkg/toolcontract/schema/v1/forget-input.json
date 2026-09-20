@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/forget-input.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["scope_id", "memory_id", "expected_revision_id", "reason"],
+  "properties": {
+    "scope_id": {"$ref": "#/$defs/id"}, "memory_id": {"$ref": "#/$defs/id"}, "expected_revision_id": {"$ref": "#/$defs/id"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1024}
+  },
+  "$defs": {"id": {"type": "string", "minLength": 1, "maxLength": 128}}
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/capabilities.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "tools", "predicate_registry_version", "evidence_disclosure"],
+  "properties": {
+    "contract_version": {"const": "dmem-agent-tool-v1"},
+    "tools": {"type": "array", "prefixItems": [{"const": "dmem_recall"}, {"const": "dmem_remember"}, {"const": "dmem_feedback"}, {"const": "dmem_forget"}], "items": false},
+    "predicate_registry_version": {"const": "predicate-registry-v2"},
+    "evidence_disclosure": {"const": "references_only"}
+  }
+}

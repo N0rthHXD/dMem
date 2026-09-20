@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/remember-output.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["operation_id", "replayed", "source_event_id", "memories", "entities", "facts", "relations"],
+  "properties": {
+    "operation_id": {"$ref": "#/$defs/id"}, "replayed": {"type": "boolean"}, "source_event_id": {"$ref": "#/$defs/id"},
+    "memories": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/outcome"}},
+    "entities": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/outcome"}},
+    "facts": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/outcome"}},
+    "relations": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/outcome"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "outcome": {
+      "type": "object", "additionalProperties": false,
+      "required": ["local_id", "status"],
+      "properties": {
+        "local_id": {"$ref": "#/$defs/id"}, "status": {"enum": ["authority", "deduplicated", "proposal", "rejected"]},
+        "memory_id": {"$ref": "#/$defs/id"}, "revision_id": {"$ref": "#/$defs/id"}, "proposal_id": {"$ref": "#/$defs/id"},
+        "reason_code": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    }
+  }
+}

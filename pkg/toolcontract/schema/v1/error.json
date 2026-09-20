@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/error.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "message", "request_id", "retryable"],
+      "properties": {
+        "code": {"enum": ["invalid_input", "not_found", "conflict", "idempotency_conflict", "permission_denied", "resource_exhausted", "capability_unavailable", "internal"]},
+        "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "request_id": {"$ref": "#/$defs/id"},
+        "retryable": {"type": "boolean"},
+        "retry_after_ms": {"type": "integer", "minimum": 0},
+        "details": {"type": "object", "x-dmem-open-map": true, "maxProperties": 16, "propertyNames": {"minLength": 1, "maxLength": 128}, "additionalProperties": {"type": "string", "maxLength": 512}}
+      }
+    }
+  },
+  "$defs": {"id": {"type": "string", "minLength": 1, "maxLength": 128}}
+}

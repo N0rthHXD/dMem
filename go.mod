@@ -6,4 +6,9 @@ require github.com/mattn/go-sqlite3 v1.14.32
 
 require github.com/pelletier/go-toml/v2 v2.4.3
 
-require github.com/asg017/sqlite-vec-go-bindings v0.1.6
+require (
+	github.com/asg017/sqlite-vec-go-bindings v0.1.6
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+)
+
+require golang.org/x/text v0.14.0 // indirect

@@ -91,18 +91,18 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### 任务
 
-- [ ] 定义协议中立的 `Recall`、`MemoryCommit`、`Feedback`、`Forget` gateway 命令与
+- [x] 定义协议中立的 `Recall`、`MemoryCommit`、`Feedback`、`Forget` gateway 命令与
       结果，不引用 HTTP 或 MCP 类型。
-- [ ] 为 `dmem_recall`、`dmem_remember`、`dmem_feedback`、`dmem_forget` 定义唯一的
+- [x] 为 `dmem_recall`、`dmem_remember`、`dmem_feedback`、`dmem_forget` 定义唯一的
       版本化 JSON Schema。
-- [ ] 定义 tool contract version、能力发现和错误模型。
-- [ ] 定义 `source`、conversation/turn/tool-call identity 和 evidence 绑定规则。
-- [ ] 定义 `search_hints` 的规范化、数量/长度上限、持久化位置和 FTS 语义。
-- [ ] 定义 memory/entity/fact/relation 的调用内 `local_id` 引用规则。
-- [ ] 定义 Agent confidence 的范围和用途，确保它不能授权破坏性变更。
-- [ ] 定义每种输入的严格边界：请求体、数组、字符串、图谱条目、metadata 和时间。
-- [ ] 定义幂等规范化，保证 JSON 字段顺序和等价空值不会改变 command hash。
-- [ ] 增加 schema golden tests、未知字段测试、边界测试和 canonical hash 测试。
+- [x] 定义 tool contract version、能力发现和错误模型。
+- [x] 定义 `source`、conversation/turn/tool-call identity 和 evidence 绑定规则。
+- [x] 定义 `search_hints` 的规范化、数量/长度上限、持久化位置和 FTS 语义。
+- [x] 定义 memory/entity/fact/relation 的调用内 `local_id` 引用规则。
+- [x] 定义 Agent confidence 的范围和用途，确保它不能授权破坏性变更。
+- [x] 定义每种输入的严格边界：请求体、数组、字符串、图谱条目、metadata 和时间。
+- [x] 定义幂等规范化，保证 JSON 字段顺序和等价空值不会改变 command hash。
+- [x] 增加 schema golden tests、未知字段测试、边界测试和 canonical hash 测试。
 
 ### 设计约束
 
@@ -116,6 +116,26 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 - 四个工具拥有稳定的 v1 schema 和示例；
 - schema 可以独立验证请求和响应；
 - gateway 单元测试覆盖成功、去重、冲突、拒绝和幂等 replay。
+
+### Phase 1 实施记录
+
+- 状态：completed
+- 完成日期：2026-09-20
+- 主要变更：新增 `internal/gateway/agenttool` 协议中立命令、结果、语义校验与规范化
+  hash；新增 `pkg/toolcontract` 及嵌入式 `schema/v1`；新增
+  `docs/architecture/agent-tool-contract-v1.md`；更新 gateway 架构包清单。
+- 验证命令：`gofmt -w internal/gateway/agenttool pkg/toolcontract`；
+  `go test ./internal/gateway/... ./pkg/toolcontract`；`CGO_ENABLED=1 go test -tags
+  sqlite_fts5 ./...`；`make test`；`CGO_ENABLED=1 go test -race -tags sqlite_fts5
+  ./internal/gateway/... ./pkg/toolcontract`；`make schema-check`；`make vet`；
+  `CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...`；`git diff --check`，全部通过。
+- 删除内容：无。旧 HTTP、storage、job 与 provider 流程仍有 Phase 0 记录的消费者，
+  删除边界属于 Phase 2。
+- 遗留问题：application 原子提交、`search_hints` 持久化与 FTS 投影尚未实现；
+  HTTP/MCP/client 尚未接线；这些不属于 Phase 1。
+- 下一阶段前置条件：Phase 2 必须将唯一 v1 schema 映射到新的 application API，完成
+  source、memory、proposal、evidence、audit 和幂等响应的同事务提交，并在迁移消费者
+  后删除旧 HTTP DTO/路由。
 
 ## Phase 2：Application API 与原子 Memory Commit
 
