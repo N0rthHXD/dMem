@@ -329,6 +329,45 @@ func TestManager_DisableCapability(t *testing.T) {
 	}
 }
 
+// TestManager_EmbeddingDimensionChangeIsVisibleToRuntime proves that a change
+// to the requested embedding dimension alone is an activated change that the
+// runtime can detect: the compatibility identity stored in the capability
+// snapshot changes even though the provider, model, and query instructions are
+// unchanged, so the runtime binds subsequent embedding work to a new vector
+// space instead of reusing vectors from the previous one.
+func TestManager_EmbeddingDimensionChangeIsVisibleToRuntime(t *testing.T) {
+	path := newManagerConfigPath(t)
+	data := t.TempDir()
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, embedding: true, embeddingDims: 1024}.String())
+	m := NewManager(path, nil)
+	if r := m.Reload(context.Background(), TriggerStartup); r.Outcome != OutcomeActivated {
+		t.Fatalf("startup outcome = %s", r.Outcome)
+	}
+	before := m.Snapshot().EmbeddingCapability
+	if before.CompatibilityIdentity == "" {
+		t.Fatal("enabled embedding capability has no compatibility identity")
+	}
+
+	reloadWriteFile(t, path, testConfigBuilder{dataDir: data, embedding: true, embeddingDims: 768}.String())
+	r := m.Reload(context.Background(), TriggerAPI)
+	if r.Outcome != OutcomeActivated {
+		t.Fatalf("dimension reload outcome = %s, error = %s", r.Outcome, r.ErrorCode)
+	}
+	if len(r.ChangedCapabilities) != 1 || r.ChangedCapabilities[0] != "embedding" {
+		t.Fatalf("changed capabilities = %v, want [embedding]", r.ChangedCapabilities)
+	}
+	after := m.Snapshot().EmbeddingCapability
+	if after.CompatibilityIdentity == before.CompatibilityIdentity {
+		t.Fatalf("dimension change kept the same compatibility identity %q", after.CompatibilityIdentity)
+	}
+	if after.Options.Dimensions != 768 {
+		t.Fatalf("active embedding dimension = %d, want 768", after.Options.Dimensions)
+	}
+	if after.Kind != before.Kind || after.Model != before.Model {
+		t.Fatalf("dimension change altered provider/model: %+v", after)
+	}
+}
+
 func TestManager_ConcurrentReloadsSerialized(t *testing.T) {
 	path := newManagerConfigPath(t)
 	data := t.TempDir()

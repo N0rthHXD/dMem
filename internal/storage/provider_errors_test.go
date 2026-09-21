@@ -51,7 +51,7 @@ func TestEmbedMemoryClassifiesProviderFailures(t *testing.T) {
 			server := httptest.NewTLSServer(test.handler)
 			defer server.Close()
 			client := embeddingErrorClient(t, server)
-			repository.ConfigureSemantic(client, client.Identity(), client.ModelIdentity())
+			repository.ConfigureSemantic(client, client.Identity(), client.ModelIdentity(), 0)
 			err := repository.EmbedMemory(context.Background(), memory.CurrentRevision.RevisionID)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("EmbedMemory() error = %v, want %v", err, test.want)

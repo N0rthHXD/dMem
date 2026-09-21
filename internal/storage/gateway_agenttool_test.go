@@ -52,7 +52,7 @@ func agentToolCommit() agenttool.CommitParams {
 
 func TestAgentToolCommitClassifiesPersistsAndSuppressesExtractionJobs(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
-	repository.ConfigureSemantic(agentToolEmbeddingProvider{}, "provider", "model")
+	repository.ConfigureSemantic(agentToolEmbeddingProvider{}, "provider", "model", 0)
 	capability := NewAgentToolCapability(repository)
 	params := agentToolCommit()
 	identity := agentToolIdentity(t, "commit", params, agenttool.OperationMemoryCommit)

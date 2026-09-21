@@ -391,6 +391,48 @@ enabled = false
 启用后才要求对应 provider 配置。Agent Tool Route 不要求增加 `executor = "agent"`，
 因为它不是 dMem 后台 job executor；它是独立的结构化应用入口。
 
+### Embedding 向量空间身份与失效
+
+Phase 6 已把 embedding 的兼容身份收敛为“向量空间”身份，覆盖所有会使两个向量不可
+比较的组成部分：
+
+```text
+vector space = provider/model marker
+             + configured dimension
+             + canonical document format
+             + query format
+             + canonical document structure version
+```
+
+存储层把该身份哈希为 `compatibility_identity`。`memory_embeddings` 的每一行、语义
+召回查询、语义索引元数据与持久 embedding 作业身份都绑定同一个值，因此：
+
+- provider、model、请求维度或任一格式版本变化都会选定一个新的向量空间；
+- 旧向量不会被新空间查询命中，也不会被混入新的活跃 semantic index；
+- 绑定旧身份的 `embed_memory` 与 `rebuild_semantic` 作业会被取消，符合资格的修订
+  在新身份下重新入队，随后由一次 `rebuild_semantic` 发布新的 index generation；
+- 重建期间如果某个合格修订仍缺少当前空间向量，重建失败并保留原有活跃 generation，
+  而不是发布一个静默缺项的语料。
+
+维度的所有权在 dMem：它来自 `[embedding.provider.options]` 的 `dimensions`，与
+provider 和 model 一同决定向量空间。因此启用 embedding 的部署改变维度必须预期一次
+重建，这与改变 model 的代价相同。没有 embedding provider 时不存在向量空间身份，
+召回按 [检索与排序](retrieval.md) 的规则降级到 keyword/graph，而不是整体失败。
+
+### 可选 Agent 向量扩展的当前状态
+
+上述可选扩展**尚未实现**，也不在基础路线要求内。当前没有主流 Agent 宿主向
+MCP server 或 tool 暴露稳定、可编程的 embedding 原语：MCP 只标准化工具与
+resources/prompts，sampling 只请求文本补全而不提供 embedding。因此在没有真实宿主
+支持前，dMem 不接受 Agent 提交的向量，也不引入第三条“由 Agent 计算 embedding”的
+路线。
+
+若未来要启用该扩展，前置条件是：宿主确实提供稳定 embedding 原语；由 dMem 生成
+规范化 document/query input；向量信封携带 model identity、dimension、document 与
+query contract 以及完整 compatibility identity；向量必须有限、非零且长度严格匹配；
+不同身份的新旧向量禁止混用；模型或维度变化时由 dMem 负责失效与重建。维度相同不
+表示向量空间兼容。
+
 ## API 重构方向
 
 ### 目标 application API

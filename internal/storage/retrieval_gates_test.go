@@ -137,7 +137,7 @@ func readJSONFixture(t *testing.T, name string, target any) {
 func newRetrievalFixture(t *testing.T, config retrievalGateConfig, documents []retrievalDoc) retrievalFixture {
 	t.Helper()
 	repository, _ := newMemoryTestRepository(t)
-	repository.ConfigureSemantic(newDeterministicEmbeddingProvider(config), config.ProviderVersion, config.ProviderModel)
+	repository.ConfigureSemantic(newDeterministicEmbeddingProvider(config), config.ProviderVersion, config.ProviderModel, 0)
 	if _, err := repository.store.writer.Exec(`INSERT INTO memory_spaces(space_id, parent_space_id, space_type, external_id, display_name, created_at) VALUES ('space-sibling', 'space-1', 'project', 'project-sibling', 'Sibling', '2026-08-21T11:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}

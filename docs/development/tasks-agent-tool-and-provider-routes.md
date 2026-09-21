@@ -470,14 +470,14 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### dMem Provider Embedding
 
-- [ ] 保留 canonical document、query format 和 compatibility identity。
-- [ ] 验证 provider/model/format/dimension 变化会使旧向量失效并安排重建。
-- [ ] 保证 recall 在 provider 不可用时按 Phase 3 降级，而不是整体失败。
+- [x] 保留 canonical document、query format 和 compatibility identity。
+- [x] 验证 provider/model/format/dimension 变化会使旧向量失效并安排重建。
+- [x] 保证 recall 在 provider 不可用时按 Phase 3 降级，而不是整体失败。
 
 ### 可选 Agent Embedding Adapter
 
-- [ ] 先调研目标 Agent 是否真正提供稳定、可编程的 embedding API；没有实际宿主
-      支持时不实现该扩展。
+- [x] 先调研目标 Agent 是否真正提供稳定、可编程的 embedding API；没有实际宿主
+      支持时不实现该扩展（调研结论：不支持，因此本阶段不实现该 adapter）。
 - [ ] 由 dMem 返回规范化 document/query input，client 不复制格式算法。
 - [ ] 定义包含 model、dimension、document/query contract 和 compatibility identity 的
       向量信封。
@@ -485,10 +485,99 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 - [ ] 定义模型变化后的失效和重建所有者，禁止新旧向量混用。
 - [ ] 增加恶意超大向量、NaN/Inf、错误模型和错误维度测试。
 
+后五项按 Phase 6 调研结论**有意不实现**。它们只有在出现真实宿主支持时才重新进入
+范围，前置条件见下方实施记录的“可选 Agent embedding adapter 决策”。
+
 ### 完成条件
 
 - 向量增强完全可选；删除 adapter 后基础 Tool Route 的 API 和数据仍然可用；
 - 任意同维但不兼容的向量不能进入活跃 semantic index。
+
+### Phase 6 实施记录
+
+- 状态：partial
+- 完成日期：2026-09-21
+- 主要变更：
+  - `internal/storage/semantic.go`：`EmbeddingCompatibilityIdentity(modelCompatibility, dimension)`
+    把请求维度并入向量空间指纹（provider/model 标记 + `dimensions` + 文档格式 +
+    查询格式 + canonical document 版本）；新增共享语料谓词
+    `eligibleSearchableCountSQL` / `eligibleEmbeddingMismatchSQL`；
+    `embedEligibleCorpus` 不再按 policy generation 变化分叉，只为缺少当前空间向量的
+    合格修订调用 provider；新增 `missingVectorSpaceRevisions` 并在 `claim == nil`
+    的重建路径上做发布前完整性校验，缺失向量时降级而不发布缺项 generation。
+  - `internal/storage/repository.go`：`ConfigureSemantic` 接收维度；
+    `EmbeddingJobIdentity()` 变为导出方法并返回
+    `<provider>/<model>#<compatibility_identity>`，使 provider、model、格式与维度
+    变化都选定新的持久作业身份。
+  - `internal/storage/indexes.go`：`semanticIndexDirty` 改为比较
+    `semantic_index_metadata.compatibility_identity` 与当前指纹，并用同一语料谓词
+    统计 `source_revision_count`；`EnsureSemanticRecoveryJobs` 取消绑定旧身份的
+    `embed_memory`/`rebuild_semantic` 作业、按同一谓词重新入队、调用
+    `repairDivergentEmbeddings` 把“标记 current 但当前空间没有向量”的投影重置为
+    `stale`，再依据同一 dirty 判定安排重建。
+  - `internal/config/identity.go`：`CapabilityIdentity` 纳入 embedding 输出选项
+    （`dimensions`、`query_instructions`），因此维度变化会被识别为能力配置变化；
+    `PolicyIdentity` 不变，维度不涉及出网授权。
+  - `internal/daemon/daemon.go`：`ConfigureSemantic` 与
+    `EmbeddingCompatibilityIdentity` 传入 `Options.Dimensions`，覆盖 `StartManaged`
+    与 reload 两条应用路径。
+  - 测试：`TestSemanticDimensionChangeInvalidatesVectorsAndRebuilds`（仅改维度的端到端
+    失效、作业取代、降级与重建）、`TestEmbeddingCompatibilityIdentityBindsModelMarkerAndDimension`、
+    `TestEmbeddingJobIdentityBindsTheWholeVectorSpace`、
+    `TestManager_EmbeddingDimensionChangeIsVisibleToRuntime`；并修正
+    `TestSemanticRecoveryJobsAreProviderBoundDeduplicatedAndOrdered`、
+    `TestSemanticFailedRebuildPreservesUnchangedLiveGeneration`（显式制造需要
+    provider 的重建场景）与 restore drill 的身份断言。
+  - 文档：更新双路线架构（新增“Embedding 向量空间身份与失效”“可选 Agent 向量扩展
+    的当前状态”）、`retrieval.md`、`processing.md`、`storage/schema.md`、
+    `operations/configuration.md`、`development/testing.md`。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `CGO_ENABLED=1 go test -race -tags sqlite_fts5 ./internal/storage/ ./internal/config/ ./internal/daemon/ ./internal/maintenance/`；
+  - `make build`、`make vet`、`make schema-check`、`make config-check`、`make quality`、
+    `make offline-default`、`make restore-drill`、`make portability-drill`、`make mcp-check`；
+  - `git diff --check`；全部通过。
+- 删除内容：`embedEligibleCorpus` 中按 `policyChanged` 分叉的旧查询分支，以及
+  `EnsureSemanticRecoveryJobs` 只看 `provider_identity`/`model_identity` 的过时重建
+  判定；维度不再排除在兼容身份之外。
+- 遗留问题：
+  - 可选 Agent embedding adapter 未实现，见“可选 Agent embedding adapter 决策”。
+  - 旧向量空间的行保留在 `memory_embeddings` 中（按 `compatibility_identity` 隔离，
+    既不参与召回也不进入活跃索引），因此回滚到旧的 provider/model/维度配置时可以直接
+    复用，而不必重新嵌入；代价是切换期间存在额外的派生存储。
+  - `docs/development/testing.md` 曾引用五个仓库中不存在的测试，本阶段只修正引用，
+    等价覆盖属于 Phase 7。
+  - 固定检索语料与门禁未变：内置确定性检索测试使用未设置 `dimensions` 的
+    provider，因此不受维度进入向量空间指纹的影响；只有显式设置 `dimensions` 的部署
+    需要在改变维度时预期一次语义重建。
+- 下一阶段前置条件：Phase 7 必须在向量空间身份稳定的前提下做全仓调用图清理与发布
+  门禁，并且不得为 Agent embedding adapter 预留没有消费者的向量信封入口；发布验收
+  需要覆盖“embedding 故障时 keyword/graph 召回继续并明确报告降级”和“同维但不兼容
+  的向量不得进入活跃 semantic index”两条已有测试。
+
+#### 可选 Agent embedding adapter 决策
+
+调研结论（2026-09）：当前没有主流 MCP-capable / tool-calling 宿主向 server 或 tool
+暴露稳定、可编程的 embedding 原语。MCP 规范只标准化工具、resources/prompts、
+elicitation 与 extensions，`sampling/createMessage` 只返回文本/图像/音频补全，规范与
+文档中没有 embedding 方法；extension 列表中也没有 embeddings。Anthropic 明确不提供
+自有 embedding 模型，OpenAI、Google 的向量能力都需要各自 API key（即 dMem 自有
+provider 配置），LangChain/LlamaIndex 的 embedding 是应用自己注入的 adapter 对象，
+不由宿主传播进 tool 执行。
+
+因此本轮不实现该扩展，也不新增依赖 sampling 的向量或重排回退。重新进入范围的
+前置条件：
+
+1. 出现真实宿主，向 MCP server 或 tool 提供稳定、可编程、有文档的 embedding 原语；
+2. dMem 继续生成规范化 document/query input，client 不复制格式算法；
+3. 向量信封携带 model identity、dimension、document/query contract 与完整
+   `compatibility_identity`；
+4. 向量必须 finite、非零、维度严格匹配，并拒绝同维但不兼容的向量；
+5. 失效与重建所有者仍是 dMem：新身份向量不得与旧身份混用。
+
+在这些条件满足之前，不接受“任意 Agent 提交一个同维向量”，也没有面向该 adapter 的
+client、schema 或配置项。
 
 ## Phase 7：删除旧流程、加固与发布门禁
 

@@ -12,6 +12,31 @@ import (
 
 const ftsIndexName = "memory_fts"
 
+// Shared semantic corpus predicates. Every semantic query binds vectors and
+// projections to one compatibility identity, one policy generation, and one
+// dimension, so the predicates below are the single definition of "this
+// projection belongs to the active vector space and has a usable vector".
+//
+// They are SQL fragments with fixed bind order:
+//
+//	eligibleSearchableCountSQL     -> policyGeneration
+//	eligibleEmbeddingMismatchSQL   -> policyGeneration, compatibilityIdentity
+const (
+	eligiblePredicateSQL = `EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1)`
+	// eligibleSearchableCountSQL counts the searchable projections that must be
+	// covered by the published corpus generation.
+	eligibleSearchableCountSQL = `SELECT count(*) FROM memory_projections p WHERE p.searchable=1 AND ` + eligiblePredicateSQL
+	// eligibleEmbeddingMismatchSQL selects the current revision of every
+	// searchable eligible projection that has no vector in the requested vector
+	// space. The vector is matched on content hash as well as identity, so
+	// revisions awaiting re-embedding after a provider, model, format, or
+	// dimension change are selected even while their previous vector is still
+	// stored under its old identity.
+	eligibleEmbeddingMismatchSQL = `SELECT p.revision_id FROM memory_projections p
+		WHERE p.searchable=1 AND ` + eligiblePredicateSQL + `
+		AND NOT EXISTS (SELECT 1 FROM memory_embeddings em WHERE em.memory_id=p.memory_id AND em.revision_id=p.revision_id AND em.content_hash=p.content_hash AND em.compatibility_identity=?)`
+)
+
 func (r *Repository) enqueueSemanticRebuild(ctx context.Context, tx *sql.Tx, now string) (bool, error) {
 	var active int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE job_type='rebuild_semantic' AND target_type='index' AND target_id=? AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, semanticIndexName, r.embeddingIdentity()).Scan(&active); err != nil {
@@ -31,18 +56,24 @@ func (r *Repository) enqueueSemanticRebuild(ctx context.Context, tx *sql.Tx, now
 	return oneRow(result), nil
 }
 
+// semanticIndexDirty reports whether the published semantic index still
+// describes exactly the vector space the runtime is configured for. The
+// compatibility identity already binds provider/model, document format, query
+// format, and requested dimension, so any of those changes makes the published
+// index dirty. It uses the same corpus predicate as the rebuild path, so a
+// publishing rebuild can never observe a dirty index for the reason it just
+// fixed.
 func (r *Repository) semanticIndexDirty(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var dirty int
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM semantic_index_metadata
 		WHERE singleton=1 AND (
-			state<>'ready' OR coalesce(provider_identity,'')<>? OR coalesce(model_identity,'')<>?
-			OR source_revision_count<>(SELECT count(*) FROM memory_projections p WHERE searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1))
+			state<>'ready' OR coalesce(compatibility_identity,'')<>?
+			OR source_revision_count<>(`+eligibleSearchableCountSQL+`)
 		)
 	) OR EXISTS (
-		SELECT 1 FROM memory_projections
-		WHERE searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=memory_projections.memory_id AND e.revision_id=memory_projections.revision_id AND e.policy_generation=? AND e.eligible=1) AND (embedding_state<>'current' OR coalesce(embedding_provider,'')<>? OR coalesce(embedding_model,'')<>?)
-	)`, r.emb().ProviderIdentity, r.emb().ModelIdentity, r.emb().PolicyGeneration, r.emb().PolicyGeneration, r.emb().ProviderIdentity, r.emb().ModelIdentity).Scan(&dirty)
+		`+eligibleEmbeddingMismatchSQL+`
+	)`, r.emb().CompatibilityIdentity, r.emb().PolicyGeneration, r.emb().CompatibilityIdentity, r.emb().CompatibilityIdentity).Scan(&dirty)
 	return dirty != 0, err
 }
 
@@ -94,6 +125,13 @@ func (r *Repository) CreateSemanticRebuildJob(ctx context.Context, identity Writ
 	return result, false, nil
 }
 
+// EnsureSemanticRecoveryJobs re-establishes the invariant that the published
+// semantic index describes the runtime's current vector space and that every
+// eligible projection has a vector in it. It runs at startup, after every
+// configuration reload, and from the maintenance loop, so it is also the path
+// that turns a provider, model, document/query format, or dimension change into
+// replacement work: jobs bound to another vector space are cancelled and their
+// revisions are scheduled again under the new identity.
 func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
 	if r.emb().Provider == nil {
 		return nil
@@ -108,10 +146,10 @@ func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
 	if err := r.ensureCurrentEmbeddingEligibility(ctx, tx, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='cancelled', finished_at=?, last_error_code='provider_changed', last_error_message='semantic provider identity changed' WHERE job_type IN ('embed_memory','rebuild_semantic') AND processing_version<>? AND status IN ('pending','waiting','retrying')`, now, identity); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='cancelled', finished_at=?, last_error_code='provider_changed', last_error_message='semantic vector space changed' WHERE job_type IN ('embed_memory','rebuild_semantic') AND processing_version<>? AND status IN ('pending','waiting','retrying')`, now, identity); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT p.revision_id FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) AND NOT EXISTS (SELECT 1 FROM memory_embeddings e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.content_hash=p.content_hash AND e.compatibility_identity=?) ORDER BY p.memory_id`, r.emb().PolicyGeneration, r.emb().CompatibilityIdentity)
+	rows, err := tx.QueryContext(ctx, eligibleEmbeddingMismatchSQL+` ORDER BY p.memory_id`, r.emb().PolicyGeneration, r.emb().CompatibilityIdentity)
 	if err != nil {
 		return err
 	}
@@ -136,19 +174,36 @@ func (r *Repository) EnsureSemanticRecoveryJobs(ctx context.Context) error {
 			return err
 		}
 	}
-	var searchable, activeVersion, sourceCount int
-	var state string
-	var currentProvider, currentModel sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1)), coalesce(active_version,0), state, provider_identity, model_identity, source_revision_count FROM semantic_index_metadata WHERE singleton=1`, r.emb().PolicyGeneration).Scan(&searchable, &activeVersion, &state, &currentProvider, &currentModel, &sourceCount); err != nil {
+	if _, err := r.repairDivergentEmbeddings(ctx, tx, now); err != nil {
 		return err
 	}
-	needsRebuild := len(revisions) > 0 || state != "ready" || currentProvider.String != r.emb().ProviderIdentity || currentModel.String != r.emb().ModelIdentity || sourceCount != searchable
+	needsRebuild := len(revisions) > 0
+	if !needsRebuild {
+		needsRebuild, err = r.semanticIndexDirty(ctx, tx)
+		if err != nil {
+			return err
+		}
+	}
 	if needsRebuild {
 		if _, err := r.enqueueSemanticRebuild(ctx, tx, now); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// repairDivergentEmbeddings resets projections that claim a current vector but
+// hold none in the active vector space. A vector can only diverge from its
+// projection when the configured vector space changed while the projection
+// still recorded the previous one, so this makes the divergence visible to
+// semanticIndexDirty and forces a rebuild instead of publishing a generation
+// that silently misses those revisions.
+func (r *Repository) repairDivergentEmbeddings(ctx context.Context, tx *sql.Tx, now string) (int64, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE memory_projections SET embedding_state='stale', embedding_provider=NULL, embedding_model=NULL, embedding_dimension=NULL, embedding_content_hash=NULL, updated_at=? WHERE searchable=1 AND embedding_state='current' AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=memory_projections.memory_id AND e.revision_id=memory_projections.revision_id AND e.policy_generation=? AND e.eligible=1) AND NOT EXISTS (SELECT 1 FROM memory_embeddings em WHERE em.memory_id=memory_projections.memory_id AND em.revision_id=memory_projections.revision_id AND em.content_hash=memory_projections.content_hash AND em.compatibility_identity=?)`, now, r.emb().PolicyGeneration, r.emb().CompatibilityIdentity)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (r *Repository) CreateFTSRebuildJob(ctx context.Context, identity WriteIdentity) (domain.JobReference, bool, error) {

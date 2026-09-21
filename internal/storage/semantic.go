@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
@@ -24,8 +25,15 @@ const (
 	embeddingQueryFormatVersion    = "embedding-query-v1"
 )
 
-func EmbeddingCompatibilityIdentity(base string) string {
-	hash := sha256.Sum256([]byte(base + "\x00" + embeddingDocumentFormatVersion + "\x00" + embeddingQueryFormatVersion + "\x00" + canonicalDocumentFormatVersion))
+// EmbeddingCompatibilityIdentity is the identity of one vector space. It binds
+// the configured model compatibility marker (provider/model and any
+// model-space options the operator set) to the canonical document format, the
+// query format, and the requested output dimension. Every component that can
+// make two vectors incomparable is part of the hash, so stored vectors are only
+// ever queried under the exact identity that produced them and a change to any
+// component invalidates them.
+func EmbeddingCompatibilityIdentity(modelCompatibility string, dimension int) string {
+	hash := sha256.Sum256([]byte(modelCompatibility + "\x00" + embeddingDocumentFormatVersion + "\x00" + embeddingQueryFormatVersion + "\x00" + canonicalDocumentFormatVersion + "\x00" + strconv.Itoa(dimension)))
 	return "sha256:" + hex.EncodeToString(hash[:])
 }
 
@@ -305,9 +313,21 @@ func (r *Repository) rebuildSemantic(ctx context.Context, claim *ClaimedJob) err
 	}
 
 	if claim == nil {
-		if err := r.embedEligibleCorpus(ctx, runtime, status); err != nil {
+		if err := r.embedEligibleCorpus(ctx, runtime); err != nil {
 			r.markSemanticDegraded()
 			return err
+		}
+		// A generation may only be published when every eligible revision owns a
+		// vector in the current space. The inline corpus embedding above already
+		// fails closed, and the claimed path relies on durable embed_memory jobs,
+		// so this verifies the invariant instead of publishing a corpus that
+		// silently misses revisions.
+		if missing, err := r.missingVectorSpaceRevisions(ctx, runtime); err != nil {
+			r.markSemanticDegraded()
+			return err
+		} else if missing > 0 {
+			r.markSemanticDegraded()
+			return fmt.Errorf("semantic rebuild is missing %d vector-space revisions", missing)
 		}
 	}
 
@@ -384,17 +404,18 @@ func (r *Repository) rebuildSemantic(ctx context.Context, claim *ClaimedJob) err
 	return nil
 }
 
-func (r *Repository) embedEligibleCorpus(ctx context.Context, runtime *embeddingRuntime, status SemanticStatus) error {
-	policyChanged := status.ActiveVersion > 0 && runtime.PolicyGeneration != status.PolicyGeneration
-	var query string
-	args := []any{runtime.PolicyGeneration}
-	if policyChanged {
-		query = `SELECT p.revision_id FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) AND NOT EXISTS (SELECT 1 FROM memory_embeddings m WHERE m.memory_id=p.memory_id AND m.revision_id=p.revision_id AND m.content_hash=p.content_hash AND m.compatibility_identity=?) ORDER BY p.memory_id`
-		args = append(args, runtime.CompatibilityIdentity)
-	} else {
-		query = `SELECT p.revision_id FROM memory_projections p WHERE p.searchable=1 AND EXISTS (SELECT 1 FROM embedding_eligibility e WHERE e.memory_id=p.memory_id AND e.revision_id=p.revision_id AND e.policy_generation=? AND e.eligible=1) ORDER BY p.memory_id`
-	}
-	rows, err := r.store.reader.QueryContext(ctx, query, args...)
+// missingVectorSpaceRevisions counts searchable eligible projections that have
+// no vector in the given vector space. It is the shared measurement behind
+// rebuild scheduling and the pre-activation completeness check.
+func (r *Repository) missingVectorSpaceRevisions(ctx context.Context, runtime *embeddingRuntime) (int, error) {
+	var missing int
+	err := r.store.reader.QueryRowContext(ctx, `SELECT count(*) FROM (`+eligibleEmbeddingMismatchSQL+`)`, runtime.PolicyGeneration, runtime.CompatibilityIdentity).Scan(&missing)
+	return missing, err
+}
+
+func (r *Repository) embedEligibleCorpus(ctx context.Context, runtime *embeddingRuntime) error {
+	query := eligibleEmbeddingMismatchSQL + ` ORDER BY p.memory_id`
+	rows, err := r.store.reader.QueryContext(ctx, query, runtime.PolicyGeneration, runtime.CompatibilityIdentity)
 	if err != nil {
 		return err
 	}

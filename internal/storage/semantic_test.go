@@ -142,7 +142,7 @@ func TestEmbedMemoryPolicyRejectsAuthoritativeClassificationBeforeHTTP(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			repository.ConfigureSemantic(client, client.Identity(), client.ModelIdentity())
+			repository.ConfigureSemantic(client, client.Identity(), client.ModelIdentity(), 0)
 			if err := repository.EmbedMemory(context.Background(), memory.CurrentRevision.RevisionID); !errors.Is(err, ErrEmbeddingPolicy) {
 				t.Fatalf("EmbedMemory() error = %v", err)
 			}
@@ -153,9 +153,16 @@ func TestEmbedMemoryPolicyRejectsAuthoritativeClassificationBeforeHTTP(t *testin
 	}
 }
 
+// testVectorSpaceIdentity is the compatibility identity of the canonical
+// storage test vector space: test-provider/test-model with the two-dimensional
+// default document/query formats used by semanticTestProvider.
+func testVectorSpaceIdentity() string {
+	return EmbeddingCompatibilityIdentity("test-provider/test-model", 0)
+}
+
 func configureSemanticTest(t *testing.T, repository *Repository, embedding provider.EmbeddingProvider) {
 	t.Helper()
-	repository.ConfigureSemantic(embedding, "test-provider", "test-model")
+	repository.ConfigureSemantic(embedding, "test-provider", "test-model", 0)
 }
 
 func TestSemanticHealthDistinguishesConfigurationAndActiveFallback(t *testing.T) {
@@ -183,14 +190,14 @@ func TestSemanticRecoveryJobsAreProviderBoundDeduplicatedAndOrdered(t *testing.T
 		t.Fatal(err)
 	}
 	var embeddings, rebuilds int
-	if err := repository.store.reader.QueryRow(`SELECT sum(job_type='embed_memory'), sum(job_type='rebuild_semantic') FROM jobs WHERE processing_version='test-provider/test-model' AND status IN ('pending','waiting','running','retrying')`).Scan(&embeddings, &rebuilds); err != nil {
+	if err := repository.store.reader.QueryRow(`SELECT sum(job_type='embed_memory'), sum(job_type='rebuild_semantic') FROM jobs WHERE processing_version=? AND status IN ('pending','waiting','running','retrying')`, repository.embeddingIdentity()).Scan(&embeddings, &rebuilds); err != nil {
 		t.Fatal(err)
 	}
 	if embeddings != 1 || rebuilds != 1 {
 		t.Fatalf("active recovery jobs = embeddings %d rebuilds %d", embeddings, rebuilds)
 	}
 	claim, err := repository.ClaimJob(context.Background(), ClaimJobParams{WorkerID: "recovery-worker", LeaseDuration: time.Minute})
-	if err != nil || claim.Job.JobType != "embed_memory" || claim.Job.TargetID != memory.CurrentRevision.RevisionID || claim.ProcessingVersion != "test-provider/test-model" {
+	if err != nil || claim.Job.JobType != "embed_memory" || claim.Job.TargetID != memory.CurrentRevision.RevisionID || claim.ProcessingVersion != repository.embeddingIdentity() {
 		t.Fatalf("first recovery claim = %+v, %v", claim, err)
 	}
 }
@@ -417,6 +424,12 @@ func TestSemanticFailedRebuildPreservesUnchangedLiveGeneration(t *testing.T) {
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// Force the next rebuild to re-derive the vector for the live revision: a
+	// rebuild that only republishes already-complete vectors does not call the
+	// provider at all and therefore cannot exercise a failing provider.
+	if _, err := repository.store.writer.Exec(`UPDATE memory_projections SET embedding_state='stale' WHERE revision_id=?`, memory.CurrentRevision.RevisionID); err != nil {
+		t.Fatal(err)
+	}
 	provider.malformed = true
 	if err := repository.RebuildSemantic(context.Background()); err == nil {
 		t.Fatal("malformed rebuild succeeded")
@@ -581,7 +594,7 @@ func TestHybridUnionDedupAndAuthoritativeVectorFiltering(t *testing.T) {
 
 func TestSemanticEligibilityAppliedBeforeBoundedVectorRecall(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
-	repository.ConfigureSemantic(recallVectorProvider{}, "test-provider", "test-model")
+	repository.ConfigureSemantic(recallVectorProvider{}, "test-provider", "test-model", 0)
 	eligible := createMemoryWithContent(t, repository, "bounded-eligible", "automobile eligible content")
 	ineligible := createMemoryWithContent(t, repository, "bounded-ineligible", "automobile ineligible content")
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
@@ -589,7 +602,7 @@ func TestSemanticEligibilityAppliedBeforeBoundedVectorRecall(t *testing.T) {
 	}
 	setEmbeddingEligibility(t, repository, eligible, 1, true)
 	setEmbeddingEligibility(t, repository, ineligible, 1, false)
-	repository.SetEmbedding(repository.emb().Provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(repository.emb().Provider, "test-provider", "test-model", testVectorSpaceIdentity(), "test-provider/test-model", 1, 1)
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -818,7 +831,7 @@ func TestSemanticEligibilityExpansionReusesCompatibleVectors(t *testing.T) {
 	}
 	requests := len(provider.requests)
 	setEmbeddingEligibility(t, repository, memory, 1, true)
-	repository.SetEmbedding(provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(provider, "test-provider", "test-model", testVectorSpaceIdentity(), "test-provider/test-model", 1, 1)
 
 	if err := repository.RebuildSemantic(context.Background()); err != nil {
 		t.Fatal(err)
@@ -839,7 +852,7 @@ func TestSemanticEligibilityNarrowingFiltersLiveCorpusImmediately(t *testing.T) 
 	}
 	setEmbeddingEligibility(t, repository, allowed, 1, true)
 	setEmbeddingEligibility(t, repository, excluded, 1, false)
-	repository.SetEmbedding(provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(provider, "test-provider", "test-model", testVectorSpaceIdentity(), "test-provider/test-model", 1, 1)
 
 	if _, err := repository.SearchMemories(context.Background(), semanticParams("car")); !errors.Is(err, ErrIndexDegraded) {
 		t.Fatalf("semantic query before policy generation publish = %v", err)
@@ -1165,7 +1178,7 @@ func configureSemanticQueryPolicy(t *testing.T, repository *Repository, allowedS
 		Activation: ActivationRecord{ActivationID: "query-activation", RevisionID: "query-revision", Trigger: "startup", RequestedBy: "test", Outcome: "activated", StartedAt: now, FinishedAt: now},
 		Capabilities: []CapabilityStateRecord{
 			{Capability: "processing", Enabled: false, HealthState: "disabled", ReconciliationState: "idle"},
-			{Capability: "embedding", Enabled: true, ConfigurationIdentity: "query-config", ConfigurationGeneration: 1, CompatibilityIdentity: EmbeddingCompatibilityIdentity("test-provider/test-model"), PolicyIdentity: "query-policy", PolicyGeneration: 1, HealthState: "ready", ReconciliationState: "idle"},
+			{Capability: "embedding", Enabled: true, ConfigurationIdentity: "query-config", ConfigurationGeneration: 1, CompatibilityIdentity: testVectorSpaceIdentity(), PolicyIdentity: "query-policy", PolicyGeneration: 1, HealthState: "ready", ReconciliationState: "idle"},
 		},
 		Policies:    []ProviderPolicyRecord{{PolicyIdentity: "query-policy", Capability: "embedding", DefaultDecision: "deny", AllowedContentTypes: []string{"text/plain"}, AllowedSourceTypes: []string{"manual"}, AllowedSensitivities: []string{"normal"}, QueryAllowed: true, CreatedAt: now}},
 		Assignments: assignments,
@@ -1174,7 +1187,7 @@ func configureSemanticQueryPolicy(t *testing.T, repository *Repository, allowedS
 		t.Fatal(err)
 	}
 	runtime := repository.emb()
-	repository.SetEmbedding(runtime.Provider, "test-provider", "test-model", EmbeddingCompatibilityIdentity("test-provider/test-model"), "test-provider/test-model", 1, 1)
+	repository.SetEmbedding(runtime.Provider, "test-provider", "test-model", testVectorSpaceIdentity(), "test-provider/test-model", 1, 1)
 }
 
 func searchResultsByID(response domain.SearchResponse) map[string]domain.SearchResult {
@@ -1220,9 +1233,57 @@ func TestEmbeddingDocumentAndQueryFormatsAreVersioned(t *testing.T) {
 }
 
 func TestEmbeddingCompatibilityBindsDocumentAndQueryFormats(t *testing.T) {
-	identity := EmbeddingCompatibilityIdentity("provider/model")
-	if identity == "" || identity == "provider/model" || identity != EmbeddingCompatibilityIdentity("provider/model") {
+	identity := EmbeddingCompatibilityIdentity("provider/model", 1024)
+	if identity == "" || identity == "provider/model" {
 		t.Fatalf("embedding compatibility identity = %q", identity)
+	}
+	if identity != EmbeddingCompatibilityIdentity("provider/model", 1024) {
+		t.Fatalf("embedding compatibility identity is not deterministic: %q", identity)
+	}
+}
+
+// TestEmbeddingCompatibilityIdentityBindsModelMarkerAndDimension proves that
+// the compatibility identity — and therefore both the stored vector identity
+// and the durable job identity — changes for every component the operator can
+// change without renaming the provider or model. Vectors and jobs from
+// different identities can never be mixed in one active vector space.
+func TestEmbeddingCompatibilityIdentityBindsModelMarkerAndDimension(t *testing.T) {
+	base := EmbeddingCompatibilityIdentity("provider/model", 1024)
+	if base != EmbeddingCompatibilityIdentity("provider/model", 1024) {
+		t.Fatal("compatibility identity is not deterministic")
+	}
+	if base == EmbeddingCompatibilityIdentity("provider/model", 768) {
+		t.Fatal("requested dimension is not part of the vector-space identity")
+	}
+	if base == EmbeddingCompatibilityIdentity("provider/model", 0) {
+		t.Fatal("unset and explicit dimensions must not share an identity")
+	}
+	// The marker itself is opaque: the embedding provider hashes it together
+	// with the format versions, so any marker change selects a new vector space.
+	if base == EmbeddingCompatibilityIdentity("provider/model\x00query-instructions", 1024) {
+		t.Fatal("model compatibility marker is not part of the vector-space identity")
+	}
+}
+
+func TestEmbeddingJobIdentityBindsTheWholeVectorSpace(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	provider := &semanticTestProvider{}
+	repository.ConfigureSemantic(provider, "test-provider", "test-model", 2)
+	first := repository.EmbeddingJobIdentity()
+	if first != "test-provider/test-model#"+repository.emb().CompatibilityIdentity {
+		t.Fatalf("job identity = %q", first)
+	}
+	repository.ConfigureSemantic(provider, "test-provider", "test-model", 3)
+	if repository.EmbeddingJobIdentity() == first {
+		t.Fatal("dimension change reused the previous durable job identity")
+	}
+	repository.ConfigureSemantic(provider, "test-provider", "other-model", 2)
+	if repository.EmbeddingJobIdentity() == first {
+		t.Fatal("model change reused the previous durable job identity")
+	}
+	repository.SetEmbedding(nil, "", "", "", "", 0, 0)
+	if repository.EmbeddingJobIdentity() != "/" {
+		t.Fatalf("unconfigured job identity = %q", repository.EmbeddingJobIdentity())
 	}
 }
 

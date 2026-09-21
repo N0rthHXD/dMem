@@ -70,7 +70,7 @@ func TestProviderRouteEventToCandidateReviewEmbeddingAndRecall(t *testing.T) {
 	repository := storage.NewRepository(store, domain.Runtime{Now: time.Now, ID: identity.UUID}, 100, 200, 3, "provider-route-v1")
 	repository.SetProcessingEnabled(true)
 	repository.SetProcessingGeneration(1, 0, "provider-route-compat")
-	repository.SetEmbedding(routeEmbedding{}, "provider-route", "model-test", storage.EmbeddingCompatibilityIdentity("provider-route/model-test"), "provider-route/model-test", 0, 0)
+	repository.SetEmbedding(routeEmbedding{}, "provider-route", "model-test", storage.EmbeddingCompatibilityIdentity("provider-route/model-test", 0), "provider-route/model-test", 0, 0)
 
 	space, _, err := repository.CreateSpace(ctx, providerRouteIdentity("space", "/v1/spaces"), storage.CreateSpaceParams{SpaceType: "user", ExternalID: "provider-route", DisplayName: "Provider Route"})
 	if err != nil {

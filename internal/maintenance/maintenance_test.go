@@ -115,10 +115,11 @@ func TestBackupRestoreDrill(t *testing.T) {
 		t.Fatalf("restored embedding state = %q, %v", embeddingState, err)
 	}
 	var embeddingJobs, rebuildJobs int
-	if err := restored.QueryRow(`SELECT count(*) FROM jobs WHERE job_type='embed_memory' AND target_id='revision-1' AND processing_version='restore-provider/restore-model' AND status='succeeded'`).Scan(&embeddingJobs); err != nil || embeddingJobs != 1 {
+	restoreIdentity := "restore-provider/restore-model#" + storage.EmbeddingCompatibilityIdentity("restore-provider/restore-model", 0)
+	if err := restored.QueryRow(`SELECT count(*) FROM jobs WHERE job_type='embed_memory' AND target_id='revision-1' AND processing_version=? AND status='succeeded'`, restoreIdentity).Scan(&embeddingJobs); err != nil || embeddingJobs != 1 {
 		t.Fatalf("restored embedding jobs = %d, %v", embeddingJobs, err)
 	}
-	if err := restored.QueryRow(`SELECT count(*) FROM jobs WHERE job_type='rebuild_semantic' AND target_id='memory_semantic' AND processing_version='restore-provider/restore-model' AND status='succeeded'`).Scan(&rebuildJobs); err != nil || rebuildJobs != 1 {
+	if err := restored.QueryRow(`SELECT count(*) FROM jobs WHERE job_type='rebuild_semantic' AND target_id='memory_semantic' AND processing_version=? AND status='succeeded'`, restoreIdentity).Scan(&rebuildJobs); err != nil || rebuildJobs != 1 {
 		t.Fatalf("restored semantic rebuild jobs = %d, %v", rebuildJobs, err)
 	}
 	var probeRows int
@@ -149,7 +150,7 @@ func validateSemanticRestore(ctx context.Context, staging, databaseFilename stri
 		counter++
 		return fmt.Sprintf("restore-validation-%d", counter), nil
 	}}, 100, 200, 3, "restore-validation")
-	repository.ConfigureSemantic(restoreEmbeddingProvider{}, "restore-provider", "restore-model")
+	repository.ConfigureSemantic(restoreEmbeddingProvider{}, "restore-provider", "restore-model", 0)
 	if err := repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
 		return err
 	}

@@ -90,21 +90,23 @@ make mcp-check
 ### 配置与调和
 
 配置重载与调和测试位于 `internal/daemon` 与 `internal/storage`。它们使用托管
-守护进程（`StartManaged` 配合 `config.NewManager`）与包内 `reloadConfig` 辅助
-函数写入严格 TOML 文件，在不使用真实 provider 凭据的情况下切换 provider 启用
-状态与策略分配。
+守护进程（`StartManaged` 配合 `config.NewManager`）与包内辅助函数写入严格 TOML
+文件，在不使用真实 provider 凭据的情况下切换 provider 启用状态与策略分配。
 
-- `TestManagedDaemonReloadsCapabilitiesAtomically` 与
-  `TestSC014ReloadBecomesEffectiveWithinTenSeconds` 验证原子重载、无变化、拒绝，
-  以及 10 秒的 SC-014 时间边界。
-- `TestPolicyCorrectionRecoversBlockedProcessing` 与
-  `TestPolicyExpansionDoesNotDuplicateCompletedWork` 证明策略扩展会把
-  `blocked_policy` 作业翻转为 `pending`，而不改变处理兼容身份、也不重复已完成
-  工作。
-- `TestReconciliationResumesAfterDaemonRestart` 证明有效配置身份、被阻塞工作、
-  调和游标与语义 provider 状态能跨守护进程重启存活并正确恢复。
+- `TestRuntimeManagedReloadAppliesSnapshots`、`TestRuntimeConcurrentReloadsAreSerialized`
+  与 `TestRuntimeApplySnapshotFailurePreservesPreviousConfiguration` 验证原子重载、
+  并发串行化，以及应用失败时回退到先前快照。
+- `TestReconciliationPersistsLineageAndResumesBoundedBatches` 证明调和血缘、游标与
+  受限批次能持久化并续跑；`TestReconciliationRuntimeLimitsCompletesWithoutScanning`
+  与 `TestEmptyReconciliationCompletesDurably` 覆盖不扫描与空扫描的终态。
 - `TestSC004ReconciliationEnqueuesEligibleJobsPromptly` 验证 30 秒的 SC-004 边界：
   95% 的新符合条件阻塞作业及时进入调和，同时已完成作业不被重复。
+
+本文档早期版本引用的 `TestManagedDaemonReloadsCapabilitiesAtomically`、
+`TestSC014ReloadBecomesEffectiveWithinTenSeconds`、`TestPolicyCorrectionRecoversBlockedProcessing`、
+`TestPolicyExpansionDoesNotDuplicateCompletedWork` 与 `TestReconciliationResumesAfterDaemonRestart`
+当前不在仓库中。本阶段只修正了引用；恢复这些边界（原子重载身份、SC-014 十秒生效、
+策略纠正翻转与不重复已完成工作、跨重启调和恢复）的等价覆盖属于 Phase 7 门禁。
 
 确定性 provider 演练使用进程内 `heldProcessor`（阻塞直到释放通道关闭）与
 `httptest.NewTLSServer` stub；它们永不访问真实端点。调和恢复由守护进程维护循环
@@ -136,6 +138,43 @@ make mcp-check
   `TestProviderDisabledEventIngestStoresWithoutModelJob` 证明禁用时无模型 job。
 - `TestToolCommitAndProviderEventDoNotDoubleExtractOneSource` 证明同一实例中 Tool
   Route commit 与 Provider Route event 是不同来源，同一来源不会被双重提取。
+
+### 可选向量增强（Phase 6）
+
+- `internal/config` 的 `TestManager_EmbeddingDimensionChangeIsVisibleToRuntime`
+  证明只改 `[embedding.provider.options]` 的 `dimensions` 也是一次可激活变更，并且
+  能力快照的 compatibility identity 随之改变，因此运行时会选定一个新的向量空间；
+  `CapabilityIdentity` 覆盖 embedding 输出选项，而 `PolicyIdentity` 不覆盖。
+- `internal/storage` 的
+  `TestEmbeddingCompatibilityIdentityBindsModelMarkerAndDimension` 与
+  `TestEmbeddingJobIdentityBindsTheWholeVectorSpace` 证明 provider/model 标记与请求
+  维度都进入向量空间指纹，持久 embedding 作业身份绑定完整指纹，且未配置 provider
+  时不存在作业身份。
+- `TestSemanticDimensionChangeInvalidatesVectorsAndRebuilds` 证明仅改变维度就会使旧
+  向量不可查询、旧身份作业被取代、新身份重新入队 `embed_memory` 与
+  `rebuild_semantic`，并且召回在重建前以 keyword/graph 降级且不返回 semantic score；
+  重建后索引维度与向量身份都切换到新空间。
+- `TestEmbeddingCompatibilityBindsDocumentAndQueryFormats` 与
+  `TestEmbeddingDocumentAndQueryFormatsAreVersioned` 固定 canonical document、query
+  格式版本及其在指纹中的绑定；修改任一格式必须同时更新这两个测试与
+  [检索与排序](../architecture/retrieval.md) 的身份表。
+- `TestSemanticCompatibilityChangeRebuildsEligibleCorpus`、
+  `TestSemanticEligibilityExpansionReusesCompatibleVectors` 与
+  `TestSemanticEligibilityNarrowingFiltersLiveCorpusImmediately` 证明兼容身份变化会
+  重建语料，而资格范围变化在同一个向量空间内复用未受影响的向量、并立即过滤收窄的
+  语料。
+- `TestSemanticFailedRebuildPreservesUnchangedLiveGeneration` 覆盖 provider 输出畸形
+  的失败路径：重建失败保留原有活跃 generation 并标记为 stale，召回继续由未被替换的
+  语料提供结果；`TestHybridFallbacksAndNeitherChannelAvailable` 覆盖 provider 故障与
+  畸形输出时语义通道降级到 keyword/graph。
+
+固定检索语料使用未设置 `dimensions` 的确定性 provider，因此不因维度进入向量空间
+指纹而改变；`make quality` 的 Phase 3 门禁阈值保持不变。
+
+可选 Agent embedding adapter 未实现（决策见
+[双路线架构](../architecture/agent-tool-and-provider-routes.md)），因此没有对应的向量
+信封测试；完成条件中的“同维但不兼容的向量不得进入活跃 semantic index”目前由
+compatibility identity 与 dimension 隔离测试覆盖。
 
 固定检索语料与版本化门禁文件位于 `internal/storage/testdata`。修改语料、排序、
 索引格式、可移植格式、规模或阈值时，必须更新对应身份并记录可复现基线。

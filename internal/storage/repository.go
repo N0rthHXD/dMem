@@ -143,9 +143,9 @@ func (r *Repository) setEmbeddingProvider(p provider.EmbeddingProvider) {
 	r.embedding.Store(&prev)
 }
 
-func (r *Repository) ConfigureSemantic(embedding provider.EmbeddingProvider, providerIdentity, modelIdentity string) {
+func (r *Repository) ConfigureSemantic(embedding provider.EmbeddingProvider, providerIdentity, modelIdentity string, dimension int) {
 	base := providerIdentity + "/" + modelIdentity
-	r.SetEmbedding(embedding, providerIdentity, modelIdentity, EmbeddingCompatibilityIdentity(base), base, 0, 0)
+	r.SetEmbedding(embedding, providerIdentity, modelIdentity, EmbeddingCompatibilityIdentity(base, dimension), base, 0, 0)
 }
 
 func (r *Repository) SetEmbedding(embedding provider.EmbeddingProvider, providerIdentity, modelIdentity, compatibilityIdentity, configurationIdentity string, generation, policyGeneration int) {
@@ -216,9 +216,23 @@ func (r *Repository) currentProcessingPolicyGeneration() int {
 	return int(r.processingPolicyGeneration.Load())
 }
 
-func (r *Repository) embeddingIdentity() string {
+// EmbeddingJobIdentity is the durable job identity of dMem Provider Route
+// embedding work for the currently configured vector space. It combines the
+// provider/model marker with the full compatibility fingerprint (document
+// format, query format, requested dimension), so provider, model, format, and
+// dimension changes each select a different identity. Jobs carrying another
+// identity can neither satisfy nor block work for the current space, which is
+// what makes superseded vectors and their in-flight jobs invalidate together.
+func (r *Repository) EmbeddingJobIdentity() string {
 	e := r.emb()
-	return e.ProviderIdentity + "/" + e.ModelIdentity
+	if e.Provider == nil {
+		return e.ProviderIdentity + "/" + e.ModelIdentity
+	}
+	return e.ProviderIdentity + "/" + e.ModelIdentity + "#" + e.CompatibilityIdentity
+}
+
+func (r *Repository) embeddingIdentity() string {
+	return r.EmbeddingJobIdentity()
 }
 
 func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, maxAttempts int, processingVersion string) *Repository {

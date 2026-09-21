@@ -244,3 +244,10 @@ embedding provider 使用相同的 `max_egress_input_chars`、`max_response_byte
 `[processing].enabled` 与 `[embedding].enabled` 的变化是运行时可重载的：启用产生
 `<capability>:enable` 调和类，禁用产生 `<capability>:disable`。禁用会取代无法再
 运行的模型 job 并把原始事件保留为 `stored`，不会删除记忆、证据、proposal 或审计。
+
+embedding 的 `model`、`options.dimensions`、`options.query_instructions` 或文档/查询
+格式变化都会选定一个新的向量空间身份。这类变化是运行时可重载的，但**必须预期一次
+语义索引重建**：旧向量立即停止参与召回，绑定旧身份的 embedding 作业被取代，符合
+资格的修订在新身份下重新入队，随后由一次 `rebuild_semantic` 发布新的 index
+generation；重建完成前召回以 keyword/graph 继续并报告 `semantic` 降级。运维上应像
+对待更换模型一样对待改变维度：这是一次需要回填的语义变更，而不是限流参数调整。

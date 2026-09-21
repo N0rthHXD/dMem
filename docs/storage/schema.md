@@ -143,6 +143,11 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 | 引导 | `schema_metadata` |
 
 `memory_embeddings` 存储紧凑 `float32` BLOB，并通过 sqlite-vec 精确余弦检索。
+每一行都由 `compatibility_identity` 标记它所属的向量空间：provider/model 标记、
+`dimensions`、canonical document 格式、query 格式与 canonical document 结构版本的
+哈希。召回查询、`semantic_index_metadata` 与 embedding 作业身份绑定同一个值，因此
+provider、model、维度或格式版本变化会选定一个新空间，旧向量既不会被查询命中，也
+不会被混入新的活跃索引；它们会保留到对应修订在新空间下重新向量化。
 `memory_fts` 是 FTS5 虚拟表，`content` 字段保存 canonical retrieval document，
 `hints` 字段保存从权威 `agent_tool_search_hints` 重建的 search hints 投影
 （`canonical-search-hints-v1`）；两个字段来源保持区分，hint 永不进入 canonical

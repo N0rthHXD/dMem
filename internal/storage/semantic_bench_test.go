@@ -54,7 +54,7 @@ func newBenchCorpus(b *testing.B, count, dimension int, eligibleRatio float64) *
 	}
 	b.Cleanup(func() { store.Close() })
 	repository := NewRepository(store, benchRuntime(), 100, 200, 3, "bench-v1")
-	repository.ConfigureSemantic(benchProvider{dimension: dimension}, "bench-provider", "bench-model")
+	repository.ConfigureSemantic(benchProvider{dimension: dimension}, "bench-provider", "bench-model", dimension)
 
 	if _, err := store.writer.Exec(`INSERT INTO memory_spaces(space_id, space_type, external_id, display_name, created_at) VALUES ('bench-space','user','bench','Bench','2026-01-01T00:00:00Z')`); err != nil {
 		b.Fatal(err)

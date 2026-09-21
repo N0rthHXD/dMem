@@ -166,7 +166,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		if providerErr != nil {
 			return nil, providerErr
 		}
-		repository.ConfigureSemantic(embedding, cfg.EmbeddingProvider.Kind, cfg.EmbeddingProvider.Model)
+		repository.ConfigureSemantic(embedding, cfg.EmbeddingProvider.Kind, cfg.EmbeddingProvider.Model, cfg.EmbeddingProvider.Options.Dimensions)
 		if err := repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
 			return nil, fmt.Errorf("prepare semantic recovery: %w", err)
 		}
@@ -528,7 +528,7 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		embedding,
 		snapshot.EmbeddingCapability.Kind,
 		snapshot.EmbeddingCapability.Model,
-		storage.EmbeddingCompatibilityIdentity(snapshot.EmbeddingCapability.CompatibilityIdentity),
+		storage.EmbeddingCompatibilityIdentity(snapshot.EmbeddingCapability.CompatibilityIdentity, snapshot.EmbeddingCapability.Options.Dimensions),
 		snapshot.EmbeddingCapability.ConfigurationIdentity,
 		snapshot.ActivationGeneration,
 		embeddingPolicyGeneration,

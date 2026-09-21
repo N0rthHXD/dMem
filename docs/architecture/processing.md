@@ -147,5 +147,12 @@ processing 或 embedding 的 `enabled` 变化会产生明确的调和类别：`e
 job 收到取消请求），`runtime_limits` 不扫描。禁用不会删除已有记忆、证据、proposal
 或审计。
 
+embedding 的 provider、model、请求维度或文档/查询格式变化会选定一个新的向量空间
+身份（见 [双路线架构](agent-tool-and-provider-routes.md#embedding-向量空间身份与失效)）。
+恢复逻辑会把绑定旧身份的 `embed_memory` 与 `rebuild_semantic` 作业取消，为缺少
+当前空间向量的合格修订重新入队 embedding，并安排一次新的 `rebuild_semantic`。重建
+只有在每个合格修订都拥有当前空间的向量时才会发布新的 index generation；否则保留
+原活跃 generation 并标记为降级，召回继续以 keyword/graph 执行。
+
 维护循环每秒执行一次，负责恢复过期租约、使过期作业到期、提升等待中的作业并
 推进调和运行；worker 以 100 毫秒间隔轮询认领，在磁盘压力下跳过。

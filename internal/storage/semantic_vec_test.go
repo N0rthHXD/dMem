@@ -9,8 +9,10 @@ import (
 	"math/rand"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/N0rthHXD/dMem/internal/provider"
 	vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
@@ -357,6 +359,120 @@ func TestSemanticCorpusGenerationAdvancesWithLiveMembership(t *testing.T) {
 	}
 }
 
+// fixedDimensionEmbeddingProvider returns "automobile" vectors in a requested
+// dimension so a dimension-only configuration change can be exercised end to
+// end.
+type fixedDimensionEmbeddingProvider struct{ dimension int }
+
+func (p fixedDimensionEmbeddingProvider) Embed(_ context.Context, request provider.EmbeddingRequest) (provider.EmbeddingResult, error) {
+	vectors := make([][]float32, len(request.Inputs()))
+	for i, input := range request.Inputs() {
+		vector := make([]float32, p.dimension)
+		if p.dimension > 1 && (strings.Contains(input, "automobile") || strings.Contains(input, "car")) {
+			vector[0] = 1
+		} else if p.dimension > 0 {
+			vector[p.dimension-1] = 1
+		}
+		vectors[i] = vector
+	}
+	return provider.NewEmbeddingResult(vectors, "dimension-test"), nil
+}
+
+// TestSemanticDimensionChangeInvalidatesVectorsAndRebuilds proves that a change
+// to the requested output dimension alone is a vector-space change: the old
+// vectors are neither queryable nor reusable, durable embedding work is
+// re-bound to the new identity, and recall degrades instead of returning
+// mismatched vectors until the rebuild lands.
+func TestSemanticDimensionChangeInvalidatesVectorsAndRebuilds(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	configureSemanticTest(t, repository, fixedDimensionEmbeddingProvider{dimension: 2})
+	memory := createMemoryWithContent(t, repository, "dimension-change", "automobile dimension change")
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := repository.emb()
+	beforeIdentity := repository.EmbeddingJobIdentity()
+	activeRebuilds := func(identity string) int {
+		t.Helper()
+		var active int
+		if err := repository.store.reader.QueryRow(`SELECT count(*) FROM jobs WHERE job_type='rebuild_semantic' AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, identity).Scan(&active); err != nil {
+			t.Fatal(err)
+		}
+		return active
+	}
+	completeRebuilds := activeRebuilds(beforeIdentity)
+	if err := repository.EnsureSemanticRecoveryJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if activeRebuilds(beforeIdentity) != completeRebuilds {
+		t.Fatalf("complete vector space scheduled extra rebuilds: %d -> %d", completeRebuilds, activeRebuilds(beforeIdentity))
+	}
+
+	repository.ConfigureSemantic(fixedDimensionEmbeddingProvider{dimension: 3}, "test-provider", "test-model", 3)
+	afterIdentity := repository.EmbeddingJobIdentity()
+	if afterIdentity == beforeIdentity || repository.emb().CompatibilityIdentity == before.CompatibilityIdentity {
+		t.Fatalf("dimension change did not change the vector space: %q", afterIdentity)
+	}
+	status, err := repository.SemanticStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.semanticQueryable(status, 0) {
+		t.Fatal("superseded vector space is still queryable")
+	}
+	degraded, err := repository.SearchMemories(context.Background(), hybridParams("automobile"))
+	if err != nil || !reflect.DeepEqual(degraded.ExecutedChannels, []string{"keyword", "graph"}) || !degraded.Degraded {
+		t.Fatalf("recall during dimension change = %+v, %v", degraded, err)
+	}
+	for _, result := range degraded.Results {
+		if result.SemanticRawScore != nil {
+			t.Fatalf("degraded recall reported a semantic score: %+v", result)
+		}
+	}
+
+	if err := repository.EnsureSemanticRecoveryJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var embeddings, rebuilds int
+	if err := repository.store.reader.QueryRow(`SELECT sum(job_type='embed_memory'), sum(job_type='rebuild_semantic') FROM jobs WHERE processing_version=? AND status IN ('pending','waiting','running','retrying')`, afterIdentity).Scan(&embeddings, &rebuilds); err != nil {
+		t.Fatal(err)
+	}
+	if embeddings != 1 || rebuilds != 1 {
+		t.Fatalf("replacement jobs for the new dimension = embeddings %d rebuilds %d", embeddings, rebuilds)
+	}
+	var staleJobs int
+	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM jobs WHERE job_type IN ('embed_memory','rebuild_semantic') AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, beforeIdentity).Scan(&staleJobs); err != nil {
+		t.Fatal(err)
+	}
+	if staleJobs != 0 {
+		t.Fatalf("jobs for the superseded vector space are still active: %d", staleJobs)
+	}
+	readTx, err := repository.store.reader.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirty, dirtyErr := repository.semanticIndexDirty(context.Background(), readTx)
+	_ = readTx.Rollback()
+	if dirtyErr != nil || !dirty {
+		t.Fatalf("semantic index dirty after dimension change = %t, %v", dirty, dirtyErr)
+	}
+
+	if err := repository.RebuildSemantic(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = repository.SemanticStatus(context.Background())
+	if err != nil || status.State != "ready" || status.Dimension != 3 || status.CompatibilityIdentity != repository.emb().CompatibilityIdentity {
+		t.Fatalf("rebuilt dimension state = %+v, %v", status, err)
+	}
+	identity, err := repository.CurrentEmbeddingIdentity(context.Background(), memory.MemoryID)
+	if err != nil || identity.Dimension != 3 {
+		t.Fatalf("rebuilt embedding identity = %+v, %v", identity, err)
+	}
+	if _, err := repository.SearchMemories(context.Background(), semanticParams("automobile")); err != nil {
+		t.Fatalf("semantic recall after dimension rebuild: %v", err)
+	}
+}
+
 func TestSemanticQueryableRequiresCurrentIdentityPolicyAndDimension(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	configureSemanticTest(t, repository, &semanticTestProvider{})
@@ -368,7 +484,7 @@ func TestSemanticQueryableRequiresCurrentIdentityPolicyAndDimension(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CompatibilityIdentity != EmbeddingCompatibilityIdentity("test-provider/test-model") || !repository.semanticQueryable(status, status.Dimension) {
+	if status.CompatibilityIdentity != testVectorSpaceIdentity() || !repository.semanticQueryable(status, status.Dimension) {
 		t.Fatalf("published identity is not queryable: %+v", status)
 	}
 

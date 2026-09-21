@@ -51,6 +51,17 @@ PreparePrimary -> ExpandGraph -> RankingInput -> Rank
   中，通过静态链接的 sqlite-vec 做精确余弦检索。语义执行需要已配置的 embedding
   provider 和可用的语义索引。
 
+### 向量空间身份
+
+每个向量都属于一个显式的向量空间身份 `compatibility_identity`，它由
+provider/model 标记、配置的 `dimensions`、canonical document 格式、query 格式与
+canonical document 结构版本共同哈希而成。身份不是“同一个模型”的近似：它决定哪些
+向量可以一起比较。存储、索引元数据、召回查询和持久 embedding 作业身份都绑定该值，
+因此 provider、model、维度或任一格式版本变化都会选定一个新空间，旧向量既不参与
+查询也不进入新的活跃索引，绑定旧身份的 `embed_memory`/`rebuild_semantic` 作业会被
+取代并在新身份下重新调度。维度变化与 model 变化同等对待，因为它同样改变向量空间。
+没有 embedding provider 时不产生向量空间身份，语义通道按下面的降级规则报告。
+
 关键词排序使用列加权 BM25（content 权重 1.0，hints 权重 0.25），因此 hint
 召回不会仅凭关键词特征压过 canonical content 匹配；确定性排序进一步保证任何
 canonical content 匹配排在 hint-only 匹配之前。hint-only 候选在上下文选择中
@@ -123,11 +134,13 @@ generation 变化会使旧游标失效，而不是在已变化的成员关系上
 
 ## 降级与结果校验
 
-能力门控决定哪些通道实际执行。当语义 provider 未配置、语义索引不可用、图谱索引
-generation 不存在或策略不允许时，响应会报告请求与实际执行的能力及降级原因，
-而不是静默声称完成了完整检索。没有执行 semantic 时，结果不会返回 semantic
-score，也不会把 keyword/graph 结果标记为 semantic、hybrid 或 vector 召回；
-Agent Tool Route 通过 `degraded_capabilities` 报告 `semantic` 降级。
+能力门控决定哪些通道实际执行。当语义 provider 未配置、语义索引不可用、embedding
+维度或模型变化使已发布索引属于另一个向量空间、图谱索引 generation 不存在或策略不
+允许时，响应会报告请求与实际执行的能力及降级原因，而不是静默声称完成了完整检索。
+没有执行 semantic 时，结果不会返回 semantic score，也不会把 keyword/graph 结果标记
+为 semantic、hybrid 或 vector 召回；Agent Tool Route 通过 `degraded_capabilities`
+报告 `semantic` 降级。embedding provider 故障或旧的向量空间都只降级语义通道，召回
+整体继续成功。
 
 在结果返回之前，dMem 会重新检查其 scope、当前修订、生命周期状态、有效时间以及
 结果/token/字符预算。被拒绝的上下文候选以有界 id/reason 记录返回。
@@ -152,6 +165,8 @@ Agent Tool Route 通过 `degraded_capabilities` 报告 `semantic` 降级。
 | 处理 | 启用时 processor identity `openai-compatible/<model>`，provider 契约 `processing-structured-v1`；禁用时为 `local-deterministic-v1` |
 | 整合 | `consolidation-v1`（哈希开启，余弦 0.90/0.94，32 候选） |
 | Embedding 文档/查询 | `embedding-document-v2` / `embedding-query-v1`，基于 `canonical-document-v1` |
+| 向量空间 | `compatibility_identity` = provider/model 标记 + `dimensions` + 文档/查询格式 + canonical document 版本，哈希为 `sha256:` |
+| Embedding 作业身份 | `<provider>/<model>#<compatibility_identity>` |
 | 语义校准 | `semantic-calibration-v1`（floor 0.35，margin 0.08） |
 | 关键词编译器 | `keyword-compiler-v2` |
 | Search hints 投影 | `canonical-search-hints-v1`（`memory_fts.hints`） |

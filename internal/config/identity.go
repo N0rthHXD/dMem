@@ -22,21 +22,38 @@ func effectiveIdentity(cfg Config) string {
 	return "sha256:" + hex.EncodeToString(h[:])
 }
 
+// CapabilityIdentity is the identity of a configured provider capability: the
+// connection target plus every option that changes what the runtime can do with
+// it. Embedding output options belong here because a change to them changes the
+// work the capability must perform; they do not grant or deny egress, so they
+// are not part of the policy identity.
 func CapabilityIdentity(pcfg provider.Config) string {
 	if !pcfg.Enabled {
 		return ""
 	}
 	type capabilityCanonical struct {
-		Kind     string `json:"kind"`
-		Endpoint string `json:"endpoint"`
-		Model    string `json:"model"`
+		Kind              string `json:"kind"`
+		Endpoint          string `json:"endpoint"`
+		Model             string `json:"model"`
+		Dimensions        int    `json:"dimensions,omitempty"`
+		QueryInstructions string `json:"query_instructions,omitempty"`
 	}
-	c := capabilityCanonical{Kind: pcfg.Kind, Endpoint: pcfg.Endpoint, Model: pcfg.Model}
+	c := capabilityCanonical{
+		Kind: pcfg.Kind, Endpoint: pcfg.Endpoint, Model: pcfg.Model,
+		Dimensions: pcfg.Options.Dimensions, QueryInstructions: pcfg.Options.QueryInstructions,
+	}
 	data, _ := json.Marshal(c)
 	h := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(h[:])
 }
 
+// CompatibilityIdentity is the model-space marker of a configured provider: the
+// model plus the options that define which outputs are interchangeable. For an
+// embedding provider that includes the requested dimension and query
+// instructions, which is why a dimension change is also a compatibility change
+// and not only a runtime-limit change. The storage runtime binds this marker to
+// its own document and query formats when it derives the vector-space
+// fingerprint.
 func CompatibilityIdentity(pcfg provider.Config, isProcessing bool) string {
 	if !pcfg.Enabled {
 		return ""
