@@ -152,9 +152,10 @@ make offline-default
 ```
 
 现有 `retrieval-corpus-v1` 门禁要求 keyword exact recall 为 `1.0`、无答案无关召回为
-`0.0`、兄弟 scope 污染为 `0`。Phase 3 新增 Agent Tool 典型查询固定集时，最低门禁
-确定为 macro `Recall@10 >= 0.80`，同时 canonical exact recall 保持 `1.0`、兄弟 scope
-污染保持 `0`；该新语料和指标实现属于 Phase 3，不能用现有 provider 语义语料冒充。
+`0.0`、兄弟 scope 污染为 `0`。Phase 3 已实现 Agent Tool 典型查询固定集：
+`internal/storage/testdata/agent-tool-recall-corpus-v1.json` 与
+`agent-tool-recall-gates-v1.json` 要求 macro `Recall@10 >= 0.80`，同时 canonical
+exact recall 保持 `1.0`、兄弟 scope 污染保持 `0`；该语料独立于 provider 语义语料。
 
 完整回归基线为 `make test`；并发与静态基线为 `make test-race` 和 `make vet`。恢复与
 可移植性基线分别为 `make restore-drill` 和 `make portability-drill`。实际执行结果记录

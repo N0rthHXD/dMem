@@ -36,6 +36,13 @@ func CanonicalDocumentForRevision(ctx context.Context, q CanonicalRevisionQuerye
 // for both FTS projections and embedding inputs. A change requires reindexing.
 const canonicalDocumentFormatVersion = "canonical-document-v1"
 
+// canonicalSearchHintFormatVersion versions the Agent Tool search-hint
+// projection stored in the dedicated FTS hint column. Hints are Agent-generated
+// retrieval aids, not canonical content: they never enter the canonical document
+// used for embedding or exact-match scoring, and recall reports them as a
+// separate matched field.
+const canonicalSearchHintFormatVersion = "canonical-search-hints-v1"
+
 // canonicalStructuredDocument builds one deterministic, field-aware document
 // from a revision's canonical content and compact structured fields. It is the
 // single source for FTS projections and embedding documents so keyword and
@@ -80,6 +87,49 @@ func writeDocumentField(builder *strings.Builder, name, value string) {
 	builder.WriteString(name)
 	builder.WriteString(":")
 	builder.WriteString(value)
+}
+
+// canonicalSearchHintDocument renders the ordered search hints attached to one
+// revision as the FTS hint column. Hints are already normalized and deduplicated
+// by the Agent Tool commit path, so the rendering is a plain deterministic join.
+func canonicalSearchHintDocument(hints []string) string {
+	if len(hints) == 0 {
+		return ""
+	}
+	return strings.Join(hints, "\n")
+}
+
+// revisionSearchHints loads the Agent Tool search hints attached to a revision
+// in deterministic order. Revisions written outside the Agent Tool Route have no
+// hints and yield an empty projection.
+func revisionSearchHints(ctx context.Context, q CanonicalRevisionQueryer, revisionID string) ([]string, error) {
+	if revisionID == "" {
+		return nil, nil
+	}
+	rows, err := q.QueryContext(ctx, `SELECT hint FROM agent_tool_search_hints WHERE revision_id=? ORDER BY event_id, local_id, hint_order`, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hints []string
+	for rows.Next() {
+		var hint string
+		if err := rows.Scan(&hint); err != nil {
+			return nil, err
+		}
+		hints = append(hints, hint)
+	}
+	return hints, rows.Err()
+}
+
+// RevisionSearchHintDocument loads a revision's search hints and renders the FTS
+// hint projection. It is exported for restore and maintenance rebuild paths.
+func RevisionSearchHintDocument(ctx context.Context, q CanonicalRevisionQueryer, revisionID string) (string, error) {
+	hints, err := revisionSearchHints(ctx, q, revisionID)
+	if err != nil {
+		return "", err
+	}
+	return canonicalSearchHintDocument(hints), nil
 }
 
 // canonicalDocumentHash returns the content hash bound to a canonical document.

@@ -312,6 +312,12 @@ func (s *ServiceImpl) Rank(input RankInput) RankOutput {
 		if a.Protected != b.Protected && (a.GraphOnly || b.GraphOnly) {
 			return a.Protected
 		}
+		// A canonical content match always outranks a candidate that matched only
+		// the Agent Tool search-hint projection, even when the hint-only candidate
+		// normalized to a higher keyword score.
+		if a.HintOnly != b.HintOnly && !a.GraphOnly && !b.GraphOnly {
+			return !a.HintOnly
+		}
 		if a.Score != b.Score {
 			return a.Score > b.Score
 		}

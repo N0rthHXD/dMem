@@ -278,3 +278,57 @@ func TestProviderDisabledOperationPreservesCoreAndDegradesSafely(t *testing.T) {
 		t.Fatalf("provider-disabled processor health = %q/%q", state, identity)
 	}
 }
+
+// TestProviderDisabledAgentToolHintRecallClosesLoop proves the offline Agent
+// Tool Route recalls a memory through Agent-generated search hints and reports
+// semantic degradation explicitly instead of claiming a semantic score.
+func TestProviderDisabledAgentToolHintRecallClosesLoop(t *testing.T) {
+	t.Parallel()
+	handler := newIntegrationRuntime(t)
+	scopeID := ensureScope(t, handler, "hint-loop")
+
+	command := map[string]any{
+		"scope_id": scopeID,
+		"source": map[string]any{
+			"type": "agent_tool", "name": "assistant", "conversation_id": "conversation-1",
+			"turn_id": "turn-1", "occurred_at": "2026-08-21T11:00:00Z",
+		},
+		"memories": []map[string]any{
+			{"local_id": "memory-1", "kind": "preference", "content": "PostgreSQL is preferred", "sensitivity": "normal", "confidence": 0.9, "search_hints": []string{"database choice"}},
+		},
+	}
+	commit := callHandler(t, handler, http.MethodPost, "/v1/memory-commits", "hint-commit-key", command, true)
+	if commit.Code != http.StatusCreated {
+		t.Fatalf("commit status = %d: %s", commit.Code, commit.Body.String())
+	}
+	var commitResponse toolcontract.MemoryCommitOutput
+	decodeInto(t, commit, &commitResponse)
+	if len(commitResponse.Memories) != 1 || commitResponse.Memories[0].Status != "authority" {
+		t.Fatalf("commit response = %+v", commitResponse)
+	}
+	memoryID := commitResponse.Memories[0].MemoryID
+
+	recall := callHandler(t, handler, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "database choice", "scope_ids": []string{scopeID},
+	}, true)
+	if recall.Code != http.StatusOK {
+		t.Fatalf("recall status = %d: %s", recall.Code, recall.Body.String())
+	}
+	var recallResponse toolcontract.RecallOutput
+	decodeInto(t, recall, &recallResponse)
+	if len(recallResponse.Memories) != 1 || recallResponse.Memories[0].MemoryID != memoryID {
+		t.Fatalf("hint-only recall memories = %+v body=%s", recallResponse.Memories, recall.Body.String())
+	}
+	degradedSemantic := false
+	for _, capability := range recallResponse.DegradedCapabilities {
+		if capability == "keyword" {
+			t.Fatalf("keyword recall must execute offline: %v", recallResponse.DegradedCapabilities)
+		}
+		if capability == "semantic" {
+			degradedSemantic = true
+		}
+	}
+	if !degradedSemantic {
+		t.Fatalf("hint-only recall did not report semantic degradation: %v", recallResponse.DegradedCapabilities)
+	}
+}

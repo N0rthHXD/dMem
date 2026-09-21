@@ -5,12 +5,26 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/mattn/go-sqlite3"
 )
+
+// keywordHintColumnWeight discounts the Agent Tool search-hint FTS column
+// relative to the canonical content column. Content is the canonical statement;
+// hints are an Agent-generated retrieval aid. The lower weight, together with
+// the deterministic hint-only ordering rule, keeps hint recall from displacing a
+// canonical content match.
+const keywordHintColumnWeight = 0.25
+
+// keywordHintBM25 renders the column-weighted BM25 expression over the
+// memory_fts columns (memory_id, revision_id, content, hints).
+func keywordHintBM25() string {
+	return "bm25(memory_fts, 0.0, 0.0, 1.0, " + strconv.FormatFloat(keywordHintColumnWeight, 'f', -1, 64) + ")"
+}
 
 func finiteOrReject(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
@@ -42,9 +56,9 @@ func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params Searc
 		return r.keywordSubstringRecall(ctx, tx, params, spaces, compiled.ShortTerms, limit)
 	}
 	query := `WITH ranked AS (
-		SELECT f.memory_id, f.revision_id, f.content, p.display_content, p.updated_at, p.content_hash, p.memory_type, rv.confidence,
+		SELECT f.memory_id, f.revision_id, f.content, coalesce(f.hints,'') AS hints, p.display_content, p.updated_at, p.content_hash, p.memory_type, rv.confidence,
 			rv.event_time_start, rv.event_time_end, rv.time_precision, rv.time_source, rv.source_speaker, rv.language,
-			rv.valid_from, rv.valid_until, bm25(memory_fts) AS score
+			rv.valid_from, rv.valid_until, ` + keywordHintBM25() + ` AS score
 		FROM memory_fts f
 		JOIN memory_projections p ON p.memory_id=f.memory_id AND p.revision_id=f.revision_id
 		JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state
@@ -70,7 +84,7 @@ func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params Searc
 	temporalSQL, temporalArgs := temporalEligibilitySQL(params)
 	query += temporalSQL
 	args = append(args, temporalArgs...)
-	query += `) SELECT memory_id, revision_id, content, display_content, updated_at, content_hash, memory_type, confidence, event_time_start, event_time_end, time_precision, time_source, source_speaker, language, valid_from, valid_until, score FROM ranked`
+	query += `) SELECT memory_id, revision_id, content, hints, display_content, updated_at, content_hash, memory_type, confidence, event_time_start, event_time_end, time_precision, time_source, source_speaker, language, valid_from, valid_until, score FROM ranked`
 	query += ` ORDER BY score ASC, updated_at DESC, memory_id ASC LIMIT ?`
 	args = append(args, limit)
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -94,6 +108,7 @@ func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params Searc
 		if !finiteOrReject(item.keywordRaw) {
 			return nil, ErrInvalidSearchQuery
 		}
+		applyKeywordMatchFields(&item, compiled.Terms)
 		candidates = append(candidates, item)
 	}
 	return candidates, rows.Err()
@@ -106,14 +121,15 @@ func (r *Repository) keywordSubstringRecall(ctx context.Context, tx *sql.Tx, par
 		return nil, nil
 	}
 	clauses := make([]string, 0, len(terms))
-	args := make([]any, 0, len(terms)+len(spaces)+len(params.States)+4)
+	args := make([]any, 0, 2*len(terms)+len(spaces)+len(params.States)+4)
 	for _, term := range terms {
-		clauses = append(clauses, `lower(p.display_content) LIKE '%'||?||'%'`)
-		args = append(args, strings.ToLower(term))
+		clauses = append(clauses, `(lower(p.display_content) LIKE '%'||?||'%' OR EXISTS (SELECT 1 FROM agent_tool_search_hints h WHERE h.revision_id=p.revision_id AND lower(h.hint) LIKE '%'||?||'%'))`)
+		args = append(args, strings.ToLower(term), strings.ToLower(term))
 	}
 	query := `SELECT p.memory_id, p.revision_id, p.display_content, p.updated_at, p.content_hash, p.memory_type, rv.confidence,
 		rv.event_time_start, rv.event_time_end, rv.time_precision, rv.time_source, rv.source_speaker, rv.language,
-		rv.valid_from, rv.valid_until
+		rv.valid_from, rv.valid_until,
+		coalesce((SELECT group_concat(h.hint, char(10)) FROM agent_tool_search_hints h WHERE h.revision_id=p.revision_id), '')
 		FROM memory_projections p
 		JOIN memories m ON m.memory_id=p.memory_id AND m.current_revision_id=p.revision_id AND m.current_state=p.current_state
 		JOIN memory_revisions rv ON rv.memory_id=p.memory_id AND rv.revision_id=p.revision_id
@@ -140,11 +156,13 @@ func (r *Repository) keywordSubstringRecall(ctx context.Context, tx *sql.Tx, par
 	defer rows.Close()
 	var candidates []searchCandidate
 	position := 0
+	matchedTerms := compileKeyword(params.Query).Terms
 	for rows.Next() {
 		item, err := scanSubstringCandidate(rows, position)
 		if err != nil {
 			return nil, err
 		}
+		applyKeywordMatchFields(&item, matchedTerms)
 		candidates = append(candidates, item)
 		position++
 	}
@@ -155,7 +173,7 @@ func scanKeywordCandidate(rows *sql.Rows) (searchCandidate, error) {
 	var item searchCandidate
 	var confidence sql.NullFloat64
 	var eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil sql.NullString
-	if err := rows.Scan(&item.memoryID, &item.revisionID, &item.ftsContent, &item.projectionContent, &item.updatedAt, &item.contentHash, &item.kind, &confidence, &eventStart, &eventEnd, &timePrecision, &timeSource, &sourceSpeaker, &language, &validFrom, &validUntil, &item.keywordRaw); err != nil {
+	if err := rows.Scan(&item.memoryID, &item.revisionID, &item.ftsContent, &item.hintsContent, &item.projectionContent, &item.updatedAt, &item.contentHash, &item.kind, &confidence, &eventStart, &eventEnd, &timePrecision, &timeSource, &sourceSpeaker, &language, &validFrom, &validUntil, &item.keywordRaw); err != nil {
 		return item, err
 	}
 	applyCandidateRevision(&item, confidence, eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil)
@@ -166,13 +184,38 @@ func scanSubstringCandidate(rows *sql.Rows, position int) (searchCandidate, erro
 	var item searchCandidate
 	var confidence sql.NullFloat64
 	var eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil sql.NullString
-	if err := rows.Scan(&item.memoryID, &item.revisionID, &item.projectionContent, &item.updatedAt, &item.contentHash, &item.kind, &confidence, &eventStart, &eventEnd, &timePrecision, &timeSource, &sourceSpeaker, &language, &validFrom, &validUntil); err != nil {
+	if err := rows.Scan(&item.memoryID, &item.revisionID, &item.projectionContent, &item.updatedAt, &item.contentHash, &item.kind, &confidence, &eventStart, &eventEnd, &timePrecision, &timeSource, &sourceSpeaker, &language, &validFrom, &validUntil, &item.hintsContent); err != nil {
 		return item, err
 	}
 	item.ftsContent = item.projectionContent
 	item.keywordRaw = -float64(position) - 1
 	applyCandidateRevision(&item, confidence, eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil)
 	return item, nil
+}
+
+// applyKeywordMatchFields records which FTS field sources produced a keyword
+// candidate. Hints are auxiliary, so a candidate that matched only hints is
+// marked hint-only and cannot outrank a canonical content match.
+func applyKeywordMatchFields(item *searchCandidate, terms []retrieval.KeywordTerm) {
+	item.contentMatched = documentMatchesTerms(item.ftsContent, terms)
+	item.hintMatched = documentMatchesTerms(item.hintsContent, terms)
+	item.hintOnly = item.hintMatched && !item.contentMatched
+}
+
+func documentMatchesTerms(document string, terms []retrieval.KeywordTerm) bool {
+	if document == "" || len(terms) == 0 {
+		return false
+	}
+	lower := strings.ToLower(document)
+	for _, term := range terms {
+		if term.Text == "" {
+			continue
+		}
+		if strings.Contains(lower, strings.ToLower(term.Text)) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyCandidateRevision(item *searchCandidate, confidence sql.NullFloat64, eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil sql.NullString) {

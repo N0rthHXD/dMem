@@ -455,7 +455,7 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 	if err != nil {
 		return 0, 0, err
 	}
-	type ftsProjection struct{ memoryID, revisionID, content string }
+	type ftsProjection struct{ memoryID, revisionID, content, hints string }
 	var ftsProjections []ftsProjection
 	for projectionRows.Next() {
 		var item ftsProjection
@@ -468,13 +468,18 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 			projectionRows.Close()
 			return 0, 0, err
 		}
+		item.hints, err = storage.RevisionSearchHintDocument(ctx, tx, item.revisionID)
+		if err != nil {
+			projectionRows.Close()
+			return 0, 0, err
+		}
 		ftsProjections = append(ftsProjections, item)
 	}
 	if err := projectionRows.Close(); err != nil {
 		return 0, 0, err
 	}
 	for _, item := range ftsProjections {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, ?)`, item.memoryID, item.revisionID, item.content); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content, hints) VALUES (?, ?, ?, ?)`, item.memoryID, item.revisionID, item.content, item.hints); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -486,8 +491,8 @@ func validateAndPrepare(ctx context.Context, db *sql.DB, at time.Time) (int, int
 		return 0, 0, errors.New("FTS validation failed")
 	}
 	for _, item := range ftsProjections {
-		var content string
-		if err := tx.QueryRowContext(ctx, `SELECT content FROM memory_fts WHERE memory_id=? AND revision_id=?`, item.memoryID, item.revisionID).Scan(&content); err != nil || content != item.content {
+		var content, hints string
+		if err := tx.QueryRowContext(ctx, `SELECT content, hints FROM memory_fts WHERE memory_id=? AND revision_id=?`, item.memoryID, item.revisionID).Scan(&content, &hints); err != nil || content != item.content || hints != item.hints {
 			return 0, 0, errors.New("FTS validation failed")
 		}
 	}

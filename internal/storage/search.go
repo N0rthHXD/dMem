@@ -174,6 +174,7 @@ func membershipIdentity(ftsVersion, semanticVersion int, metadata searchMetadata
 		":relation_generation=" + strconv.FormatInt(metadata.relationIndexGeneration, 10) +
 		":relation_state=" + metadata.relationIndexState +
 		":keyword=" + retrieval.KeywordCompilerVersion +
+		":hints=" + canonicalSearchHintFormatVersion +
 		":temporal=" + retrieval.TemporalFeatureVersion
 }
 
@@ -190,7 +191,8 @@ func graphIdentity(metadata searchMetadata) string {
 type searchCandidate struct {
 	memoryID, revisionID, updatedAt string
 	contentHash                     string
-	ftsContent, projectionContent   string
+	ftsContent, hintsContent        string
+	projectionContent               string
 	keywordRaw, keywordScore        float64
 	semanticRaw, semanticScore      float64
 	semanticPercentile              float64
@@ -200,6 +202,8 @@ type searchCandidate struct {
 	score                           float64
 	keywordRank, semanticRank       int
 	graphRank                       int
+	contentMatched, hintMatched     bool
+	hintOnly                        bool
 	graphSignals                    []domain.GraphSignal
 	graphFacts                      []domain.EntityFact
 	graphPaths                      []domain.GraphPath
@@ -467,7 +471,7 @@ func (r *Repository) finalizeRankedCandidates(ctx context.Context, tx *sql.Tx, p
 		if err != nil {
 			return err
 		}
-		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keywordRelevance, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate), ProtectedPrimary: candidate.protected}
+		searchResult := domain.SearchResult{Memory: memory, Rank: len(response.Results) + 1, KeywordRelevance: keywordRelevance, SemanticScore: semanticScore, MatchedChannels: channels, GraphSignals: candidate.graphSignals, GraphFacts: candidate.graphFacts, GraphPaths: candidate.graphPaths, SelectionReason: reason, ConflictRefs: refs, RankContribution: rankContribution(candidate), ProtectedPrimary: candidate.protected, KeywordHintMatched: candidate.hintMatched}
 		if params.Explain {
 			r.applyExplain(candidate, &searchResult, params)
 		}

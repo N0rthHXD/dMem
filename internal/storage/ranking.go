@@ -137,10 +137,23 @@ func (r *Repository) applyExplain(candidate *searchCandidate, result *domain.Sea
 		raw := candidate.keywordRaw
 		coverage := retrieval.Coverage(candidate.ftsContent, params.planTerms())
 		result.KeywordRawBM25 = &raw
-		result.KeywordMatchedFields = []string{"content"}
+		result.KeywordMatchedFields = keywordMatchedFields(candidate)
 		result.KeywordExactMatch = retrieval.ExactMatched(candidate.ftsContent, params.planTerms())
 		result.KeywordTermCoverage = &coverage
 	}
+}
+
+// keywordMatchedFields reports the field sources that produced a keyword match.
+// It names fields only; hint text, query text, and memory content never appear.
+func keywordMatchedFields(candidate *searchCandidate) []string {
+	fields := make([]string, 0, 2)
+	if candidate.contentMatched {
+		fields = append(fields, "content")
+	}
+	if candidate.hintMatched {
+		fields = append(fields, "hints")
+	}
+	return fields
 }
 
 func rankContribution(candidate *searchCandidate) domain.RankContribution {
@@ -152,11 +165,18 @@ func rankContribution(candidate *searchCandidate) domain.RankContribution {
 	}
 }
 
+// rankingOrderingVersion identifies the deterministic candidate ordering rules
+// layered on top of the versioned feature weights. Phase 3 added the
+// canonical-content-before-hint-only rule, so cursors bound to the previous
+// ordering must not continue on a new candidate set.
+const rankingOrderingVersion = "hint-canonical-v1"
+
 // rankingIdentity is the versioned ranker identity bound into cursors.
 func (r *Repository) rankingIdentity() string {
 	weights, calibration, policy := r.retrievalCalibration()
 	return rankingVersion + ":weights=" + weights.Identity() + ":semantic=" + calibration.Identity() +
-		":graph_policy=" + string(policy) + fmt.Sprintf(":entity_floor=%g:fact_floor=%g", r.minEntityConfidence, r.minFactConfidence)
+		":graph_policy=" + string(policy) + ":ordering=" + rankingOrderingVersion +
+		fmt.Sprintf(":entity_floor=%g:fact_floor=%g", r.minEntityConfidence, r.minFactConfidence)
 }
 
 // planTerms returns the compiled keyword terms for the current plan.

@@ -680,6 +680,10 @@ type SearchResult struct {
 	// ProtectedPrimary marks a strong direct primary match that graph-only
 	// candidates and broad aggregates must not displace during selection.
 	ProtectedPrimary bool `json:"-"`
+	// KeywordHintMatched marks a keyword candidate that matched the Agent Tool
+	// search-hint projection. Hints are auxiliary, so this grants only a bounded
+	// selection relevance and never canonical exact-match protection.
+	KeywordHintMatched bool `json:"-"`
 	// Explain fields are populated only when explain mode is requested.
 	RankingFeatures             map[string]float64 `json:"ranking_features,omitempty"`
 	GraphScore                  *float64           `json:"graph_score,omitempty"`

@@ -96,6 +96,14 @@ make config-check
 固定检索语料与版本化门禁文件位于 `internal/storage/testdata`。修改语料、排序、
 索引格式、可移植格式、规模或阈值时，必须更新对应身份并记录可复现基线。
 
+Phase 3 的 Agent Tool 无 provider 检索门禁由
+`internal/storage/testdata/agent-tool-recall-corpus-v1.json` 与
+`agent-tool-recall-gates-v1.json` 定义，覆盖同义表达、实体别名、时间问题、偏好、
+决策与程序性记忆。门禁要求 macro `Recall@10 >= 0.80`、canonical exact recall
+`= 1.0`、兄弟 scope 污染 `= 0`，并验证 hint-only 召回不会压过 canonical content
+匹配、无 semantic 执行时不返回 semantic score、explain 与无内容 telemetry 不泄露
+hint/query/正文。`make quality` 会运行这些门禁。
+
 ## 漏洞扫描
 
 漏洞扫描独立执行，因为它需要下载漏洞数据：

@@ -218,27 +218,70 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### 任务
 
-- [ ] 将 canonical memory content 和 search hints 纳入 FTS 文档，保留字段来源区分。
-- [ ] 验证 entity names、aliases 和 typed graph expansion 在无 embedding 时可参与召回。
-- [ ] 调整 capability selection，使 semantic 不可用时明确降级到 keyword/graph。
-- [ ] 禁止在无 semantic 执行时返回 semantic score 或宣称 hybrid/vector recall。
-- [ ] 使用 Agent Tool 典型查询建立固定测试集，覆盖同义表达、实体别名、时间问题、
+- [x] 将 canonical memory content 和 search hints 纳入 FTS 文档，保留字段来源区分。
+- [x] 验证 entity names、aliases 和 typed graph expansion 在无 embedding 时可参与召回。
+- [x] 调整 capability selection，使 semantic 不可用时明确降级到 keyword/graph。
+- [x] 禁止在无 semantic 执行时返回 semantic score 或宣称 hybrid/vector recall。
+- [x] 使用 Agent Tool 典型查询建立固定测试集，覆盖同义表达、实体别名、时间问题、
       偏好、决策和程序性记忆。
-- [ ] 调整确定性排序，使 search hints 召回不会压过 canonical exact match。
-- [ ] 验证 scope、敏感度、生命周期、current revision、时间和预算过滤在所有通道前
+- [x] 调整确定性排序，使 search hints 召回不会压过 canonical exact match。
+- [x] 验证 scope、敏感度、生命周期、current revision、时间和预算过滤在所有通道前
       或返回前生效。
-- [ ] 验证 explain 和无内容 telemetry 不泄露 search hints、query 或正文。
+- [x] 验证 explain 和无内容 telemetry 不泄露 search hints、query 或正文。
 
 ### 质量门禁
 
-- [ ] 无 processing/embedding provider 的全新实例通过 remember -> recall 集成测试。
-- [ ] 固定测试集达到在 Phase 0 确定的最低 Recall@K；指标未达标时先改进 FTS 文档和
+- [x] 无 processing/embedding provider 的全新实例通过 remember -> recall 集成测试。
+- [x] 固定测试集达到在 Phase 0 确定的最低 Recall@K；指标未达标时先改进 FTS 文档和
       query compiler，不把 embedding 重新变成硬依赖。
-- [ ] 语义降级原因稳定、可测试并出现在 response capability metadata 中。
+- [x] 语义降级原因稳定、可测试并出现在 response capability metadata 中。
 
 ### 完成条件
 
 - Agent Tool Route 在空 provider 配置下是完整可用的产品路径，而不只是存储降级模式。
+
+### Phase 3 实施记录
+
+- 状态：completed
+- 完成日期：2026-09-21
+- 主要变更：
+  - Schema v1：`memory_fts` 新增受索引 `hints` 字段；两份 SQL 与内嵌 schema 同步。
+  - `internal/storage/canonical.go`：新增 `canonicalSearchHintDocument`、
+    `revisionSearchHints` 与导出的 `RevisionSearchHintDocument`
+    （`canonical-search-hints-v1`）；hint 投影独立于 canonical document 与
+    embedding 输入。
+  - `internal/storage/keyword_query.go`：关键词召回改为字段感知；列加权 BM25
+    （content 1.0 / hints 0.25），记录 `contentMatched`/`hintMatched`/`hintOnly`，
+    substring fallback 也覆盖 hints。
+  - `internal/storage/{memories,indexes}.go`、`internal/maintenance/maintenance.go`：
+    projection 写入、FTS 重建与恢复重建均填充 `content` 与 `hints`。
+  - `internal/gateway/retrieval`：`Candidate` 携带字段来源与 `HintOnly`；确定性排序
+    保证任何 canonical content 匹配先于 hint-only 匹配。
+  - `internal/storage/{search,ranking,context_selection}.go`：`KeywordHintMatched`
+    进入 selection relevance（有界 0.5，exact canonical 仍受保护）；explain 只报告
+    `content`/`hints` 字段名；`rankingIdentity` 增加 `hint-canonical-v1` 顺序身份。
+  - 测试：新增 `internal/storage/agent_tool_recall_test.go`、
+    `testdata/agent-tool-recall-corpus-v1.json`、
+    `testdata/agent-tool-recall-gates-v1.json`，以及 daemon
+    `TestProviderDisabledAgentToolHintRecallClosesLoop`。
+  - `Makefile`：`quality` 纳入 Agent Tool 检索门禁，`offline-default` 纳入 hint
+    recall 闭环。
+  - 文档：更新 `docs/architecture/retrieval.md`、`agent-tool-contract-v1.md`、
+    `docs/storage/schema.md`、`docs/development/testing.md`、
+    `docs/architecture/phase-0-decisions-and-baseline.md`。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `make build`、`make test`、`make test-race`、`make vet`；
+  - `make schema-check`、`make quality`、`make offline-default`、
+    `make config-check`、`make restore-drill`、`make portability-drill`；
+  - `git diff --check`；全部通过。
+- 删除内容：无。Phase 3 只新增字段与投影，未移除仍被目标架构使用的入口。
+- 遗留问题：默认 `features_only` 图谱策略只加分不新增候选，typed graph 新增候选
+  仍需显式放宽策略；MCP、薄 client 与 Provider Route 收敛属于 Phase 4-5。
+- 下一阶段前置条件：Phase 4 必须在不改变 Phase 3 稳定检索语义的前提下，用同一份
+  `pkg/toolcontract` v1 schema 实现 Go application client 与 stdio MCP server，
+  不复制领域规则、不访问 storage/jobs/provider。
 
 ## Phase 4：薄 Client 与 MCP Server
 

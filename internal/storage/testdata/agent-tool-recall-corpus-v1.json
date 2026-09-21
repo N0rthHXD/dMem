@@ -1,0 +1,94 @@
+{
+  "version": "agent-tool-recall-corpus-v1",
+  "primary_space": "space-1",
+  "sibling_space": "space-sibling",
+  "documents": [
+    {
+      "id": "pref-db",
+      "space": "primary",
+      "kind": "preference",
+      "content": "The user prefers PostgreSQL for the project database.",
+      "hints": ["database choice", "preferred database engine", "postgres"],
+      "exact_identifier": "PostgreSQL"
+    },
+    {
+      "id": "decision-framework",
+      "space": "primary",
+      "kind": "plan",
+      "content": "The team decided to adopt the Go standard library HTTP server.",
+      "hints": ["framework decision", "web framework selection"],
+      "exact_identifier": "Go standard library"
+    },
+    {
+      "id": "entity-alias",
+      "space": "primary",
+      "kind": "fact",
+      "content": "Acme Corporation owns the Aurora product line.",
+      "hints": ["Aurora maker", "Acme product"],
+      "exact_identifier": "Aurora"
+    },
+    {
+      "id": "temporal-release",
+      "space": "primary",
+      "kind": "event",
+      "content": "The v2 release shipped on 2026-03-14.",
+      "hints": ["release date", "version two launch"],
+      "exact_identifier": "2026-03-14"
+    },
+    {
+      "id": "procedure-deploy",
+      "space": "primary",
+      "kind": "procedure",
+      "content": "To deploy, run make build then restart the daemon.",
+      "hints": ["deployment steps", "how to deploy"],
+      "exact_identifier": "make build"
+    },
+    {
+      "id": "synonym-budget",
+      "space": "primary",
+      "kind": "fact",
+      "content": "The quarterly budget is 25000 dollars.",
+      "hints": ["spending limit", "cost ceiling"],
+      "exact_identifier": "25000"
+    },
+    {
+      "id": "pref-timezone",
+      "space": "primary",
+      "kind": "preference",
+      "content": "The user prefers UTC timestamps in reports.",
+      "hints": ["time zone preference"],
+      "exact_identifier": "UTC"
+    },
+    {
+      "id": "cjk-preference",
+      "space": "primary",
+      "kind": "preference",
+      "content": "用户偏好使用 PostgreSQL 数据库。",
+      "hints": ["数据存储方案"],
+      "exact_identifier": "PostgreSQL"
+    },
+    {
+      "id": "sibling-private",
+      "space": "sibling",
+      "kind": "fact",
+      "content": "The sibling project keeps a private vacation calendar.",
+      "hints": ["vacation travel"],
+      "exact_identifier": "vacation"
+    }
+  ],
+  "queries": [
+    {"id": "q-db-hint", "text": "database choice", "relevant": ["pref-db"]},
+    {"id": "q-db-exact", "text": "PostgreSQL", "relevant": ["pref-db"]},
+    {"id": "q-framework-hint", "text": "web framework selection", "relevant": ["decision-framework"]},
+    {"id": "q-framework", "text": "framework decision", "relevant": ["decision-framework"]},
+    {"id": "q-entity-alias", "text": "Aurora maker", "relevant": ["entity-alias"]},
+    {"id": "q-temporal-hint", "text": "release date", "relevant": ["temporal-release"]},
+    {"id": "q-temporal-exact", "text": "2026-03-14", "relevant": ["temporal-release"]},
+    {"id": "q-procedure-hint", "text": "how to deploy", "relevant": ["procedure-deploy"]},
+    {"id": "q-procedure-exact", "text": "make build", "relevant": ["procedure-deploy"]},
+    {"id": "q-budget-hint", "text": "spending limit", "relevant": ["synonym-budget"]},
+    {"id": "q-timezone-hint", "text": "time zone preference", "relevant": ["pref-timezone"]},
+    {"id": "q-cjk-hint", "text": "数据存储", "relevant": ["cjk-preference"]},
+    {"id": "q-cjk-short", "text": "存储", "relevant": ["cjk-preference"]}
+  ]
+}

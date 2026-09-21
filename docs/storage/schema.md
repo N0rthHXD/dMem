@@ -143,4 +143,7 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 | 引导 | `schema_metadata` |
 
 `memory_embeddings` 存储紧凑 `float32` BLOB，并通过 sqlite-vec 精确余弦检索。
-`memory_fts` 是 FTS5 虚拟表。语义向量与 FTS 行都可以从权威修订重建。
+`memory_fts` 是 FTS5 虚拟表，`content` 字段保存 canonical retrieval document，
+`hints` 字段保存从权威 `agent_tool_search_hints` 重建的 search hints 投影
+（`canonical-search-hints-v1`）；两个字段来源保持区分，hint 永不进入 canonical
+content hash。语义向量与 FTS 行都可以从权威修订重建。

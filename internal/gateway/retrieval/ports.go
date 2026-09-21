@@ -94,8 +94,13 @@ type Candidate struct {
 	Features                                           retrieval.FeatureVector
 	RankOutput                                         retrieval.RankOutput
 	GraphOnly, Protected                               bool
-	Quality, DuplicateRisk, Overbreadth                *float64
-	LifecyclePenalty                                   *float64
+	// ContentMatched and HintMatched report which FTS field sources produced a
+	// keyword match. HintOnly marks a keyword candidate whose only match came
+	// from the Agent Tool search-hint projection rather than canonical content.
+	// They are deterministic ordering and explain inputs, never content signals.
+	ContentMatched, HintMatched, HintOnly bool
+	Quality, DuplicateRisk, Overbreadth   *float64
+	LifecyclePenalty                      *float64
 }
 
 type PrimaryInput struct {

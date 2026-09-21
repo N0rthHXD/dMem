@@ -36,7 +36,7 @@ portability-drill:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/portability -run '^TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval$$' -count=1 -v
 
 quality:
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalQuality|SearchQuality|FeedbackPoisoningSingleCaller)' -count=1 -v
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalQuality|SearchQuality|FeedbackPoisoningSingleCaller|AgentToolRecall)' -count=1 -v
 
 performance:
 	DMEM_PERFORMANCE=1 CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/storage -run '^Test(RetrievalPerformance|SearchPerformance|DecisionScaleGates|GraphTraversalFanOutIsBounded)' -count=1 -v
@@ -45,7 +45,7 @@ performance:
 offline-default:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestProvidersDisabledByDefault$$' -count=1
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/provider -run '^Test(DisabledDoesNotResolveSecretOrUseHTTP|PolicyRejectsBeforeSecretAndNetwork|EmbeddingPolicyRejectsBeforeSecretAndNetwork)$$' -count=1
-	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/daemon -run '^TestProviderDisabledOperationPreservesCoreAndDegradesSafely$$' -count=1
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/daemon -run '^TestProviderDisabled(OperationPreservesCoreAndDegradesSafely|AgentToolHintRecallClosesLoop)$$' -count=1
 
 config-check:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestExampleConfigValidates$$' -count=1

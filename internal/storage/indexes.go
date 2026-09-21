@@ -233,7 +233,7 @@ func (r *Repository) rebuildFTS(ctx context.Context, claim *ClaimedJob) error {
 	if err := initial.Commit(); err != nil {
 		return err
 	}
-	type projection struct{ memoryID, revisionID, content string }
+	type projection struct{ memoryID, revisionID, content, hints string }
 	readTx, err := r.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		r.markFTSDegraded()
@@ -253,6 +253,10 @@ func (r *Repository) rebuildFTS(ctx context.Context, claim *ClaimedJob) error {
 				break
 			}
 			item.content = canonicalStructuredDocument(revision)
+			item.hints, err = RevisionSearchHintDocument(ctx, readTx, item.revisionID)
+			if err != nil {
+				break
+			}
 			projections = append(projections, item)
 		}
 		if closeErr := rows.Close(); err == nil {
@@ -296,12 +300,12 @@ func (r *Repository) rebuildFTS(ctx context.Context, claim *ClaimedJob) error {
 		_, err = tx.ExecContext(ctx, `DELETE FROM memory_fts`)
 	}
 	if err == nil {
-		statement, prepareErr := tx.PrepareContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, ?)`)
+		statement, prepareErr := tx.PrepareContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content, hints) VALUES (?, ?, ?, ?)`)
 		if prepareErr != nil {
 			err = prepareErr
 		} else {
 			for _, item := range projections {
-				if _, err = statement.ExecContext(ctx, item.memoryID, item.revisionID, item.content); err != nil {
+				if _, err = statement.ExecContext(ctx, item.memoryID, item.revisionID, item.content, item.hints); err != nil {
 					break
 				}
 			}

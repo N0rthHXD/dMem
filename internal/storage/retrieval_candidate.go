@@ -18,7 +18,8 @@ func toGatewayCandidates(candidates []*searchCandidate) []gwretrieval.Candidate 
 			EventStart: candidate.eventStart, EventEnd: candidate.eventEnd, ValidFrom: candidate.validFrom, ValidUntil: candidate.validUntil,
 			TimePrecision: candidate.timePrecision, TimeSource: candidate.timeSource, SourceSpeaker: candidate.sourceSpeaker,
 			Language: candidate.language, Kind: candidate.kind, Features: candidate.features, RankOutput: candidate.rankOutput,
-			GraphOnly: candidate.graphOnly, Protected: candidate.protected, Quality: candidate.quality,
+			GraphOnly: candidate.graphOnly, Protected: candidate.protected, HintOnly: candidate.hintOnly,
+			ContentMatched: candidate.contentMatched, HintMatched: candidate.hintMatched, Quality: candidate.quality,
 			DuplicateRisk: candidate.duplicateRisk, Overbreadth: candidate.overbreadth, LifecyclePenalty: candidate.lifecyclePenalty,
 		}
 	}
@@ -41,7 +42,8 @@ func fromGatewayCandidates(candidates []gwretrieval.Candidate) []*searchCandidat
 			eventStart: candidate.EventStart, eventEnd: candidate.EventEnd, validFrom: candidate.ValidFrom, validUntil: candidate.ValidUntil,
 			timePrecision: candidate.TimePrecision, timeSource: candidate.TimeSource, sourceSpeaker: candidate.SourceSpeaker,
 			language: candidate.Language, kind: candidate.Kind, features: candidate.Features, rankOutput: candidate.RankOutput,
-			graphOnly: candidate.GraphOnly, protected: candidate.Protected, quality: candidate.Quality,
+			graphOnly: candidate.GraphOnly, protected: candidate.Protected, hintOnly: candidate.HintOnly,
+			contentMatched: candidate.ContentMatched, hintMatched: candidate.HintMatched, quality: candidate.Quality,
 			duplicateRisk: candidate.DuplicateRisk, overbreadth: candidate.Overbreadth, lifecyclePenalty: candidate.LifecyclePenalty,
 		}
 	}

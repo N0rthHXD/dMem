@@ -1075,6 +1075,10 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 	}
 	memoryType, content, contentHash := string(revision.Kind), revision.DisplayContent, revision.CanonicalHash
 	ftsContent := canonicalStructuredDocument(revision)
+	hintDocument, err := RevisionSearchHintDocument(ctx, tx, revisionID)
+	if err != nil {
+		return err
+	}
 	validFrom, validUntil := formatTimePointer(revision.ValidFrom), formatTimePointer(revision.ValidUntil)
 	searchable := state == "active" || state == "contested"
 	embeddingChanged, corpusChanged := true, true
@@ -1101,7 +1105,7 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 		return err
 	}
 	if searchable {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content) VALUES (?, ?, ?)`, memoryID, revisionID, ftsContent); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_fts(memory_id, revision_id, content, hints) VALUES (?, ?, ?, ?)`, memoryID, revisionID, ftsContent, hintDocument); err != nil {
 			return err
 		}
 	}

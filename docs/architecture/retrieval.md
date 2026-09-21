@@ -1,8 +1,10 @@
 # 检索与排序
 
-> **状态**：本文描述当前检索实现。目标架构要求 Agent Tool Route 在未配置 dMem
-> embedding provider 时，以 FTS、search hints、实体和图谱形成完整基础召回，并
-> 显式报告 semantic 降级。参见
+> **状态**：本文描述当前检索实现。Phase 3 已把 Agent Tool search hints 纳入 FTS
+> 文档并在无 provider 时形成完整基础召回，semantic 不可用时明确降级为
+> keyword/graph。目标架构要求 Agent Tool Route 在未配置 dMem embedding provider
+> 时，以 FTS、search hints、实体和图谱形成完整基础召回，并显式报告 semantic
+> 降级。参见
 > [Agent Tool 与 dMem Provider 双路线架构](agent-tool-and-provider-routes.md)。
 
 检索把一次自然语言查询转化为一个有界、可复现的上下文包。它由
@@ -40,10 +42,20 @@ PreparePrimary -> ExpandGraph -> RankingInput -> Rank
 关键词与语义是相互独立的主召回信号：
 
 - **关键词**：SQLite FTS5。查询文本被编译为 FTS 表达式（`keyword-compiler-v2`），
-  而不是直接透传用户输入。
+  而不是直接透传用户输入。`memory_fts` 有两个受索引字段：`content` 保存
+  canonical retrieval document，`hints` 保存受 revision 约束的 Agent Tool
+  search hints 投影（`canonical-search-hints-v1`）。字段来源保持区分：hint 永不
+  进入 canonical document、embedding 输入或 exact-match 判定，explain 只报告
+  `content` / `hints` 字段名而不返回 hint 文本。
 - **语义**：embedding 以紧凑 `float32` BLOB 存储在权威表 `memory_embeddings`
   中，通过静态链接的 sqlite-vec 做精确余弦检索。语义执行需要已配置的 embedding
   provider 和可用的语义索引。
+
+关键词排序使用列加权 BM25（content 权重 1.0，hints 权重 0.25），因此 hint
+召回不会仅凭关键词特征压过 canonical content 匹配；确定性排序进一步保证任何
+canonical content 匹配排在 hint-only 匹配之前。hint-only 候选在上下文选择中
+获得有界 relevance（0.5），高于选择效用下限、低于完整 canonical 覆盖，因此它
+既可被返回，也不会替代 exact canonical 匹配。
 
 权威、scope、策略、身份与有效性过滤在 top-k 之前执行。`semantic_index_version`
 是活跃语义语料的单调 generation，而不是不可变向量快照：投影资格与兼容向量
@@ -113,7 +125,9 @@ generation 变化会使旧游标失效，而不是在已变化的成员关系上
 
 能力门控决定哪些通道实际执行。当语义 provider 未配置、语义索引不可用、图谱索引
 generation 不存在或策略不允许时，响应会报告请求与实际执行的能力及降级原因，
-而不是静默声称完成了完整检索。
+而不是静默声称完成了完整检索。没有执行 semantic 时，结果不会返回 semantic
+score，也不会把 keyword/graph 结果标记为 semantic、hybrid 或 vector 召回；
+Agent Tool Route 通过 `degraded_capabilities` 报告 `semantic` 降级。
 
 在结果返回之前，dMem 会重新检查其 scope、当前修订、生命周期状态、有效时间以及
 结果/token/字符预算。被拒绝的上下文候选以有界 id/reason 记录返回。
@@ -140,10 +154,12 @@ generation 不存在或策略不允许时，响应会报告请求与实际执行
 | Embedding 文档/查询 | `embedding-document-v2` / `embedding-query-v1`，基于 `canonical-document-v1` |
 | 语义校准 | `semantic-calibration-v1`（floor 0.35，margin 0.08） |
 | 关键词编译器 | `keyword-compiler-v2` |
+| Search hints 投影 | `canonical-search-hints-v1`（`memory_fts.hints`） |
 | 谓词注册表 | `predicate-registry-v2` |
 | 图谱抽取/评分 | `graph-typed-v1` / `graph-scoring-v3`；`auto-review-v1`、`entity-graph-statistics-v2` |
 | 查询计划/时间 | `query-plan-v2` / `temporal-features-v1` |
 | 排序特征/权重 | `ranking-features-v1` / `ranking-weights-v1` |
+| 排序顺序 | `hint-canonical-v1`（canonical content 匹配先于 hint-only） |
 | 上下文选择 | `context-selection-v2` / `context-tokens-v1` |
 | 反馈 | `v2`（90 天窗口，最小支持度 3，半衰期 45 天） |
 | 质量/重复 | `memory-quality-v1` / `duplicate-cluster-v1` |
@@ -161,7 +177,15 @@ generation 不存在或策略不允许时，响应会报告请求与实际执行
   规模不需要，ANN 尚未实现。
 - 学习式重排器仅用于诊断；生产使用确定性排序器及其回退。
 - 校准提升未在固定合成开发集上达标，因此权重保持确定性默认值而非拟合值。
-- provider 默认禁用。关键词召回、直接记忆、查询规划与降级图谱工作可在无密钥、
-  无网络时离线运行；结构化抽取与图谱权威需要配置 provider。
+- provider 默认禁用。关键词召回、canonical content 与 search hints、直接记忆、
+  查询规划与降级图谱工作可在无密钥、无网络时离线运行；结构化抽取与图谱权威需要
+  配置 provider 或经审核的图谱权威。Agent Tool Route 的空 provider 配置是完整
+  可用产品路径，而非仅存储降级模式：固定 Agent Tool 语料（同义表达、实体别名、
+  时间、偏好、决策和程序性记忆）在无 embedding 时通过
+  `internal/storage/testdata/agent-tool-recall-corpus-v1.json` 门禁，要求 macro
+  Recall@10 ≥ 0.80、canonical exact recall = 1.0、兄弟 scope 污染 = 0。
+- 实体名称、别名与 typed graph expansion 不依赖 embedding，但需要已构建的
+  entity/relation/graph 索引；默认 `features_only` 图谱策略只加分不新增候选，
+  新增候选需要显式放宽图谱策略。
 - 在图谱索引 generation 存在之前，图谱健康状态报告为不可用，排序退化为
   `features_only` 或 `off`，而不返回图谱候选。

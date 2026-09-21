@@ -189,6 +189,10 @@ func graphExplanation(paths []domain.GraphPath, signals []domain.GraphSignal) st
 // reflects direct query coverage and calibrated semantic or graph similarity
 // rather than the fused ranker total, so a legitimate direct match is never
 // discarded merely because rank-local calibration spread same-query results.
+//
+// A search-hint-only keyword match is auxiliary but legitimate, so it receives a
+// bounded relevance above the selection utility floor and below full canonical
+// coverage. Exact canonical matches remain protected and are chosen first.
 func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResult, terms []retrieval.KeywordTerm) float64 {
 	if result.ProtectedPrimary {
 		return 1
@@ -196,6 +200,9 @@ func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResu
 	relevance := 0.0
 	if len(terms) > 0 {
 		relevance = retrieval.Coverage(revision.DisplayContent, terms)
+	}
+	if result.KeywordHintMatched && relevance < hintSelectionRelevance {
+		relevance = hintSelectionRelevance
 	}
 	if result.SemanticScore != nil && *result.SemanticScore > relevance {
 		relevance = *result.SemanticScore
@@ -205,6 +212,10 @@ func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResu
 	}
 	return retrieval.Clamp01(relevance)
 }
+
+// hintSelectionRelevance is the bounded selection relevance granted to a
+// search-hint-only keyword match.
+const hintSelectionRelevance = 0.5
 
 func isAggregateKind(kind domain.MemoryKind) bool {
 	switch kind {
