@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/N0rthHXD/dMem/internal/gateway"
 )
@@ -66,7 +67,7 @@ func CanonicalMemoryCommitHash(command MemoryCommitCommand) (string, error) {
 	return gateway.CanonicalHash(canonicalEnvelope[MemoryCommitCommand]{ContractVersion, OperationMemoryCommit, normalized})
 }
 
-func CanonicalFeedbackHash(command FeedbackCommand) (string, error) {
+func canonicalFeedbackHash(command FeedbackCommand) (string, error) {
 	command.Reason = normalizeText(command.Reason)
 	return gateway.CanonicalHash(canonicalEnvelope[FeedbackCommand]{ContractVersion, OperationFeedback, command})
 }
@@ -91,7 +92,7 @@ func NewFeedbackWriteIdentity(call gateway.CallContext, command FeedbackCommand)
 	if err := ValidateFeedback(command); err != nil {
 		return gateway.WriteIdentity{}, err
 	}
-	hash, err := CanonicalFeedbackHash(command)
+	hash, err := canonicalFeedbackHash(command)
 	if err != nil {
 		return gateway.WriteIdentity{}, gateway.WriteIdentityError(err)
 	}
@@ -119,7 +120,13 @@ func writeIdentity(call gateway.CallContext, operation gateway.OperationName, ha
 	return gateway.WriteIdentity{Caller: call.Caller, Operation: operation, IdempotencyKey: call.IdempotencyKey(), CommandHash: hash, RequestID: call.RequestID}, nil
 }
 
-func normalizeText(value string) string { return strings.Join(strings.Fields(value), " ") }
+// normalizeText collapses insignificant whitespace. It repairs invalid UTF-8
+// instead of preserving it, so canonical hashing and the FTS hint projection can
+// never disagree about the same input. Callers still reject non-UTF-8 user input
+// during validation; this is defense in depth for internal call sites.
+func normalizeText(value string) string {
+	return strings.Join(strings.Fields(strings.ToValidUTF8(value, string(utf8.RuneError))), " ")
+}
 
 func normalizedSet(values []string) []string {
 	if len(values) == 0 {

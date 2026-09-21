@@ -9,7 +9,6 @@ import (
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
-	"github.com/N0rthHXD/dMem/internal/gateway/consolidation"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/identity"
@@ -106,13 +105,12 @@ func TestProviderRouteEventToCandidateReviewEmbeddingAndRecall(t *testing.T) {
 	if processor.calls != 1 {
 		t.Fatalf("processor calls = %d, want 1", processor.calls)
 	}
-	review := consolidation.NewService(storage.NewConsolidationCapability(repository))
-	confirmed, err := review.Confirm(ctx, gateway.CallContext{RequestID: "confirm", Caller: gateway.CallerIdentity{SubjectID: "reviewer"}, Idempotency: &gateway.Idempotency{Key: "confirm-1"}}, consolidation.ConfirmCommand{CandidateID: candidateID, ReasonCode: "reviewed"})
-	if err != nil {
-		t.Fatal(err)
+	confirmed, replay, err := repository.ConfirmCandidate(ctx, providerRouteIdentity("confirm-1", "provider_route.candidate_review"), candidateID, storage.ReviewCandidateParams{ReasonCode: "reviewed"})
+	if err != nil || replay {
+		t.Fatalf("ConfirmCandidate() replay=%t error=%v", replay, err)
 	}
-	if confirmed.Memory.CurrentRevision.RevisionID == "" {
-		t.Fatalf("confirmed memory = %+v", confirmed.Memory)
+	if confirmed.CurrentRevision.RevisionID == "" {
+		t.Fatalf("confirmed memory = %+v", confirmed)
 	}
 
 	if err := repository.RebuildSemantic(ctx); err != nil {
@@ -130,7 +128,7 @@ func TestProviderRouteEventToCandidateReviewEmbeddingAndRecall(t *testing.T) {
 	}
 	found := false
 	for _, item := range result.Context.Items {
-		if item.MemoryID == confirmed.Memory.MemoryID {
+		if item.MemoryID == confirmed.MemoryID {
 			found = true
 		}
 	}

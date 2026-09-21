@@ -1,10 +1,10 @@
 # dMem 文档
 
-dMem 是一个以 SQLite 为后端的本地 Linux 守护进程。当前产品面包括直接记忆操作、
-原始事件处理与审核、受 scope 约束的关键词与语义主召回（叠加门控类型化图谱特征
-与预算化上下文选择）、实体、实体事实与关系、显式冲突演化、反馈驱动排序、经
-审核的 scene/topic/timeline 聚合、决策遥测与 explain 输出、备份与恢复，以及
-逻辑导入导出。
+dMem 是一个以 SQLite 为后端的本地 Linux 守护进程。当前产品面包括 Agent Tool Route
+（remember、recall、feedback、forget）、Provider Route 的原始事件处理与候选审核
+对象、受 scope 约束的关键词与语义主召回（叠加门控类型化图谱特征与预算化上下文选择）、
+实体、实体事实与关系、显式冲突演化、反馈驱动排序、经审核的
+scene/topic/timeline 聚合、决策遥测与 explain 输出、备份与恢复，以及逻辑导入导出。
 
 语义位于协议无关的 Memory Gateway 模块中。当前入站协议适配器是 Agent Tool
 application REST+JSON `http.Handler`（Phase 2）与 `dmem-mcp` stdio 服务器
@@ -13,6 +13,11 @@ MCP 服务器复用 `pkg/client` 薄 application client。`internal/server` 是�
 它在回环地址上监听，可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。认证与网络边缘
 授权仍属后续独立工作。Provider Route 已在 Phase 5 收敛为显式
 `[processing].enabled`/`[embedding].enabled` 加 `POST /v1/events` 入口。
+
+Phase 7 删除了没有生产消费者的 `memory`、`feedback`、`knowledge` 网关模块、
+consolidation 入口服务及其存储适配器。记忆权威写入、反馈追加、逻辑遗忘与审核
+不变量全部由 Agent Tool Route 的单一原子 application 面与存储层触发器承担；不存在
+并行的旧写入入口。
 
 Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新的数据目录，而不是
 复用不兼容的数据库。
@@ -24,7 +29,8 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 - [Agent Tool 与 dMem Provider 双路线架构](architecture/agent-tool-and-provider-routes.md)：
   Agent 工具、MCP server、无 provider 检索、dMem provider 处理及 API 重构边界。
 - [Phase 0 决策与基线](architecture/phase-0-decisions-and-baseline.md)：双路线重构的
-  authority/proposal、枚举、MCP/client 决策，重构前九路由调用图与测试基线。
+  authority/proposal、枚举、MCP/client 决策，以及**重构前**九路由调用图与测试基线
+  的历史记录。其中的模块名、类型名与路由描述改造开始时的代码，不是当前实现。
 - [领域模型与权威数据](architecture/domain-model.md)：scope、记忆与修订、结构化
   字段、证据、生命周期、实体/关系/事实、冲突、演化与聚合。
 - [处理、审核与演化](architecture/processing.md)：事件摄取、处理 provider、候选
@@ -34,8 +40,8 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 
 ## 接口
 
-- [Application HTTP 契约](api/http-rest-contract.md)：Phase 2 实现的路由、DTO、
-  请求头、解码规则与错误模型；线格式来自 `pkg/toolcontract`。
+- [Application HTTP 契约](api/http-rest-contract.md)：Phase 2/5 实现的路由、DTO、
+  请求头、解码规则、边界与错误模型；线格式来自 `pkg/toolcontract`。
 - [API 使用说明](api/usage.md)：gateway 语义如何映射到契约。
 - [dmem-mcp stdio 服务器](api/mcp-server.md)：最小 Agent 配置、四个工具、scope/
   source 注入、集成模式、错误与取消语义。
@@ -65,7 +71,7 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 当散文描述与可执行契约冲突时，以可执行契约为准：
 
 - [HTTP REST+JSON 契约](api/http-rest-contract.md) 描述当前
-  `internal/protocol/httpapi` 实现。项目预发布期间，它将按双路线架构替换，不构成
-  外部兼容性承诺。
+  `internal/protocol/httpapi` 实现。当前九条路由是**已实现行为**，不是冻结契约，
+  也不构成外部兼容性承诺；项目发布前路径与 DTO 仍可调整。
 - [SQLite Schema v1](storage/schema-v1.sql) 定义新数据库初始化，并由
   `internal/storage` 内嵌并校验一致。

@@ -30,8 +30,8 @@ provider。前者不要求 dMem 配置模型，后者服务于原始事件和脱
                                 v
 +-------------------------------------------------------------+
 |                       Memory Gateway                        |
-|   Memory     Retrieval   Extraction   Consolidation         |
-|   Scope      Feedback    Knowledge    Policy                |
+|   Agent Tool  Retrieval  Extraction  Consolidation          |
+|   Scope       Policy     (+ knowledge invariants in storage)|
 +-------------------------------+-----------------------------+
                                 | 能力端口
                                 v
@@ -95,20 +95,23 @@ provider 网络调用位于 SQLite 写事务之外，并通过既有的租约、
 | 模块 | 职责 | 稳定操作名 |
 | --- | --- | --- |
 | `agenttool` | Agent Tool Route 的协议中立命令、原子 memory commit、召回/反馈/遗忘适配 | `agent_tool.recall`、`agent_tool.memory_commit`、`agent_tool.feedback`、`agent_tool.forget` |
-| `memory` | 直接记忆权威的底层写入与读取（由存储适配器与测试复用） | `memory.remember`、`memory.forget` |
 | `scope` | Scope 层级、稳定外部身份与原子 ensure | `scope.ensure`、`scope.get` |
-| `feedback` | provider 来源反馈追加与聚合健康 | `feedback.append` |
 | `retrieval` | 召回规划、融合、排序、上下文选择、游标、explain | `retrieval.recall` |
 | `extraction` | 原始事件入口与面向 worker 的处理 | `extraction.ingest` |
-| `consolidation` | 候选确认/拒绝与确定性分类 | `consolidation.confirm`、`consolidation.reject` |
+| `consolidation` | 确定性候选整合分类与可选 provider 分类契约（纯函数，无入口服务） | 无独立写操作，作为分类器被存储适配器消费 |
 | `policy` | 能力授权与披露分区 | 无独立写操作，作为服务被消费 |
-| `knowledge` | 实体/关系/事实/提案/冲突的读取与审核变更 | `knowledge.review_entity`、`knowledge.review_relation`、`knowledge.review_fact`、`knowledge.review_evolution`、`knowledge.review_aggregate`、`knowledge.resolve_conflict` |
 
-各模块声明自己的能力端口，例如 `memory.AuthorityStore`、`scope.Store`、
-`feedback.Store`、`retrieval.CandidateStore`、`extraction.EventStore`/
-`extraction.WorkStore`、`consolidation.Store`、`policy.Store`、
-`knowledge.ReadStore`/`knowledge.ReviewStore`。SQLite 适配器通过
-`internal/storage/gateway_*.go` 中的 capability 结构满足这些端口。
+Phase 7 已删除没有生产消费者的 `memory`、`feedback` 和 `knowledge` 网关模块及其
+存储适配器。直接记忆权威写入、provider 来源 feedback 追加、知识审核入口都被
+Agent Tool Route 的单一原子 application 面取代：`dmem_remember` 提交结构化建议，
+`dmem_feedback` 追加五类封闭反馈，`dmem_forget` 执行逻辑遗忘。审核、冲突解决和
+整合不变量保留在存储层，由 `Repository` 的评审方法与触发器继续强制，并通过存储
+层测试直接覆盖。
+
+各模块声明自己的能力端口，例如 `scope.Store`、`retrieval.CandidateStore`、
+`extraction.EventStore`/`extraction.WorkStore`、`policy.Store`。SQLite 适配器通过
+`internal/storage/gateway_*.go` 中的 capability 结构满足这些端口，并由
+`internal/storage/gateway_assert.go` 在编译期断言端口签名。
 
 ## 共享 gateway 契约
 

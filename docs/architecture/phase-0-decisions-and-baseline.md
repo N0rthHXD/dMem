@@ -9,12 +9,22 @@
 本文固化 Agent Tool Route 与 dMem Provider Route 重构开始前的产品决策、当前调用图
 和测试基线。它约束后续 Phase 1 及以上的实现。
 
-> **Phase 2-4 后状态**：九条旧 HTTP 路由及其 DTO 已被目标 application API 替换并
+> **Phase 2-7 后状态**：九条旧 HTTP 路由及其 DTO 已被目标 application API 替换并
 > 删除，`agent_tool` 单事务原子提交、`agent_tool_feedback`、修订围栏遗忘、原子
 > scope ensure 与 `search_hints` 持久化均已实现（Phase 2）；无 provider 检索闭环与
 > 固定检索门禁已实现（Phase 3）；`pkg/client` 薄 application client 与
-> `dmem-mcp` stdio 服务器已实现（Phase 4）。Provider Route 收敛仍属后续阶段。本文
-> 其余调用图与矩阵保留为重构前基线记录。
+> `dmem-mcp` stdio 服务器已实现（Phase 4）；显式 `processing.enabled`/
+> `embedding.enabled` 与无 no-op 流程已实现（Phase 5）；向量空间身份与失效已实现
+> （Phase 6）；Phase 7 已删除本文件调用图中失去消费者的 gateway 模块与存储适配器
+> （`gateway/memory`、`gateway/feedback`、`gateway/knowledge`、consolidation 入口
+> 服务，以及 `MemoryCapability`/`FeedbackCapability`/`KnowledgeReadCapability`/
+> `KnowledgeReviewCapability`/`ConsolidationCapability`/`UnitOfWork`）。
+>
+> 下面「调用图」「路由与模块矩阵」「测试消费者与删除边界」三节是**重构前的历史
+> 基线记录**，其中的类型名、路由和模块名描述的是改造开始时的代码，不是当前实现。
+> 当前实现见 [架构总览](overview.md)、[应用 HTTP 契约](../api/http-rest-contract.md)
+> 和 [dmem-mcp stdio 服务器](../api/mcp-server.md)。本文件保留历史记录是为了让后续
+> 阶段的删除决策可追溯，不代表这些入口仍然存在。
 
 ## 产品决策
 
@@ -58,10 +68,11 @@ participates_in has_participant plan_targets has_status is_active occurred_at
 occurred_during has_participant_count depends_on required_by derived_from
 ```
 
-当前 `memory_quality_feedback`、`retrieval_feedback`、`answer_feedback` 及其 type/reason
-组合属于待替换的旧 HTTP/gateway DTO，不定义目标工具契约。Phase 1 应定义五类 feedback
-的协议中立语义；Phase 2 迁移存储时不得把 `not_used` 自动等同于“无关”，也不得通过
-兼容映射丢失原始类别。
+`memory_quality_feedback`、`retrieval_feedback`、`answer_feedback` 及其 type/reason
+组合是重构前的旧 HTTP/gateway DTO，不定义目标工具契约。**Phase 1 已定义**五类
+feedback 的协议中立语义，**Phase 2 已迁移**存储，且没有把 `not_used` 自动等同于
+“无关”，也没有通过兼容映射丢失原始类别。这三类 purpose 现在只是历史记录与旧格式
+导入路径，不构成 Agent 工具契约。
 
 ### Evidence 披露
 
@@ -69,8 +80,9 @@ Tool Route v1 不返回 evidence 正文或片段。`dmem_recall` 默认返回经
 约束的引用，最多包含 `evidence_id`、`event_id`、role、时间/序号和合法 span offset；
 引用仍受 scope、policy 和 sensitivity 检查。没有安全引用时返回空数组。
 
-当前 recall 在 `include_evidence=false` 时不返回 evidence，在 `true` 时返回上述引用，
-不会读取原始正文。目标 contract 不沿用该布尔字段作为兼容要求。未来如增加片段，
+重构前的 `/v1/recall` 曾以 `include_evidence` 布尔字段控制是否返回上述引用；该字段
+只存在于当时的内部 recall 请求，从未进入 v1 tool schema。当前 `dmem_recall` 不接受
+任何 evidence 披露开关，始终只返回有界引用，也永不读取原始正文。未来如增加片段，
 必须另行决定显式请求、字符/数量上限、offset 校验和 disclosure filtering。
 
 ### MCP 与 Client
@@ -143,17 +155,21 @@ gateway service，恢复 probe 仍依赖当前 recall 路径。安全删除点�
 
 ## 可重复测试基线
 
-Phase 0 使用现有测试保存重构前行为，不新增独立测试体系。最小能力基线：
+Phase 0 使用现有测试保存重构前行为，不新增独立测试体系。下面这段命令是
+**重构前的历史基线**，其中 `./internal/gateway/memory` 与 `./internal/gateway/feedback`
+已在 Phase 7 删除，命令原样保留只用于对照：
 
 ```sh
-CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/gateway/memory ./internal/gateway/scope ./internal/gateway/feedback ./internal/gateway/retrieval ./internal/gateway/extraction
+CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/gateway/scope ./internal/gateway/retrieval ./internal/gateway/extraction ./internal/gateway/agenttool
 CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/protocol/httpapi
-CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/storage -run 'Test(MemoryCapability|ScopeCapability|Feedback|RecallCapability|IngestEvent|EventCapability)'
+CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/storage -run 'Test(ScopeCapability|RecallCapability|IngestEvent|EventCapability|AgentTool)'
 CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/jobs
 make schema-check
 make quality
 make offline-default
 ```
+
+当前完整基线是 `make check`。
 
 现有 `retrieval-corpus-v1` 门禁要求 keyword exact recall 为 `1.0`、无答案无关召回为
 `0.0`、兄弟 scope 污染为 `0`。Phase 3 已实现 Agent Tool 典型查询固定集：

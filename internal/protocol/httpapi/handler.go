@@ -27,9 +27,9 @@ type Handler struct {
 
 var _ http.Handler = (*Handler)(nil)
 
-// New validates the dependencies and returns a handler over the frozen route
-// set. Every gateway module interface is required: the initial surface has no
-// optional routes, and a missing dependency must fail at construction rather
+// New validates the dependencies and returns a handler over the implemented
+// route set. Every gateway module interface is required: the current surface has
+// no optional routes, and a missing dependency must fail at construction rather
 // than at request time.
 func New(deps Dependencies) (*Handler, error) {
 	switch {
@@ -50,7 +50,7 @@ func New(deps Dependencies) (*Handler, error) {
 	return h, nil
 }
 
-// Routes returns a copy of the frozen route metadata in declaration order.
+// Routes returns a copy of the route metadata in declaration order.
 func (h *Handler) Routes() []RouteInfo {
 	infos := make([]RouteInfo, 0, len(h.routes))
 	for _, r := range h.routes {
@@ -295,7 +295,8 @@ func (ex *exchange) setReplay(replay bool) {
 	ex.writer.Header().Set(replayHeader, strconv.FormatBool(replay))
 }
 
-// requireJSONContentType enforces the frozen media type for write bodies.
+// requireJSONContentType enforces the single accepted media type for write
+// bodies.
 func requireJSONContentType(r *http.Request) error {
 	value := r.Header.Get("Content-Type")
 	if value == "" {

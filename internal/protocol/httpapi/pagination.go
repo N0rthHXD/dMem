@@ -8,13 +8,13 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway"
 )
 
-// PageQuery parameter names frozen for future list routes.
+// PageQuery parameter names shared by list routes.
 const (
 	limitQueryParam  = "limit"
 	cursorQueryParam = "cursor"
 )
 
-// ParsePageRequest implements the frozen pagination convention: an optional
+// ParsePageRequest implements the shared pagination convention: an optional
 // integer limit between 1 and 200 (default 50) and an optional opaque cursor of
 // at most 512 characters. It returns a gateway page request ready for a module
 // list query.

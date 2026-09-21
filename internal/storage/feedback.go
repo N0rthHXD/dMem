@@ -71,10 +71,6 @@ func (r *Repository) AppendFeedback(ctx context.Context, identity WriteIdentity,
 	return r.appendFeedback(ctx, identity, p, false)
 }
 
-func (r *Repository) AppendCurrentFeedback(ctx context.Context, identity WriteIdentity, p AppendFeedbackParams) (domain.FeedbackAppendResponse, bool, error) {
-	return r.appendFeedback(ctx, identity, p, true)
-}
-
 func (r *Repository) appendFeedback(ctx context.Context, identity WriteIdentity, p AppendFeedbackParams, currentRevision bool) (domain.FeedbackAppendResponse, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {

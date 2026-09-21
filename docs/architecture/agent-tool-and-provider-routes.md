@@ -83,7 +83,7 @@ Agent 生命周期处理原始事件的部署，仍可选择 dMem Provider Route
 | --- | --- | --- |
 | Agent 正常对话中的记忆 | Agent Tool | Agent 调用 `dmem_remember` 提交结构化建议 |
 | Agent 回答前的上下文召回 | Agent Tool | Agent 调用 `dmem_recall` |
-| collector、文件或无 Agent 在线的原始事件 | dMem Provider | dMem 摄取事件并创建处理 job |
+| collector、文件或无 Agent 在线的原始事件 | dMem Provider | processing 启用时摄取事件并创建处理 job；禁用时只以 `stored` 状态保留，`job_ids` 为空 |
 | 需要 dMem 自动图谱抽取或聚合 | dMem Provider | dMem worker 调 processing provider |
 | Tool 路线提交后的确定性索引维护 | 共享本地运行时 | 不调用模型 |
 
@@ -449,24 +449,27 @@ HTTP 是 client 和 MCP server 共用的 dMem application transport。目标资�
 | raw event ingest | 仅供启用 Provider Route 的原始输入 |
 | operation/event status | 仅在异步 provider 处理需要时查询 |
 
-实现阶段可以重新设计路径和 DTO，不以当前九条 `/v1` 路由为兼容目标。应先确定
-gateway 命令和版本化 tool schema，再决定 REST 资源形状；MCP 与 HTTP 不得各自发明
-领域语义。
+实现阶段可以重新设计路径和 DTO，不以 Phase 2 之前的旧九条 `/v1` 路由为兼容目标。
+应先确定 gateway 命令和版本化 tool schema，再决定 REST 资源形状；MCP 与 HTTP 不得
+各自发明领域语义。
 
-### 可移除或收敛的现有流程
+### 已删除的旧流程
 
-实施时允许删除无法服务目标架构的接口和底层流程，包括但不限于：
+Phase 2-7 已按本节删除下列无法服务目标架构的接口和底层流程：
 
-- 把当前九路由视为冻结外部契约的文档和测试；
+- 把旧九路由视为冻结外部契约的文档和测试（旧 routes/DTO/errors/decode 契约测试）；
 - 只为旧 DTO 存在的转换层、兼容字段和路由元数据；
-- provider 禁用时由 `builtin-noop` 领取并完成模型 job 的流程；
-- Agent Tool 写入后再次创建 memory/graph 模型提取 job 的流程；
-- 如果新 memory commit 已覆盖其语义，旧的重复直接写入入口；
-- 对目标产品不可达的同步 aggregate/provider 入口；
-- 依赖已移除 API 且没有内部消费者的 gateway/storage capability。
+- provider 禁用时由 `builtin-noop` 领取并完成模型 job 的流程（Phase 5）；
+- Agent Tool 写入后再次创建 memory/graph 模型提取 job 的流程（Phase 2 起不再创建）；
+- 被新 memory commit 覆盖语义的重复直接写入入口：`gateway/memory`、
+  `gateway/feedback`、`gateway/knowledge`、consolidation 入口服务，以及
+  `MemoryCapability`、`FeedbackCapability`、`KnowledgeReadCapability`、
+  `KnowledgeReviewCapability`、`ConsolidationCapability`、`UnitOfWork`（Phase 7）；
+- 对目标产品不可达的同步 aggregate provider 入口（Phase 5）。
 
-删除必须基于调用图和测试确认。记忆 revision、证据、policy、审核、幂等、审计、
-索引维护及恢复能力不能因为入口重构而被绕过。
+删除都基于调用图和测试确认。记忆 revision、证据、policy、审核、幂等、审计、索引
+维护及恢复能力没有因为入口重构而被绕过：审核、冲突解决和整合不变量保留在存储层
+并由触发器与存储层测试继续强制。
 
 ## 一致性与幂等
 

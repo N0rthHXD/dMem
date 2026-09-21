@@ -57,7 +57,7 @@ Agent -> MCP tool -> dmem-mcp -> dMem application HTTP API -> Memory Gateway
 | `--caller-subject-id` | `DMEM_CALLER_SUBJECT_ID` | 空 | 主要审计身份。 |
 | `--caller-client-id` | `DMEM_CALLER_CLIENT_ID` | `dmem-mcp` | 实际发起的客户端身份。 |
 | `--scope-type` | `DMEM_SCOPE_TYPE` | 必填 | scope 类型，例如 `project`、`user`、`session`。 |
-| `--scope-external-id` | `DMEM_SCOPE_EXTERNAL_ID` | 必填 | 稳定外部标识；启动后按该标识 ensure scope。 |
+| `--scope-external-id` | `DMEM_SCOPE_EXTERNAL_ID` | 必填 | 稳定外部标识；首次需要时按该标识 ensure scope 并缓存。 |
 | `--scope-display-name` | `DMEM_SCOPE_DISPLAY_NAME` | 等于 external id | scope 显示名。 |
 | `--scope-parent-id` | `DMEM_SCOPE_PARENT_ID` | 空 | 可选父 scope 的 application ID。 |
 | `--source-name` | `DMEM_SOURCE_NAME` | `assistant` | 记忆提交记录的 provenance source 名称。 |

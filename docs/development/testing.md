@@ -19,13 +19,26 @@ make vet
 `make schema-check` 验证文档化 SQL 与内嵌 schema 完全一致，并初始化一个临时
 数据库。
 
+Fuzz 目标的种子语料随 `make test` 一起执行，因此上面四个门禁已经覆盖它们。要
+对某个目标做探索式 fuzz：
+
+```sh
+CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/protocol/httpapi -run '^$' -fuzz 'FuzzStrictBodyDecodingIsTotal'
+CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/gateway/agenttool -run '^$' -fuzz 'FuzzCanonicalHashIsReplayStable'
+CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/domain -run '^$' -fuzz 'FuzzPredicateRegistryIsClosed'
+```
+
+`make performance` 与 `make govulncheck` 不在 `make check` 内，需单独运行。
+
 ## Gateway 与协议测试
 
 - Gateway 模块测试只为模块声明的能力使用窄 fake 端口，覆盖语义校验、错误分类、
   取消、幂等、编排与不变量，尽量不涉及 HTTP 或 SQLite。
 - `internal/gateway/arch_test.go` 强制 gateway 依赖规则：不导入 `net/http`、不
   导入协议包、不导入 storage 或 jobs、不导入兄弟模块，且不导出暴露 `storage.*`
-  选择器的契约。
+  选择器的契约。它同时固定当前 gateway 模块清单；Phase 7 删除 `memory`、
+  `feedback`、`knowledge` 与 consolidation 入口服务后，该清单只包含有生产消费者
+  的模块。
 - `internal/protocol/httpapi` 测试使用 fake gateway 模块，覆盖严格单值 JSON
   解码、DTO 转换、路由一致性（调用方身份与幂等策略）、响应编码、gateway 错误
   映射、panic 恢复、取消与安全错误。
@@ -52,7 +65,47 @@ make vet
   的同步报错、优雅关闭排空在途请求、请求头大小上限、自签证书 TLS 与 HTTP/2
   协商，以及无效/符号链接 TLS 文件的拒绝。`internal/server/arch_test.go` 强制
   传输层只依赖 `net/http`/`crypto/tls`，不导入 storage、jobs、provider、config、
-  retrieval、daemon、gateway 或 protocol。
+  retrieval、daemon、gateway 或 protocol。`internal/server/e2e_test.go` 通过真实
+  TCP 监听驱动组装后的 handler，属于 `internal/server` 包测试，不是独立端到端
+  测试体系。
+
+### 发布验收场景（Phase 7）
+
+`internal/daemon/release_acceptance_test.go` 固定发布验收场景。它们通过组装后的
+运行时、真实 SQLite 与真实 loopback 监听运行，不使用独立测试体系、不使用
+`.dmem-e2e/`：
+
+| 场景 | 测试 | 证明内容 |
+| --- | --- | --- |
+| MCP-only | `TestMCPToolRouteClosesMemoryLoopWithoutProvider` | 无 provider 配置时经 `dmem-mcp` 完成完整记忆闭环。 |
+| Native client | `TestReleaseAcceptanceNativeClientClosesMemoryLoop` | 无 MCP、无 provider 时经 `pkg/client` 与真实 HTTP 完成同等闭环，并报告 `semantic` 降级。 |
+| Native/MCP 等价 | `TestReleaseAcceptanceNativeClientMatchesMCPCommand` | 同一工具命令在两个传输上产生相同状态词汇与独立权威身份。 |
+| Provider-only | `TestProviderRouteEventToCandidateReviewEmbeddingAndRecall` | 原始事件经 durable job、processor、审核、embedding 进入可召回状态。 |
+| Mixed | `TestReleaseAcceptanceMixedRoutesShareOneAuthority` | 同实例两条路线并存：Tool 写入零模型 job，collector 事件恰好一个 job 且被 worker 消费为候选。 |
+| Offline | `TestReleaseAcceptanceOfflineRestartKeepsToolRouteMemories` | provider 全关时重启后 Tool Route 记忆仍可召回，且零模型 job。 |
+| Degraded | `TestHybridFallbacksAndNeitherChannelAvailable`、`TestSemanticDimensionChangeInvalidatesVectorsAndRebuilds` | embedding 故障或旧向量空间时 keyword/graph 召回继续并明确报告降级。 |
+| Conflict | `TestReleaseAcceptanceAgentSuggestionCannotSilentlyOverwrite` | 敏感内容与聚合 kind 进入 proposal 且不发布权威；重复内容 deduplicated 到既有 revision。 |
+| Idempotency | `TestReleaseAcceptanceLostResponseRetryIsNotDuplicated` | 响应丢失后的重试 replay 原结果，同 key 不同命令返回 `idempotency_conflict`，召回只有一条权威。 |
+| 泄露防护 | `TestReleaseAcceptanceLogsAndTelemetryDoNotLeakContent` | 普通日志、`query_telemetry`、`audit_events` 都不含正文、query、search hints 或 feedback reason。 |
+
+### Fuzz 目标（Phase 7）
+
+Fuzz 目标使用标准库 `testing.F`，其种子语料就是回归测试；`go test` 会执行种子，
+`-fuzz` 执行探索。它们不引入独立测试体系：
+
+- `internal/protocol/httpapi`：`FuzzStrictBodyDecodingIsTotal`（任意字节要么完整
+  映射为命令，要么以有界协议错误拒绝且不回显请求体）、
+  `FuzzRecallWireMappingPreservesContractValues`（契约接受的值要么忠实映射，要么
+  `invalid_input`）、`FuzzEventIngestBoundsAreEnforced`（事件入口边界）。
+- `internal/gateway/agenttool`：`FuzzCanonicalHashIsReplayStable`（幂等规范化对
+  字段顺序、等价空值、时区不敏感且可重放）、`FuzzLocalReferencesResolveOrReject`
+  （`local_id` 解析全函数）、`FuzzNormalizeTextIsSafeAndIdempotent`（search hint
+  规范化不产生非法 UTF-8 且幂等）、`FuzzFeedbackAndForgetBoundsAreEnforced`。
+- `internal/domain`：`FuzzPredicateRegistryIsClosed`（图谱谓词注册表封闭且自洽）、
+  `FuzzPredicatePathPositionsAreKnown`、`FuzzRevisionWindowsRejectAmbiguousIntervals`
+  （revision 时间窗口与量值边界）、`FuzzEvidenceOrderingIsTotal`（证据稳定全序）。
+
+发现过的崩溃输入保留在对应包的 `testdata/fuzz/<Target>/` 下作为回归种子。
 
 ## 恢复与质量
 
@@ -105,13 +158,28 @@ make mcp-check
 本文档早期版本引用的 `TestManagedDaemonReloadsCapabilitiesAtomically`、
 `TestSC014ReloadBecomesEffectiveWithinTenSeconds`、`TestPolicyCorrectionRecoversBlockedProcessing`、
 `TestPolicyExpansionDoesNotDuplicateCompletedWork` 与 `TestReconciliationResumesAfterDaemonRestart`
-当前不在仓库中。本阶段只修正了引用；恢复这些边界（原子重载身份、SC-014 十秒生效、
-策略纠正翻转与不重复已完成工作、跨重启调和恢复）的等价覆盖属于 Phase 7 门禁。
+不在仓库中。Phase 7 重新核对后确认：这五个名字没有任何现存文件定义，因此引用已
+修正为仓库中真实存在的等价覆盖：
 
-确定性 provider 演练使用进程内 `heldProcessor`（阻塞直到释放通道关闭）与
-`httptest.NewTLSServer` stub；它们永不访问真实端点。调和恢复由守护进程维护循环
-（1 秒间隔）或直接仓储调用（`ClaimReconciliationRun` + `Reconcile`）驱动，以便
-精确控制时序。
+| 原引用边界 | 当前覆盖 |
+| --- | --- |
+| 原子重载身份与失败回退 | `TestRuntimeManagedReloadAppliesSnapshots`、`TestRuntimeApplySnapshotFailurePreservesPreviousConfiguration` |
+| 并发重载串行化 | `TestRuntimeConcurrentReloadsAreSerialized` |
+| 策略纠正翻转与不重复已完成工作 | `TestSC004ReconciliationEnqueuesEligibleJobsPromptly`、`TestReconciliationPersistsLineageAndResumesBoundedBatches` |
+| 调和不扫描与空扫描终态 | `TestReconciliationRuntimeLimitsCompletesWithoutScanning`、`TestEmptyReconciliationCompletesDurably` |
+| 跨重启调和恢复与租约围栏 | `internal/storage` 的 `TestJOB007ExpiredLeaseRecoveryClosesAttemptAndFencesWorker`、`TestJobMaintenancePromotionRecoveryTerminalStatesAndExpiration`，以及 `internal/maintenance` 的 `TestRecoveryDrillsFenceInterruptedWork` |
+| 「十秒生效」时限 | 未保留为独立断言。生效时限由 `TestRuntimeManagedReloadAppliesSnapshots` 的同步激活语义覆盖；本项目不再主张一个单独的 SC-014 十秒数值门禁。 |
+
+确定性 provider 演练完全在进程内完成，不访问真实端点：
+
+- `internal/provider` 用 `httptest.NewTLSServer` 提供 OpenAI-compatible stub；
+- `internal/daemon` 用进程内确定性 processor（`routeProcessor`、
+  `mixedRouteProcessor`）与 `routeEmbedding` 替代模型传输，durable job、claim、
+  围栏、候选发布与语义索引仍然真实；
+- `internal/jobs` 用包内 processor fake 驱动认领、心跳、失败与取消路径。
+
+调和恢复由守护进程维护循环（1 秒间隔）或直接仓储调用
+（`ClaimReconciliationRun` + `Reconcile`）驱动，以便精确控制时序。
 
 ### Provider Route 收敛（Phase 5）
 

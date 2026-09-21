@@ -87,7 +87,7 @@ func (ex *exchange) writeJSON(status int, value any) {
 	_, _ = ex.writer.Write(body)
 }
 
-// writeError maps an error to the frozen wire error model. A gateway error
+// writeError maps an error to the wire error model. A gateway error
 // contributes only its declared-safe fields; any other error is reported
 // generically so an internal cause is never echoed.
 func (ex *exchange) writeError(err error) {

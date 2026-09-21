@@ -42,7 +42,7 @@ func invalidContractBody() error {
 }
 
 // readBoundedBody reads the request body under a hard byte limit. The limit is
-// the route's frozen body limit; a route that accepts no body is rejected before
+// the route's body limit; a route that accepts no body is rejected before
 // any read happens.
 func readBoundedBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
 	if limit <= 0 {

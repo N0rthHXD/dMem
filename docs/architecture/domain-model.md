@@ -148,8 +148,10 @@ dMem 支持经审核的 `scene`、`topic`、`timeline` 聚合记忆，建立在�
 Agent Tool Route 只接受 `used`、`not_used`、`incorrect`、`outdated`、`duplicate`
 五个封闭类别，具体决策见 [Phase 0 决策与基线](phase-0-decisions-and-baseline.md)。
 Phase 2 已把这些类别持久化为 `agent_tool_feedback` purpose，并保留原始 `kind`，不
-把 `not_used` 映射为 `irrelevant`。以下 purpose/type/reason 组合仍描述旧 provider
-来源的反馈事件；它们不是 Agent 工具契约：
+把 `not_used` 映射为 `irrelevant`。Phase 7 已删除产生旧反馈事件的 `gateway/feedback`
+模块与其存储适配器，因此当前唯一的反馈写入入口是 `dmem_feedback`。以下
+purpose/type/reason 组合只作为历史记录与旧格式导入路径保留；它们不是 Agent 工具
+契约：
 
 反馈按用途分离，用途/类型/原因是封闭组合：
 

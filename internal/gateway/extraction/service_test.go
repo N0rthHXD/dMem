@@ -2,7 +2,12 @@ package extraction
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +129,87 @@ func TestIngestRejectsInvalidInputBeforePersistence(t *testing.T) {
 	}
 	if store.ingestCalls != 0 {
 		t.Fatalf("store called %d times for invalid input", store.ingestCalls)
+	}
+}
+
+// TestIngestEnforcesInputBounds proves every raw-event input bound is enforced
+// before persistence, so an oversized or pathologically shaped payload never
+// reaches the authority store and never becomes a provider request.
+func TestIngestEnforcesInputBounds(t *testing.T) {
+	service := NewService(&fakeEventStore{})
+	deepMetadata := map[string]any{}
+	cursor := deepMetadata
+	for i := 0; i < MaxMetadataDepth+2; i++ {
+		next := map[string]any{}
+		cursor["level"] = next
+		cursor = next
+	}
+	wideMetadata := map[string]any{}
+	for i := 0; i < MaxMetadataKeys+1; i++ {
+		wideMetadata[fmt.Sprintf("key-%d", i)] = "value"
+	}
+	largeMetadata := map[string]any{"blob": strings.Repeat("x", MaxMetadataBytes+1)}
+	nanMetadata := map[string]any{"value": math.NaN()}
+	deepJSON := any("leaf")
+	for i := 0; i < MaxJSONValueDepth+2; i++ {
+		deepJSON = map[string]any{"child": deepJSON}
+	}
+	manyNodes := make([]any, 0, MaxJSONValueNodes+1)
+	for i := 0; i <= MaxJSONValueNodes; i++ {
+		manyNodes = append(manyNodes, json.Number(strconv.Itoa(i)))
+	}
+	hash := strings.Repeat("a", 64)
+
+	cases := map[string]IngestCommand{
+		"oversized text":      {Content: textContent(strings.Repeat("x", MaxContentRunes+1))},
+		"empty text":          {Content: textContent("")},
+		"deep metadata":       {Metadata: deepMetadata},
+		"wide metadata":       {Metadata: wideMetadata},
+		"large metadata":      {Metadata: largeMetadata},
+		"non-finite metadata": {Metadata: nanMetadata},
+		"long reference uri": {Content: domain.Content{Kind: "reference", MediaType: "text/plain",
+			ReferenceURI: "https://example.invalid/" + strings.Repeat("p", MaxReferenceURIRunes)}},
+		"malformed declared hash": {Content: domain.Content{Kind: "reference", MediaType: "text/plain",
+			ReferenceURI: "https://example.invalid/x", DeclaredHash: "not-a-digest"}},
+		"deep json content":  {Content: domain.Content{Kind: "json", MediaType: "application/json", Value: deepJSON}},
+		"large json content": {Content: domain.Content{Kind: "json", MediaType: "application/json", Value: map[string]any{"items": manyNodes}}},
+		"long media type":    {Content: domain.Content{Kind: "text", MediaType: strings.Repeat("m", 129), Text: "raw"}},
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			command.SpaceID = "space-1"
+			command.SourceType = "manual"
+			command.SourceName = "source"
+			command.OccurredAt = "2026-08-21T12:00:00Z"
+			if command.Content.Kind == "" {
+				command.Content = textContent("raw event")
+			}
+			if _, err := service.Ingest(context.Background(), ingestCall("caller-1", "key-1", "request-1"), command); !gateway.IsCode(err, gateway.ErrorInvalidInput) {
+				t.Fatalf("error = %v, want invalid_input", err)
+			}
+		})
+	}
+
+	// The same shapes at the documented limits are accepted.
+	service = NewService(&fakeEventStore{record: IngestRecord{EventID: "event-1", OperationID: "operation-1", Status: "accepted"}})
+	accepted := map[string]IngestCommand{
+		"text at the limit": {Content: textContent(strings.Repeat("x", MaxContentRunes))},
+		"reference at the limit": {Content: domain.Content{Kind: "reference", MediaType: "text/plain",
+			ReferenceURI: "https://example.invalid/" + strings.Repeat("p", MaxReferenceURIRunes-24), DeclaredHash: hash}},
+		"metadata at the limit": {Content: textContent("raw event"), Metadata: map[string]any{"k": strings.Repeat("x", MaxMetadataBytes-16)}},
+		"json at the limit": {Content: domain.Content{Kind: "json", MediaType: "application/json",
+			Value: map[string]any{"items": manyNodes[:MaxJSONValueNodes-2]}}},
+	}
+	for name, command := range accepted {
+		t.Run("accepted/"+name, func(t *testing.T) {
+			command.SpaceID = "space-1"
+			command.SourceType = "manual"
+			command.SourceName = "source"
+			command.OccurredAt = "2026-08-21T12:00:00Z"
+			if _, err := service.Ingest(context.Background(), ingestCall("caller-1", "key-1", "request-1"), command); err != nil {
+				t.Fatalf("Ingest() error = %v", err)
+			}
+		})
 	}
 }
 

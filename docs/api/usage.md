@@ -39,6 +39,12 @@ Agent 宿主有两种接入方式：直接使用 application HTTP API，或只�
 | `POST /v1/forget` | `agent_tool.forget` | 按期望修订逻辑遗忘一条记忆。 |
 | `POST /v1/scopes/ensure` | `scope.ensure` | 按稳定外部身份解析或创建 scope。 |
 | `GET /v1/scopes/{scope_id}` | `scope.get` | 返回一个 scope。 |
+| `POST /v1/events` | `extraction.ingest` | Provider Route 原始事件入口；processing 禁用时以 `stored` 保留且不创建模型 job。 |
+| `GET /v1/events/{event_id}` | `extraction.event_get` | 返回事件的 `processing_status` 与已存内容，不返回 job 列表。 |
+
+前七条属于 Agent Tool Route，后两条属于 Provider Route，只有启用
+`[processing].enabled` 时才会创建 `extract_memory` job。完整 DTO、输入边界与状态码
+见 [Application HTTP 契约](http-rest-contract.md)。
 
 ## 记忆提交语义
 

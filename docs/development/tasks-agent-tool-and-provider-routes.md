@@ -8,8 +8,9 @@
 1. 默认的 Agent Tool Route，包括薄 client 和 MCP server；
 2. 可选的 dMem Provider Route，包括 dMem 自有 LLM/embedding provider 和持久 job。
 
-项目尚未发布，本任务不保留当前九条 HTTP 路由或 DTO 的兼容性。每个阶段都应删除
-已经失去消费者的接口、实现和测试，避免在新架构旁长期保留旧路线。
+项目尚未发布，本任务不保留重构前九条 HTTP 路由或旧 DTO 的兼容性。每个阶段都应
+删除已经失去消费者的接口、实现和测试，避免在新架构旁长期保留旧路线。Phase 7 完成
+后，仓库中已不存在重构前的九路由 handler、旧 DTO 或标记为“冻结契约”的测试。
 
 ## 全局完成标准
 
@@ -203,13 +204,16 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
   - `git diff --check`；全部通过。
 - 删除内容：旧九路由 handler/DTO/转换器与测试（`/v1/memories`、`/v1/events`、
   `/v1/scopes` create、旧 recall/feedback DTO、`routes_test.go`、`fakes_test.go`、
-  `decode_test.go`、`errors_test.go`）；daemon 对 memory/feedback/extraction HTTP 服务
-  的组装；旧 purpose/type/reason feedback 的 HTTP 入口。
+  `decode_test.go`）；daemon 对 memory/feedback/extraction HTTP 服务的组装；旧
+  purpose/type/reason feedback 的 HTTP 入口。注：`errors_test.go` 并未被删除，它
+  当前仍在仓库中并覆盖新适配器的错误映射与不泄露断言，因此不属于本阶段删除项。
 - 遗留问题：无消费者的 `gateway/memory`、`gateway/feedback` 模块与其存储适配器仍保留，
-  由 Phase 7 全仓调用图清理；Tool knowledge proposal 以统一 `agent_tool_proposals`
-  envelope 持久化（审核物化到 entity/fact/relation 权威属于后续审核阶段）；scope ensure
-  为 resolve-then-create，依赖 `memory_spaces` 唯一约束处理并发；MCP、薄 client、
-  Provider Route 收敛与 search hints 进入 FTS 属于 Phase 3-5。
+  由 Phase 7 全仓调用图清理（**Phase 7 已删除**：`gateway/memory`、`gateway/feedback`、
+  `gateway/knowledge`、consolidation 入口服务及对应存储适配器）；Tool knowledge proposal
+  以统一 `agent_tool_proposals` envelope 持久化（审核物化到 entity/fact/relation 权威
+  仍属后续审核阶段）；scope ensure 为 resolve-then-create，依赖 `memory_spaces` 唯一
+  约束处理并发；MCP、薄 client、Provider Route 收敛与 search hints 进入 FTS 已在
+  Phase 3-5 完成。
 - 下一阶段前置条件：Phase 3 必须在同一版本化契约下把 canonical content 与 search hints
   纳入 FTS 文档、建立无 provider 固定检索质量门禁，并在 response capability metadata 中
   稳定报告 semantic 降级；不得改变 Phase 2 已稳定的 application API 与原子提交语义。
@@ -547,7 +551,8 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
     既不参与召回也不进入活跃索引），因此回滚到旧的 provider/model/维度配置时可以直接
     复用，而不必重新嵌入；代价是切换期间存在额外的派生存储。
   - `docs/development/testing.md` 曾引用五个仓库中不存在的测试，本阶段只修正引用，
-    等价覆盖属于 Phase 7。
+    等价覆盖属于 Phase 7（**Phase 7 已完成**：五个引用被替换为仓库中真实存在的
+    等价覆盖，并删除了同一文档中不存在的 `heldProcessor` 引用）。
   - 固定检索语料与门禁未变：内置确定性检索测试使用未设置 `dimensions` 的
     provider，因此不受维度进入向量空间指纹的影响；只有显式设置 `dimensions` 的部署
     需要在改变维度时预期一次语义重建。
@@ -583,32 +588,32 @@ client、schema 或配置项。
 
 ### 删除与整理
 
-- [ ] 再次生成全仓调用图，删除无消费者的 handler、gateway port、storage capability、
+- [x] 再次生成全仓调用图，删除无消费者的 handler、gateway port、storage capability、
       job type、配置字段和测试 fixture。
-- [ ] 删除旧“冻结九路由”文档和已过时的使用示例。
-- [ ] 删除为旧 no-op/provider 行为存在的兼容分支。
-- [ ] 更新 README、架构、处理、检索、配置、运维、schema 和测试文档。
-- [ ] 确保文档不再同时描述互相冲突的当前/目标契约。
+- [x] 删除旧“冻结九路由”文档和已过时的使用示例。
+- [x] 删除为旧 no-op/provider 行为存在的兼容分支。
+- [x] 更新 README、架构、处理、检索、配置、运维、schema 和测试文档。
+- [x] 确保文档不再同时描述互相冲突的当前/目标契约。
 
 ### 安全与可靠性
 
-- [ ] 对 HTTP 和 MCP 执行请求体、数组、字符串和超时限制。
-- [ ] 验证非回环部署的认证/网络边界要求；未实现认证时保持明确警告和安全默认值。
-- [ ] fuzz 严格 JSON、local reference、图谱 predicate、时间和幂等规范化。
-- [ ] 测试进程崩溃、HTTP/MCP 响应丢失、重复 tool call 和 provider lease 过期。
-- [ ] 验证普通日志、审计摘要和 telemetry 不泄露正文、query、vector 或 secret。
-- [ ] 运行 race、静态检查、完整单元/集成测试及备份恢复测试。
+- [x] 对 HTTP 和 MCP 执行请求体、数组、字符串和超时限制。
+- [x] 验证非回环部署的认证/网络边界要求；未实现认证时保持明确警告和安全默认值。
+- [x] fuzz 严格 JSON、local reference、图谱 predicate、时间和幂等规范化。
+- [x] 测试进程崩溃、HTTP/MCP 响应丢失、重复 tool call 和 provider lease 过期。
+- [x] 验证普通日志、审计摘要和 telemetry 不泄露正文、query、vector 或 secret。
+- [x] 运行 race、静态检查、完整单元/集成测试及备份恢复测试。
 
 ### 发布验收场景
 
-- [ ] MCP-only：无 provider 配置，从 remember 到 recall、feedback、forget 完整成功。
-- [ ] Native client：无 MCP，行为与 MCP-only 一致。
-- [ ] Provider-only：原始 event 经 LLM/embedding provider 进入可召回状态。
-- [ ] Mixed：Tool 与 Provider Route 同实例运行，没有重复提取或索引身份污染。
-- [ ] Offline：provider 全部关闭，重启、备份、恢复后 Tool Route 记忆仍可召回。
-- [ ] Degraded：embedding provider 故障时关键词/图谱召回继续并明确报告降级。
-- [ ] Conflict：Agent 建议与已有记忆冲突时产生安全 proposal/冲突流程，不静默覆盖。
-- [ ] Idempotency：HTTP、MCP 和 provider 重试不会产生重复权威写入。
+- [x] MCP-only：无 provider 配置，从 remember 到 recall、feedback、forget 完整成功。
+- [x] Native client：无 MCP，行为与 MCP-only 一致。
+- [x] Provider-only：原始 event 经 LLM/embedding provider 进入可召回状态。
+- [x] Mixed：Tool 与 Provider Route 同实例运行，没有重复提取或索引身份污染。
+- [x] Offline：provider 全部关闭，重启、备份、恢复后 Tool Route 记忆仍可召回。
+- [x] Degraded：embedding provider 故障时关键词/图谱召回继续并明确报告降级。
+- [x] Conflict：Agent 建议与已有记忆冲突时产生安全 proposal/冲突流程，不静默覆盖。
+- [x] Idempotency：HTTP、MCP 和 provider 重试不会产生重复权威写入。
 
 ### 完成条件
 
@@ -616,6 +621,101 @@ client、schema 或配置项。
 - 不存在未记录的旧 API 或兼容路线；
 - 文档与可执行契约一致；
 - 可以从空数据目录按文档完成两条路线的验收。
+
+### Phase 7 实施记录
+
+- 状态：completed
+- 完成日期：2026-09-21
+- 主要变更：
+  - **删除无消费者的 gateway 模块**：`internal/gateway/memory`、`internal/gateway/feedback`、
+    `internal/gateway/knowledge`（含各自 `*_test.go`），以及
+    `internal/gateway/consolidation` 的入口服务层（`consolidation.go`、`ports.go`、
+    `service.go`、`service_test.go`）。`consolidation` 保留纯分类器
+    （`classifier.go`）与其 `Classifier`/`ClassifyRequest`/`Classification` 契约类型，
+    供存储层整合与可选 provider 分类使用。
+  - **删除无消费者的存储适配器**：`internal/storage/gateway_memory.go`、
+    `gateway_feedback.go`、`gateway_knowledge.go`、`gateway_consolidation.go`、
+    `gateway_uow.go`；`internal/storage/gateway_assert.go` 收敛为只断言有生产消费者的
+    端口（scope、recall、extraction、policy）；`internal/storage/gateway_adapters_test.go`
+    重写为只覆盖这些存活的适配器。`gateway_identity.go` 与 `gateway_errors.go` 保留，
+    因为它们仍被 Agent Tool、scope、recall、extraction、policy 适配器共享。
+  - **删除被取代的重复直接写入入口**：`Repository.Remember`、`Repository.ForgetMemory`
+    及其 `RememberParams`/`RememberResult`，以及从未接线的
+    `Repository.AppendCurrentFeedback`。Agent Tool 的 `commitAgentToolMemory`、
+    修订围栏遗忘与 `appendAgentToolFeedback` 是唯一写入路径；`Repository.Remember`
+    只被已删除的适配器调用，删除后未遗留不可达代码。
+  - **`internal/gateway/arch_test.go`** 更新当前 gateway 模块清单。
+  - **安全加固**：`internal/gateway/extraction` 新增原始事件输入边界
+    （`MaxContentRunes` 65536、`MaxReferenceURIRunes` 4096、`MaxMetadataKeys` 32、
+    `MaxMetadataDepth` 4、`MaxMetadataBytes` 16 KiB、`MaxJSONValueDepth` 8、
+    `MaxJSONValueNodes` 4096），并校验 `declared_hash` 形状与 `media_type` 长度；
+    metadata 校验只检查形状、不回显取值。`internal/gateway/agenttool/normalize.go`
+    的 `normalizeText` 改为 UTF-8 安全（`strings.ToValidUTF8`），使 canonical hash 与
+    FTS hint 投影不可能对同一输入产生分歧；`CanonicalFeedbackHash` 收回为包内函数。
+  - **新增 fuzz 目标**：`internal/protocol/httpapi/fuzz_test.go`
+    （`FuzzStrictBodyDecodingIsTotal`、`FuzzRecallWireMappingPreservesContractValues`、
+    `FuzzEventIngestBoundsAreEnforced`）、`internal/gateway/agenttool/fuzz_test.go`
+    （`FuzzCanonicalHashIsReplayStable`、`FuzzLocalReferencesResolveOrReject`、
+    `FuzzNormalizeTextIsSafeAndIdempotent`、`FuzzFeedbackAndForgetBoundsAreEnforced`）、
+    `internal/domain/fuzz_test.go`（`FuzzPredicateRegistryIsClosed`、
+    `FuzzPredicatePathPositionsAreKnown`、`FuzzRevisionWindowsRejectAmbiguousIntervals`、
+    `FuzzEvidenceOrderingIsTotal`）；崩溃输入保留为 `testdata/fuzz` 回归种子。
+  - **新增发布验收测试**：`internal/daemon/release_acceptance_test.go`
+    （Native client 闭环、Native/MCP 命令等价、响应丢失重试幂等、Agent 建议不静默
+    覆盖、Mixed 双路线不重复提取、Offline 重启保持 Tool Route 记忆、日志/审计/遥测
+    不泄露正文与 query），以及 `internal/gateway/extraction/service_test.go` 的
+    `TestIngestEnforcesInputBounds`。
+  - **文档**：重写 `docs/architecture/overview.md` 的模块表与依赖图、
+    `docs/architecture/processing.md` 的审核/整合边界（provider 分类未接线、审核无
+    协议入口）、`docs/architecture/domain-model.md` 的旧反馈 purpose 说明、
+    `docs/architecture/retrieval.md` 的 `skip_diversification` 与分页边界、
+    `docs/architecture/agent-tool-and-provider-routes.md` 的“已删除的旧流程”、
+    `docs/api/http-rest-contract.md`（状态、范围、Agent Tool 字段边界表、原始事件
+    边界表、传输加固表、recall 请求体例外）、`docs/api/usage.md`（补两条事件路由）、
+    `docs/api/mcp-server.md`（scope 懒 ensure）、`docs/README.md`、`README.md`、
+    `docs/architecture/phase-0-decisions-and-baseline.md`（明确标注历史基线）、
+    `docs/development/testing.md`（发布验收场景表、fuzz 目标、不存在的测试引用改为
+    真实等价覆盖）。同时删除 `internal/protocol/httpapi` 中“冻结路由集/冻结契约”的
+    表述。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `CGO_ENABLED=1 go test -race -tags sqlite_fts5 ./...`；
+  - `CGO_ENABLED=1 go vet -tags sqlite_fts5 ./...`；
+  - `make build`、`make test`、`make test-race`、`make vet`；
+  - `make schema-check`、`make quality`、`make offline-default`、`make config-check`、
+    `make restore-drill`、`make portability-drill`、`make mcp-check`；
+  - fuzz 探索：`httpapi` 三个目标（20s/15s）与 `agenttool`、`domain` 各目标
+    （10–25s），无失败输入；
+  - `git diff --check`；全部通过。
+- 删除内容：`internal/gateway/{memory,feedback,knowledge}` 三个包；
+  `internal/gateway/consolidation/{consolidation,ports,service,service_test}.go`；
+  `internal/storage/{gateway_memory,gateway_feedback,gateway_knowledge,gateway_consolidation,gateway_uow}.go`；
+  `Repository.Remember`、`Repository.ForgetMemory`、`Repository.AppendCurrentFeedback`、
+  `RememberParams`、`RememberResult`；`CanonicalFeedbackHash` 导出名；HTTP 适配器的
+  “冻结路由/冻结契约”措辞；`docs/development/testing.md` 中五个不存在的测试引用与
+  不存在的 `heldProcessor` 引用。
+- 遗留问题：
+  - 审核、冲突解决与整合的存储层能力（`ConfirmCandidate`、`RejectCandidate`、
+    `ConfirmEntityProposal`、`ConfirmFactProposal`、`ConfirmEvolutionProposal`、
+    `ConfirmAggregateProposal`、`ResolveConflict`、`GetConsolidationDecision`）目前
+    只有存储层测试消费者；它们的领域不变量、触发器和幂等语义完整保留，但没有 HTTP
+    或 MCP 入口。目标架构要求审核存在，具体入口属于后续审核阶段。
+  - `consolidation.Classifier` 端口与 `SetConsolidationClassifier` 已实现但没有生产者
+    接线，因此分类当前只走确定性路径（`consolidation-v1`）。
+  - Agent Tool 的 `agent_tool_proposals` 只持久化审核对象，尚未物化到
+    entity/fact/relation 权威。
+  - `Repository` 中仍有若干低层能力只被存储层测试或派生维护流程消费
+    （例如 `ChangeMemoryState`、`ReviseMemory`、`SearchMemories`、`CreateMemory`、
+    `CreateFTSRebuildJob` 等索引/调和入口）。它们服务于维护、恢复、可移植性与
+    固定检索门禁，属于目标架构要求保留的能力，因此本阶段不删除。
+  - `internal/server/e2e_test.go` 与 `daemon.StartStaging` 保留：它们是
+    `internal/server` 包测试与恢复 staging probe 的真实运行路径，不是独立端到端
+    测试体系。
+- 下一阶段前置条件：全局完成标准已满足，双路线架构收敛完成。后续工作应在既有
+  契约上推进，不新增第三条路线：审核/冲突的协议入口（若需要）、Agent Tool proposal
+  向 entity/fact/relation 权威的物化、以及可选 Agent embedding adapter（仅当出现
+  真实宿主支持时，前置条件见 Phase 6 决策）。
 
 ## 跨阶段测试矩阵
 

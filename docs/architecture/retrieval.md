@@ -120,7 +120,8 @@ score = 加权主召回分数 + 有界图谱提升 + 反馈信号 - 惩罚项
   token 格式版本 `context-tokens-v1`）。
 
 过时聚合默认被排除在召回之外；显式调试包含会报告过时原因与溯源，而不是带警告
-返回。请求可以通过 `skip_diversification` 关闭多样化。
+返回。`skip_diversification` 关闭多样化只是**内部存储层**的召回参数，用于诊断与
+测试；Agent Tool v1 契约不暴露任何内部通道或流程开关。
 
 ## 游标与分页
 
@@ -128,9 +129,16 @@ score = 加权主召回分数 + 有界图谱提升 + 反馈信号 - 惩罚项
 成员关系（语料 generation）、排序、图谱、上下文与反馈；此外还绑定结果上限、
 字符上限、参考时间与上一次分数。
 
-generation 变化会使旧游标失效，而不是在已变化的成员关系上继续。分页约定为
-`limit`（1–200，默认 50）与不透明 `cursor`，列表响应形状为
-`{"items": [...], "next_cursor": ...}`。
+generation 变化会使旧游标失效，而不是在已变化的成员关系上继续。
+
+分页约定按调用面区分：
+
+| 调用面 | `limit` | 默认 | 响应形状 |
+| --- | --- | --- | --- |
+| `dmem_recall`（Agent Tool v1） | 1–100 | 10 | `{operation_id, memories, degraded_capabilities, next_cursor}` |
+| 内部 `gateway.PageRequest`（管理/列表查询） | 1–200 | 50 | `{"items": [...], "next_cursor": ...}` |
+
+Agent 工具面不暴露内部管理列表，因此不返回 `items` 包裹形状。
 
 ## 降级与结果校验
 

@@ -41,8 +41,8 @@ const (
 	IdempotencyRequired IdempotencyPolicy = "required"
 )
 
-// Route body limits, in bytes. Read routes declare no body. The values are part
-// of the frozen contract in docs/api/http-rest-contract.md.
+// Route body limits, in bytes. Read routes declare no body. The values are
+// documented in docs/api/http-rest-contract.md as current implemented behavior.
 const (
 	MaxScopeBodyBytes        int64 = 64 << 10
 	MaxMemoryCommitBodyBytes int64 = 1 << 20
@@ -79,9 +79,10 @@ type Dependencies struct {
 	Events     ExtractionService
 }
 
-// RouteInfo is the declarative, inspectable metadata of one frozen route. It is
-// returned by Handler.Routes and is the source of truth for route conformance
-// tests.
+// RouteInfo is the declarative, inspectable metadata of one implemented route.
+// It is returned by Handler.Routes and is the source of truth for route
+// conformance tests. The route set is the current implementation, not a frozen
+// external contract: paths and DTOs may change until the project is released.
 type RouteInfo struct {
 	// Operation is the stable gateway operation name.
 	Operation gateway.OperationName
@@ -106,7 +107,7 @@ type handlerFunc func(*exchange, routeParams)
 // routeParams holds the decoded path parameters of one request.
 type routeParams map[string]string
 
-// route couples frozen metadata with the implementation that serves it.
+// route couples route metadata with the implementation that serves it.
 type route struct {
 	RouteInfo
 	handle handlerFunc

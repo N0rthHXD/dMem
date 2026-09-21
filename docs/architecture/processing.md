@@ -54,7 +54,15 @@ invalid_output 直接终止，避免永久错误被无差别重试。
 ## 候选与整合
 
 抽取产生候选，候选在确认或拒绝之前是独立的审核对象。整合
-（consolidation）把新候选与现有修订比较，产生以下动作之一：
+（consolidation）把新候选与现有修订比较，产生以下动作之一。
+
+> **当前实现边界**：`internal/gateway/consolidation` 现在只提供纯分类器
+> （`classifier.go`）与 `Classifier` 端口。其入口服务（`Confirm`/`Reject`/
+> `Decision` 命令）在 Phase 7 被删除，因为没有任何协议入口消费它；候选的确认与
+> 拒绝目前只能由存储层的 `Repository.ConfirmCandidate`/`RejectCandidate` 执行，
+> 并由存储层测试覆盖。Agent Tool 提交的知识建议不进入候选表，而是持久化为
+> `agent_tool_proposals` 审核对象。因此“进入审核队列”描述的是权威状态，不代表
+> 当前存在审核 API。
 
 | 动作 | 含义 |
 | --- | --- |
@@ -65,18 +73,24 @@ invalid_output 直接终止，避免永久错误被无差别重试。
 | `create` | 创建新记忆。 |
 | `reject` | 拒绝候选。 |
 
-分类可以是确定性的（`consolidation-v1`）或由 provider 给出。确定性分类使用
-精确哈希与余弦阈值（默认同一来源事件 0.90、同一主体与 kind 0.94），候选上限为
-32。余弦阈值本身永不取代、争议或删除任何内容；它们只产生建议，破坏性变更仍需
-审核。
+确定性分类已实现并生效（`consolidation-v1`）：使用精确哈希与余弦阈值（默认同一
+来源事件 0.90、同一主体与 kind 0.94），候选上限为 32。余弦阈值本身永不取代、
+争议或删除任何内容；它们只产生建议，破坏性变更仍需审核。
+
+可选 provider 分类**尚未接线**：`consolidation.Classifier` 端口与
+`Repository.SetConsolidationClassifier` 存在，且 `ValidateProviderProposal` 会拒绝
+在没有确定性冲突的情况下提出的破坏性动作，但当前没有任何类型实现该端口，也没有
+任何生产者调用 `SetConsolidationClassifier`。在出现真实消费者前，分类只走确定性
+路径。
 
 ## 审核与自动确认
 
 实体、别名、提及、记忆关系、实体事实、演化提案与聚合提案各自拥有独立的提案
-资源与审核记录。提案字段不可变，审核状态是终态，记录不可删除。
+资源与审核记录。提案字段不可变，审核状态是终态，记录不可删除。这些都由 schema
+触发器与存储层评审方法强制，不依赖任何协议入口。
 
 满足封闭自动确认策略的图谱事实可以自动确认，并记录 `auto-review-v1` 规则版本；
-其余进入待审核队列。谓词的自动确认策略取值为 `never`、`exact_match` 或
+其余记录为待审核状态。谓词的自动确认策略取值为 `never`、`exact_match` 或
 `threshold`，并受谓词自身的最低置信度约束。
 
 没有任何置信度阈值会自动确认演化提案。模型置信度不能自主修订或删除记忆。

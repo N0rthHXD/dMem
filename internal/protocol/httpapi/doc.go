@@ -14,7 +14,7 @@
 // a listener, an http.Server, or a TLS configuration; enforcing HTTP/2 is the
 // responsibility of the future server layer.
 //
-// The wire contract is frozen in docs/api/http-rest-contract.md. Routes are
-// declared as inspectable metadata so contract conformance can be tested without
-// exercising every handler.
+// The implemented wire contract is documented in docs/api/http-rest-contract.md.
+// Routes are declared as inspectable metadata so conformance can be tested
+// without exercising every handler.
 package httpapi

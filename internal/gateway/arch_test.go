@@ -25,17 +25,16 @@ var forbiddenImports = []string{
 
 // gatewayPackages is the expected set of direct gateway module packages. The
 // test fails if a package is missing so the dependency check cannot pass
-// vacuously.
+// vacuously. Phase 7 removed the consumerless `memory`, `feedback`, and
+// `knowledge` modules and the consolidation entry service; the Agent Tool Route
+// owns those domain commands through a single atomic application surface.
 var gatewayPackages = []string{
 	"",
-	"memory",
 	"scope",
-	"feedback",
 	"retrieval",
 	"extraction",
 	"policy",
 	"consolidation",
-	"knowledge",
 	"agenttool",
 }
 

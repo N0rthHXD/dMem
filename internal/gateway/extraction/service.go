@@ -2,7 +2,9 @@ package extraction
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -117,12 +119,65 @@ func validateIngest(command IngestCommand) error {
 	if _, err := time.Parse(time.RFC3339, command.OccurredAt); err != nil {
 		return errors.New("occurred_at must be RFC3339")
 	}
+	if err := validateMetadata(command.Metadata, 1); err != nil {
+		return err
+	}
 	return validateContent(command.Content)
+}
+
+// validateMetadata bounds the shape of caller-supplied event metadata. It never
+// inspects or echoes values, so a rejected payload cannot leak through an error
+// message.
+func validateMetadata(value any, depth int) error {
+	if value == nil {
+		return nil
+	}
+	if depth > MaxMetadataDepth {
+		return errors.New("metadata exceeds maximum depth")
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		if len(typed) > MaxMetadataKeys {
+			return errors.New("metadata has too many keys")
+		}
+		for key, child := range typed {
+			if utf8.RuneCountInString(key) < 1 || utf8.RuneCountInString(key) > 128 {
+				return errors.New("metadata key length must be between 1 and 128")
+			}
+			if err := validateMetadata(child, depth+1); err != nil {
+				return err
+			}
+		}
+	case []any:
+		if len(typed) > MaxMetadataKeys {
+			return errors.New("metadata array is too large")
+		}
+		for _, child := range typed {
+			if err := validateMetadata(child, depth+1); err != nil {
+				return err
+			}
+		}
+	case string, bool, nil, json.Number:
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return errors.New("metadata number must be finite")
+		}
+	default:
+		return errors.New("metadata contains an unsupported value")
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) > MaxMetadataBytes {
+		return errors.New("metadata exceeds encoded size limit")
+	}
+	return nil
 }
 
 func validateContent(content domain.Content) error {
 	if content.MediaType == "" {
 		return errors.New("content.media_type is required")
+	}
+	if utf8.RuneCountInString(content.MediaType) > 128 {
+		return errors.New("content.media_type is too long")
 	}
 	if content.DeclaredSize != nil && *content.DeclaredSize < 0 {
 		return errors.New("declared_size must not be negative")
@@ -132,18 +187,86 @@ func validateContent(content domain.Content) error {
 		if content.ReferenceURI != "" || content.DeclaredSize != nil || content.DeclaredHash != "" {
 			return errors.New("text content contains incompatible fields")
 		}
+		if utf8.RuneCountInString(content.Text) == 0 {
+			return errors.New("text content must not be empty")
+		}
+		if utf8.RuneCountInString(content.Text) > MaxContentRunes {
+			return errors.New("content.text exceeds the maximum length")
+		}
 	case "json":
 		if content.Value == nil || content.Text != "" || content.ReferenceURI != "" || content.DeclaredSize != nil || content.DeclaredHash != "" {
 			return errors.New("json content requires value only")
+		}
+		if err := validateJSONValue(content.Value, 1, new(int)); err != nil {
+			return err
 		}
 	case "reference":
 		if content.ReferenceURI == "" || content.Text != "" || content.Value != nil {
 			return errors.New("reference content requires reference_uri")
 		}
+		if utf8.RuneCountInString(content.ReferenceURI) > MaxReferenceURIRunes {
+			return errors.New("content.reference_uri exceeds the maximum length")
+		}
+		if content.DeclaredHash != "" && !validDeclaredHash(content.DeclaredHash) {
+			return errors.New("declared_hash must be a hex digest")
+		}
 	default:
 		return errors.New("unsupported content kind")
 	}
 	return nil
+}
+
+// validateJSONValue bounds embedded JSON content by depth and total node count.
+// It accepts exactly the values a JSON decoder produces for a decoded body.
+func validateJSONValue(value any, depth int, nodes *int) error {
+	if depth > MaxJSONValueDepth {
+		return errors.New("json content exceeds maximum depth")
+	}
+	*nodes++
+	if *nodes > MaxJSONValueNodes {
+		return errors.New("json content has too many values")
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if utf8.RuneCountInString(key) > 128 {
+				return errors.New("json content key is too long")
+			}
+			if err := validateJSONValue(child, depth+1, nodes); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := validateJSONValue(child, depth+1, nodes); err != nil {
+				return err
+			}
+		}
+	case string, bool, nil, json.Number:
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return errors.New("json content number must be finite")
+		}
+	default:
+		return errors.New("json content contains an unsupported value")
+	}
+	return nil
+}
+
+// validDeclaredHash accepts an optional declared content digest. Only the shape
+// is validated: dMem records the reference and never fetches or verifies it.
+func validDeclaredHash(value string) bool {
+	if len(value) < 32 || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		switch {
+		case char >= '0' && char <= '9', char >= 'a' && char <= 'f', char >= 'A' && char <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeError(err error) error {

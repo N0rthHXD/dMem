@@ -7,6 +7,10 @@
 可执行形式。项目尚未发布，本文档不是外部兼容性承诺；路径、DTO 和状态码可在后续
 阶段按目标架构调整。
 
+Phase 7 已从路由注释、测试名与文档中移除“冻结路由集”的表述：当前九条路由是**已
+实现行为**，不是冻结契约，也不是旧九条路由的延续。唯一仍然稳定的是
+`pkg/toolcontract` 的版本化 v1 schema 与各模块发布的稳定操作名。
+
 线格式（wire DTO 与 JSON Schema）的唯一来源是 `pkg/toolcontract`。HTTP 适配器只做
 严格解码、协议中立命令映射和错误转换，不拥有领域语义。`internal/server` 是生产
 传输层：它在回环 TCP 地址上监听，可选终止 TLS 并通过 ALPN 协商 HTTP/2，并优雅
@@ -21,8 +25,8 @@ Phase 2 删除。Phase 5 重新引入 Provider Route 的原始事件入口
 
 包含：
 
-- `/v1` 下的九条 application 路由：七条 Agent Tool/scope 路由加两条 Provider Route
-  原始事件路由；
+- `/v1` 下当前已实现的九条 application 路由：七条 Agent Tool/scope 路由加两条
+  Provider Route 原始事件路由；
 - 这些路由的请求与响应 DTO（Agent Tool 路由来自 `pkg/toolcontract/schema/v1`，
   事件路由是协议本地 DTO）；
 - 请求标识、调用方身份与幂等请求头；
@@ -33,7 +37,9 @@ Phase 2 删除。Phase 5 重新引入 Provider Route 的原始事件入口
 不包含，且有意从本契约中排除：
 
 - h2c 与 socket 生命周期；
-- 认证、网络边缘授权、限流或任何网络安全边界；
+- 认证、网络边缘授权、限流或任何网络安全边界。当前实现**没有认证**：
+  默认监听地址是回环地址 `127.0.0.1:7373`，绑定到非回环地址时
+  `internal/server` 会记录一条明确的警告，运维必须自行提供网络边缘保护；
 - 候选审核、作业控制、索引重建、配置重载、图谱维护或任何其他管理操作；
 - 面向 Claude、OpenCode 或其他具体客户端的路由、DTO 或行为。所有路由都是
   调用方中立、客户端中立的。
@@ -115,7 +121,28 @@ Phase 2 删除。Phase 5 重新引入 Provider Route 的原始事件入口
 ## DTO 与语义
 
 字段、枚举、数组与字符串上限由 `pkg/toolcontract/schema/v1` 的 JSON Schema 定义。
-适配器先做 schema 校验，再做严格单值解码，然后映射为协议中立 gateway 命令。
+适配器先做 schema 校验，再做严格单值解码，然后映射为协议中立 gateway 命令。Schema
+是唯一定义来源，下表是便于评审的摘要（`internal/gateway/agenttool/contract.go`）：
+
+| 字段 | 边界 |
+| --- | --- |
+| `query` | 1–4096 runes |
+| `scope_ids` | 1–32 项，每项 ≤128 runes，无重复 |
+| `entities`（recall hints） | ≤32 项，每项 ≤256 runes，无重复 |
+| `limit`（recall） | 1–100，省略时默认 10 |
+| `cursor` | ≤4096 runes |
+| `memories` | 1–32 项，`local_id` 唯一且 ≤128 runes |
+| `memories[].content` | 1–4096 runes |
+| `memories[].search_hints` | ≤16 项，每项 1–256 runes |
+| `entities`（commit） | ≤256 项，`aliases` ≤16 项 |
+| `facts` / `relations` | 各 ≤256 项，`local_id` 唯一 |
+| `confidence` / `specificity` | `[0, 1]` 且必须有限（NaN/Inf 被拒绝） |
+| `source.metadata` | 深度 ≤4，每层 ≤32 键，编码 ≤16 KiB，键 ≤128 runes |
+| `reason`（feedback/forget） | feedback ≤1024 runes 可选；forget 1–1024 runes 必填 |
+| 全请求体 | 见上面的路由表（1 MiB / 256 KiB / 64 KiB） |
+
+`dmem_remember` 不接受 `confirmed`、`skip_policy` 或 `skip_review`；未知字段一律
+返回 `400 invalid_json`。
 
 ### `GET /v1/capabilities`
 
@@ -251,6 +278,22 @@ Provider Route 原始事件入口。请求包含 scope、来源与内容：
 `content.kind` 封闭为 `text`、`json`、`reference`；`json` 使用 `content.value`，
 `reference` 使用 `content.reference_uri` 与可选的 `declared_size`/`declared_hash`。
 
+原始事件输入边界由 `internal/gateway/extraction` 强制（协议适配器只额外限制请求体
+大小），因此任何入口提交的事件都是有界的：
+
+| 边界 | 值 | 行为 |
+| --- | --- | --- |
+| 请求体 | 1 MiB | 超限返回 `413 request_too_large`。 |
+| `content.text` | 1–65536 runes | 空或超限返回 `422 invalid_input`。 |
+| `content.media_type` | 1–128 runes | 必填，超限被拒绝。 |
+| `content.reference_uri` | 1–4096 runes | 超限被拒绝。 |
+| `content.declared_hash` | 32–128 位十六进制 | 只校验形状，dMem 不抓取也不校验引用目标。 |
+| `content.value`（JSON） | 深度 ≤ 8，节点 ≤ 4096 | 超限被拒绝。 |
+| `source.metadata` | 深度 ≤ 4，每层 ≤ 32 键，编码 ≤ 16 KiB | 非有限数值与不支持类型被拒绝。 |
+
+`source.metadata` 校验只检查形状，不读取、不回显取值，因此被拒绝的载荷不会通过
+错误消息泄露。
+
 响应 `202` 返回：
 
 ```json
@@ -278,7 +321,27 @@ Provider Route 原始事件入口。请求包含 scope、来源与内容：
 5. 字段类型不匹配或不符合 `pkg/toolcontract` schema 返回 `400 invalid_json`。
 6. 数字使用 `json.Number` 解码，整数值不会经过 `float64` 舍入。
 
-读路由不解析请求体；非空请求体返回 `400 unexpected_body`。
+不接受请求体的读路由不解析请求体；非空请求体返回 `400 unexpected_body`。`POST
+/v1/recall` 是读语义但接受有界请求体，因为查询意图本身需要表达。
+
+严格解码与边界由测试和 fuzz 目标共同固定：`internal/protocol/httpapi` 的
+`FuzzStrictBodyDecodingIsTotal`、`FuzzRecallWireMappingPreservesContractValues` 与
+`FuzzEventIngestBoundsAreEnforced` 证明任意字节输入要么完整映射为协议中立命令，
+要么以有界协议错误拒绝，且错误响应不回显请求体。
+
+## 传输加固
+
+| 项 | 值 | 说明 |
+| --- | --- | --- |
+| 默认监听地址 | `127.0.0.1:7373` | 回环，见 `[server].listen_address`。 |
+| `ReadHeaderTimeout` | 10s | 防止慢速请求头耗尽连接。 |
+| `ReadTimeout` | 30s | 覆盖请求体读取。 |
+| `WriteTimeout` | 30s | 覆盖响应写出。 |
+| `IdleTimeout` | 120s | keep-alive 空闲上限。 |
+| `MaxHeaderBytes` | 1 MiB | 请求头硬上限。 |
+| 优雅关闭 | 15s（可配置） | `[server].shutdown_grace_period`。 |
+| TLS | 可选，最低 TLS 1.2 | 证书与私钥必须同时提供，且必须是普通文件。 |
+| 认证 | **未实现** | 非回环绑定时记录警告；运维必须提供网络边缘保护。 |
 
 ## 错误模型
 

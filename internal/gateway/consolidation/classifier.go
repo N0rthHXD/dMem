@@ -1,6 +1,7 @@
 package consolidation
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"sort"
@@ -8,6 +9,28 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 )
+
+// Classifier is the optional, policy-gated provider boundary for candidates the
+// deterministic rules leave unresolved. Its result is a proposal, never an
+// authority change.
+type Classifier interface {
+	Classify(context.Context, ClassifyRequest) (Classification, error)
+}
+
+// ClassifyRequest is the bounded classifier input.
+type ClassifyRequest struct {
+	Candidate domain.MemoryRevision
+	Neighbors []Neighbor
+}
+
+// Classification is a provider-proposed consolidation decision.
+type Classification struct {
+	Action     domain.ConsolidationAction
+	ReasonCode string
+	MemoryID   string
+	RevisionID string
+	Similarity *float64
+}
 
 // Rules are the versioned deterministic consolidation thresholds that classify a
 // structured candidate against existing memory revisions. They are a

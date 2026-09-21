@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// Protocol header names. They are part of the frozen contract and are never
+// Protocol header names. They are part of the wire contract and are never
 // Agent-specific.
 const (
 	requestIDHeader     = "X-Request-ID"
