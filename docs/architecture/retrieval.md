@@ -41,12 +41,25 @@ PreparePrimary -> ExpandGraph -> RankingInput -> Rank
 
 关键词与语义是相互独立的主召回信号：
 
-- **关键词**：SQLite FTS5。查询文本被编译为 FTS 表达式（`keyword-compiler-v2`），
+- **关键词**：SQLite FTS5。查询文本被编译为 FTS 表达式（`keyword-compiler-v3`），
   而不是直接透传用户输入。`memory_fts` 有两个受索引字段：`content` 保存
   canonical retrieval document，`hints` 保存受 revision 约束的 Agent Tool
   search hints 投影（`canonical-search-hints-v1`）。字段来源保持区分：hint 永不
   进入 canonical document、embedding 输入或 exact-match 判定，explain 只报告
   `content` / `hints` 字段名而不返回 hint 文本。
+  编译出的 FTS 表达式与**字面子串 fallback 并联执行**：trigram tokenizer 无法
+  表示的 1–2 rune 词（CJK unigram/bigram 与短拉丁词）由 `display_content` /
+  hint 的字面匹配召回，两条通路在同一快照上运行、按 revision 去重合并，FTS 的
+  BM25 顺序优先。字面通路没有 BM25，因此按编译词的命中覆盖数排序，再按
+  `updated_at` 与 memory id 决胜。二者不能互斥：一旦以「FTS 表达式为空」作为
+  fallback 的唯一开关，含拉丁词的中英混合查询会丢掉其中的中文词。
+- **中文精确层**：trigram 不尊重词边界，OR-of-trigrams 会召回仅与查询某个片段
+  共享 3 字窗口的记忆（「数据库连接池的负责人」也会召回「数据库连接池：暂停
+  两周」）。编译器用封闭类中文虚词把查询切成**内容片段**
+  （`CompileQuerySegments`，无词典、无模型）。当查询确实被切分（≥2 个片段，且至少
+  一个 rune 落在片段之外）时，只有覆盖全部片段的候选进入结果集
+  （`preciseKeywordSet`）；若没有候选覆盖全部片段，则保留完整宽召回，**召回不会
+  塌陷为 0**。无法切分的查询（无双片段边界，如「上海产品评审会议」）行为不变。
 - **语义**：embedding 以紧凑 `float32` BLOB 存储在权威表 `memory_embeddings`
   中，通过静态链接的 sqlite-vec 做精确余弦检索。语义执行需要已配置的 embedding
   provider 和可用的语义索引。
@@ -176,7 +189,7 @@ Agent 工具面不暴露内部管理列表，因此不返回 `items` 包裹形�
 | 向量空间 | `compatibility_identity` = provider/model 标记 + `dimensions` + 文档/查询格式 + canonical document 版本，哈希为 `sha256:` |
 | Embedding 作业身份 | `<provider>/<model>#<compatibility_identity>` |
 | 语义校准 | `semantic-calibration-v1`（floor 0.35，margin 0.08） |
-| 关键词编译器 | `keyword-compiler-v2` |
+| 关键词编译器 | `keyword-compiler-v3` |
 | Search hints 投影 | `canonical-search-hints-v1`（`memory_fts.hints`） |
 | 谓词注册表 | `predicate-registry-v2` |
 | 图谱抽取/评分 | `graph-typed-v1` / `graph-scoring-v3`；`auto-review-v1`、`entity-graph-statistics-v2` |
@@ -206,7 +219,15 @@ Agent 工具面不暴露内部管理列表，因此不返回 `items` 包裹形�
   可用产品路径，而非仅存储降级模式：固定 Agent Tool 语料（同义表达、实体别名、
   时间、偏好、决策和程序性记忆）在无 embedding 时通过
   `internal/storage/testdata/agent-tool-recall-corpus-v1.json` 门禁，要求 macro
-  Recall@10 ≥ 0.80、canonical exact recall = 1.0、兄弟 scope 污染 = 0。
+  Recall@10 ≥ 0.80、canonical exact recall = 1.0、兄弟 scope 污染 = 0。语料含中文
+  文档与查询（纯 CJK、1–2 rune 短词、中英混排），并由
+  `TestAgentToolRecallEveryQueryHitsTopK` 补充逐查询召回必须为 1.0 的硬断言，
+  防止某个中文查询被 macro 平均值吸收。
+- 中文关键词召回以字面匹配为基础：精确层消除了跨词边界的误召回，但 trigram
+  tokenizer 仍不能桥接同义改写，无词典切分也无法处理词序变化（「评审会议产品」
+  vs「产品评审会议」）；provider 未配置时也没有 hint 投影可依赖。进一步提升需要
+  引入真正的分词器并做索引级改造（全量重建 + `index_version` 递增），目前不作为
+  默认路径。
 - 实体名称、别名与 typed graph expansion 不依赖 embedding，但需要已构建的
   entity/relation/graph 索引；默认 `features_only` 图谱策略只加分不新增候选，
   新增候选需要显式放宽图谱策略。

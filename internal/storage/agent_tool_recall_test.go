@@ -460,6 +460,29 @@ func TestAgentToolRecallQualityFixedCorpus(t *testing.T) {
 	}
 }
 
+// TestAgentToolRecallEveryQueryHitsTopK is the strict per-query companion to the
+// macro gate. The macro average can absorb a query that recall misses entirely:
+// every query in the fixed corpus must recall all of its relevant documents
+// within the recall window. Chinese queries in particular depend on the literal
+// substring path, which a single failed query used to be able to hide behind the
+// macro average.
+func TestAgentToolRecallEveryQueryHitsTopK(t *testing.T) {
+	corpus, gates := loadAgentToolRecallEvaluation(t)
+	repository, docIDs := agentToolRecallFixture(t, corpus)
+
+	for _, query := range corpus.Queries {
+		relevant := make(map[string]bool, len(query.Relevant))
+		for _, id := range query.Relevant {
+			relevant[docIDs[id]] = true
+		}
+		ids := agentToolRecallIDs(t, repository, query.Text, []string{corpus.PrimarySpace}, gates.Quality.RecallK)
+		if recall := recallAtK(ids, relevant); recall < 1 {
+			t.Fatalf("query %q recall@%d = %.3f, want 1.0 (recalled=%v relevant=%v)",
+				query.Text, gates.Quality.RecallK, recall, ids, query.Relevant)
+		}
+	}
+}
+
 // TestAgentToolRecallSiblingContaminationZero proves hinted sibling scopes never
 // leak into recall across keyword or graph execution.
 func TestAgentToolRecallSiblingContaminationZero(t *testing.T) {

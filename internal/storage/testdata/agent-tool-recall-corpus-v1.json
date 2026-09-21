@@ -68,6 +68,38 @@
       "exact_identifier": "PostgreSQL"
     },
     {
+      "id": "cjk-short-name",
+      "space": "primary",
+      "kind": "fact",
+      "content": "张伟负责支付网关的日常维护。",
+      "hints": ["支付负责人"],
+      "exact_identifier": "张伟"
+    },
+    {
+      "id": "cjk-mixed-term",
+      "space": "primary",
+      "kind": "procedure",
+      "content": "灰度发布流程参考 deploy 手册执行。",
+      "hints": ["发布步骤"],
+      "exact_identifier": "deploy"
+    },
+    {
+      "id": "cjk-temporal",
+      "space": "primary",
+      "kind": "event",
+      "content": "产品评审会议定于 2026-09-30 举行。",
+      "hints": ["评审安排"],
+      "exact_identifier": "2026-09-30"
+    },
+    {
+      "id": "cjk-decision",
+      "space": "primary",
+      "kind": "plan",
+      "content": "团队决定将数据库连接池上限调整为 200。",
+      "hints": ["扩容方案"],
+      "exact_identifier": "200"
+    },
+    {
       "id": "sibling-private",
       "space": "sibling",
       "kind": "fact",
@@ -89,6 +121,11 @@
     {"id": "q-budget-hint", "text": "spending limit", "relevant": ["synonym-budget"]},
     {"id": "q-timezone-hint", "text": "time zone preference", "relevant": ["pref-timezone"]},
     {"id": "q-cjk-hint", "text": "数据存储", "relevant": ["cjk-preference"]},
-    {"id": "q-cjk-short", "text": "存储", "relevant": ["cjk-preference"]}
+    {"id": "q-cjk-short", "text": "存储", "relevant": ["cjk-preference"]},
+    {"id": "q-cjk-short-name", "text": "支付负责人", "relevant": ["cjk-short-name"]},
+    {"id": "q-cjk-mixed", "text": "灰度 deploy", "relevant": ["cjk-mixed-term"]},
+    {"id": "q-cjk-temporal", "text": "产品评审会议", "relevant": ["cjk-temporal"]},
+    {"id": "q-cjk-decision", "text": "数据库连接池上限", "relevant": ["cjk-decision"]},
+    {"id": "q-cjk-verbatim", "text": "手册", "relevant": ["cjk-mixed-term"]}
   ]
 }

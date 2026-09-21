@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,17 +45,68 @@ func compileKeyword(input string) retrieval.KeywordQuery {
 	return retrieval.CompileKeyword(input)
 }
 
-// keywordRecall performs bounded FTS recall with all eligibility filters applied
-// before the top-k cut. It returns raw BM25, matched content, and the revision
-// fields needed for temporal and quality features.
+// keywordRecall performs bounded keyword recall with all eligibility filters
+// applied before the top-k cut. It returns raw BM25, matched content, and the
+// revision fields needed for temporal and quality features.
+//
+// The compact FTS expression and the literal substring fallback run as parallel
+// recall paths over one snapshot: the FTS path keeps deterministic BM25 order,
+// and short terms that cannot form a trigram are served by the literal path and
+// merged in behind it. Deriving the fallback from "Match == empty" instead would
+// silently drop the CJK terms of a mixed Chinese/latin query and the 1-2 rune
+// terms of any query that also contains a longer term.
 func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, limit int) ([]searchCandidate, error) {
 	compiled := compileKeyword(params.Query)
 	if !compiled.Searchable {
 		return nil, nil
 	}
-	if compiled.Match == "" {
-		return r.keywordSubstringRecall(ctx, tx, params, spaces, compiled.ShortTerms, limit)
+	var candidates []searchCandidate
+	var err error
+	if compiled.Match != "" {
+		candidates, err = r.keywordMatchRecall(ctx, tx, params, spaces, compiled, limit)
+		if err != nil {
+			return nil, err
+		}
 	}
+	if len(compiled.ShortTerms) == 0 {
+		return candidates, nil
+	}
+	remaining := limit - len(candidates)
+	if remaining < 1 {
+		remaining = 1
+	}
+	short, err := r.keywordSubstringRecall(ctx, tx, params, spaces, compiled, remaining)
+	if err != nil {
+		return nil, err
+	}
+	return mergeShortTermCandidates(candidates, short), nil
+}
+
+// mergeShortTermCandidates appends literal fallback candidates that FTS did not
+// already return. The FTS order is authoritative, so a candidate that matched
+// both paths keeps its matched path position and its BM25-derived rank.
+func mergeShortTermCandidates(matched, short []searchCandidate) []searchCandidate {
+	if len(short) == 0 {
+		return matched
+	}
+	seen := make(map[string]struct{}, len(matched)+len(short))
+	for i := range matched {
+		seen[matched[i].memoryID+"\x00"+matched[i].revisionID] = struct{}{}
+	}
+	merged := matched
+	for i := range short {
+		key := short[i].memoryID + "\x00" + short[i].revisionID
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, short[i])
+	}
+	return merged
+}
+
+// keywordMatchRecall executes the compiled FTS5 expression.
+func (r *Repository) keywordMatchRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, compiled retrieval.KeywordQuery, limit int) ([]searchCandidate, error) {
 	query := `WITH ranked AS (
 		SELECT f.memory_id, f.revision_id, f.content, coalesce(f.hints,'') AS hints, p.display_content, p.updated_at, p.content_hash, p.memory_type, rv.confidence,
 			rv.event_time_start, rv.event_time_end, rv.time_precision, rv.time_source, rv.source_speaker, rv.language,
@@ -108,15 +160,19 @@ func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params Searc
 		if !finiteOrReject(item.keywordRaw) {
 			return nil, ErrInvalidSearchQuery
 		}
-		applyKeywordMatchFields(&item, compiled.Terms)
+		applyKeywordMatchFields(&item, compiled)
 		candidates = append(candidates, item)
 	}
 	return candidates, rows.Err()
 }
 
 // keywordSubstringRecall serves terms too short for the trigram tokenizer (CJK
-// unigram/bigram and short latin tokens) with a literal substring match.
-func (r *Repository) keywordSubstringRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, terms []string, limit int) ([]searchCandidate, error) {
+// unigram/bigram and short latin tokens) with a literal substring match. The
+// literal clauses come from the compiled short terms, while coverage ranking
+// counts every compiled term so a candidate that also covers a longer query term
+// is preferred.
+func (r *Repository) keywordSubstringRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, compiled retrieval.KeywordQuery, limit int) ([]searchCandidate, error) {
+	terms := compiled.ShortTerms
 	if len(terms) == 0 {
 		return nil, nil
 	}
@@ -126,7 +182,8 @@ func (r *Repository) keywordSubstringRecall(ctx context.Context, tx *sql.Tx, par
 		clauses = append(clauses, `(lower(p.display_content) LIKE '%'||?||'%' OR EXISTS (SELECT 1 FROM agent_tool_search_hints h WHERE h.revision_id=p.revision_id AND lower(h.hint) LIKE '%'||?||'%'))`)
 		args = append(args, strings.ToLower(term), strings.ToLower(term))
 	}
-	query := `SELECT p.memory_id, p.revision_id, p.display_content, p.updated_at, p.content_hash, p.memory_type, rv.confidence,
+	query := `SELECT p.memory_id, p.revision_id, p.display_content,
+		coalesce((SELECT f.content FROM memory_fts f WHERE f.memory_id=p.memory_id AND f.revision_id=p.revision_id), ''), p.updated_at, p.content_hash, p.memory_type, rv.confidence,
 		rv.event_time_start, rv.event_time_end, rv.time_precision, rv.time_source, rv.source_speaker, rv.language,
 		rv.valid_from, rv.valid_until,
 		coalesce((SELECT group_concat(h.hint, char(10)) FROM agent_tool_search_hints h WHERE h.revision_id=p.revision_id), '')
@@ -156,17 +213,36 @@ func (r *Repository) keywordSubstringRecall(ctx context.Context, tx *sql.Tx, par
 	defer rows.Close()
 	var candidates []searchCandidate
 	position := 0
-	matchedTerms := compileKeyword(params.Query).Terms
 	for rows.Next() {
 		item, err := scanSubstringCandidate(rows, position)
 		if err != nil {
 			return nil, err
 		}
-		applyKeywordMatchFields(&item, matchedTerms)
+		applyKeywordMatchFields(&item, compiled)
 		candidates = append(candidates, item)
 		position++
 	}
-	return candidates, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The literal path produces no BM25 score, so rank its candidates by how many
+	// compiled terms they literally match. Recency alone would let an arbitrary
+	// recent document outrank a better literal match.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].shortTermMatches != candidates[j].shortTermMatches {
+			return candidates[i].shortTermMatches > candidates[j].shortTermMatches
+		}
+		if candidates[i].updatedAt != candidates[j].updatedAt {
+			return candidates[i].updatedAt > candidates[j].updatedAt
+		}
+		return candidates[i].memoryID < candidates[j].memoryID
+	})
+	for i := range candidates {
+		// Keep a deterministic per-path rank for explain output; the merged
+		// position still keeps short-term matches behind FTS matches.
+		candidates[i].keywordRaw = -float64(i) - 1
+	}
+	return candidates, nil
 }
 
 func scanKeywordCandidate(rows *sql.Rows) (searchCandidate, error) {
@@ -184,10 +260,9 @@ func scanSubstringCandidate(rows *sql.Rows, position int) (searchCandidate, erro
 	var item searchCandidate
 	var confidence sql.NullFloat64
 	var eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil sql.NullString
-	if err := rows.Scan(&item.memoryID, &item.revisionID, &item.projectionContent, &item.updatedAt, &item.contentHash, &item.kind, &confidence, &eventStart, &eventEnd, &timePrecision, &timeSource, &sourceSpeaker, &language, &validFrom, &validUntil, &item.hintsContent); err != nil {
+	if err := rows.Scan(&item.memoryID, &item.revisionID, &item.projectionContent, &item.ftsContent, &item.updatedAt, &item.contentHash, &item.kind, &confidence, &eventStart, &eventEnd, &timePrecision, &timeSource, &sourceSpeaker, &language, &validFrom, &validUntil, &item.hintsContent); err != nil {
 		return item, err
 	}
-	item.ftsContent = item.projectionContent
 	item.keywordRaw = -float64(position) - 1
 	applyCandidateRevision(&item, confidence, eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil)
 	return item, nil
@@ -196,26 +271,61 @@ func scanSubstringCandidate(rows *sql.Rows, position int) (searchCandidate, erro
 // applyKeywordMatchFields records which FTS field sources produced a keyword
 // candidate. Hints are auxiliary, so a candidate that matched only hints is
 // marked hint-only and cannot outrank a canonical content match.
-func applyKeywordMatchFields(item *searchCandidate, terms []retrieval.KeywordTerm) {
+func applyKeywordMatchFields(item *searchCandidate, compiled retrieval.KeywordQuery) {
+	terms := compiled.Terms
 	item.contentMatched = documentMatchesTerms(item.ftsContent, terms)
 	item.hintMatched = documentMatchesTerms(item.hintsContent, terms)
 	item.hintOnly = item.hintMatched && !item.contentMatched
+	item.shortTermMatches = countDocumentMatches(item.projectionContent, terms)
+	if item.shortTermMatches == 0 {
+		item.shortTermMatches = countDocumentMatches(item.ftsContent, terms)
+	}
+}
+
+// matchSegments reports whether one candidate covers every compiled query span.
+// An empty span set means the query has no word boundary to recover, which is
+// not a match.
+func matchSegments(segments []string, documents ...string) bool {
+	if len(segments) == 0 {
+		return false
+	}
+	for _, segment := range segments {
+		found := false
+		for _, document := range documents {
+			if document != "" && strings.Contains(document, segment) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func documentMatchesTerms(document string, terms []retrieval.KeywordTerm) bool {
+	return countDocumentMatches(document, terms) > 0
+}
+
+// countDocumentMatches counts the compiled terms literally present in one
+// document. It is the relevance signal for the literal fallback path, which has
+// no BM25 score to rank with.
+func countDocumentMatches(document string, terms []retrieval.KeywordTerm) int {
 	if document == "" || len(terms) == 0 {
-		return false
+		return 0
 	}
 	lower := strings.ToLower(document)
+	matched := 0
 	for _, term := range terms {
 		if term.Text == "" {
 			continue
 		}
 		if strings.Contains(lower, strings.ToLower(term.Text)) {
-			return true
+			matched++
 		}
 	}
-	return false
+	return matched
 }
 
 func applyCandidateRevision(item *searchCandidate, confidence sql.NullFloat64, eventStart, eventEnd, timePrecision, timeSource, sourceSpeaker, language, validFrom, validUntil sql.NullString) {

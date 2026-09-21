@@ -35,12 +35,16 @@ type KeywordTerm struct {
 
 // KeywordQuery is the deterministic output of the keyword compiler. Match is a
 // literal FTS5 expression. ShortTerms are terms too short for the trigram
-// tokenizer and are served by a literal substring fallback.
+// tokenizer and are served by a literal substring fallback. Segments are the
+// query's CJK content spans between function words; they give the literal
+// recall path a word-boundary level of precision without a segmentation
+// dependency.
 type KeywordQuery struct {
 	Version    string        `json:"version"`
 	Match      string        `json:"match"`
 	Terms      []KeywordTerm `json:"terms"`
 	ShortTerms []string      `json:"short_terms"`
+	Segments   []string      `json:"segments"`
 	Searchable bool          `json:"searchable"`
 }
 
@@ -115,7 +119,69 @@ func CompileKeyword(input string) KeywordQuery {
 	}
 	result.Searchable = true
 	result.Match = buildKeywordMatch(result.Terms)
+	result.Segments = CompileQuerySegments(input)
 	return result
+}
+
+// maximumQuerySegments bounds the phrase-level precision tier.
+const maximumQuerySegments = 8
+
+// cjkFunctionWords are closed-class Chinese words and question markers that
+// separate content spans in a natural-language query. They carry little
+// retrieval signal and splitting on them is deterministic, so the compiler
+// never needs a lexicon or a segmentation model to recover word boundaries.
+var cjkFunctionWords = map[rune]struct{}{
+	'的': {}, '了': {}, '是': {}, '在': {}, '和': {}, '与': {}, '及': {}, '或': {},
+	'把': {}, '被': {}, '对': {}, '从': {}, '到': {}, '由': {}, '向': {}, '给': {},
+	'为': {}, '就': {}, '都': {}, '也': {}, '很': {}, '会': {}, '要': {}, '请': {},
+	'哪': {}, '那': {}, '这': {}, '谁': {}, '啥': {}, '吗': {}, '呢': {}, '吧': {},
+	'啊': {}, '呀': {}, '么': {}, '什': {}, '怎': {}, '如': {}, '何': {}, '有': {},
+	'没': {}, '不': {}, '能': {}, '可': {}, '以': {}, '并': {}, '而': {}, '但': {},
+}
+
+// CompileQuerySegments splits a query into CJK content spans at function-word
+// boundaries. A span is at least two runes and at most maximumQuerySegments
+// spans are returned. The result is empty when the split does not actually
+// partition the query: requiring every span of a query that never reaches a
+// function word would tighten recall without adding any word-boundary
+// information.
+func CompileQuerySegments(input string) []string {
+	runes := []rune(input)
+	segments := make([]string, 0, maximumQuerySegments)
+	current := make([]rune, 0, len(runes))
+	flush := func() {
+		if len([]rune(current)) >= 2 && len(segments) < maximumQuerySegments {
+			segments = append(segments, string(current))
+		}
+		current = current[:0]
+	}
+	for _, r := range runes {
+		if unicode.Is(unicode.Han, r) {
+			if _, boundary := cjkFunctionWords[r]; boundary {
+				flush()
+				continue
+			}
+			current = append(current, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	if len(segments) < 2 {
+		return nil
+	}
+	// The split must actually separate content. Every span already has at least
+	// two runes, and at least one query rune must fall outside the spans, which
+	// is what makes the spans a genuine word-boundary partition rather than the
+	// whole query restated.
+	total := 0
+	for _, segment := range segments {
+		total += len([]rune(segment))
+	}
+	if total >= len(runes) {
+		return nil
+	}
+	return segments
 }
 
 func (t KeywordTerm) Width() int {

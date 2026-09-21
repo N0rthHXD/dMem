@@ -204,6 +204,7 @@ type searchCandidate struct {
 	graphRank                       int
 	contentMatched, hintMatched     bool
 	hintOnly                        bool
+	shortTermMatches                int
 	graphSignals                    []domain.GraphSignal
 	graphFacts                      []domain.EntityFact
 	graphPaths                      []domain.GraphPath
@@ -419,9 +420,16 @@ func (r *Repository) finalizeRankedCandidates(ctx context.Context, tx *sql.Tx, p
 	response.FeedbackIdentity = identities.Feedback
 	response.QueryPlanIdentity = params.Plan.Identity()
 	returned := make(map[string]struct{})
-	var last *searchCandidate
-	windowFull := false
 	window := selectionWindow(params.Limit)
+	// Trigrams are not word bounded, so an OR-of-trigrams keyword query recalls
+	// candidates that merely share a three-rune window with the query. When the
+	// query compiles word-boundary spans, the precise tier (candidates covering
+	// every span) is the admission set; if that tier is empty the broad recall is
+	// kept whole, so recall never collapses on a span the content does not
+	// literally repeat.
+	precise := preciseKeywordSet(params, list[start:])
+	strict := len(precise) > 0
+	var full *searchCandidate
 	for i := start; i < len(list); i++ {
 		candidate := list[i]
 		if _, duplicate := returned[candidate.memoryID]; duplicate {
@@ -477,17 +485,22 @@ func (r *Repository) finalizeRankedCandidates(ctx context.Context, tx *sql.Tx, p
 		}
 		response.Results = append(response.Results, searchResult)
 		returned[memory.MemoryID] = struct{}{}
-		last = candidate
+		full = candidate
 		if len(response.Results) >= window {
-			windowFull = true
 			break
+		}
+	}
+	if strict {
+		response.Results = preciseKeywordResults(response.Results, precise)
+		for i := range response.Results {
+			response.Results[i].Rank = i + 1
 		}
 	}
 	// A full ranked window may have more candidates behind the bounded recall,
 	// so it always yields a continuation cursor anchored at the window tail.
-	if windowFull && last != nil {
+	if len(response.Results) >= window && full != nil {
 		response.Truncated = true
-		next, err := params.processor.EncodeCursor(gatewayRecallParams(params), gatewayCursorBinding(identities), gwretrieval.CursorPosition{MemoryID: last.memoryID, RevisionID: last.revisionID, Score: last.score})
+		next, err := params.processor.EncodeCursor(gatewayRecallParams(params), gatewayCursorBinding(identities), gwretrieval.CursorPosition{MemoryID: full.memoryID, RevisionID: full.revisionID, Score: full.score})
 		if err != nil {
 			return err
 		}
@@ -495,6 +508,36 @@ func (r *Repository) finalizeRankedCandidates(ctx context.Context, tx *sql.Tx, p
 	}
 	return nil
 }
+
+// preciseKeywordSet returns the memory ids of the keyword candidates that cover
+// every compiled query span. It is empty when the query has no word boundaries
+// to recover or when no candidate covers them all. The check runs on the
+// candidate's own retrieved documents so it does not depend on any storage-local
+// flag surviving the candidate port round trip.
+func preciseKeywordSet(params SearchParams, candidates []*searchCandidate) map[string]struct{} {
+	segments := retrieval.CompileQuerySegments(params.Query)
+	if len(segments) == 0 {
+		return nil
+	}
+	precise := map[string]struct{}{}
+	for _, candidate := range candidates {
+		if candidate.keywordRank > 0 && matchSegments(segments, candidate.ftsContent, candidate.hintsContent) {
+			precise[candidate.memoryID] = struct{}{}
+		}
+	}
+	return precise
+}
+
+func preciseKeywordResults(results []domain.SearchResult, precise map[string]struct{}) []domain.SearchResult {
+	filtered := make([]domain.SearchResult, 0, len(results))
+	for _, result := range results {
+		if _, ok := precise[result.Memory.MemoryID]; ok {
+			filtered = append(filtered, result)
+		}
+	}
+	return filtered
+}
+
 
 func searchScope(ctx context.Context, tx *sql.Tx, starts []string, ancestors bool) ([]string, error) {
 	set := make(map[string]struct{})

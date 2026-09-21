@@ -1,7 +1,7 @@
 {
   "config_version": "agent-tool-recall-gates-v1",
   "corpus_version": "agent-tool-recall-corpus-v1",
-  "keyword_compiler_version": "keyword-compiler-v2",
+  "keyword_compiler_version": "keyword-compiler-v3",
   "ranking_version": "ranking-weights-v1",
   "quality": {
     "recall_k": 10,

@@ -22,7 +22,7 @@ import (
 // temporal features, graph scoring, and feature ranking.
 const (
 	QueryPlanVersion       = "query-plan-v2"
-	KeywordCompilerVersion = "keyword-compiler-v2"
+	KeywordCompilerVersion = "keyword-compiler-v3"
 	SemanticCalibrationVer = "semantic-calibration-v1"
 	TemporalFeatureVersion = "temporal-features-v1"
 	GraphScoringVersion    = "graph-scoring-v3"
