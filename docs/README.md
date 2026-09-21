@@ -7,10 +7,11 @@ dMem 是一个以 SQLite 为后端的本地 Linux 守护进程。当前产品面
 逻辑导入导出。
 
 语义位于协议无关的 Memory Gateway 模块中。当前入站协议适配器是 Agent Tool
-application REST+JSON `http.Handler`（Phase 2），它使用 `pkg/toolcontract` 的版本化
-schema 并提供原子 memory commit。`internal/server` 是生产传输层：它在回环地址上
-监听，可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。认证与网络边缘授权仍属后续独立
-工作。MCP server、薄 client 与 Provider Route 收敛尚未实现。
+application REST+JSON `http.Handler`（Phase 2）与 `dmem-mcp` stdio 服务器
+（Phase 4）；两者使用同一份 `pkg/toolcontract` 版本化 schema 与原子 memory commit，
+MCP 服务器复用 `pkg/client` 薄 application client。`internal/server` 是生产传输层：
+它在回环地址上监听，可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。认证与网络边缘
+授权仍属后续独立工作。Provider Route 收敛尚未实现。
 
 Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新的数据目录，而不是
 复用不兼容的数据库。
@@ -35,6 +36,8 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 - [Application HTTP 契约](api/http-rest-contract.md)：Phase 2 实现的路由、DTO、
   请求头、解码规则与错误模型；线格式来自 `pkg/toolcontract`。
 - [API 使用说明](api/usage.md)：gateway 语义如何映射到契约。
+- [dmem-mcp stdio 服务器](api/mcp-server.md)：最小 Agent 配置、四个工具、scope/
+  source 注入、集成模式、错误与取消语义。
 
 ## 存储
 

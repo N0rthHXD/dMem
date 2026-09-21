@@ -287,32 +287,85 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### Client 任务
 
-- [ ] 在 dMem 仓库实现供 `dmem-mcp` 复用的 Go application client，覆盖 recall、
+- [x] 在 dMem 仓库实现供 `dmem-mcp` 复用的 Go application client，覆盖 recall、
       remember、feedback、forget 和 scope bootstrap；原生 client 位于 Agent 应用或
       对应 SDK 中，不要求使用 Go。
-- [ ] 自动传递 caller、request/correlation 和 idempotency identity。
-- [ ] 对网络重试复用同一个 idempotency key，禁止每次 retry 重新生成。
-- [ ] 提供 tool definitions 和标准 memory policy prompt；支持 `opportunistic` 与
+- [x] 自动传递 caller、request/correlation 和 idempotency identity。
+- [x] 对网络重试复用同一个 idempotency key，禁止每次 retry 重新生成。
+- [x] 提供 tool definitions 和标准 memory policy prompt；支持 `opportunistic` 与
       `checkpoint` 集成指导。
-- [ ] 保留 dMem 结构化错误和 retryability，不把所有错误压成字符串。
-- [ ] 限制日志，默认不输出工具参数、记忆正文或召回内容。
+- [x] 保留 dMem 结构化错误和 retryability，不把所有错误压成字符串。
+- [x] 限制日志，默认不输出工具参数、记忆正文或召回内容。
 
 ### MCP 任务
 
-- [ ] 新增 `dmem-mcp` 可执行程序。
-- [ ] 第一版实现 MCP stdio transport 和四个 tools。
-- [ ] MCP handler 只依赖公共 application client，不导入 storage/jobs/provider。
-- [ ] tool input/output schema 直接来自 Phase 1 的契约来源。
-- [ ] 将 caller/client identity、scope 默认值和 dMem endpoint 作为 MCP server 配置。
-- [ ] 正确传播取消、超时和结构化错误。
-- [ ] 增加 MCP 协议测试以及 MCP handler 与 application client 的集成测试。
-- [ ] 文档提供最小 Agent 配置和工具使用示例，但不绑定特定商业模型。
+- [x] 新增 `dmem-mcp` 可执行程序。
+- [x] 第一版实现 MCP stdio transport 和四个 tools。
+- [x] MCP handler 只依赖公共 application client，不导入 storage/jobs/provider。
+- [x] tool input/output schema 直接来自 Phase 1 的契约来源。
+- [x] 将 caller/client identity、scope 默认值和 dMem endpoint 作为 MCP server 配置。
+- [x] 正确传播取消、超时和结构化错误。
+- [x] 增加 MCP 协议测试以及 MCP handler 与 application client 的集成测试。
+- [x] 文档提供最小 Agent 配置和工具使用示例，但不绑定特定商业模型。
 
 ### 完成条件
 
 - 一个支持 MCP tools 的 Agent 只配置 `dmem-mcp` 和 scope，即可完成完整记忆闭环；
 - MCP server 不需要 LLM API key，不调用 MCP sampling，不维护后台 job worker；
 - 原生 client 与 MCP 对相同输入产生相同 application 命令和错误语义。
+
+### Phase 4 实施记录
+
+- 状态：completed
+- 完成日期：2026-09-21
+- 主要变更：
+  - `pkg/toolcontract/tools.go`：新增协议中立 `ToolDefinition`、`V1ToolDefinitions`
+    （从嵌入式 v1 schema 机械派生，支持 `DefaultScope`/`HostSource` 放宽）、
+    `IntegrationMode` 与 `MemoryPolicyPrompt`。
+  - `pkg/client`：新增薄 Go application client（capabilities、recall、remember、
+    feedback、forget、scope ensure/get），自动传递 caller/请求/关联身份，写操作生成
+    并在重试间复用同一幂等 key 与请求 ID，按 `retryable`/`retry_after_ms` 退避，
+    保留 `*client.Error`（code/retryable/retry_after/details/request_id），校验请求
+    与响应契约，限制响应大小，日志只含方法与状态。
+  - `internal/protocol/mcp`：新增 stdio JSON-RPC 2.0 适配器（newline framing、
+    initialize 版本协商、tools/list、tools/call、ping、cancelled 通知、消息大小
+    上限、并发分发与取消抑制响应）；`ConfiguredScope` 按外部身份 ensure 并缓存
+    scope；remember 注入传输层 source，scope 不匹配返回 `permission_denied`，
+    所有 dMem 错误以 `isError` + 结构化 error JSON 回传。
+  - `cmd/dmem-mcp`：新增可执行程序与 flag/env 配置（endpoint、caller、scope、
+    source name、integration mode、request timeout、log level、version）。
+  - `internal/storage/gateway_agenttool.go`：修复 Phase 2 遗留缺陷——commit、
+    feedback、forget 三个 capability 记录未回填 `OperationID`，导致 wire
+    `operation_id` 为空并违反 v1 output schema；client 的响应校验暴露了该问题。
+  - 测试：`pkg/toolcontract/tools_test.go`、`pkg/client/client_test.go`、
+    `pkg/client/arch_test.go`、`internal/protocol/mcp/{arch,server,tools,integration}_test.go`、
+    `cmd/dmem-mcp/main_test.go`；`internal/daemon/integration_test.go` 新增
+    `TestMCPToolRouteClosesMemoryLoopWithoutProvider`（真实 SQLite + HTTP +
+    `pkg/client` + `dmem-mcp` 的 remember/recall/feedback/forget 闭环）。
+  - `internal/protocol/httpapi/arch_test.go`：协议树白名单加入 `../mcp`。
+  - `Makefile`：新增 `mcp-check` 并纳入 `check`。
+  - 文档：新增 `docs/api/mcp-server.md`；更新 `agent-tool-contract-v1.md`、
+    `agent-tool-and-provider-routes.md`、`overview.md`、`phase-0-decisions-and-baseline.md`、
+    `docs/api/usage.md`、`docs/operations/runbook.md`、`docs/development/testing.md`、
+    `docs/README.md` 与 `README.md`。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `CGO_ENABLED=1 go test -race -tags sqlite_fts5 ./pkg/... ./internal/protocol/... ./cmd/dmem-mcp/ ./internal/daemon/`；
+  - `make build`、`make test`、`make test-race`、`make vet`；
+  - `make schema-check`、`make quality`、`make offline-default`、`make config-check`、
+    `make restore-drill`、`make portability-drill`、`make mcp-check`；
+  - `git diff --check`；全部通过。
+- 删除内容：无。Phase 4 只新增适配器与 client，并修复一个领域输出缺陷；旧路由与
+  DTO 已在 Phase 2 删除，Provider Route 的 no-op 流程属于 Phase 5。
+- 遗留问题：MCP streamable HTTP、resources、prompts 与 sampling 明确不属于 v1；
+  `dmem-mcp` 每个进程只服务一个配置 scope；非 Go 官方 client 仅在出现具体消费者后
+  提供；`internal/protocol/mcp` 仅依赖 `pkg/client`，其协议测试使用进程内管道而非
+  真实 Agent 宿主。
+- 下一阶段前置条件：Phase 5 必须在不改变已稳定的 application API、工具契约与
+  Phase 4 client/MCP 语义的前提下，用显式 `processing.enabled`/`embedding.enabled`
+  表达 Provider Route 状态，删除 `builtin-noop` 消费模型 job 的流程，并保证 Tool
+  Route commit 与 Provider Route event 不对同一 source 双重提取。
 
 ## Phase 5：dMem Provider Route 收敛
 

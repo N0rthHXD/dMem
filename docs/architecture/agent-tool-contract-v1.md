@@ -3,12 +3,14 @@
 ## 状态
 
 Phase 1 契约定义已实现，Phase 2 已把该契约映射到 application HTTP API 与单事务
-原子提交。本文描述 HTTP、MCP 与 client 适配器共同使用的协议中立契约；MCP server
-与薄 client 尚未实现。
+原子提交，Phase 4 已用同一 schema 实现 Go application client（`pkg/client`）与
+`dmem-mcp` stdio 服务器。本文描述 HTTP、MCP 与 client 适配器共同使用的协议中立
+契约。
 
 Go wire package 位于 `pkg/toolcontract`。`internal/gateway/agenttool` 包含命令、
-结果、领域校验与规范幂等哈希。两个包都不导入 HTTP、MCP、storage、jobs 或
-provider 代码。
+结果、领域校验与规范幂等哈希。`pkg/client` 只依赖标准库与该 wire package。
+`internal/protocol/mcp` 只依赖 `pkg/client` 与 `pkg/toolcontract`。这些包都不导入
+storage、jobs 或 provider 代码。
 
 ## 工具与能力
 
@@ -62,7 +64,7 @@ idempotency conflict。
 ## 集成进度
 
 `pkg/toolcontract/schema/v1` 中的嵌入式 schema 是 HTTP、MCP 与 client 的唯一
-schema 来源。
+schema 来源。`pkg/toolcontract` 还从这些 schema 派生工具定义与 Agent 记忆策略提示。
 
 - Phase 2 已将同一 schema 映射到 application HTTP API（`/v1/memory-commits`、
   `/v1/recall`、`/v1/feedback`、`/v1/forget`、`/v1/scopes/ensure`、
@@ -73,8 +75,28 @@ schema 来源。
   建立无 provider 的固定检索质量门禁，并保证 canonical content 匹配排在
   hint-only 匹配之前；未执行 semantic 时通过 `degraded_capabilities` 报告降级，
   且不返回 semantic score 或宣称 hybrid/vector 召回。
-- Phase 4 将同一 schema 暴露给薄 client 和 MCP server。
+- Phase 4 已实现 `pkg/client`（recall、remember、feedback、forget、scope ensure/get
+  与 capabilities）与 `dmem-mcp` stdio 服务器。client 自动传递 caller、请求/关联与
+  幂等身份，网络重试复用同一幂等 key 与请求 ID，保留 dMem 结构化错误与
+  retryability，并默认不记录工具参数或正文。MCP 服务器用同一 schema 暴露四个
+  tools，注入配置的 scope 与传输层 source 身份，且不使用 sampling、不运行 worker。
+  详见 [dmem-mcp stdio 服务器](../api/mcp-server.md)。
 - Phase 5 收敛 Provider Route 的原始事件摄取与配置状态。
 
 MCP、HTTP 和 client 不得各自发明领域语义；`internal/gateway/agenttool` 的命令与
 结果仍是唯一协议中立契约。
+
+## 工具定义与记忆策略
+
+`toolcontract.V1ToolDefinitions` 从 canonical schema 派生四个工具定义（名称、标题、
+说明、input/output schema 与只读/破坏性/幂等注解）。宿主可提供默认身份：
+
+- `DefaultScope`：把 `scope_id`/`scope_ids` 从 `required` 中移除；
+- `HostSource`：从 `dmem_remember` schema 移除 `source` 属性。
+
+这两项只放宽广播 schema；宿主注入身份后仍以 canonical schema 严格解码。原生
+client 使用未放宽的定义，MCP server 使用放宽后的定义。
+
+`toolcontract.MemoryPolicyPrompt` 返回版本化的 Agent 记忆策略文本，支持
+`opportunistic` 与 `checkpoint` 两种集成模式；MCP 通过 `initialize.instructions`
+下发，原生 client 可自行嵌入。

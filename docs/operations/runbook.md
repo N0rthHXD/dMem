@@ -55,6 +55,7 @@ provider 不解析密钥、不发起 HTTP 请求。`instance.data_dir`、
 | `dmemd [--config PATH] daemon` | 运行守护进程。 |
 | `dmemd [--config PATH] backup --target DIR` | 创建一致性备份。 |
 | `dmemd [--config PATH] restore --source DIR --confirm-replace` | 用备份替换数据目录。 |
+| `dmem-mcp --scope-type TYPE --scope-external-id ID ...` | 运行 Agent Tool Route 的 stdio MCP 服务器。 |
 
 `backup`、`restore`、`init` 接受 `--timeout`（默认 5 分钟，必须大于零且不超过
 1 小时）。退出码：用法错误与守护进程启动失败为 `2`，其他维护失败为 `1`，成功为
@@ -63,6 +64,18 @@ offline_required`、`maintenance: unsafe_path`、`maintenance: database_exists`�
 
 没有 `status` 或 `reload` 子命令：`SIGHUP` 请求一次串行化重载流水线，重复信号
 会被合并。失败或被拒绝的重载保留先前完整快照；修正文件后再次发送信号即可。
+
+## Agent 接入
+
+`dmem-mcp` 是独立的 stdio 子进程，由 Agent 宿主启动，不属于 `dmemd`。它不需要
+LLM/embedding 配置、不需要 TOML 文件，也不运行 worker；只要求 `dmemd daemon` 已
+在 `--endpoint`（默认 `http://127.0.0.1:7373`）上运行，并提供一个 scope 身份。
+日志只写 stderr。最小配置、选项与环境变量见
+[dmem-mcp stdio 服务器](../api/mcp-server.md)。
+
+scope 在首次 tool call 时按稳定外部标识 ensure 并缓存；daemon 暂时不可用时，
+MCP 服务器保持可用，每个 tool call 返回带 `capability_unavailable` 的结构化错误，
+恢复后自动重试 ensure。
 
 ## 健康与故障
 

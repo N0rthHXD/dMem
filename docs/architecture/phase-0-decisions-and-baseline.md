@@ -9,10 +9,12 @@
 本文固化 Agent Tool Route 与 dMem Provider Route 重构开始前的产品决策、当前调用图
 和测试基线。它约束后续 Phase 1 及以上的实现。
 
-> **Phase 2 后状态**：九条旧 HTTP 路由及其 DTO 已被目标 application API 替换并
+> **Phase 2-4 后状态**：九条旧 HTTP 路由及其 DTO 已被目标 application API 替换并
 > 删除，`agent_tool` 单事务原子提交、`agent_tool_feedback`、修订围栏遗忘、原子
-> scope ensure 与 `search_hints` 持久化均已实现。MCP server、薄 client 与
-> Provider Route 收敛仍属后续阶段。本文其余调用图与矩阵保留为重构前基线记录。
+> scope ensure 与 `search_hints` 持久化均已实现（Phase 2）；无 provider 检索闭环与
+> 固定检索门禁已实现（Phase 3）；`pkg/client` 薄 application client 与
+> `dmem-mcp` stdio 服务器已实现（Phase 4）。Provider Route 收敛仍属后续阶段。本文
+> 其余调用图与矩阵保留为重构前基线记录。
 
 ## 产品决策
 
@@ -74,11 +76,13 @@ Tool Route v1 不返回 evidence 正文或片段。`dmem_recall` 默认返回经
 ### MCP 与 Client
 
 - MCP v1 只实现 stdio transport 和四个 tools：`dmem_recall`、`dmem_remember`、
-  `dmem_feedback`、`dmem_forget`。
+  `dmem_feedback`、`dmem_forget`。Phase 4 已按此实现 `cmd/dmem-mcp` 与
+  `internal/protocol/mcp`。
 - MCP streamable HTTP、resources、prompts 和 sampling 不属于 v1。增加 streamable HTTP
   需要独立产品与安全决策。
-- dMem 仓库内首发 Go application client，部署在 `dmem-mcp` 进程中供 MCP adapter
-  复用；它也可被原生 Go 集成选择性复用，但不是所有 Agent 应用的运行时依赖。
+- dMem 仓库内首发 Go application client（Phase 4 位于 `pkg/client`），部署在
+  `dmem-mcp` 进程中供 MCP adapter 复用；它也可被原生 Go 集成选择性复用，但不是
+  所有 Agent 应用的运行时依赖。
 - 原生 client 位于各个 Agent 应用或对应 SDK 中，语言由 Agent 宿主决定，并基于同一
   tool contract 实现。支持 MCP 的 Agent 不需要开发原生 dMem client。
 - dMem 仓库只有在出现具体消费者后才提供 TypeScript/Python 等额外官方 client。

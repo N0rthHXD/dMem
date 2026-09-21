@@ -7,6 +7,10 @@ dMem 通过 `internal/protocol/httpapi` 中的 Agent Tool application 适配器�
 [Agent Tool 与 dMem Provider 双路线架构](../architecture/agent-tool-and-provider-routes.md)
 继续演进，不构成外部兼容性承诺。
 
+Agent 宿主有两种接入方式：直接使用 application HTTP API，或只配置
+[dmem-mcp stdio 服务器](mcp-server.md)（内部复用 `pkg/client`）。两种方式使用同一
+份版本化工具契约与错误模型。
+
 适配器返回一个 `http.Handler`。`internal/server` 在 `server.listen_address` 上提供
 监听（默认 `127.0.0.1:7373`），配置 TLS 后通过 ALPN 协商 HTTP/2。服务层不提供
 认证。
@@ -83,3 +87,9 @@ Agent 协议。原始事件摄取与异步 provider 处理属于后续 Provider 
 导出/导入与备份/恢复不是 HTTP 操作，参见
 [逻辑可移植性](../storage/logical-portability.md) 与
 [运维手册](../operations/runbook.md)。
+
+## MCP 接入
+
+`dmem-mcp` 把同一契约暴露为四个 MCP tools，并注入配置的 scope 与传输层 source
+身份；它不需要 LLM 或 embedding 配置，也不运行后台 worker。最小配置、工具清单、
+身份注入规则、集成模式与错误映射见 [dmem-mcp stdio 服务器](mcp-server.md)。

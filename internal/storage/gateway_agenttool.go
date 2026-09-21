@@ -34,7 +34,7 @@ func (c *AgentToolCapability) CommitMemory(ctx context.Context, identity gateway
 		return agenttool.CommitRecord{}, replay, gatewayError(err)
 	}
 	return agenttool.CommitRecord{
-		SourceEventID: result.SourceEventID, Memories: result.Memories, Entities: result.Entities,
+		OperationID: result.OperationID, SourceEventID: result.SourceEventID, Memories: result.Memories, Entities: result.Entities,
 		Facts: result.Facts, Relations: result.Relations,
 	}, replay, nil
 }
@@ -45,7 +45,7 @@ func (c *AgentToolCapability) AppendFeedback(ctx context.Context, identity gatew
 	if err != nil {
 		return agenttool.FeedbackRecord{}, replay, gatewayError(err)
 	}
-	return agenttool.FeedbackRecord{FeedbackID: result.FeedbackID, MemoryID: result.MemoryID, RevisionID: result.RevisionID, Kind: result.Kind}, replay, nil
+	return agenttool.FeedbackRecord{OperationID: result.OperationID, FeedbackID: result.FeedbackID, MemoryID: result.MemoryID, RevisionID: result.RevisionID, Kind: result.Kind}, replay, nil
 }
 
 func (c *AgentToolCapability) ForgetMemory(ctx context.Context, identity gateway.WriteIdentity, params agenttool.ForgetParams) (agenttool.ForgetRecord, bool, error) {
@@ -54,7 +54,7 @@ func (c *AgentToolCapability) ForgetMemory(ctx context.Context, identity gateway
 	if err != nil {
 		return agenttool.ForgetRecord{}, replay, gatewayError(err)
 	}
-	return agenttool.ForgetRecord{MemoryID: result.MemoryID, RevisionID: result.RevisionID, State: result.State}, replay, nil
+	return agenttool.ForgetRecord{OperationID: result.OperationID, MemoryID: result.MemoryID, RevisionID: result.RevisionID, State: result.State}, replay, nil
 }
 
 func (r *Repository) commitAgentToolMemory(ctx context.Context, identity WriteIdentity, command agenttool.MemoryCommitCommand) (agenttool.MemoryCommitResult, bool, error) {

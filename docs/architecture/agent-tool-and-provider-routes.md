@@ -215,8 +215,9 @@ dMem 仍负责 scope、生命周期、有效时间、敏感度、预算、去重
 
 具体字段以实施阶段形成的版本化 JSON Schema 为准。Phase 1 形成了
 [Agent Tool Contract v1](agent-tool-contract-v1.md)；Phase 2 已把该 schema 映射到
-application HTTP API 与单事务原子提交。MCP server、原生 client 与 Provider Route
-收敛仍属于后续阶段。核心语义是：
+application HTTP API 与单事务原子提交；Phase 4 已实现薄 Go application client 与
+`dmem-mcp` stdio 服务器（见 [dmem-mcp stdio 服务器](../api/mcp-server.md)）。
+Provider Route 收敛仍属于后续阶段。核心语义是：
 
 - `source` 与 memory/knowledge 建议在一个幂等事务中提交；
 - `local_id` 只在本次命令中解析引用，不成为长期外部 ID；
@@ -257,7 +258,8 @@ checkpoint 是 Agent client 行为，不要求 dMem 保存对话 session，也�
 
 ### Client 与 MCP
 
-定义一个协议中立的薄 client contract：
+Phase 4 已实现本节描述的 Go application client 与 stdio MCP server；原生 Agent
+adapter 仍位于各 Agent 应用或 SDK 中。协议中立的薄 client contract 为：
 
 ```text
 recall(input)   -> RecallResult
@@ -280,12 +282,13 @@ MCP server 不调用模型、不访问 SQLite、不拥有记忆规则，也不�
 Agent 执行 dMem 内部任务。第一版使用 MCP `tools`；resources、prompts 和 sampling
 不是基础依赖。
 
-建议仓库边界：
+仓库边界（Phase 4 已按此实现）：
 
 ```text
 cmd/dmem-mcp/                 MCP server 进程
 pkg/client/                   dmem-mcp 复用的 Go application client
 pkg/toolcontract/             工具 DTO、JSON Schema 与版本
+internal/protocol/mcp/        MCP stdio adapter
 internal/protocol/httpapi/    application HTTP adapter
 internal/gateway/...          领域语义
 ```

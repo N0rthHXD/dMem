@@ -135,7 +135,7 @@ func TestProtocolTreeContainsOnlyExpectedPackages(t *testing.T) {
 		t.Fatalf("walk protocol tree: %v", err)
 	}
 	for pkg := range packages {
-		if pkg != ".." && pkg != "../httpapi" {
+		if pkg != ".." && pkg != "../httpapi" && pkg != "../mcp" {
 			t.Errorf("unexpected protocol package directory %q", pkg)
 		}
 	}

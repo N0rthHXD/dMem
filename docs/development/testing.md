@@ -33,6 +33,21 @@ make vet
   证明。测试不添加任何生产监听器、TLS 或 h2c 配置。
 - `internal/protocol/httpapi/arch_test.go` 强制协议树不导入 storage、jobs、
   provider、config、retrieval 或应用包，且永不拥有监听器或检查 HTTP 协议版本。
+- `pkg/toolcontract` 测试证明工具定义与记忆策略提示来自唯一版本化 schema，宿主
+  默认身份只机械放宽 scope/source，且派生结果确定。
+- `pkg/client` 测试用 `httptest` 覆盖 caller/请求/关联/幂等身份传递、网络重试复用
+  同一幂等 key 与请求 ID、可重试与不可重试错误分类、`retry_after_ms`、请求与响应
+  契约校验、响应大小上限、取消与超时，以及日志不泄露正文/query。`pkg/client/arch_test.go`
+  强制它只依赖标准库与 `pkg/toolcontract`。
+- `internal/protocol/mcp` 测试用进程内管道驱动 stdio 连接，覆盖 initialize 版本
+  协商、tools/list schema、scope 与 source 注入、scope 不匹配拒绝、未知工具与未知
+  字段、结构化错误传播、取消抑制响应、超限消息、以及日志不泄露工具参数。
+  `internal/protocol/mcp/arch_test.go` 强制它不导入任何 `internal/` 包、不使用 MCP
+  sampling、不拥有监听器。
+- `internal/daemon` 的 `TestMCPToolRouteClosesMemoryLoopWithoutProvider` 在真实
+  SQLite 运行时上通过 `httptest` 提供 HTTP，再经 `pkg/client` 与 `dmem-mcp` 完成
+  remember -> recall -> feedback -> forget 闭环，并验证无 provider 时的
+  `semantic` 降级。
 - `internal/server` 测试在 `127.0.0.1:0` 上启动真实监听，覆盖请求收发、绑定冲突
   的同步报错、优雅关闭排空在途请求、请求头大小上限、自签证书 TLS 与 HTTP/2
   协商，以及无效/符号链接 TLS 文件的拒绝。`internal/server/arch_test.go` 强制
@@ -49,6 +64,7 @@ make quality
 make performance
 make offline-default
 make config-check
+make mcp-check
 ```
 
 - `restore-drill` 创建并恢复真实的一致性快照，校验权威与检查点，围栏被中断的
@@ -68,6 +84,8 @@ make config-check
   变量。
 - `offline-default` 验证禁用的 provider 不读取密钥、不发起 HTTP 请求。
 - `config-check` 验证 `docs/operations/config.example.toml` 可以通过校验。
+- `mcp-check` 运行 `pkg/toolcontract`、`pkg/client`、`internal/protocol/mcp` 的测试
+  与 daemon 的无 provider MCP 闭环测试。
 
 ### 配置与调和
 

@@ -70,10 +70,11 @@ storage -> gateway service
 适配器不拥有领域校验、记忆生命周期规则、scope 可见性语义、检索规划与融合、
 抽取或整合决策、provider 出网策略、事务管理与仓储调用。
 
-HTTP application adapter 位于 `internal/protocol/httpapi`。目标 MCP server 是建立在
-同一 application contract 和薄 client 之上的适配器，不拥有独立领域语义。handler
-不得创建监听器，也不得要求 `r.ProtoMajor == 2`；监听、TLS 与协议协商由
-`internal/server` 传输层负责。
+HTTP application adapter 位于 `internal/protocol/httpapi`。MCP stdio adapter 位于
+`internal/protocol/mcp`，建立在同一 application contract 与 `pkg/client` 薄 client
+之上，不拥有独立领域语义；它不调用模型、不使用 MCP sampling、不访问 storage/jobs/
+provider，也不运行后台 worker。handler 不得创建监听器，也不得要求
+`r.ProtoMajor == 2`；监听、TLS 与协议协商由 `internal/server` 传输层负责。
 
 ### Memory Gateway
 

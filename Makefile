@@ -2,7 +2,7 @@ GO ?= go
 GO_TAGS := sqlite_fts5
 GOVULNCHECK ?= govulncheck
 
-.PHONY: build test test-race vet schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check govulncheck check
+.PHONY: build test test-race vet schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check mcp-check govulncheck check
 
 build:
 	CGO_ENABLED=1 $(GO) build -tags '$(GO_TAGS)' ./...
@@ -50,6 +50,10 @@ offline-default:
 config-check:
 	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/config -run '^TestExampleConfigValidates$$' -count=1
 
+mcp-check:
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./pkg/client ./pkg/toolcontract ./internal/protocol/mcp -count=1
+	CGO_ENABLED=1 $(GO) test -tags '$(GO_TAGS)' ./internal/daemon -run '^TestMCPToolRouteClosesMemoryLoopWithoutProvider$$' -count=1
+
 govulncheck:
 	CGO_ENABLED=1 $(GOVULNCHECK) -tags '$(GO_TAGS)' ./...
 
@@ -62,3 +66,4 @@ check:
 	$(MAKE) --no-print-directory portability-drill
 	$(MAKE) --no-print-directory quality
 	$(MAKE) --no-print-directory offline-default
+	$(MAKE) --no-print-directory mcp-check

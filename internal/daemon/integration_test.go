@@ -1,16 +1,21 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/config"
+	"github.com/N0rthHXD/dMem/internal/protocol/mcp"
 	"github.com/N0rthHXD/dMem/internal/provider"
+	"github.com/N0rthHXD/dMem/pkg/client"
 	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
@@ -330,5 +335,195 @@ func TestProviderDisabledAgentToolHintRecallClosesLoop(t *testing.T) {
 	}
 	if !degradedSemantic {
 		t.Fatalf("hint-only recall did not report semantic degradation: %v", recallResponse.DegradedCapabilities)
+	}
+}
+
+// mcpLoop drives the dmem-mcp stdio adapter against a real runtime over HTTP.
+// It proves the Agent Tool Route is a complete product path with every provider
+// disabled: MCP tool calls alone produce authority, recall, feedback, and
+// forget, and no model job is involved.
+type mcpLoop struct {
+	t         *testing.T
+	input     *io.PipeWriter
+	responses chan map[string]any
+	done      chan error
+}
+
+func startMCPLoop(t *testing.T, handler http.Handler, externalScopeID string) *mcpLoop {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	applicationClient, err := client.New(client.Config{
+		Endpoint: server.URL,
+		Caller:   client.Caller{SubjectID: "mcp-agent", ClientID: "dmem-mcp"},
+	})
+	if err != nil {
+		t.Fatalf("application client: %v", err)
+	}
+	serverImpl, err := mcp.New(mcp.Config{
+		Name: "dmem-mcp", Title: "dMem memory", Version: "test",
+		Client: applicationClient,
+		Scope:  &mcp.ConfiguredScope{Client: applicationClient, ScopeType: "user", ExternalID: externalScopeID},
+	})
+	if err != nil {
+		t.Fatalf("mcp server: %v", err)
+	}
+	inReader, inWriter := io.Pipe()
+	outReader, outWriter := io.Pipe()
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { done <- serverImpl.Serve(ctx, inReader, outWriter) }()
+	responses := make(chan map[string]any, 32)
+	go func() {
+		reader := bufio.NewReader(outReader)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				var value map[string]any
+				if json.Unmarshal(line, &value) == nil {
+					responses <- value
+				}
+			}
+			if err != nil {
+				close(responses)
+				return
+			}
+		}
+	}()
+	loop := &mcpLoop{t: t, input: inWriter, responses: responses, done: done}
+	t.Cleanup(func() {
+		_ = inWriter.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			cancel()
+			<-done
+		}
+		_ = outWriter.Close()
+	})
+	return loop
+}
+
+func (l *mcpLoop) send(id int, method string, params map[string]any) {
+	l.t.Helper()
+	message := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
+	if params != nil {
+		message["params"] = params
+	}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		l.t.Fatalf("encode MCP message: %v", err)
+	}
+	if _, err := l.input.Write(append(encoded, '\n')); err != nil {
+		l.t.Fatalf("write MCP message: %v", err)
+	}
+}
+
+func (l *mcpLoop) receive(id int) map[string]any {
+	l.t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case response, ok := <-l.responses:
+			if !ok {
+				l.t.Fatalf("MCP server closed while waiting for id %d", id)
+			}
+			if fmt.Sprint(response["id"]) == fmt.Sprint(id) {
+				return response
+			}
+		case <-deadline:
+			l.t.Fatalf("timed out waiting for MCP response %d", id)
+		}
+	}
+}
+
+func (l *mcpLoop) callTool(id int, name string, arguments map[string]any) map[string]any {
+	l.t.Helper()
+	l.send(id, "tools/call", map[string]any{"name": name, "arguments": arguments})
+	response := l.receive(id)
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		l.t.Fatalf("tool call %s returned %v", name, response)
+	}
+	if isError, _ := result["isError"].(bool); isError {
+		l.t.Fatalf("tool call %s failed: %v", name, result)
+	}
+	structured, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		l.t.Fatalf("tool call %s returned no structured content: %v", name, result)
+	}
+	return structured
+}
+
+// TestMCPToolRouteClosesMemoryLoopWithoutProvider proves a provider-free runtime
+// serves the full Agent Tool Route over MCP stdio: scope bootstrap, atomic
+// remember, recall with explicit semantic degradation, feedback, and forget.
+func TestMCPToolRouteClosesMemoryLoopWithoutProvider(t *testing.T) {
+	t.Parallel()
+	handler := newIntegrationRuntime(t)
+	loop := startMCPLoop(t, handler, "mcp-loop")
+	loop.send(1, "initialize", map[string]any{"protocolVersion": mcp.ProtocolVersion20250618,
+		"capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "test-agent", "version": "1"}})
+	if result, ok := loop.receive(1)["result"].(map[string]any); !ok || result["protocolVersion"] != mcp.ProtocolVersion20250618 {
+		t.Fatalf("initialize = %v", loop.receive(1))
+	}
+
+	commit := loop.callTool(2, toolcontract.ToolRemember, map[string]any{
+		"memories": []map[string]any{{"local_id": "m", "kind": "fact", "content": "mcp loop keyword memory",
+			"sensitivity": "normal", "confidence": 0.9}},
+	})
+	memories, ok := commit["memories"].([]any)
+	if !ok || len(memories) != 1 {
+		t.Fatalf("commit outcomes = %v", commit["memories"])
+	}
+	outcome, _ := memories[0].(map[string]any)
+	if outcome["status"] != "authority" {
+		t.Fatalf("commit status = %v", outcome["status"])
+	}
+	memoryID, _ := outcome["memory_id"].(string)
+	revisionID, _ := outcome["revision_id"].(string)
+	if memoryID == "" || revisionID == "" {
+		t.Fatalf("commit identity = %v", outcome)
+	}
+
+	recall := loop.callTool(3, toolcontract.ToolRecall, map[string]any{"query": "mcp loop keyword"})
+	operationID, _ := recall["operation_id"].(string)
+	if operationID == "" {
+		t.Fatalf("recall = %v", recall)
+	}
+	recalled, ok := recall["memories"].([]any)
+	if !ok || len(recalled) != 1 {
+		t.Fatalf("recalled = %v", recall["memories"])
+	}
+	first, _ := recalled[0].(map[string]any)
+	if first["memory_id"] != memoryID {
+		t.Fatalf("recalled memory = %v", first)
+	}
+	degraded, _ := recall["degraded_capabilities"].([]any)
+	foundSemantic := false
+	for _, capability := range degraded {
+		if capability == "semantic" {
+			foundSemantic = true
+		}
+	}
+	if !foundSemantic {
+		t.Fatalf("provider-free recall did not report semantic degradation: %v", degraded)
+	}
+
+	feedback := loop.callTool(4, toolcontract.ToolFeedback, map[string]any{
+		"memory_id": memoryID, "revision_id": revisionID, "kind": "used", "recall_operation_id": operationID})
+	if feedback["feedback_id"] == "" || feedback["kind"] != "used" {
+		t.Fatalf("feedback = %v", feedback)
+	}
+
+	forget := loop.callTool(5, toolcontract.ToolForget, map[string]any{
+		"memory_id": memoryID, "expected_revision_id": revisionID, "reason": "mcp loop cleanup"})
+	if forget["state"] != "deleted" {
+		t.Fatalf("forget = %v", forget)
+	}
+
+	after := loop.callTool(6, toolcontract.ToolRecall, map[string]any{"query": "mcp loop keyword"})
+	if remaining, _ := after["memories"].([]any); len(remaining) != 0 {
+		t.Fatalf("forgotten memory still recalled: %v", remaining)
 	}
 }

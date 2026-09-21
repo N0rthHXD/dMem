@@ -7,15 +7,20 @@ provider 默认关闭。
 
 > **状态**：项目处于预发布阶段。Schema v1 没有迁移路径；schema 不兼容的数据库
 > 必须由新初始化的数据目录替代。`dmemd daemon` 默认在回环地址启动 REST+JSON
-> 监听服务；TLS 可选，认证与网络边缘授权仍属后续独立工作。
+> 监听服务；TLS 可选，认证与网络边缘授权仍属后续独立工作。`dmem-mcp` 提供
+> stdio MCP 服务器，Agent 无需在 dMem 中配置模型即可完成记忆闭环。
 
 ## 能力
 
 - **版本化记忆权威**：稳定的逻辑 ID、不可变修订、仅追加状态事件、证据与当前
   投影；修订永不原地编辑，逻辑删除保留完整审计历史。
-- **两条模型路线（目标架构）**：Agent 将通过工具或 MCP 直接召回和提交结构化
-  记忆，无需在 dMem 配置模型；独立输入可选择 dMem Provider Route 做持久异步
-  处理。当前实现正在按该架构重构。
+- **两条模型路线（目标架构）**：Agent Tool Route 已可用——Agent 通过 MCP 或薄
+  client 直接召回和提交结构化记忆，无需在 dMem 配置模型；独立输入可选择 dMem
+  Provider Route 做持久异步处理（尚未收敛）。
+- **MCP 与薄 client**：`dmem-mcp` 通过 stdio 暴露 `dmem_recall`、`dmem_remember`、
+  `dmem_feedback`、`dmem_forget`；`pkg/client` 是供 MCP 与原生 Go 集成复用的
+  application client，自动传递 caller、scope、请求与幂等身份，且不需要 LLM 或
+  embedding 配置。
 - **可审核的知识构建**：实体、别名、提及、类型化实体事实与记忆关系以提案形式
   产生，经确定性校验与风险分类后自动确认或进入人工审核。
 - **混合检索**：关键词（SQLite FTS5）与语义（sqlite-vec 精确余弦）作为独立的
@@ -27,9 +32,9 @@ provider 默认关闭。
   提案覆盖重复、补充、替换与冲突。
 - **聚合记忆**：经审核的 `scene`、`topic`、`timeline` 聚合，建立在显式、有界、
   去重的输入修订列表之上，并通过 `derived_from` 关系保留来源。
-- **无 Provider 可用（目标架构）**：FTS、检索辅助文本、实体和图谱将构成 Tool
-  Route 的基础召回；dMem 的处理与 embedding provider 是显式启用的增强，默认
-  关闭且独立限流。
+- **无 Provider 可用**：FTS、检索辅助文本、实体和图谱构成 Tool Route 的基础召回，
+  未配置 embedding provider 时显式报告 `semantic` 降级；dMem 的处理与 embedding
+  provider 是显式启用的增强，默认关闭且独立限流。
 - **可移植与可恢复**：一致性在线备份与离线 staging 恢复、SQLite 完整性检查、
   派生索引重建，以及 Format v1 逻辑导出/导入。
 
@@ -42,9 +47,9 @@ provider 默认关闭。
   八个模块。模块发布协议中立的命令、查询、结果、错误与窄能力端口，且永不导入
   `net/http`、协议包或存储实现。
 - **协议适配器**把线上协议翻译为 gateway 调用。当前实现是
-  `internal/protocol/httpapi`；目标架构增加建立在同一 application contract 上的
-  MCP server。适配器负责严格解码、请求体上限、请求头、路由与错误映射，永不拥有
-  领域规则或仓储调用。
+  `internal/protocol/httpapi` 与建立在同一 application contract 上的
+  `internal/protocol/mcp`（stdio）。适配器负责严格解码、请求体上限、请求头、路由
+  与错误映射，永不拥有领域规则或仓储调用。
 - **传输服务层**（`internal/server`）在 `server.listen_address` 上监听 TCP，应用
   固定传输加固、可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。它只持有
   `http.Handler`，不拥有领域规则、认证或网络边缘授权。
@@ -91,12 +96,21 @@ cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/c
 `SIGHUP` 请求一次串行化的配置重载。可用子命令为 `daemon`、`config validate`、
 `init`、`backup`、`restore`。
 
+`dmem-mcp` 是供 Agent 宿主启动的 stdio 子进程；它只要求 dMem endpoint 与一个
+scope，不需要 TOML 文件或模型配置：
+
+```sh
+CGO_ENABLED=1 go build -tags sqlite_fts5 -o dmem-mcp ./cmd/dmem-mcp
+./dmem-mcp --endpoint http://127.0.0.1:7373 --scope-type project --scope-external-id project-123
+```
+
 ## 接口状态
 
-当前可执行契约见 [docs/api/http-rest-contract.md](docs/api/http-rest-contract.md)。
+当前可执行契约见 [docs/api/http-rest-contract.md](docs/api/http-rest-contract.md)，
+MCP 接入见 [docs/api/mcp-server.md](docs/api/mcp-server.md)。
 项目尚未发布，当前路由不是外部兼容性边界，将继续按
 [Agent Tool 与 dMem Provider 双路线架构](docs/architecture/agent-tool-and-provider-routes.md)
-演进。Phase 2 的 application API 为：
+演进。当前 application API 为：
 
 ```text
 GET  /v1/capabilities
@@ -114,7 +128,8 @@ GET  /v1/scopes/{scope_id}
 路由的请求体上限，每个响应都携带 `X-Request-ID`。线格式由
 `pkg/toolcontract` 的版本化 schema 唯一定义。`internal/protocol/httpapi` 返回
 `http.Handler`；`internal/server` 在回环地址上提供监听、可选 TLS 与优雅关闭。
-服务层不提供认证。MCP server、薄 client 与 Provider Route 收敛见
+服务层不提供认证。`dmem-mcp` 通过 stdio 暴露同样的四个工具，并复用
+`pkg/client` 薄 application client。Provider Route 收敛见
 [双路线架构开发任务](docs/development/tasks-agent-tool-and-provider-routes.md)。
 
 ## 文档
@@ -127,6 +142,7 @@ GET  /v1/scopes/{scope_id}
 - [检索与排序](docs/architecture/retrieval.md)
 - [HTTP REST+JSON 契约](docs/api/http-rest-contract.md)
 - [API 使用说明](docs/api/usage.md)
+- [dmem-mcp stdio 服务器](docs/api/mcp-server.md)
 - [SQLite Schema v1](docs/storage/schema.md)
 - [逻辑可移植性](docs/storage/logical-portability.md)
 - [配置参考](docs/operations/configuration.md)

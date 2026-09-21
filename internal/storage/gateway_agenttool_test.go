@@ -63,6 +63,9 @@ func TestAgentToolCommitClassifiesPersistsAndSuppressesExtractionJobs(t *testing
 	if record.SourceEventID == "" || len(record.Memories) != 3 || record.Memories[0].Status != agenttool.CommitAuthority || record.Memories[1].Status != agenttool.CommitProposal || record.Memories[2].Status != agenttool.CommitProposal {
 		t.Fatalf("record = %+v", record)
 	}
+	if record.OperationID == "" || record.OperationID != identity.RequestID {
+		t.Fatalf("record operation identity = %q, want %q", record.OperationID, identity.RequestID)
+	}
 	for _, outcomes := range [][]agenttool.CommitOutcome{record.Entities, record.Facts, record.Relations} {
 		if len(outcomes) != 1 || outcomes[0].Status != agenttool.CommitProposal || outcomes[0].ProposalID == "" {
 			t.Fatalf("proposal outcome = %+v", outcomes)
@@ -195,6 +198,9 @@ func TestAgentToolFeedbackAndRevisionFencedForget(t *testing.T) {
 	if err != nil || replay || feedbackRecord.FeedbackID == "" {
 		t.Fatalf("feedback=%+v replay=%t error=%v", feedbackRecord, replay, err)
 	}
+	if feedbackRecord.OperationID == "" {
+		t.Fatal("feedback record lost its operation identity")
+	}
 	var purpose, recallID string
 	if err := repository.store.reader.QueryRow(`SELECT feedback_purpose,search_operation_id FROM feedback_events WHERE feedback_id=?`, feedbackRecord.FeedbackID).Scan(&purpose, &recallID); err != nil || purpose != "agent_tool_feedback" || recallID != "recall-1" {
 		t.Fatalf("purpose=%q recall=%q error=%v", purpose, recallID, err)
@@ -209,6 +215,9 @@ func TestAgentToolFeedbackAndRevisionFencedForget(t *testing.T) {
 	forgotten, replay, err := capability.ForgetMemory(context.Background(), agentToolIdentity(t, "forget", forget, agenttool.OperationForget), forget)
 	if err != nil || replay || forgotten.State != "deleted" || forgotten.RevisionID != memory.RevisionID {
 		t.Fatalf("forget=%+v replay=%t error=%v", forgotten, replay, err)
+	}
+	if forgotten.OperationID == "" {
+		t.Fatal("forget record lost its operation identity")
 	}
 	var state string
 	if err := repository.store.reader.QueryRow(`SELECT current_state FROM memories WHERE memory_id=?`, memory.MemoryID).Scan(&state); err != nil || state != "deleted" {
