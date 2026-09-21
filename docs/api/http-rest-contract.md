@@ -12,16 +12,19 @@
 传输层：它在回环 TCP 地址上监听，可选终止 TLS 并通过 ALPN 协商 HTTP/2，并优雅
 关闭。本契约不定义监听地址、TLS 或传输加固参数。
 
-旧九条 `/v1` 路由、旧 purpose/type/reason feedback DTO、`GET /v1/memories/{id}` 与
-`/v1/events` 入口已在 Phase 2 删除；原始事件摄取与异步 operation/event status 属于
-后续 Provider Route 阶段。
+旧九条 `/v1` 路由、旧 purpose/type/reason feedback DTO 与 `GET /v1/memories/{id}` 已在
+Phase 2 删除。Phase 5 重新引入 Provider Route 的原始事件入口
+（`POST /v1/events`、`GET /v1/events/{event_id}`）；它们在 processing 未启用时只把
+事件保存为 `stored`，不创建模型 job。
 
 ## 范围
 
 包含：
 
-- `/v1` 下的七条 Agent Tool application 路由；
-- 这些路由的请求与响应 DTO（来自 `pkg/toolcontract/schema/v1`）；
+- `/v1` 下的九条 application 路由：七条 Agent Tool/scope 路由加两条 Provider Route
+  原始事件路由；
+- 这些路由的请求与响应 DTO（Agent Tool 路由来自 `pkg/toolcontract/schema/v1`，
+  事件路由是协议本地 DTO）；
 - 请求标识、调用方身份与幂等请求头；
 - 严格 JSON 解码规则与请求体上限；
 - 统一错误体与状态码映射；
@@ -95,15 +98,19 @@
 | 5 | `agent_tool.forget` | `POST /v1/forget` | 写 | 必需 | 必需 | 64 KiB | `200` |
 | 6 | `scope.ensure` | `POST /v1/scopes/ensure` | 写 | 必需 | 必需 | 64 KiB | `200` |
 | 7 | `scope.get` | `GET /v1/scopes/{scope_id}` | 读 | 必需 | 不需要 | 无 | `200` |
+| 8 | `extraction.ingest` | `POST /v1/events` | 写 | 必需 | 必需 | 1 MiB | `202` |
+| 9 | `extraction.event_get` | `GET /v1/events/{event_id}` | 读 | 必需 | 不需要 | 无 | `200` |
 
 说明：
 
 - 写路由的成功状态由操作语义决定：`memory-commits` 与 `feedback` 返回 `201`，
-  `forget` 与 `scopes/ensure` 返回 `200`。
+  `forget` 与 `scopes/ensure` 返回 `200`，`events` 返回 `202`。
 - 读路由拒绝非空请求体，返回 `400 unexpected_body`；`recall` 例外，它接受有界请求体。
 - 路径标识符是 1–128 个字符的不透明非空字符串。适配器不强制 UUID 格式；未知
   标识符由 gateway 返回 `404 not_found`。
 - 路由顺序稳定，即为声明顺序。
+- `POST /v1/events` 是 Provider Route 入口，不属于 Agent Tool 契约。`GET /v1/events/{event_id}`
+  只返回事件状态与已存内容，不返回 job 列表。
 
 ## DTO 与语义
 
@@ -220,6 +227,44 @@ purpose/type/reason 组合不属于本契约。
 ### `GET /v1/scopes/{scope_id}`
 
 响应 `200` 返回 scope 资源。
+
+### `POST /v1/events`
+
+Provider Route 原始事件入口。请求包含 scope、来源与内容：
+
+```json
+{
+  "scope_id": "project-123",
+  "source": {
+    "type": "manual",
+    "name": "collector",
+    "event_id": "source-event-1",
+    "stream_key": "collector/project-123",
+    "sequence": 1,
+    "occurred_at": "2026-09-20T10:00:00Z",
+    "metadata": {}
+  },
+  "content": {"kind": "text", "media_type": "text/plain", "text": "原始事件正文"}
+}
+```
+
+`content.kind` 封闭为 `text`、`json`、`reference`；`json` 使用 `content.value`，
+`reference` 使用 `content.reference_uri` 与可选的 `declared_size`/`declared_hash`。
+
+响应 `202` 返回：
+
+```json
+{"operation_id": "op-1", "event_id": "event-1", "status": "accepted", "job_ids": ["job-1"], "accepted_at": "2026-09-20T10:00:00Z", "replayed": false}
+```
+
+`status` 取 `accepted`、`deferred` 或 `stored`。只有 processing 启用时才创建
+`extract_memory` job；未启用时 `status` 为 `stored`、`job_ids` 为空，事件以明确的
+`stored` 状态保留，绝不创建注定由 no-op 消费的 job。
+
+### `GET /v1/events/{event_id}`
+
+响应 `200` 返回事件的 `processing_status`（`stored`、`processing`、`processed`、
+`failed`）、来源标识与已存内容。它不返回 job 列表或 provider 载荷。
 
 ## JSON 解码规则
 

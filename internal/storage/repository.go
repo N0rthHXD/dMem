@@ -33,6 +33,12 @@ var (
 	ErrIndexDegraded       = errors.New("index degraded")
 	ErrEmbeddingPolicy     = errors.New("embedding policy rejected")
 	ErrPolicyDenied        = errors.New("policy denied")
+	// Provider failure classes shared by embedding and aggregate provider calls.
+	// They let the worker distinguish a retryable transport failure from a
+	// permanent request rejection or a malformed model output.
+	ErrProviderTransient     = errors.New("provider transient failure")
+	ErrProviderPermanent     = errors.New("provider permanent failure")
+	ErrProviderInvalidOutput = errors.New("provider invalid output")
 )
 
 type WriteIdentity struct {
@@ -78,7 +84,8 @@ type Repository struct {
 	queueSoftLimit                     int
 	queueHardLimit                     int
 	maxAttempts                        int
-	processingVersion                  string
+	processingVersionValue             atomic.Value
+	processingEnabled                  atomic.Bool
 	processingGeneration               atomic.Int64
 	processingPolicyGeneration         atomic.Int64
 	processingCompatibilityIdentity    atomic.Value
@@ -161,6 +168,38 @@ func (r *Repository) graphExtractionOn() bool {
 	return r.graphExtractionEnabled.Load()
 }
 
+// SetProcessingEnabled records whether the dMem Provider Route processing
+// capability is active. Raw event ingestion only creates an extraction job when
+// it is enabled; otherwise the event is stored without a job that no real
+// processor could ever consume.
+func (r *Repository) SetProcessingEnabled(enabled bool) {
+	r.processingEnabled.Store(enabled)
+}
+
+func (r *Repository) processingOn() bool {
+	return r.processingEnabled.Load()
+}
+
+// SetProcessingVersion updates the provenance version stored on provider jobs
+// and revisions. It is safe to call during a configuration reload while workers
+// are running.
+func (r *Repository) SetProcessingVersion(version string) {
+	if version == "" {
+		return
+	}
+	r.processingVersionValue.Store(version)
+}
+
+// processingVersion returns the current provenance version. A repository that
+// was never configured falls back to the local deterministic marker so a job
+// row always carries a non-empty version.
+func (r *Repository) processingVersion() string {
+	if value, ok := r.processingVersionValue.Load().(string); ok && value != "" {
+		return value
+	}
+	return domain.LocalProcessingVersion
+}
+
 func (r *Repository) SetProcessingGeneration(generation, policyGeneration int, compatibilityIdentity string) {
 	r.processingGeneration.Store(int64(generation))
 	r.processingPolicyGeneration.Store(int64(policyGeneration))
@@ -185,7 +224,7 @@ func (r *Repository) embeddingIdentity() string {
 func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, maxAttempts int, processingVersion string) *Repository {
 	r := &Repository{
 		store: store, runtime: runtime, queueSoftLimit: softLimit, queueHardLimit: hardLimit,
-		maxAttempts: maxAttempts, processingVersion: processingVersion,
+		maxAttempts:          maxAttempts,
 		rankingWeights:       retrieval.DefaultWeights(),
 		semanticCalibration:  retrieval.DefaultCalibration(),
 		graphPolicy:          retrieval.GraphFeaturesOnly,
@@ -195,6 +234,7 @@ func NewRepository(store *Store, runtime domain.Runtime, softLimit, hardLimit, m
 		consolidationVersion: "consolidation-v1", consolidationMaxCandidates: 32,
 		consolidationExactHashEnabled: true, consolidationSameSourceCosine: 0.90, consolidationSameSubjectKindCosine: 0.94,
 	}
+	r.processingVersionValue.Store(processingVersion)
 	r.embedding.Store(&embeddingRuntime{})
 	return r
 }
@@ -487,14 +527,21 @@ func (r *Repository) IngestEvent(ctx context.Context, identity WriteIdentity, pa
 		return domain.IngestResponse{}, false, err
 	}
 	var activeJobs, backlog int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(status IN ('pending','waiting','retrying')), 0) FROM jobs WHERE status IN ('pending','waiting','running','retrying') AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?)`, r.embeddingIdentity()).Scan(&activeJobs, &backlog); err != nil {
-		return domain.IngestResponse{}, false, err
+	processing := r.processingOn()
+	if processing {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(status IN ('pending','waiting','retrying')), 0) FROM jobs WHERE status IN ('pending','waiting','running','retrying') AND (job_type NOT IN ('embed_memory','rebuild_semantic') OR processing_version=?)`, r.embeddingIdentity()).Scan(&activeJobs, &backlog); err != nil {
+			return domain.IngestResponse{}, false, err
+		}
+		if activeJobs >= r.queueHardLimit {
+			return domain.IngestResponse{}, false, ErrQueueFull
+		}
 	}
-	if activeJobs >= r.queueHardLimit {
-		return domain.IngestResponse{}, false, ErrQueueFull
-	}
+	// With the Provider Route disabled the event is stored without a model job.
+	// No job is created that only a no-op worker could ever consume.
 	jobStatus, responseStatus := "pending", "accepted"
-	if backlog >= r.queueSoftLimit {
+	if !processing {
+		jobStatus, responseStatus = "", "stored"
+	} else if backlog >= r.queueSoftLimit {
 		jobStatus, responseStatus = "waiting", "deferred"
 	}
 
@@ -533,10 +580,14 @@ func (r *Repository) IngestEvent(ctx context.Context, identity WriteIdentity, pa
 		}
 		return domain.IngestResponse{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'extract_memory', 'raw_event', ?, ?, ?, ?, ?, ?)`, jobID, operationID, eventID, r.processingVersion, jobStatus, r.maxAttempts, now, now); err != nil {
-		return domain.IngestResponse{}, false, err
+	jobIDs := []string(nil)
+	if processing {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'extract_memory', 'raw_event', ?, ?, ?, ?, ?, ?)`, jobID, operationID, eventID, r.processingVersion(), jobStatus, r.maxAttempts, now, now); err != nil {
+			return domain.IngestResponse{}, false, err
+		}
+		jobIDs = []string{jobID}
 	}
-	result := domain.IngestResponse{EventID: eventID, OperationID: operationID, Status: responseStatus, JobIDs: []string{jobID}, AcceptedAt: now}
+	result := domain.IngestResponse{EventID: eventID, OperationID: operationID, Status: responseStatus, JobIDs: jobIDs, AcceptedAt: now}
 	body, _ := json.Marshal(result)
 	if err := writeIdempotency(ctx, tx, identity, operationID, 202, body, now); err != nil {
 		return domain.IngestResponse{}, false, err
@@ -671,76 +722,6 @@ func (r *Repository) ListEvents(ctx context.Context, filter EventFilter) (domain
 		page.NextCursor, page.Items = &next, page.Items[:filter.Limit]
 	}
 	return page, rows.Err()
-}
-
-func (r *Repository) ReplayEvent(ctx context.Context, identity WriteIdentity, eventID string) (domain.JobReference, bool, error) {
-	tx, err := r.store.writer.BeginTx(ctx, nil)
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	defer tx.Rollback()
-	if status, body, found, err := readIdempotency(ctx, tx, identity); err != nil {
-		return domain.JobReference{}, false, err
-	} else if found {
-		var result domain.JobReference
-		if status != 202 || json.Unmarshal([]byte(body), &result) != nil {
-			return result, false, errors.New("invalid stored idempotency response")
-		}
-		return result, true, nil
-	}
-	if err := r.requireDiskWritable(); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	var exists int
-	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM raw_events WHERE event_id = ?", eventID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-		return domain.JobReference{}, false, ErrNotFound
-	} else if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	var existingID, existingOperationID, existingStatus string
-	err = tx.QueryRowContext(ctx, `SELECT job_id,operation_id,status FROM jobs WHERE job_type='extract_memory' AND target_type='raw_event' AND target_id=? AND processing_version=? ORDER BY created_at DESC,job_id DESC LIMIT 1`, eventID, r.processingVersion).Scan(&existingID, &existingOperationID, &existingStatus)
-	if err == nil {
-		result := domain.JobReference{OperationID: existingOperationID, JobID: existingID}
-		body, _ := json.Marshal(result)
-		if err := writeIdempotency(ctx, tx, identity, existingOperationID, 202, body, formatTime(r.runtime.Now())); err != nil {
-			return domain.JobReference{}, false, err
-		}
-		if err := tx.Commit(); err != nil {
-			return domain.JobReference{}, false, err
-		}
-		return result, existingStatus == "succeeded" || existingStatus == "failed" || existingStatus == "cancelled" || existingStatus == "expired", nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return domain.JobReference{}, false, err
-	}
-	jobID, err := r.runtime.ID()
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	operationID, err := r.runtime.ID()
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	auditID, err := r.runtime.ID()
-	if err != nil {
-		return domain.JobReference{}, false, err
-	}
-	now := formatTime(r.runtime.Now())
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'extract_memory', 'raw_event', ?, ?, 'pending', ?, ?, ?)`, jobID, operationID, eventID, r.processingVersion, r.maxAttempts, now, now); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	result := domain.JobReference{OperationID: operationID, JobID: jobID}
-	body, _ := json.Marshal(result)
-	if err := writeIdempotency(ctx, tx, identity, operationID, 202, body, now); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, created_at) VALUES (?, ?, ?, ?, 'replay_event', 'raw_event', ?, 'succeeded', ?)`, auditID, operationID, identity.RequestID, identity.CallerID, eventID, now); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.JobReference{}, false, err
-	}
-	return result, false, nil
 }
 
 func readIdempotency(ctx context.Context, tx *sql.Tx, identity WriteIdentity) (int, string, bool, error) {

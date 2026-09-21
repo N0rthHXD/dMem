@@ -149,7 +149,7 @@ Agent Tool Route 通过 `degraded_capabilities` 报告 `semantic` 降级。
 | 阶段 | 身份 |
 | --- | --- |
 | Schema | `schema-v1`（`schema_version = 1`） |
-| 处理 | processor `builtin-noop-v1`，provider 契约 `processing-structured-v1` |
+| 处理 | 启用时 processor identity `openai-compatible/<model>`，provider 契约 `processing-structured-v1`；禁用时为 `local-deterministic-v1` |
 | 整合 | `consolidation-v1`（哈希开启，余弦 0.90/0.94，32 候选） |
 | Embedding 文档/查询 | `embedding-document-v2` / `embedding-query-v1`，基于 `canonical-document-v1` |
 | 语义校准 | `semantic-calibration-v1`（floor 0.35，margin 0.08） |

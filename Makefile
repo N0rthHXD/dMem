@@ -26,7 +26,7 @@ schema-init:
 schema-check: schema
 	@root="$$(mktemp -d)"; trap 'rm -rf "$$root"' EXIT; \
 		config="$$root/config.toml"; \
-		printf '%s\n' 'config_version = 1' '' '[instance]' "data_dir = \"$$root/data\"" 'database_filename = "dmem.db"' '' '[server]' 'shutdown_grace_period = "15s"' '' '[jobs]' 'worker_count = 1' 'queue_soft_limit = 10' 'queue_hard_limit = 20' 'max_attempts = 3' 'lease_duration = "30s"' 'per_job_timeout = "2m"' 'retry_initial_backoff = "1s"' 'retry_max_backoff = "5m"' '' '[storage]' 'disk_soft_free_bytes = 1073741824' 'disk_hard_free_bytes = 268435456' '' '[processing]' 'version = "builtin-noop-v1"' '' '[processing.provider]' 'enabled = false' '' '[embedding.provider]' 'enabled = false' > "$$config"; \
+		printf '%s\n' 'config_version = 1' '' '[instance]' "data_dir = \"$$root/data\"" 'database_filename = "dmem.db"' '' '[server]' 'shutdown_grace_period = "15s"' '' '[jobs]' 'worker_count = 1' 'queue_soft_limit = 10' 'queue_hard_limit = 20' 'max_attempts = 3' 'lease_duration = "30s"' 'per_job_timeout = "2m"' 'retry_initial_backoff = "1s"' 'retry_max_backoff = "5m"' '' '[storage]' 'disk_soft_free_bytes = 1073741824' 'disk_hard_free_bytes = 268435456' '' '[processing]' 'enabled = false' '' '[embedding]' 'enabled = false' > "$$config"; \
 		$(MAKE) --no-print-directory schema-init CONFIG="$$config"
 
 restore-drill:

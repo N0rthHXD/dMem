@@ -46,23 +46,9 @@ func (s *Service) currentProcessing() *processingSnapshot {
 	return s.processing.Load()
 }
 
-func (s *Service) Build(ctx context.Context, identity storage.WriteIdentity, space, kind string, revisions []string) (domain.AggregateProposal, bool, error) {
-	rt := s.currentProcessing()
-	if rt.provider == nil {
-		return domain.AggregateProposal{}, false, ErrUnsupported
-	}
-	prepared, err := s.repository.PrepareAggregateBuild(ctx, space, kind, revisions, rt.maxInputs)
-	if err != nil {
-		return domain.AggregateProposal{}, false, err
-	}
-	result, err := rt.provider.Build(ctx, domain.AggregateProviderInput{SpaceID: space, Kind: kind, PolicyVersion: rt.policy, ProcessingVersion: rt.version, Inputs: prepared})
-	if err != nil {
-		return domain.AggregateProposal{}, false, err
-	}
-	params := storage.CommitAggregateProposalParams{SpaceID: space, AggregateKind: kind, Inputs: prepared, Content: result.Content, ValidFrom: result.ValidFrom, ValidUntil: result.ValidUntil, Sensitivity: result.Sensitivity, PolicyVersion: rt.policy, ProcessorIdentity: rt.processor, ProviderIdentity: result.ProviderIdentity, ModelIdentity: result.ModelIdentity, ProcessingVersion: rt.version}
-	return s.repository.CommitAggregateProposal(ctx, identity, params, nil)
-}
-
+// RebuildClaimed runs one durable aggregate rebuild job. It is the only
+// aggregate execution entry: the removed synchronous Build path had no
+// transport consumer and bypassed durable job, policy, and attempt semantics.
 func (s *Service) RebuildClaimed(ctx context.Context, claim storage.ClaimedJob) error {
 	rt := s.currentProcessing()
 	if rt.provider == nil {
@@ -78,7 +64,7 @@ func (s *Service) RebuildClaimed(ctx context.Context, claim storage.ClaimedJob) 
 	}
 	result, err := rt.provider.Build(ctx, domain.AggregateProviderInput{SpaceID: space, Kind: kind, PolicyVersion: rt.policy, ProcessingVersion: rt.version, Inputs: prepared})
 	if err != nil {
-		return err
+		return storage.ClassifyProviderError(err, storage.ErrPolicyDenied)
 	}
 	params := storage.CommitAggregateProposalParams{SpaceID: space, AggregateKind: kind, Inputs: prepared, Content: result.Content, ValidFrom: result.ValidFrom, ValidUntil: result.ValidUntil, Sensitivity: result.Sensitivity, PolicyVersion: rt.policy, ProcessorIdentity: rt.processor, ProviderIdentity: result.ProviderIdentity, ModelIdentity: result.ModelIdentity, ProcessingVersion: rt.version}
 	_, _, err = s.repository.CommitAggregateProposal(ctx, storage.WriteIdentity{}, params, &claim)

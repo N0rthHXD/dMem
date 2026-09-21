@@ -170,7 +170,7 @@ func (r *Repository) CreateFTSRebuildJob(ctx context.Context, identity WriteIden
 		return domain.JobReference{}, false, err
 	}
 	var activeID string
-	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs WHERE job_type='rebuild_fts' AND target_type='index' AND target_id=? AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, ftsIndexName, r.processingVersion).Scan(&activeID)
+	err = tx.QueryRowContext(ctx, `SELECT job_id FROM jobs WHERE job_type='rebuild_fts' AND target_type='index' AND target_id=? AND processing_version=? AND status IN ('pending','waiting','running','retrying')`, ftsIndexName, r.processingVersion()).Scan(&activeID)
 	if err == nil {
 		return domain.JobReference{JobID: activeID}, false, ErrJobAlreadyActive
 	}
@@ -183,7 +183,7 @@ func (r *Repository) CreateFTSRebuildJob(ctx context.Context, identity WriteIden
 	}
 	jobID, operationID, auditID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
-	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'rebuild_fts', 'index', ?, ?, 'pending', ?, ?, ?)`, jobID, operationID, ftsIndexName, r.processingVersion, r.maxAttempts, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'rebuild_fts', 'index', ?, ?, 'pending', ?, ?, ?)`, jobID, operationID, ftsIndexName, r.processingVersion(), r.maxAttempts, now, now); err != nil {
 		return domain.JobReference{}, false, err
 	}
 	result := domain.JobReference{OperationID: operationID, JobID: jobID}

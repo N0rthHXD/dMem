@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -560,5 +561,63 @@ func TestRedactedDocumentExcludesSecretsEndpointAndQueryInstructions(t *testing.
 		if strings.Contains(persistedRedacted, forbidden) {
 			t.Fatalf("redacted_document leaked %q: %s", forbidden, persistedRedacted)
 		}
+	}
+}
+
+// TestProcessingDisableReconciliationSupersedesModelJobs proves that disabling
+// the Provider Route leaves raw events stored and never leaves a model job for a
+// no-op worker to consume.
+func TestProcessingDisableReconciliationSupersedesModelJobs(t *testing.T) {
+	ctx := context.Background()
+	repo := newConfigTestRepository(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	commit := ActivationCommit{
+		Revision:           RevisionRecord{RevisionID: "disable-revision", SourceIdentity: "source", EffectiveIdentity: "effective", ConfigVersion: 1, LoadedAt: now},
+		Activation:         ActivationRecord{ActivationID: "disable-activation", RevisionID: "disable-revision", Trigger: "api", RequestedBy: "test", Outcome: "activated", StartedAt: now, FinishedAt: now},
+		Capabilities:       []CapabilityStateRecord{{Capability: "processing", Enabled: false, ConfigurationGeneration: 2, HealthState: "disabled", ReconciliationState: "idle"}},
+		ReconciliationRuns: []ReconciliationRunRecord{{RunID: "disable-run", Capability: "processing", ChangeClass: "disable", ToConfigurationGeneration: 2}},
+	}
+	if err := repo.CommitActivation(ctx, commit); err != nil {
+		t.Fatal(err)
+	}
+	insertPolicySpace(t, repo, "root", "", "user", "root")
+	for i := 1; i <= 3; i++ {
+		eventID := fmt.Sprintf("disable-event-%d", i)
+		contentID := fmt.Sprintf("disable-content-%d", i)
+		if _, err := repo.store.writer.Exec(`INSERT INTO raw_contents(content_id,content_kind,content_text,media_type,content_hash,size_bytes,created_at) VALUES (?,'text','content','text/plain',?,7,?)`, contentID, contentID, formatTime(now)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.store.writer.Exec(`INSERT INTO raw_events(event_id,operation_id,space_id,content_id,source_type,source_name,caller_id,occurred_at,received_at,created_at) VALUES (?,?,'root',?,'manual','test','test',?,?,?)`, eventID, "operation-"+eventID, contentID, formatTime(now), formatTime(now), formatTime(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,capability,configuration_generation,policy_generation,created_at) VALUES ('disable-pending','op-disable-pending','extract_memory','raw_event','disable-event-1','v1','pending',3,?,'processing',1,1,?)`, formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,capability,configuration_generation,policy_generation,blocked_reason_code,created_at) VALUES ('disable-blocked','op-disable-blocked','extract_memory','raw_event','disable-event-2','v1','blocked_policy',3,?,'processing',1,1,'target_policy_denied',?)`, formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.writer.Exec(`INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,capability,configuration_generation,policy_generation,lease_owner,lease_until,lease_generation,created_at) VALUES ('disable-running','op-disable-running','extract_memory','raw_event','disable-event-3','v1','running',3,?,'processing',1,1,'worker',?,1,?)`, formatTime(now), formatTime(now.Add(time.Hour)), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := repo.ClaimReconciliationRun(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := repo.Reconcile(ctx, run, 100)
+	if err != nil || !batch.Complete {
+		t.Fatalf("Reconcile() = %+v, %v", batch, err)
+	}
+	var superseded, running, storedEvents int
+	if err := repo.store.reader.QueryRow(`SELECT (SELECT count(*) FROM jobs WHERE status='superseded' AND job_type='extract_memory'),(SELECT count(*) FROM jobs WHERE status='running'),(SELECT count(*) FROM raw_events WHERE processing_status='stored')`).Scan(&superseded, &running, &storedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if superseded != 2 || running != 1 || storedEvents != 3 {
+		t.Fatalf("superseded=%d running=%d stored=%d, want 2/1/3", superseded, running, storedEvents)
+	}
+	var cancelRequested sql.NullString
+	if err := repo.store.reader.QueryRow(`SELECT cancel_requested_at FROM jobs WHERE job_id='disable-running'`).Scan(&cancelRequested); err != nil || !cancelRequested.Valid {
+		t.Fatalf("running job cancel request = %v, %v", cancelRequested, err)
 	}
 }

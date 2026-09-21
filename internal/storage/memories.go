@@ -113,7 +113,7 @@ func (r *Repository) CreateMemory(ctx context.Context, identity WriteIdentity, p
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, frozen, sensitivity, created_at, updated_at) VALUES (?, ?, ?, 'active', 0, ?, ?, ?)`, memoryID, params.SpaceID, revisionID, params.Sensitivity, now, now); err != nil {
 		return domain.Memory{}, false, err
 	}
-	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, params.Kind, params.Content, params.ValidFrom, params.ValidUntil, nil, params.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
+	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, params.Kind, params.Content, params.ValidFrom, params.ValidUntil, nil, params.Sensitivity, identity.CallerID, r.processingVersion(), nil, now)
 	if err != nil {
 		return domain.Memory{}, false, err
 	}
@@ -202,7 +202,7 @@ func (r *Repository) Remember(ctx context.Context, identity WriteIdentity, param
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,'active',0,?,?,?)`, memoryID, params.SpaceID, revisionID, params.Sensitivity, now, now); err != nil {
 		return RememberResult{}, false, err
 	}
-	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, params.Kind, params.Content, params.ValidFrom, params.ValidUntil, nil, params.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
+	revision, err := revisionFromTextInput(revisionID, memoryID, nil, nil, params.Kind, params.Content, params.ValidFrom, params.ValidUntil, nil, params.Sensitivity, identity.CallerID, r.processingVersion(), nil, now)
 	if err != nil {
 		return RememberResult{}, false, err
 	}
@@ -325,7 +325,7 @@ func (r *Repository) ReviseMemory(ctx context.Context, identity WriteIdentity, m
 	}
 	revisionID, operationID, auditID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
-	revision, err := revisionFromTextInput(revisionID, memoryID, &params.ExpectedRevisionID, nil, string(current.Kind), params.Content, params.ValidFrom, params.ValidUntil, nil, current.Sensitivity, identity.CallerID, r.processingVersion, nil, now)
+	revision, err := revisionFromTextInput(revisionID, memoryID, &params.ExpectedRevisionID, nil, string(current.Kind), params.Content, params.ValidFrom, params.ValidUntil, nil, current.Sensitivity, identity.CallerID, r.processingVersion(), nil, now)
 	if err != nil {
 		return domain.Memory{}, false, err
 	}
@@ -425,7 +425,7 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 		revision.ParentRevisionID = &params.ExpectedRevisionID
 		revision.RestoredFromRevisionID = params.RestoreRevisionID
 		revision.CreatedBy = identity.CallerID
-		revision.ProcessingVersion = r.processingVersion
+		revision.ProcessingVersion = r.processingVersion()
 		revision.ProcessorIdentity = ""
 		revision.CreatedAt = now
 		if err := insertRevision(ctx, tx, revision); err != nil {

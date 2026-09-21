@@ -529,7 +529,7 @@ func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIde
 		return p, false, err
 	}
 	if confirm {
-		if _, err = enqueueEntityIndexJob(ctx, tx, ids[12], operationID, r.processingVersion, r.maxAttempts, now); err != nil {
+		if _, err = enqueueEntityIndexJob(ctx, tx, ids[12], operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
 			return p, false, err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE entity_index_metadata SET state='stale',updated_at=? WHERE singleton=1`, now); err != nil {

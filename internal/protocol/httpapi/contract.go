@@ -7,6 +7,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 )
 
@@ -17,6 +18,7 @@ import (
 const (
 	OperationCapabilities gateway.OperationName = "agent_tool.capabilities"
 	OperationScopeGet     gateway.OperationName = "scope.get"
+	OperationEventGet     gateway.OperationName = "extraction.event_get"
 )
 
 // AccessMode classifies a route as a read or a state-changing write.
@@ -47,6 +49,7 @@ const (
 	MaxForgetBodyBytes       int64 = 64 << 10
 	MaxFeedbackBodyBytes     int64 = 256 << 10
 	MaxRecallBodyBytes       int64 = 256 << 10
+	MaxEventIngestBodyBytes  int64 = 1 << 20
 )
 
 type AgentToolService interface {
@@ -61,11 +64,19 @@ type ScopeService interface {
 	Get(context.Context, gateway.CallContext, scope.GetQuery) (domain.Space, error)
 }
 
+// ExtractionService is the Provider Route raw-event ingress surface. It is
+// absent from the Agent Tool Route, which never submits raw events.
+type ExtractionService interface {
+	Ingest(context.Context, gateway.CallContext, extraction.IngestCommand) (extraction.IngestResult, error)
+	GetEvent(context.Context, gateway.CallContext, extraction.GetEventQuery) (domain.RawEvent, error)
+}
+
 // Dependencies are the gateway module interfaces the adapter depends on. Every
 // field is an interface owned by this package, never a concrete gateway service.
 type Dependencies struct {
 	AgentTools AgentToolService
 	Scopes     ScopeService
+	Events     ExtractionService
 }
 
 // RouteInfo is the declarative, inspectable metadata of one frozen route. It is

@@ -11,7 +11,8 @@ application REST+JSON `http.Handler`（Phase 2）与 `dmem-mcp` stdio 服务器
 （Phase 4）；两者使用同一份 `pkg/toolcontract` 版本化 schema 与原子 memory commit，
 MCP 服务器复用 `pkg/client` 薄 application client。`internal/server` 是生产传输层：
 它在回环地址上监听，可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。认证与网络边缘
-授权仍属后续独立工作。Provider Route 收敛尚未实现。
+授权仍属后续独立工作。Provider Route 已在 Phase 5 收敛为显式
+`[processing].enabled`/`[embedding].enabled` 加 `POST /v1/events` 入口。
 
 Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新的数据目录，而不是
 复用不兼容的数据库。

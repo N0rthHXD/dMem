@@ -158,7 +158,7 @@ func validateSemanticRestore(ctx context.Context, staging, databaseFilename stri
 		return err
 	}
 	cfg.WorkerCount, cfg.DiskSoftFree, cfg.DiskHardFree = 1, 0, 0
-	service, err := jobs.NewService(repository, cfg, jobs.NoopProcessor{}, jobs.Dependencies{Processing: storage.NewExtractionWorkCapability(repository), Indexes: repository})
+	service, err := jobs.NewService(repository, cfg, nil, jobs.Dependencies{Processing: storage.NewExtractionWorkCapability(repository), Indexes: repository})
 	if err != nil {
 		return err
 	}

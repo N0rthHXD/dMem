@@ -14,9 +14,10 @@ provider 默认关闭。
 
 - **版本化记忆权威**：稳定的逻辑 ID、不可变修订、仅追加状态事件、证据与当前
   投影；修订永不原地编辑，逻辑删除保留完整审计历史。
-- **两条模型路线（目标架构）**：Agent Tool Route 已可用——Agent 通过 MCP 或薄
-  client 直接召回和提交结构化记忆，无需在 dMem 配置模型；独立输入可选择 dMem
-  Provider Route 做持久异步处理（尚未收敛）。
+- **两条模型路线**：Agent Tool Route 已可用——Agent 通过 MCP 或薄 client 直接召回
+  和提交结构化记忆，无需在 dMem 配置模型；独立输入可选择 dMem Provider Route 做
+  持久异步处理，通过 `POST /v1/events` 摄取原始事件，并由显式
+  `[processing].enabled`/`[embedding].enabled` 控制，默认关闭。
 - **MCP 与薄 client**：`dmem-mcp` 通过 stdio 暴露 `dmem_recall`、`dmem_remember`、
   `dmem_feedback`、`dmem_forget`；`pkg/client` 是供 MCP 与原生 Go 集成复用的
   application client，自动传递 caller、scope、请求与幂等身份，且不需要 LLM 或
@@ -120,17 +121,20 @@ POST /v1/feedback
 POST /v1/forget
 POST /v1/scopes/ensure
 GET  /v1/scopes/{scope_id}
+POST /v1/events
+GET  /v1/events/{event_id}
 ```
 
 `GET /v1/capabilities` 是唯一的公开路由；其余路由都要求调用方身份
 （`X-Caller-Subject-ID` 和/或 `X-Caller-Client-ID`），写操作要求
 `Idempotency-Key`，`POST /v1/recall` 是读操作。请求是严格的单值 JSON，具有按
-路由的请求体上限，每个响应都携带 `X-Request-ID`。线格式由
-`pkg/toolcontract` 的版本化 schema 唯一定义。`internal/protocol/httpapi` 返回
+路由的请求体上限，每个响应都携带 `X-Request-ID`。Agent Tool 路由的线格式由
+`pkg/toolcontract` 的版本化 schema 唯一定义；`/v1/events` 是 Provider Route
+入口，processing 未启用时只把事件保存为 `stored`。
+`internal/protocol/httpapi` 返回
 `http.Handler`；`internal/server` 在回环地址上提供监听、可选 TLS 与优雅关闭。
 服务层不提供认证。`dmem-mcp` 通过 stdio 暴露同样的四个工具，并复用
-`pkg/client` 薄 application client。Provider Route 收敛见
-[双路线架构开发任务](docs/development/tasks-agent-tool-and-provider-routes.md)。
+`pkg/client` 薄 application client。
 
 ## 文档
 

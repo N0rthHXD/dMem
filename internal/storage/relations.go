@@ -337,7 +337,7 @@ func (r *Repository) reviewRelationProposal(ctx context.Context, identity WriteI
 					return p, false, err
 				}
 			}
-			if _, err = enqueueRelationIndexJob(ctx, tx, ids[5], operationID, r.processingVersion, r.maxAttempts, now); err != nil {
+			if _, err = enqueueRelationIndexJob(ctx, tx, ids[5], operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
 				return p, false, err
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE relation_index_metadata SET state='stale',generation=generation+1,updated_at=? WHERE singleton=1`, now); err != nil {

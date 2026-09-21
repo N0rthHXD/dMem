@@ -239,14 +239,14 @@ func (r *Repository) FinishImport(ctx context.Context, operationID string, gener
 		return ErrImportFenceLost
 	}
 	for _, job := range []struct{ typ, target, version, state string }{
-		{"rebuild_fts", "memory_fts", r.processingVersion, "pending"},
+		{"rebuild_fts", "memory_fts", r.processingVersion(), "pending"},
 		{"rebuild_semantic", semanticIndexName, r.embeddingIdentity(), "waiting"},
-		{"rebuild_entity_index", entityIndexName, r.processingVersion, "pending"},
-		{"rebuild_relation_index", relationIndexName, r.processingVersion, "pending"},
+		{"rebuild_entity_index", entityIndexName, r.processingVersion(), "pending"},
+		{"rebuild_relation_index", relationIndexName, r.processingVersion(), "pending"},
 		{"rebuild_feedback_aggregates", "feedback_aggregates", FeedbackAlgorithmVersion, "pending"},
-		{"rebuild_quality", "memory_quality", r.processingVersion, "pending"},
-		{"rebuild_duplicates", "duplicate_clusters", r.processingVersion, "pending"},
-		{"rebuild_graph_index", graphIndexName, r.processingVersion, "pending"},
+		{"rebuild_quality", "memory_quality", r.processingVersion(), "pending"},
+		{"rebuild_duplicates", "duplicate_clusters", r.processingVersion(), "pending"},
+		{"rebuild_graph_index", graphIndexName, r.processingVersion(), "pending"},
 	} {
 		id := stableImportID("job", operationID, job.typ)
 		_, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,created_at) VALUES (?,?,?,'index',?,?,?,?,?,?) ON CONFLICT DO NOTHING`, id, operationID, job.typ, job.target, job.version, job.state, r.maxAttempts, now, now)

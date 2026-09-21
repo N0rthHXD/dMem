@@ -34,7 +34,6 @@ func TestEndToEndServesGatewayRoutes(t *testing.T) {
 		RetryMaxBackoff:     time.Second,
 		DiskSoftFree:        1 << 30,
 		DiskHardFree:        1 << 28,
-		ProcessingVersion:   config.DefaultProcessingVersion,
 		GraphEnabled:        true,
 	}
 	d, err := daemon.StartStaging(context.Background(), cfg)

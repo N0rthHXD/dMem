@@ -205,6 +205,7 @@ func TestRecallCapabilityReturnsContextAndCursor(t *testing.T) {
 func TestEventCapabilityIngestIsAtomicAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	repository, _ := newMemoryTestRepository(t)
+	repository.SetProcessingEnabled(true)
 	capability := NewEventCapability(repository)
 	call := gatewayCall("gateway-caller", "ingest-1", "request-ingest-1")
 	command := extraction.IngestCommand{SpaceID: "space-1", SourceType: "manual", SourceName: "test", OccurredAt: "2026-08-21T12:00:00Z", Content: domain.Content{Kind: "text", Text: "raw event"}}
@@ -224,6 +225,29 @@ func TestEventCapabilityIngestIsAtomicAndIdempotent(t *testing.T) {
 	}
 	if _, err := capability.GetEvent(ctx, record.EventID); err != nil {
 		t.Fatalf("GetEvent() error = %v", err)
+	}
+}
+
+func TestEventCapabilityIngestWithoutProcessingStoresEventWithoutJob(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	capability := NewEventCapability(repository)
+	call := gatewayCall("gateway-caller", "ingest-disabled", "request-ingest-disabled")
+	command := extraction.IngestCommand{SpaceID: "space-1", SourceType: "manual", SourceName: "test", OccurredAt: "2026-08-21T12:00:00Z", Content: domain.Content{Kind: "text", Text: "stored only"}}
+	identity := gatewayIdentity(t, call, extraction.OperationIngest, command)
+
+	record, replay, err := capability.IngestEvent(ctx, identity, extraction.IngestParams{SpaceID: command.SpaceID, SourceType: command.SourceType, SourceName: command.SourceName, OccurredAt: command.OccurredAt, Content: command.Content})
+	if err != nil || replay || record.Status != "stored" || len(record.JobIDs) != 0 {
+		t.Fatalf("IngestEvent() = %+v replay=%t error=%v", record, replay, err)
+	}
+	var jobs int
+	var status string
+	if err := repository.store.reader.QueryRow(`SELECT (SELECT count(*) FROM jobs WHERE target_type='raw_event' AND target_id=?), (SELECT processing_status FROM raw_events WHERE event_id=?)`, record.EventID, record.EventID).Scan(&jobs, &status); err != nil || jobs != 0 || status != "stored" {
+		t.Fatalf("jobs=%d status=%q error=%v", jobs, status, err)
+	}
+	event, err := capability.GetEvent(ctx, record.EventID)
+	if err != nil || event.ProcessingStatus != "stored" {
+		t.Fatalf("GetEvent() = %+v error=%v", event, err)
 	}
 }
 

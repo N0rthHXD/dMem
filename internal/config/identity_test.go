@@ -70,12 +70,9 @@ disk_soft_free_bytes = 1073741824
 disk_hard_free_bytes = 268435456
 
 [processing]
-version = "builtin-noop-v1"
-
-[processing.provider]
 enabled = false
 
-[embedding.provider]
+[embedding]
 enabled = false
 `
 	doc2 := strings.Replace(doc1, "config_version = 1\n", "config_version=1\n\n", 1)

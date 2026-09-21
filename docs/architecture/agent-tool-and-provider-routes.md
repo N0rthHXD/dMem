@@ -217,7 +217,8 @@ dMem 仍负责 scope、生命周期、有效时间、敏感度、预算、去重
 [Agent Tool Contract v1](agent-tool-contract-v1.md)；Phase 2 已把该 schema 映射到
 application HTTP API 与单事务原子提交；Phase 4 已实现薄 Go application client 与
 `dmem-mcp` stdio 服务器（见 [dmem-mcp stdio 服务器](../api/mcp-server.md)）。
-Provider Route 收敛仍属于后续阶段。核心语义是：
+Phase 5 已用显式 `[processing].enabled`/`[embedding].enabled` 收敛 Provider Route，
+并删除 no-op 消费模型 job 的流程。核心语义是：
 
 - `source` 与 memory/knowledge 建议在一个幂等事务中提交；
 - `local_id` 只在本次命令中解析引用，不成为长期外部 ID；
@@ -339,7 +340,9 @@ client 中提供可选 adapter，并让 recall/remember 接受版本化向量信
 
 ## dMem Provider Route
 
-dMem Provider Route 保留现有持久异步处理模型，但收敛为显式选择的独立路线：
+dMem Provider Route 保留现有持久异步处理模型，但收敛为显式选择的独立路线。Phase 5
+已实现本节的能力开关、事件入口和 provider 失败分类；原始事件通过
+`POST /v1/events` 摄取，禁用时只以 `stored` 状态保留：
 
 ```text
 raw event

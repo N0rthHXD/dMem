@@ -504,7 +504,7 @@ func (r *Repository) createConflictResolutionMemory(ctx context.Context, tx *sql
 	if err != nil {
 		return nil, "", "", err
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,created_at) VALUES (?,?,'rebuild_fts','index','memory_fts',?,'pending',?,?,?) ON CONFLICT DO NOTHING`, jobID, operationID, r.processingVersion, r.maxAttempts, now, now)
+	res, err := tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,created_at) VALUES (?,?,'rebuild_fts','index','memory_fts',?,'pending',?,?,?) ON CONFLICT DO NOTHING`, jobID, operationID, r.processingVersion(), r.maxAttempts, now, now)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -520,7 +520,7 @@ func (r *Repository) createResolutionRelation(ctx context.Context, tx *sql.Tx, s
 		return nil, err
 	}
 	spec := sha256.Sum256([]byte(sourceMemoryID + sourceRevisionID + targetMemoryID + targetRevisionID + "supersedes"))
-	if _, err = tx.ExecContext(ctx, `INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,state,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'active','conflict_resolution',?,?,?,?,?)`, ids[0], spaceID, "supersedes", sourceMemoryID, sourceRevisionID, targetMemoryID, targetRevisionID, hex.EncodeToString(spec[:]), caller, r.processingVersion, now, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,state,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'active','conflict_resolution',?,?,?,?,?)`, ids[0], spaceID, "supersedes", sourceMemoryID, sourceRevisionID, targetMemoryID, targetRevisionID, hex.EncodeToString(spec[:]), caller, r.processingVersion(), now, now); err != nil {
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO relation_state_events(state_event_id,relation_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,NULL,'active',?,?,?)`, ids[1], ids[0], operationID, reason, caller, now); err != nil {
@@ -529,7 +529,7 @@ func (r *Repository) createResolutionRelation(ctx context.Context, tx *sql.Tx, s
 	if _, err = tx.ExecContext(ctx, `INSERT INTO relation_evidence(evidence_id,relation_id,evidence_type,created_by,created_at) VALUES (?,?,'human_confirmation',?,?)`, ids[2], ids[0], caller, now); err != nil {
 		return nil, err
 	}
-	createdJob, err := enqueueRelationIndexJob(ctx, tx, ids[3], operationID, r.processingVersion, r.maxAttempts, now)
+	createdJob, err := enqueueRelationIndexJob(ctx, tx, ids[3], operationID, r.processingVersion(), r.maxAttempts, now)
 	if err != nil {
 		return nil, err
 	}

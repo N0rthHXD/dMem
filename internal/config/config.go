@@ -6,10 +6,14 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
-const DefaultProcessingVersion = "builtin-noop-v1"
+// LocalProcessingVersion labels deterministic, non-model work such as index
+// maintenance when the dMem Provider Route is disabled. It is never a model
+// identity and never authorizes extraction.
+const LocalProcessingVersion = domain.LocalProcessingVersion
 
 // DefaultListenAddress is the loopback HTTP listen address used when
 // [server].listen_address is omitted.
@@ -44,6 +48,10 @@ type Config struct {
 	DiskSoftFree uint64
 	DiskHardFree uint64
 
+	// ProcessingVersion is derived, never read from the file. It is the
+	// configured processor identity when the Provider Route is enabled and
+	// LocalProcessingVersion otherwise. It is the provenance value stored on
+	// provider jobs and revisions.
 	ProcessingVersion  string
 	ProcessingProvider ProviderConfig
 	EmbeddingProvider  ProviderConfig
@@ -55,6 +63,15 @@ type Config struct {
 	Graph         GraphConfig
 	Ranking       RankingConfig
 	Context       ContextConfig
+}
+
+// ProcessingVersionFor derives the provenance version for a provider
+// configuration. A disabled provider never contributes a model identity.
+func ProcessingVersionFor(pcfg ProviderConfig) string {
+	if !pcfg.Enabled {
+		return LocalProcessingVersion
+	}
+	return provider.ProcessorIdentity(pcfg)
 }
 
 func Default() (Config, error) {
@@ -79,7 +96,7 @@ func Default() (Config, error) {
 		RetryMaxBackoff:     5 * time.Minute,
 		DiskSoftFree:        1 << 30,
 		DiskHardFree:        256 << 20,
-		ProcessingVersion:   DefaultProcessingVersion,
+		ProcessingVersion:   LocalProcessingVersion,
 		GraphEnabled:        true,
 		Consolidation:       defaultConsolidationConfig(),
 		Semantic:            defaultSemanticConfig(),

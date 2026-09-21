@@ -12,6 +12,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
@@ -56,10 +57,26 @@ func testScope(command scope.EnsureCommand) domain.Space {
 		DisplayName: command.DisplayName, CreatedAt: "2026-09-20T10:00:00Z"}
 }
 
+type fakeEvents struct {
+	call    gateway.CallContext
+	command any
+}
+
+func (f *fakeEvents) Ingest(_ context.Context, call gateway.CallContext, command extraction.IngestCommand) (extraction.IngestResult, error) {
+	f.call, f.command = call, command
+	return extraction.IngestResult{WriteResult: gateway.WriteResult{OperationID: "op", Replay: true}, EventID: "event",
+		Status: "accepted", JobIDs: []string{"job"}, AcceptedAt: "2026-09-20T10:00:00Z"}, nil
+}
+func (f *fakeEvents) GetEvent(_ context.Context, _ gateway.CallContext, query extraction.GetEventQuery) (domain.RawEvent, error) {
+	return domain.RawEvent{EventID: query.EventID, OperationID: "op", SpaceID: "scope", SourceType: "manual", SourceName: "collector",
+		OccurredAt: "2026-09-20T10:00:00Z", ReceivedAt: "2026-09-20T10:00:01Z", ProcessingStatus: "stored",
+		Content: domain.Content{Kind: "text", MediaType: "text/plain", Text: "body"}}, nil
+}
+
 func testHandler(t *testing.T) (*Handler, *fakeTools, *fakeScopes) {
 	t.Helper()
 	tools, scopes := &fakeTools{}, &fakeScopes{}
-	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes})
+	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes, Events: &fakeEvents{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,14 +91,16 @@ var targetRoutes = []RouteInfo{
 	{Operation: agenttool.OperationForget, Method: http.MethodPost, Path: "/v1/forget", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxForgetBodyBytes},
 	{Operation: scope.OperationEnsure, Method: http.MethodPost, Path: "/v1/scopes/ensure", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxScopeBodyBytes},
 	{Operation: OperationScopeGet, Method: http.MethodGet, Path: "/v1/scopes/{scope_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: extraction.OperationIngest, Method: http.MethodPost, Path: "/v1/events", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxEventIngestBodyBytes},
+	{Operation: OperationEventGet, Method: http.MethodGet, Path: "/v1/events/{event_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
 }
 
-func TestRoutesAreExactPhaseTwoSurface(t *testing.T) {
+func TestRoutesAreExactProviderAndToolSurface(t *testing.T) {
 	handler, _, _ := testHandler(t)
 	if got := handler.Routes(); !reflect.DeepEqual(got, targetRoutes) {
 		t.Fatalf("routes = %+v", got)
 	}
-	for _, path := range []string{"/v1/memories/m", "/v1/events/e", "/v1/scopes"} {
+	for _, path := range []string{"/v1/memories/m", "/v1/scopes"} {
 		if response := request(t, handler, http.MethodGet, path, "", nil); response.Code != http.StatusNotFound {
 			t.Errorf("%s status = %d", path, response.Code)
 		}
@@ -181,6 +200,51 @@ func TestScopeEnsureResolvesThenCreatesAndScopeGet(t *testing.T) {
 	}
 	if err := toolcontract.Validate(toolcontract.SchemaScopeOutput, response.Body.Bytes()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEventIngestAndStatusUseProviderRouteSurface(t *testing.T) {
+	events := &fakeEvents{}
+	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"scope_id":"scope","source":{"type":"manual","name":"collector","occurred_at":"2026-09-20T10:00:00Z","metadata":{"n":1}},"content":{"kind":"text","media_type":"text/plain","text":"raw body"}}`
+	response := request(t, handler, http.MethodPost, "/v1/events", body, writes())
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("ingest status = %d: %s", response.Code, response.Body.String())
+	}
+	command, ok := events.command.(extraction.IngestCommand)
+	if !ok || command.SpaceID != "scope" || command.SourceType != "manual" || command.Content.Text != "raw body" {
+		t.Fatalf("ingest command = %+v", events.command)
+	}
+	var output eventOutput
+	if err := json.Unmarshal(response.Body.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.EventID != "event" || output.Status != "accepted" || len(output.JobIDs) != 1 || !output.Replayed {
+		t.Fatalf("ingest output = %+v", output)
+	}
+	status := request(t, handler, http.MethodGet, "/v1/events/event", "", caller())
+	if status.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", status.Code, status.Body.String())
+	}
+	var event eventStatusOutput
+	if err := json.Unmarshal(status.Body.Bytes(), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.EventID != "event" || event.ProcessingStatus != "stored" || event.Content.Text != "body" {
+		t.Fatalf("event status = %+v", event)
+	}
+	for name, invalid := range map[string]string{
+		"unknown field": `{"scope_id":"scope","source":{"type":"manual","name":"collector"},"content":{"kind":"text","media_type":"text/plain","text":"x"},"extra":1}`,
+		"bad value":     `{"scope_id":"scope","source":{"type":"manual","name":"collector"},"content":{"kind":"json","media_type":"application/json","value":}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if rejected := request(t, handler, http.MethodPost, "/v1/events", invalid, writes()); rejected.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d: %s", rejected.Code, rejected.Body.String())
+			}
+		})
 	}
 }
 

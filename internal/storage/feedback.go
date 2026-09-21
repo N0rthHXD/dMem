@@ -225,7 +225,7 @@ func (r *Repository) createFeedbackProposal(ctx context.Context, p AppendFeedbac
 	}
 	hash := sha256.Sum256([]byte(action + "\x00" + p.MemoryID + "\x00" + p.RevisionID + "\x00" + p.ProposedContent))
 	contentHash := sha256.Sum256([]byte(p.ProposedContent))
-	if _, err := tx.ExecContext(ctx, `INSERT INTO evolution_proposals(proposal_id,event_id,space_id,action,proposed_content,proposed_content_hash,memory_type,sensitivity,processor_identity,processing_version,specification_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, proposalID, p.SourceEventID, eventSpace, action, p.ProposedContent, hex.EncodeToString(contentHash[:]), memoryType, sensitivity, "feedback/"+p.FeedbackType, r.processingVersion, hex.EncodeToString(hash[:]), now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO evolution_proposals(proposal_id,event_id,space_id,action,proposed_content,proposed_content_hash,memory_type,sensitivity,processor_identity,processing_version,specification_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, proposalID, p.SourceEventID, eventSpace, action, p.ProposedContent, hex.EncodeToString(contentHash[:]), memoryType, sensitivity, "feedback/"+p.FeedbackType, r.processingVersion(), hex.EncodeToString(hash[:]), now); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO evolution_proposal_targets(proposal_id,target_order,memory_id,expected_revision_id,created_at) VALUES (?,0,?,?,?)`, proposalID, p.MemoryID, p.RevisionID, now); err != nil {

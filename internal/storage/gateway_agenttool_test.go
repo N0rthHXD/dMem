@@ -10,6 +10,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
@@ -235,5 +236,46 @@ func TestAgentToolCommitValidatesThroughGatewayContract(t *testing.T) {
 	bad.Source.Type = "provider"
 	if err := agenttool.ValidateMemoryCommit(bad); err == nil {
 		t.Fatal("invalid source accepted")
+	}
+}
+
+// TestToolCommitAndProviderEventDoNotDoubleExtractOneSource proves that an Agent
+// Tool commit and a Provider Route event in the same instance stay distinct
+// sources: the tool event is committed as processed with no model job, while the
+// raw event owns exactly one extraction job.
+func TestToolCommitAndProviderEventDoNotDoubleExtractOneSource(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	repository.SetProcessingEnabled(true)
+	params := agentToolCommit()
+	if _, _, err := NewAgentToolCapability(repository).CommitMemory(context.Background(), agentToolIdentity(t, "mixed-tool", params, agenttool.OperationMemoryCommit), params); err != nil {
+		t.Fatal(err)
+	}
+	command := extraction.IngestCommand{SpaceID: "space-1", SourceType: "manual", SourceName: "collector", OccurredAt: "2026-08-21T11:00:00Z", Content: domain.Content{Kind: "text", MediaType: "text/plain", Text: "collector event"}}
+	call := gateway.CallContext{RequestID: "event-request", Caller: gateway.CallerIdentity{SubjectID: "collector"}, Idempotency: &gateway.Idempotency{Key: "mixed-event"}}
+	identity, err := gateway.NewWriteIdentity(call, extraction.OperationIngest, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, replay, err := NewEventCapability(repository).IngestEvent(context.Background(), identity, extraction.IngestParams{SpaceID: command.SpaceID, SourceType: command.SourceType, SourceName: command.SourceName, OccurredAt: command.OccurredAt, Content: command.Content})
+	if err != nil || replay || len(event.JobIDs) != 1 {
+		t.Fatalf("IngestEvent() = %+v replay=%t error=%v", event, replay, err)
+	}
+
+	var toolEventID, toolStatus string
+	if err := repository.store.reader.QueryRow(`SELECT event_id FROM agent_tool_sources LIMIT 1`).Scan(&toolEventID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.store.reader.QueryRow(`SELECT processing_status FROM raw_events WHERE event_id=?`, toolEventID).Scan(&toolStatus); err != nil {
+		t.Fatal(err)
+	}
+	var toolJobs, eventJobs int
+	if err := repository.store.reader.QueryRow(`SELECT (SELECT count(*) FROM jobs WHERE job_type IN ('extract_memory','extract_graph') AND target_id=?), (SELECT count(*) FROM jobs WHERE job_type='extract_memory' AND target_id=?)`, toolEventID, event.EventID).Scan(&toolJobs, &eventJobs); err != nil {
+		t.Fatal(err)
+	}
+	if toolStatus != "processed" || toolJobs != 0 {
+		t.Fatalf("tool source status=%q extraction_jobs=%d, want processed/0", toolStatus, toolJobs)
+	}
+	if eventJobs != 1 {
+		t.Fatalf("provider event extraction jobs = %d, want 1", eventJobs)
 	}
 }

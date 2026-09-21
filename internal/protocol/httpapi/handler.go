@@ -10,6 +10,7 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 )
 
@@ -18,6 +19,7 @@ import (
 type Handler struct {
 	agentTools AgentToolService
 	scopes     ScopeService
+	events     ExtractionService
 
 	routes []route
 	newID  func() string
@@ -35,10 +37,13 @@ func New(deps Dependencies) (*Handler, error) {
 		return nil, fmt.Errorf("%w: agent tools", errMissingDependency)
 	case deps.Scopes == nil:
 		return nil, fmt.Errorf("%w: scopes", errMissingDependency)
+	case deps.Events == nil:
+		return nil, fmt.Errorf("%w: extraction", errMissingDependency)
 	}
 	h := &Handler{
 		agentTools: deps.AgentTools,
 		scopes:     deps.Scopes,
+		events:     deps.Events,
 		newID:      newRequestID,
 	}
 	h.routes = h.buildRoutes()
@@ -134,6 +139,27 @@ func (h *Handler) buildRoutes() []route {
 				Idempotency: IdempotencyNotRequired,
 			},
 			handle: h.handleGetScope,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    extraction.OperationIngest,
+				Method:       http.MethodPost,
+				Path:         "/v1/events",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxEventIngestBodyBytes,
+			},
+			handle: h.handleIngestEvent,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationEventGet,
+				Method:      http.MethodGet,
+				Path:        "/v1/events/{event_id}",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleGetEvent,
 		},
 	}
 }

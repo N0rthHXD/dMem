@@ -371,24 +371,24 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### 配置任务
 
-- [ ] 用显式 `processing.enabled` 和 `embedding.enabled` 表达 Provider Route 能力状态。
-- [ ] disabled 状态不要求 endpoint、model、secret 或 provider policy。
-- [ ] enabled 状态严格要求 provider 配置和默认拒绝出网策略。
-- [ ] 移除把 `builtin-noop` 当作正常模型执行结果的模糊流程。
-- [ ] 保证配置 reload、identity 和 reconciliation 对 enabled/disabled 变化行为明确。
+- [x] 用显式 `processing.enabled` 和 `embedding.enabled` 表达 Provider Route 能力状态。
+- [x] disabled 状态不要求 endpoint、model、secret 或 provider policy。
+- [x] enabled 状态严格要求 provider 配置和默认拒绝出网策略。
+- [x] 移除把 `builtin-noop` 当作正常模型执行结果的模糊流程。
+- [x] 保证配置 reload、identity 和 reconciliation 对 enabled/disabled 变化行为明确。
 
 ### 处理任务
 
-- [ ] raw event ingest 只在 processing enabled 时创建模型提取 job，或以明确的 stored
+- [x] raw event ingest 只在 processing enabled 时创建模型提取 job，或以明确的 stored
       状态保留；不得创建注定由 no-op 消费的 job。
-- [ ] 保留 memory extraction 的 candidate/review 边界和严格输出验证。
-- [ ] 保留 graph extraction 的 proposal、predicate registry 和 revision fence。
-- [ ] 审查 aggregate provider 的可达性；无目标产品消费者则删除同步/异步流程，
+- [x] 保留 memory extraction 的 candidate/review 边界和严格输出验证。
+- [x] 保留 graph extraction 的 proposal、predicate registry 和 revision fence。
+- [x] 审查 aggregate provider 的可达性；无目标产品消费者则删除同步/异步流程，
       有消费者则统一 provider attempt、policy 和错误分类。
-- [ ] 统一 embedding 和 aggregate 的 transient/permanent/invalid-output 分类，避免
+- [x] 统一 embedding 和 aggregate 的 transient/permanent/invalid-output 分类，避免
       永久错误被无差别重试。
-- [ ] 统一 provider attempt provenance 和外部调用计数。
-- [ ] 验证 Tool Route commit 与 Provider Route event 不会对同一 source 双重提取。
+- [x] 统一 provider attempt provenance 和外部调用计数。
+- [x] 验证 Tool Route commit 与 Provider Route event 不会对同一 source 双重提取。
 
 ### 完成条件
 
@@ -396,6 +396,73 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
   集成测试；
 - Provider Route 禁用时没有模型 job 被 no-op worker 消费；
 - 两条路线写出的 memory 可由同一个 recall 流水线检索。
+
+### Phase 5 实施记录
+
+- 状态：completed
+- 完成日期：2026-09-21
+- 主要变更：
+  - `internal/config`：`[processing].enabled` 与 `[embedding].enabled` 成为唯一能力
+    开关，删除 `[processing].version`、`DefaultProcessingVersion` 与 provider 级
+    `enabled`；禁用时不校验 provider 配置，启用时严格要求连接、密钥、限制与
+    default-deny 策略；`ProcessingVersion` 改为派生（启用时 provider identity，
+    禁用时 `domain.LocalProcessingVersion`）；capability policy identity 对禁用
+    provider 返回空；`manager` 用同一 identity 判定能力变化并产生
+    `enable`/`disable`/`runtime_limits` 调和类。
+  - `internal/provider`：新增 `ProcessorIdentity(cfg)`，供配置与 provenance 复用。
+  - `internal/storage/repository.go`：`processingVersion` 改为原子值并提供
+    `SetProcessingVersion`；新增 `SetProcessingEnabled`；`IngestEvent` 仅在
+    processing 启用时创建 `extract_memory` job，禁用时返回 `stored` 与空
+    `job_ids`；删除无消费者的 `ReplayEvent`。
+  - `internal/storage/provider_errors.go`：新增 `ClassifyProviderError` 与
+    `ErrProviderTransient`/`ErrProviderPermanent`/`ErrProviderInvalidOutput`；
+    `embedMemory` 与 aggregate `RebuildClaimed` 统一分类 provider 失败。
+  - `internal/storage/configuration.go`：processing `disable` 调和取代
+    `pending`/`waiting`/`retrying`/`blocked_policy` 模型 job、把原始事件保留为
+    `stored`，并给运行中的 job 写入取消请求。
+  - `internal/storage/aggregates.go`：新增 `AggregateScope` 供 worker 做 processing
+    policy 判定。
+  - `internal/jobs`：删除 `NoopProcessor`；`SetProcessing` 在未配置真实 provider 时
+    保持 nil processor 与 `not_configured`；无处理器的模型 job 以
+    `processing_disabled` 永久失败而非记录成功；`ProcessingNoProcessor` 与
+    `GraphExtractionNoProcessor` 不再提交为成功；`rebuild_aggregate` 经过 processing
+    policy 与 `MarkProviderAttempt`；index 失败按 permanent/invalid-output/transient
+    分流。
+  - `internal/gateway/extraction` + `internal/protocol/httpapi`：接入
+    `POST /v1/events` 与 `GET /v1/events/{event_id}`，`Dependencies` 增加
+    consumer-owned `ExtractionService`，新增协议本地事件 DTO 与严格解码。
+  - `internal/daemon`：组装 extraction 服务；`applySnapshot` 同步 processing 版本、
+    enabled 状态与 graph 门控；删除 aggregate 同步入口的版本来源。
+  - `internal/aggregate`：删除无消费者的同步 `Build`，保留并统一异步
+    `RebuildClaimed`。
+  - 测试：config 能力开关与派生版本、storage ingest 门控与 disable 调和、embedding
+    失败分类、jobs permanent 分类与 aggregate policy/attempt、httpapi 事件路由、
+    daemon `TestProviderRouteEventToCandidateReviewEmbeddingAndRecall` 与
+    `TestProviderDisabledEventIngestStoresWithoutModelJob`、storage
+    `TestToolCommitAndProviderEventDoNotDoubleExtractOneSource`。
+  - 文档：更新 `docs/architecture/processing.md`、`overview.md`、
+    `agent-tool-and-provider-routes.md`、`retrieval.md`、`docs/api/http-rest-contract.md`、
+    `docs/api/usage.md`、`docs/operations/configuration.md`、`config.example.toml`、
+    `docs/development/testing.md`。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `CGO_ENABLED=1 go test -race -tags sqlite_fts5 ./internal/config/... ./internal/storage/... ./internal/jobs/... ./internal/aggregate/... ./internal/protocol/... ./internal/daemon/...`；
+  - `make build`、`make test`、`make test-race`、`make vet`；
+  - `make schema-check`、`make quality`、`make offline-default`、`make config-check`、
+    `make restore-drill`、`make portability-drill`、`make mcp-check`；
+  - `git diff --check`；全部通过。
+- 删除内容：`builtin-noop` 处理版本与 `NoopProcessor`；provider 级 `enabled` 配置键；
+  `[processing].version`；无消费者的 `Repository.ReplayEvent` 及其测试；aggregate
+  无消费者的同步 `Build` 及其测试；no-op 完成模型 job 的提交路径。
+- 遗留问题：aggregate 生成目前只有导入的 descriptor 能触发异步 rebuild，尚无
+  HTTP/MCP 触发入口；禁用期间摄取的事件保持 `stored`，重新启用不会追溯处理；
+  MCP 仍只暴露四个 Agent 工具，不暴露事件入口；`builtin-noop` 在历史 Phase 0
+  基线文档中作为当时行为保留。
+- 下一阶段前置条件：Phase 6 必须在 Provider Route 语义稳定的前提下，保留
+  canonical document、query format 与 compatibility identity，并让 recall 在
+  embedding provider 不可用时按 Phase 3 降级，不得改变 Phase 5 的能力开关与
+  失败分类。
 
 ## Phase 6：可选向量增强
 

@@ -9,6 +9,9 @@ import (
 
 const outcomeIndexRebuilt = "index_rebuilt"
 
+// Processor is the dMem Provider Route processing adapter. It is present only
+// when the route is explicitly enabled and a real provider is configured; there
+// is no no-op implementation that could report success for a model job.
 type Processor interface {
 	Enabled() bool
 	Identity() string
@@ -17,19 +20,6 @@ type Processor interface {
 
 type GraphProcessor interface {
 	ProcessGraph(context.Context, domain.GraphExtractionInput) domain.GraphExtractionResult
-}
-
-type NoopProcessor struct{}
-
-func (NoopProcessor) Enabled() bool    { return false }
-func (NoopProcessor) Identity() string { return "none" }
-
-func (NoopProcessor) Process(context.Context, domain.ProcessingInput) domain.ProcessingResult {
-	return domain.ProcessingResult{Code: domain.ProcessingNoProcessor}
-}
-
-func (NoopProcessor) ProcessGraph(context.Context, domain.GraphExtractionInput) domain.GraphExtractionResult {
-	return domain.GraphExtractionResult{Code: domain.GraphExtractionNoProcessor}
 }
 
 type IndexRepository interface {

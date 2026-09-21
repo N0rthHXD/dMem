@@ -462,7 +462,7 @@ func (r *Repository) reviewAggregateProposal(ctx context.Context, identity Write
 				return p, false, err
 			}
 		}
-		if _, err = enqueueRelationIndexJob(ctx, tx, ids[idx], operationID, r.processingVersion, r.maxAttempts, now); err != nil {
+		if _, err = enqueueRelationIndexJob(ctx, tx, ids[idx], operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
 			return p, false, err
 		}
 		idx++
@@ -538,7 +538,7 @@ func (r *Repository) enqueueAggregateRebuild(ctx context.Context, tx *sql.Tx, ag
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,created_at) VALUES (?,?,'rebuild_aggregate','aggregate',?,?,'pending',50,?,?,?) ON CONFLICT DO NOTHING`, ids[0], ids[1], aggregateID, r.processingVersion, r.maxAttempts, now, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,priority,max_attempts,next_run_at,created_at) VALUES (?,?,'rebuild_aggregate','aggregate',?,?,'pending',50,?,?,?) ON CONFLICT DO NOTHING`, ids[0], ids[1], aggregateID, r.processingVersion(), r.maxAttempts, now, now)
 	return err
 }
 
@@ -729,6 +729,24 @@ func (r *Repository) ListAggregates(ctx context.Context, f AggregateFilter) (dom
 		page.Items = page.Items[:f.Limit]
 	}
 	return page, err
+}
+
+// AggregateScope resolves the space of the aggregate targeted by a rebuild job.
+// The worker uses it to route the processing-provider egress decision through
+// the policy interface before any aggregate provider call.
+func (r *Repository) AggregateScope(ctx context.Context, claim ClaimedJob) (string, bool, error) {
+	if claim.Job.JobType != "rebuild_aggregate" || claim.Job.TargetType != "aggregate" {
+		return "", false, ErrInvalidJobState
+	}
+	var spaceID string
+	err := r.store.reader.QueryRowContext(ctx, `SELECT m.space_id FROM aggregate_descriptors d JOIN memories m ON m.memory_id=d.memory_id WHERE d.aggregate_id=?`, claim.Job.TargetID).Scan(&spaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return spaceID, true, nil
 }
 
 func (r *Repository) PrepareAggregateRebuild(ctx context.Context, claim ClaimedJob, maxInputs int) (string, string, []string, error) {

@@ -111,6 +111,32 @@ make mcp-check
 （1 秒间隔）或直接仓储调用（`ClaimReconciliationRun` + `Reconcile`）驱动，以便
 精确控制时序。
 
+### Provider Route 收敛（Phase 5）
+
+- `internal/config` 覆盖 `[processing].enabled`/`[embedding].enabled` 的显式语义：
+  禁用时不要求也不校验 provider 连接、密钥或策略；启用时缺少完整 provider 配置会
+  被拒绝；处理版本由 provider identity 派生；`disable` 重载产生
+  `processing:disable` 调和类。
+- `internal/storage` 的 `TestEventCapabilityIngestWithoutProcessingStoresEventWithoutJob`
+  与 `TestProcessingDisableReconciliationSupersedesModelJobs` 证明禁用时事件保留为
+  `stored`、不创建模型 job，禁用调和取代无法再运行的模型 job 并请求运行中的 job
+  取消。
+- `TestEmbedMemoryClassifiesProviderFailures` 证明 embedding provider 的永久拒绝、
+  暂时故障与畸形输出分别映射为 `ErrProviderPermanent`、`ErrProviderTransient` 与
+  `ErrProviderInvalidOutput`；`internal/jobs` 的
+  `TestPermanentIndexFailureDoesNotConsumeRetryBudget` 证明永久错误不进入重试预算。
+- `TestAggregateRebuildUsesProcessingPolicyAndRecordsAttempt` 与
+  `TestAggregateRebuildPolicyDenialBlocksBeforeProviderAttempt` 证明 aggregate
+  rebuild 经过 processing policy 与 provider attempt 记录，被拒绝时在调用前阻塞。
+- `internal/protocol/httpapi` 覆盖 `POST /v1/events` 与 `GET /v1/events/{event_id}`
+  的路由元数据、DTO 映射、未知字段与畸形 body 拒绝。
+- `internal/daemon` 的 `TestProviderRouteEventToCandidateReviewEmbeddingAndRecall`
+  用真实 SQLite 与进程内确定性 processor/embedding 驱动 event -> durable job ->
+  candidate -> review -> revision -> semantic index -> recall 全链路；
+  `TestProviderDisabledEventIngestStoresWithoutModelJob` 证明禁用时无模型 job。
+- `TestToolCommitAndProviderEventDoNotDoubleExtractOneSource` 证明同一实例中 Tool
+  Route commit 与 Provider Route event 是不同来源，同一来源不会被双重提取。
+
 固定检索语料与版本化门禁文件位于 `internal/storage/testdata`。修改语料、排序、
 索引格式、可移植格式、规模或阈值时，必须更新对应身份并记录可复现基线。
 

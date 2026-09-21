@@ -527,3 +527,42 @@ func TestMCPToolRouteClosesMemoryLoopWithoutProvider(t *testing.T) {
 		t.Fatalf("forgotten memory still recalled: %v", remaining)
 	}
 }
+
+// TestProviderDisabledEventIngestStoresWithoutModelJob proves that with the
+// Provider Route disabled a raw event is stored without creating an extraction
+// job that only a no-op worker could consume.
+func TestProviderDisabledEventIngestStoresWithoutModelJob(t *testing.T) {
+	t.Parallel()
+	handler := newIntegrationRuntime(t)
+	scopeID := ensureScope(t, handler, "provider-disabled-event")
+
+	response := callHandler(t, handler, http.MethodPost, "/v1/events", "event-disabled", map[string]any{
+		"scope_id": scopeID,
+		"source":   map[string]any{"type": "manual", "name": "collector", "occurred_at": "2026-08-21T11:00:00Z"},
+		"content":  map[string]any{"kind": "text", "media_type": "text/plain", "text": "stored without processing"},
+	}, true)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("ingest status = %d: %s", response.Code, response.Body.String())
+	}
+	var output struct {
+		EventID string   `json:"event_id"`
+		Status  string   `json:"status"`
+		JobIDs  []string `json:"job_ids"`
+	}
+	decodeInto(t, response, &output)
+	if output.EventID == "" || output.Status != "stored" || len(output.JobIDs) != 0 {
+		t.Fatalf("provider-disabled ingest = %+v, want stored with no job", output)
+	}
+
+	status := callHandler(t, handler, http.MethodGet, "/v1/events/"+output.EventID, "", nil, true)
+	if status.Code != http.StatusOK {
+		t.Fatalf("event status = %d: %s", status.Code, status.Body.String())
+	}
+	var event struct {
+		ProcessingStatus string `json:"processing_status"`
+	}
+	decodeInto(t, status, &event)
+	if event.ProcessingStatus != "stored" {
+		t.Fatalf("processing_status = %q, want stored", event.ProcessingStatus)
+	}
+}

@@ -1,36 +1,41 @@
 # 处理、审核与演化
 
-> **状态**：本文主要描述当前 provider/job 实现。项目尚未发布，处理入口、no-op
-> 行为和部分 job 将按
-> [Agent Tool 与 dMem Provider 双路线架构](agent-tool-and-provider-routes.md)重构；
-> 当前行为不构成兼容性承诺。Phase 2 已移除 HTTP raw event ingest 入口并禁止 Agent
-> Tool commit 创建模型提取 job；Provider Route 的原始事件摄取、`builtin-noop`
-> 状态与显式 `enabled` 配置属于 Phase 5。
+> **状态**：本文描述当前已实现的 dMem Provider Route。Phase 5 已用显式
+> `[processing].enabled` 与 `[embedding].enabled` 表达能力状态，删除了
+> `builtin-noop` 消费模型 job 的流程，并让禁用状态把原始事件保留为 `stored`。
+> Agent Tool Route 不需要本文任何模型配置；两条路线的目标见
+> [Agent Tool 与 dMem Provider 双路线架构](agent-tool-and-provider-routes.md)。
 
 dMem 把外部模型输出当作建议，而不是权威。处理在后台异步进行，产出独立可审核的
 候选或提案；只有显式确认才会改变记忆权威。
 
 ## 事件摄取
 
-`extraction.ingest` 摄取一条原始事件，并在同一事务中持久化入队其抽取工作。事件
-包含 scope、来源类型与名称、可选来源事件 ID/流键/序号、可选发生时间、内容与
-元数据。内容 kind 为：
+`POST /v1/events`（`extraction.ingest`）摄取一条原始事件。事件包含 scope、来源类型
+与名称、可选来源事件 ID/流键/序号、可选发生时间、内容与元数据。内容 kind 为：
 
 - `text`：文本内容。
 - `json`：结构化 JSON 值。
 - `reference`：外部引用，只记录元数据（URI、声明大小与哈希），不复制也不保证
   所引用的资源。
 
-二进制内容与托管附件存储尚未实现。摄取返回事件 ID、处理状态与作业 ID 列表。
+摄取在 processing 启用时于同一事务中持久化事件并入队一条 `extract_memory` 工作；
+未启用时不创建任何模型 job，事件以 `stored` 状态保留，响应 `status` 为 `stored`、
+`job_ids` 为空。二进制内容与托管附件存储尚未实现。摄取返回事件 ID、处理状态与
+作业 ID 列表；`GET /v1/events/{event_id}` 返回处理状态。
 
 ## 处理 Provider
 
-处理与 embedding provider 分别配置、独立限流、默认禁用。provider 类型为
-`openai-compatible`，且必须显式启用、提供 endpoint、model、默认拒绝的出网策略
-与环境变量密钥引用。禁用状态下不解析密钥、不发起 HTTP 请求。
+处理与 embedding provider 分别配置、独立限流、默认禁用。启用状态由
+`[processing].enabled` 与 `[embedding].enabled` 显式表达；禁用时不要求 endpoint、
+model、secret 或出网策略，也不解析密钥、不发起 HTTP 请求。provider 类型为
+`openai-compatible`，启用后必须提供 endpoint、model、默认拒绝的出网策略与环境
+变量密钥引用。
 
-默认处理器是 no-op（`builtin-noop-v1`），因此没有外部 provider 时事件捕获依然
-可用。启用处理 provider 时，处理版本必须不再使用 `builtin-noop-v1`。
+不存在 `builtin-noop` 处理器：禁用时不会创建模型 job；若某个模型 job 因配置变化
+在无处理器时被认领，它会以 `processing_disabled` 永久失败，而不是被记录为成功。
+配置重载把 processing 从启用改为禁用时，调和会取代无法再运行的模型 job，并把它
+们的原始事件保留为 `stored`。
 
 处理 provider 同时驱动两类工作：
 
@@ -38,11 +43,13 @@ dMem 把外部模型输出当作建议，而不是权威。处理在后台异步
 - `extract_graph`：知识图谱抽取，遵循 `graph-typed-v1` 契约，并额外受
   `[processing].graph_enabled` 门控。
 
-embedding provider 遵循 `embedding-document-v2` / `embedding-query-v1` 文档与
-查询格式。provider 调用在 SQLite 写事务之外执行；provider/model 与处理身份随
-工作一起存储，使结果始终可归因。provider 错误分类
-（disabled/policy/invalid_input/transient/permanent/invalid_output）映射为领域
-结果，用于决定重试或终止。
+`rebuild_aggregate` 也调用处理 provider，并同样经过 processing policy 与 provider
+attempt 记录。embedding provider 遵循 `embedding-document-v2` / `embedding-query-v1`
+文档与查询格式。provider 调用在 SQLite 写事务之外执行；provider/model 与处理身份
+随工作一起存储，使结果始终可归因。provider 错误分类
+（disabled/policy/invalid_input/transient/permanent/invalid_output）统一映射为领域
+结果：策略拒绝进入 `blocked_policy`，transient 进入有界重试，permanent 与
+invalid_output 直接终止，避免永久错误被无差别重试。
 
 ## 候选与整合
 
@@ -134,6 +141,11 @@ worker 暂停认领，达到硬阈值时写入失败而只读查询仍可继续�
 策略纠正会创建持久调和运行，在崩溃安全游标下分批重新评估被阻塞的工作。调和
 只改变作业、资格投影与索引元数据，永不修改权威记录。策略变化后兼容的 embedding
 会被复用；身份不兼容时触发重建。
+
+processing 或 embedding 的 `enabled` 变化会产生明确的调和类别：`enable` 重新评估
+被阻塞的工作，`disable` 取代无法再运行的模型 job（原始事件保持 `stored`，运行中的
+job 收到取消请求），`runtime_limits` 不扫描。禁用不会删除已有记忆、证据、proposal
+或审计。
 
 维护循环每秒执行一次，负责恢复过期租约、使过期作业到期、提升等待中的作业并
 推进调和运行；worker 以 100 毫秒间隔轮询认领，在磁盘压力下跳过。

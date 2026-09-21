@@ -27,6 +27,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
@@ -84,7 +85,7 @@ func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err 
 	base := snapshot.Config
 	base.ProcessingProvider = config.ProviderConfig{}
 	base.EmbeddingProvider = config.ProviderConfig{}
-	d, err := startService(ctx, base, jobs.NoopProcessor{}, nil, false)
+	d, err := startService(ctx, base, nil, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +118,7 @@ func start(ctx context.Context, cfg config.Config, processor jobs.Processor) (_ 
 func StartStaging(ctx context.Context, cfg config.Config) (_ *Daemon, err error) {
 	cfg.ProcessingProvider = config.ProviderConfig{}
 	cfg.EmbeddingProvider = config.ProviderConfig{}
-	return startService(ctx, cfg, jobs.NoopProcessor{}, nil, false)
+	return startService(ctx, cfg, nil, nil, false)
 }
 
 // Handler returns the protocol handler assembled from the gateway modules. The
@@ -155,9 +156,10 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 			slog.Error("storage integrity check failed", "error", err)
 		}
 	}()
-	repository := storage.NewRepository(d.store, domain.Runtime{Now: time.Now, ID: identity.UUID}, cfg.QueueSoftLimit, cfg.QueueHardLimit, cfg.MaxAttempts, cfg.ProcessingVersion)
+	repository := storage.NewRepository(d.store, domain.Runtime{Now: time.Now, ID: identity.UUID}, cfg.QueueSoftLimit, cfg.QueueHardLimit, cfg.MaxAttempts, config.ProcessingVersionFor(cfg.ProcessingProvider))
 	d.repository = repository
 	repository.SetDiskFreeThresholds(cfg.DiskSoftFree, cfg.DiskHardFree)
+	repository.SetProcessingEnabled(cfg.ProcessingProvider.Enabled)
 	repository.SetGraphExtractionEnabled(cfg.ProcessingProvider.Enabled && cfg.GraphEnabled)
 	if cfg.EmbeddingProvider.Enabled {
 		embedding, providerErr := provider.New(cfg.EmbeddingProvider, nil)
@@ -173,7 +175,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	if !cfg.ProcessingProvider.Enabled {
 		policyIdentity = ""
 	}
-	aggregateService := aggregate.NewService(repository, aggregateProvider, "aggregate/provider", policyIdentity, cfg.ProcessingVersion, cfg.ProcessingProvider.Limits.MaxContextItems)
+	aggregateService := aggregate.NewService(repository, aggregateProvider, "aggregate/provider", policyIdentity, config.ProcessingVersionFor(cfg.ProcessingProvider), cfg.ProcessingProvider.Limits.MaxContextItems)
 	d.aggregateService = aggregateService
 	policyService := policy.NewService(storage.NewPolicyCapability(repository))
 	d.jobs, err = jobs.NewService(repository, cfg, processor, jobs.Dependencies{
@@ -204,6 +206,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	handler, err := httpapi.New(httpapi.Dependencies{
 		AgentTools: agentTools,
 		Scopes:     scope.NewService(storage.NewScopeCapability(repository)),
+		Events:     extraction.NewService(storage.NewEventCapability(repository)),
 	})
 	if err != nil {
 		return nil, err
@@ -448,7 +451,7 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 	if snapshot == nil || d.jobs == nil || d.aggregateService == nil || d.repository == nil {
 		return errors.New("daemon runtime is incomplete")
 	}
-	var processor jobs.Processor = jobs.NoopProcessor{}
+	var processor jobs.Processor
 	var aggregateProvider domain.AggregateProvider
 	processingIdentity := "none"
 	if snapshot.ProcessingCapability.Enabled {
@@ -492,6 +495,8 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		snapshot.Config.Consolidation.SameSubjectKindCosine,
 	)
 	d.repository.SetProcessingGeneration(snapshot.ActivationGeneration, processingPolicyGeneration, snapshot.ProcessingCapability.CompatibilityIdentity)
+	d.repository.SetProcessingVersion(config.ProcessingVersionFor(snapshot.Config.ProcessingProvider))
+	d.repository.SetProcessingEnabled(snapshot.ProcessingCapability.Enabled)
 	d.repository.SetGraphExtractionEnabled(snapshot.ProcessingCapability.Enabled && snapshot.Config.GraphEnabled)
 	d.jobs.SetProcessing(jobs.ProcessingConfig{
 		Processor:              processor,
@@ -504,13 +509,13 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		PolicyGeneration:       processingPolicyGeneration,
 		CompatibilityIdentity:  snapshot.ProcessingCapability.CompatibilityIdentity,
 		PolicyIdentity:         snapshot.ProcessingCapability.PolicyIdentity,
-		ProcessingVersion:      snapshot.Config.ProcessingVersion,
+		ProcessingVersion:      config.ProcessingVersionFor(snapshot.Config.ProcessingProvider),
 	})
 	d.aggregateService.SetProcessing(
 		aggregateProvider,
 		processingIdentity,
 		snapshot.ProcessingCapability.PolicyIdentity,
-		snapshot.Config.ProcessingVersion,
+		config.ProcessingVersionFor(snapshot.Config.ProcessingProvider),
 		snapshot.ProcessingCapability.Limits.MaxContextItems,
 		snapshot.ActivationGeneration,
 		processingPolicyGeneration,

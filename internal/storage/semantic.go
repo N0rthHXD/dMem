@@ -200,18 +200,14 @@ func (r *Repository) embedMemory(ctx context.Context, claim *ClaimedJob, revisio
 	}
 	result, err := runtime.Provider.Embed(ctx, provider.NewEmbeddingRequest(spaceID, "text/plain", sensitivity, sourceTypes, []string{content}))
 	if err != nil {
-		var providerErr *provider.Error
-		if errors.As(err, &providerErr) && providerErr.Class() == provider.ErrorPolicy {
-			return fmt.Errorf("%w: %s", ErrEmbeddingPolicy, providerErr.Code())
-		}
-		return err
+		return ClassifyProviderError(err, ErrEmbeddingPolicy)
 	}
 	if len(result.Vectors()) != 1 {
-		return errors.New("embedding count mismatch")
+		return fmt.Errorf("%w: embedding count mismatch", ErrProviderInvalidOutput)
 	}
 	values, err := validEmbedding(result.Vectors()[0])
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %s", ErrProviderInvalidOutput, err.Error())
 	}
 	blob, err := vec.SerializeFloat32(values)
 	if err != nil {

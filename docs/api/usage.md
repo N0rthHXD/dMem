@@ -83,7 +83,9 @@ Tool Route commit 不创建 `extract_memory` 或 `extract_graph` job。
 ## 契约之外的操作
 
 候选审核、作业控制、索引重建、配置重载、图谱维护以及更广泛的管理接口不属于
-Agent 协议。原始事件摄取与异步 provider 处理属于后续 Provider Route 阶段。逻辑
+Agent 协议。原始事件摄取由独立的 Provider Route 入口 `POST /v1/events` 承担：
+启用 processing 时它创建持久抽取 job，禁用时只把事件保留为 `stored`，不创建模型
+job；事件状态通过 `GET /v1/events/{event_id}` 查询。它不进入 Agent 工具集合。逻辑
 导出/导入与备份/恢复不是 HTTP 操作，参见
 [逻辑可移植性](../storage/logical-portability.md) 与
 [运维手册](../operations/runbook.md)。

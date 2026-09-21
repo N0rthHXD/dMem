@@ -42,7 +42,7 @@ func (r *Repository) scheduleGraphExtraction(ctx context.Context, tx *sql.Tx, re
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'extract_graph', 'memory_revision', ?, ?, 'pending', ?, ?, ?) ON CONFLICT DO NOTHING`, ids[0], ids[1], revisionID, r.processingVersion, r.maxAttempts, now, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id, operation_id, job_type, target_type, target_id, processing_version, status, max_attempts, next_run_at, created_at) VALUES (?, ?, 'extract_graph', 'memory_revision', ?, ?, 'pending', ?, ?, ?) ON CONFLICT DO NOTHING`, ids[0], ids[1], revisionID, r.processingVersion(), r.maxAttempts, now, now)
 	return err
 }
 
@@ -257,7 +257,7 @@ func (r *Repository) markGraphIndexStale(ctx context.Context, tx *sql.Tx, now st
 	if err != nil {
 		return err
 	}
-	_, err = enqueueGraphIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, now)
+	_, err = enqueueGraphIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion(), r.maxAttempts, now)
 	return err
 }
 
@@ -671,7 +671,7 @@ func (r *Repository) markEntityIndexStale(ctx context.Context, tx *sql.Tx, now s
 	if err != nil {
 		return err
 	}
-	_, err = enqueueEntityIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, now)
+	_, err = enqueueEntityIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion(), r.maxAttempts, now)
 	return err
 }
 
@@ -683,7 +683,7 @@ func (r *Repository) markRelationIndexStale(ctx context.Context, tx *sql.Tx, now
 	if err != nil {
 		return err
 	}
-	_, err = enqueueRelationIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, now)
+	_, err = enqueueRelationIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion(), r.maxAttempts, now)
 	return err
 }
 

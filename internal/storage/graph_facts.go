@@ -672,7 +672,7 @@ func (r *Repository) CreateGraphIndexRebuildJob(ctx context.Context, identity Wr
 		return domain.JobReference{}, false, err
 	}
 	now := formatTime(r.runtime.Now())
-	if _, err = enqueueGraphIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, now); err != nil {
+	if _, err = enqueueGraphIndexJob(ctx, tx, ids[0], ids[1], r.processingVersion(), r.maxAttempts, now); err != nil {
 		return domain.JobReference{}, false, err
 	}
 	v := domain.JobReference{JobID: ids[0], OperationID: ids[1]}

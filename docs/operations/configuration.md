@@ -70,24 +70,35 @@ dmemd --config /absolute/path/config.toml config validate
 | `disk_soft_free_bytes` | uint64 | 大于零。 |
 | `disk_hard_free_bytes` | uint64 | 大于零且小于软阈值。 |
 
+## Provider 配置
+
+Provider Route 默认关闭；省略整个 `[processing]` 或 `[embedding]` section 等同于
+`enabled = false`。禁用状态下不解析密钥、不发起 HTTP 请求，`POST /v1/events` 只把
+事件保存为 `stored`。
+
 ### `[processing]`
 
 | 键 | 类型 | 规则 |
 | --- | --- | --- |
-| `version` | string | 必需。启用处理 provider 时不得为 `builtin-noop-v1`。 |
-| `graph_enabled` | bool | 可选，默认 `true`。为 `false` 时处理照常运行但不做图谱抽取。 |
+| `enabled` | bool | 可选，默认 `false`。显式启用 dMem Provider Route 的处理能力。 |
+| `graph_enabled` | bool | 可选，默认 `true`。仅在 `enabled = true` 时生效；为 `false` 时处理照常运行但不做图谱抽取。 |
 
-## Provider 配置
+`enabled = false` 时不读取 `[processing.provider]`：不要求 endpoint、model、secret
+或出网策略，也不解析密钥或发起 HTTP 请求。处理版本不再是配置项：启用时它由
+provider identity（`kind/model`）派生，禁用时使用本地的 `local-deterministic-v1`
+标记。
 
-处理与 embedding provider 默认禁用。省略整个 provider section 等同于
-`enabled = false`。禁用状态下不解析密钥、不发起 HTTP 请求。
+### `[embedding]`
+
+| 键 | 类型 | 规则 |
+| --- | --- | --- |
+| `enabled` | bool | 可选，默认 `false`。显式启用 dMem Provider Route 的 embedding 能力。 |
 
 ### `[processing.provider]` 与 `[embedding.provider]`
 
 | 键 | 类型 | 规则 |
 | --- | --- | --- |
-| `enabled` | bool | 显式启用 provider。 |
-| `kind` | string | 启用时必须为 `openai-compatible`。 |
+| `kind` | string | 对应能力启用时必须为 `openai-compatible`。 |
 | `endpoint` | string | 启用时必须是 https URL，且不含用户信息、查询或片段。 |
 | `model` | string | 启用时必需。 |
 | `telemetry_disabled` | bool | 启用时必须为 `true`。 |
@@ -229,3 +240,7 @@ embedding provider 使用相同的 `max_egress_input_chars`、`max_response_byte
 `server.listen_address` 与 `server.tls_cert_file`/`server.tls_key_file`。重载改变其中
 任何一项都会拒绝整个候选文件，错误码为 `config_restart_required`。运行时没有
 `reload` 子命令或重载 HTTP 路由；只使用 `SIGHUP`。
+
+`[processing].enabled` 与 `[embedding].enabled` 的变化是运行时可重载的：启用产生
+`<capability>:enable` 调和类，禁用产生 `<capability>:disable`。禁用会取代无法再
+运行的模型 job 并把原始事件保留为 `stored`，不会删除记忆、证据、proposal 或审计。

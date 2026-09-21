@@ -40,11 +40,13 @@ Agent 中立 REST+JSON `http.Handler`，然后在 `server.listen_address` 上启
 HTTP 请求体上限按路由声明在当前 HTTP 契约与 `internal/protocol/httpapi` 路由元数据
 中，它们不是守护进程设置。
 
-Provider 需要显式启用、endpoint、model、默认拒绝策略与环境变量密钥引用。禁用的
-provider 不解析密钥、不发起 HTTP 请求。`instance.data_dir`、
-`instance.database_filename`、`jobs.worker_count`、`server.listen_address` 与
-`server.tls_cert_file`/`server.tls_key_file` 是重启绑定字段；改变其中任何一项的
-重载会被整体拒绝。
+Provider Route 由 `[processing].enabled` 与 `[embedding].enabled` 显式启用；启用后
+provider 需要 endpoint、model、默认拒绝策略与环境变量密钥引用。禁用的 provider 不
+解析密钥、不发起 HTTP 请求，`POST /v1/events` 只把事件保存为 `stored` 而不创建模型
+job；从启用切换到禁用会取代无法再运行的模型 job 并保留原始事件。
+`instance.data_dir`、`instance.database_filename`、`jobs.worker_count`、
+`server.listen_address` 与 `server.tls_cert_file`/`server.tls_key_file` 是重启绑定
+字段；改变其中任何一项的重载会被整体拒绝。
 
 ## 命令行
 

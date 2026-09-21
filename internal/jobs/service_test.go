@@ -19,11 +19,13 @@ import (
 )
 
 type fakeJob struct {
-	job             domain.Job
-	generation      int
-	cancelRequested bool
-	embeddingSpace  string
-	failure         storage.JobFailure
+	job              domain.Job
+	generation       int
+	cancelRequested  bool
+	embeddingSpace   string
+	aggregateSpace   string
+	providerAttempts int
+	failure          storage.JobFailure
 }
 
 type fakeRepository struct {
@@ -161,6 +163,27 @@ func (r *fakeRepository) EmbeddingScope(_ context.Context, claim storage.Claimed
 		return "", false, nil
 	}
 	return item.embeddingSpace, true, nil
+}
+
+func (r *fakeRepository) AggregateScope(_ context.Context, claim storage.ClaimedJob) (string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.find(claim.Job.JobID)
+	if item == nil || item.aggregateSpace == "" {
+		return "", false, nil
+	}
+	return item.aggregateSpace, true, nil
+}
+
+func (r *fakeRepository) MarkProviderAttempt(_ context.Context, claim storage.ClaimedJob) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.find(claim.Job.JobID)
+	if !validClaim(item, claim) {
+		return storage.ErrLeaseLost
+	}
+	item.providerAttempts++
+	return nil
 }
 
 func (r *fakeRepository) CompleteJob(_ context.Context, claim storage.ClaimedJob, result storage.JobResult) error {
@@ -326,17 +349,20 @@ func waitFor(t *testing.T, condition func() bool) {
 	}
 }
 
-func TestNoopProcessorCompletesWithoutMemoryOutput(t *testing.T) {
-	item := pendingJob("noop", 1)
+func TestModelJobClaimedWithoutProcessorFailsExplicitly(t *testing.T) {
+	item := pendingJob("disabled", 1)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
 	startService(t, repository, nil)
 	waitFor(t, func() bool {
 		repository.mu.Lock()
 		defer repository.mu.Unlock()
-		return item.job.Status == "succeeded"
+		return item.job.Status == "failed"
 	})
-	if item.job.ResultCode == nil || *item.job.ResultCode != string(domain.ProcessingNoProcessor) {
-		t.Fatalf("result code = %v", item.job.ResultCode)
+	if item.job.ResultCode != nil {
+		t.Fatalf("disabled model job recorded a success result: %v", *item.job.ResultCode)
+	}
+	if item.failure.Code != "processing_disabled" || item.failure.Transient {
+		t.Fatalf("failure = %+v", item.failure)
 	}
 }
 
@@ -363,13 +389,13 @@ func TestProcessorHealthTracksConfiguredOutcomes(t *testing.T) {
 		t.Fatalf("invalid-output health = %q", state)
 	}
 
-	noop, err := newService(&fakeRepository{}, testConfig(), NoopProcessor{}, Dependencies{})
+	disabled, err := newService(&fakeRepository{}, testConfig(), nil, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	noop.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingTransientFailure})
-	if state, identity := noop.ProcessorHealth(); state != "not_configured" || identity != "none" {
-		t.Fatalf("noop health = %q/%q", state, identity)
+	disabled.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingTransientFailure})
+	if state, identity := disabled.ProcessorHealth(); state != "not_configured" || identity != "none" {
+		t.Fatalf("disabled health = %q/%q", state, identity)
 	}
 }
 
@@ -522,7 +548,7 @@ func (graphExtractorStub) CommitGraphExtraction(context.Context, storage.Claimed
 func TestGraphInvalidOutputRetriesTransiently(t *testing.T) {
 	item := pendingJob("graph-invalid-output", 3)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	service, err := newService(repository, testConfig(), NoopProcessor{}, Dependencies{})
+	service, err := newService(repository, testConfig(), nil, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +570,7 @@ func TestGraphInvalidOutputRetriesTransiently(t *testing.T) {
 func TestGraphPermanentFailureDoesNotRetry(t *testing.T) {
 	item := pendingJob("graph-permanent", 3)
 	repository := &fakeRepository{jobs: []*fakeJob{item}}
-	service, err := newService(repository, testConfig(), NoopProcessor{}, Dependencies{})
+	service, err := newService(repository, testConfig(), nil, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,6 +760,120 @@ func TestEmbeddingPolicyRejectionBlocksWithoutRetry(t *testing.T) {
 	defer repository.mu.Unlock()
 	if item.job.AttemptCount != 1 || item.job.BlockedReasonCode != "embedding_policy_denied" || len(repository.failures) != 0 {
 		t.Fatalf("job = %+v, failures = %+v", item.job, repository.failures)
+	}
+}
+
+func TestPermanentIndexFailureDoesNotConsumeRetryBudget(t *testing.T) {
+	for name, test := range map[string]struct {
+		err  error
+		code string
+	}{
+		"permanent rejection": {storage.ErrProviderPermanent, string(domain.ProcessingPermanentFailure)},
+		"invalid output":      {storage.ErrProviderInvalidOutput, string(domain.ProcessingInvalidOutput)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			item := pendingJob("index-permanent-"+name, 3)
+			item.job.JobType, item.job.TargetType, item.job.TargetID = "embed_memory", "memory_revision", "revision-1"
+			repository := &fakeRepository{jobs: []*fakeJob{item}}
+			service, err := newService(repository, testConfig(), nil, Dependencies{Indexes: failingIndexRepository{err: test.err}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := service.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				_ = service.Shutdown(ctx)
+			})
+			waitFor(t, func() bool {
+				repository.mu.Lock()
+				defer repository.mu.Unlock()
+				return item.job.Status == "failed"
+			})
+			repository.mu.Lock()
+			defer repository.mu.Unlock()
+			if len(repository.failures) != 1 || repository.failures[0].Transient || repository.failures[0].Code != test.code {
+				t.Fatalf("failures = %+v, want one permanent %s failure", repository.failures, test.code)
+			}
+		})
+	}
+}
+
+func TestAggregateRebuildUsesProcessingPolicyAndRecordsAttempt(t *testing.T) {
+	item := pendingJob("aggregate-allowed", 3)
+	item.job.JobType, item.job.TargetType, item.job.TargetID = "rebuild_aggregate", "aggregate", "aggregate-1"
+	item.aggregateSpace = "space-1"
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	authorizer := &fakePolicyAuthorizer{allowed: map[policy.Capability]bool{policy.CapabilityProcessing: true}}
+	recorder := rebuildRecorder{calls: make(chan string, 1)}
+	service, err := newService(repository, testConfig(), nil, Dependencies{Authorizer: authorizer, AggregateRebuilder: recorder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	select {
+	case call := <-recorder.calls:
+		if call != "aggregate" {
+			t.Fatalf("aggregate rebuild call = %q", call)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("aggregate rebuild was not dispatched")
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if len(authorizer.calls) != 1 || authorizer.calls[0].Capability != policy.CapabilityProcessing || len(authorizer.calls[0].SpaceIDs) != 1 || authorizer.calls[0].SpaceIDs[0] != "space-1" {
+		t.Fatalf("authorization calls = %+v", authorizer.calls)
+	}
+	if item.providerAttempts != 1 {
+		t.Fatalf("provider attempts = %d, want 1", item.providerAttempts)
+	}
+}
+
+func TestAggregateRebuildPolicyDenialBlocksBeforeProviderAttempt(t *testing.T) {
+	item := pendingJob("aggregate-denied", 3)
+	item.job.JobType, item.job.TargetType, item.job.TargetID = "rebuild_aggregate", "aggregate", "aggregate-1"
+	item.aggregateSpace = "space-1"
+	repository := &fakeRepository{jobs: []*fakeJob{item}}
+	authorizer := &fakePolicyAuthorizer{allowed: map[policy.Capability]bool{}}
+	recorder := rebuildRecorder{calls: make(chan string, 1)}
+	service, err := newService(repository, testConfig(), nil, Dependencies{Authorizer: authorizer, AggregateRebuilder: recorder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = service.Shutdown(ctx)
+	})
+	waitFor(t, func() bool {
+		repository.mu.Lock()
+		defer repository.mu.Unlock()
+		return item.job.Status == "blocked_policy"
+	})
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if item.providerAttempts != 0 {
+		t.Fatalf("provider attempts = %d, want 0 for a policy-blocked rebuild", item.providerAttempts)
+	}
+	if item.job.BlockedReasonCode != "processing_policy_denied" {
+		t.Fatalf("blocked reason = %q", item.job.BlockedReasonCode)
+	}
+	select {
+	case call := <-recorder.calls:
+		t.Fatalf("blocked rebuild dispatched provider call %q", call)
+	default:
 	}
 }
 

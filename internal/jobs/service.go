@@ -97,18 +97,16 @@ func (s *Service) currentProcessing() *processingRuntime {
 
 func (s *Service) SetProcessing(cfg ProcessingConfig) {
 	processor := cfg.Processor
-	if processor == nil {
-		processor = NoopProcessor{}
-	}
-	identity := cfg.ProcessorIdentity
-	if identity == "" {
-		identity = processor.Identity()
-	}
-	if identity == "" {
-		identity = "processor/in-process"
-	}
-	if !cfg.Enabled {
-		identity = "none"
+	enabled := cfg.Enabled && processor != nil && processor.Enabled()
+	identity := "none"
+	if enabled {
+		identity = cfg.ProcessorIdentity
+		if identity == "" {
+			identity = processor.Identity()
+		}
+		if identity == "" {
+			identity = "processor/in-process"
+		}
 	}
 	maxContentChars := cfg.MaxContentChars
 	if maxContentChars <= 0 {
@@ -121,7 +119,7 @@ func (s *Service) SetProcessing(cfg ProcessingConfig) {
 	rt := processingRuntime{
 		processor:             processor,
 		processorID:           identity,
-		processorEnabled:      cfg.Enabled,
+		processorEnabled:      enabled,
 		generation:            cfg.Generation,
 		policyGeneration:      cfg.PolicyGeneration,
 		compatibilityIdentity: cfg.CompatibilityIdentity,
@@ -174,9 +172,6 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 	if cfg.WorkerCount <= 0 || cfg.LeaseDuration <= 0 || cfg.PerJobTimeout <= 0 || cfg.RetryInitialBackoff <= 0 || cfg.RetryMaxBackoff < cfg.RetryInitialBackoff {
 		return nil, errors.New("invalid job service configuration")
 	}
-	if processor == nil {
-		processor = NoopProcessor{}
-	}
 	if dependencies.Logger == nil {
 		dependencies.Logger = slog.Default()
 	}
@@ -190,15 +185,17 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 	if maxContext < 0 {
 		maxContext = 0
 	}
-	identity := processor.Identity()
-	if identity == "" {
-		identity = "processor/in-process"
+	enabled := processor != nil && processor.Enabled()
+	identity := "none"
+	if enabled {
+		identity = processor.Identity()
+		if identity == "" {
+			identity = "processor/in-process"
+		}
 	}
-	enabled := processor.Enabled()
 	state := "degraded"
 	if !enabled {
 		state = "not_configured"
-		identity = "none"
 	}
 	s := &Service{
 		repository:         repository,
@@ -411,6 +408,13 @@ func (s *Service) processClaim(serviceCtx context.Context, claim storage.Claimed
 		return
 	}
 	runtime := s.currentProcessing()
+	if runtime.processor == nil || !runtime.processorEnabled {
+		// A model job must never be completed by a no-op path. The Provider Route
+		// reconciliation supersedes such jobs when the capability is disabled;
+		// this is the fenced safety net for a job that slipped through.
+		s.failDisabledModelJob(claim)
+		return
+	}
 	input, err := s.work.Prepare(processCtx, workClaim(claim), extraction.PrepareRequest{
 		ProcessorIdentity:      runtime.preparation.ProcessorIdentity,
 		AllowedMemoryTypes:     runtime.preparation.AllowedMemoryTypes,
@@ -526,13 +530,22 @@ func (s *Service) applyOutcome(claim storage.ClaimedJob, input domain.Processing
 	}
 	s.recordProcessorResult(result)
 	switch result.Code {
-	case domain.ProcessingNoProcessor, domain.ProcessingNoMemory, domain.ProcessingCandidatesExtracted:
+	case domain.ProcessingNoMemory, domain.ProcessingCandidatesExtracted:
 		err := s.work.Commit(context.Background(), workClaim(claim), input, extraction.CommitRequest{Result: result})
 		if errors.Is(err, storage.ErrStaleGeneration) {
 			s.reevaluateStale(claim)
 			return
 		}
 		s.logPersistenceError(context.Background(), "commit_processing", claim, err)
+	case domain.ProcessingNoProcessor:
+		// A real provider reported that it is disabled mid-flight. Never commit
+		// this as a stored success; the capability reconciliation that disabled
+		// the route supersedes the job, and until then it is retryable.
+		code := result.ReasonCode
+		if code == "" {
+			code = "provider_disabled"
+		}
+		s.failProcessing(claim, input, code, "processing provider is disabled", true)
 	case domain.ProcessingPolicyRejected:
 		s.logPersistenceError(context.Background(), "block_processing_job", claim, s.work.Block(context.Background(), workClaim(claim), result.ReasonCode))
 	case domain.ProcessingTransientFailure:
@@ -564,6 +577,10 @@ func (s *Service) processGraphClaim(serviceCtx context.Context, claim storage.Cl
 	processCtx, cancel := context.WithTimeout(serviceCtx, s.perJobTimeout)
 	defer cancel()
 	runtime := s.currentProcessing()
+	if runtime.processor == nil || !runtime.processorEnabled {
+		s.failDisabledModelJob(claim)
+		return
+	}
 	input, err := extractor.PrepareGraphExtraction(processCtx, claim, runtime.preparation)
 	if err != nil {
 		if errors.Is(err, storage.ErrLeaseLost) {
@@ -648,7 +665,7 @@ func (s *Service) processGraphClaim(serviceCtx context.Context, claim storage.Cl
 func (s *Service) applyGraphOutcome(extractor GraphExtractor, claim storage.ClaimedJob, input domain.GraphExtractionInput, result domain.GraphExtractionResult) {
 	s.recordProcessorResult(domain.ProcessingResult{Code: domain.ProcessingCandidatesExtracted})
 	switch result.Code {
-	case domain.GraphExtractionNoProcessor, domain.GraphExtractionEmpty, domain.GraphExtractionExtracted:
+	case domain.GraphExtractionEmpty, domain.GraphExtractionExtracted:
 		err := extractor.CommitGraphExtraction(context.Background(), claim, input, storage.GraphExtractionCommit{Result: result})
 		if errors.Is(err, storage.ErrStaleGeneration) {
 			s.reevaluateStale(claim)
@@ -665,6 +682,10 @@ func (s *Service) applyGraphOutcome(extractor GraphExtractor, claim storage.Clai
 			s.failTransientJob(claim, "graph_commit_failed", "graph extraction commit failed")
 			return
 		}
+	case domain.GraphExtractionNoProcessor:
+		// The provider reported that it is disabled mid-flight; never record a
+		// successful empty extraction for a route that is not running.
+		s.failDisabledModelJob(claim)
 	case domain.GraphExtractionPolicyRejected:
 		reason := result.ReasonCode
 		if reason == "" {
@@ -715,6 +736,36 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 				if errors.Is(err, storage.ErrPolicyDenied) {
 					s.logPersistenceError(context.Background(), "block_index_job", claim, s.work.Block(context.Background(), workClaim(claim), "embedding_policy_denied"))
 				} else if !errors.Is(err, storage.ErrLeaseLost) {
+					s.failTransientJob(claim, "attempt_record_failed", "provider attempt could not be recorded")
+				}
+				return
+			}
+		}
+	}
+	if claim.Job.JobType == "rebuild_aggregate" {
+		// Aggregate rebuilds call the same processing provider, so they obey the
+		// same policy decision and consume the same external-attempt budget.
+		if scope, ok := s.repository.(interface {
+			AggregateScope(context.Context, storage.ClaimedJob) (string, bool, error)
+		}); ok {
+			if spaceID, exists, err := scope.AggregateScope(operationCtx, claim); err != nil {
+				s.failTransientJob(claim, "aggregate_scope_failed", "aggregate scope could not be resolved")
+				return
+			} else if exists {
+				if denied, err := s.policyDenied(operationCtx, policy.CapabilityProcessing, spaceID); err != nil {
+					s.failTransientJob(claim, "policy_check_failed", "policy authorization failed")
+					return
+				} else if denied {
+					s.logPersistenceError(context.Background(), "block_index_job", claim, s.work.Block(context.Background(), workClaim(claim), "processing_policy_denied"))
+					return
+				}
+			}
+		}
+		if recorder, ok := s.repository.(interface {
+			MarkProviderAttempt(context.Context, storage.ClaimedJob) error
+		}); ok {
+			if err := recorder.MarkProviderAttempt(operationCtx, claim); err != nil {
+				if !errors.Is(err, storage.ErrLeaseLost) {
 					s.failTransientJob(claim, "attempt_record_failed", "provider attempt could not be recorded")
 				}
 				return
@@ -826,12 +877,17 @@ func (s *Service) processIndexClaim(ctx context.Context, claim storage.ClaimedJo
 				return
 			}
 			if err != nil {
-				if errors.Is(err, storage.ErrEmbeddingPolicy) || errors.Is(err, storage.ErrPolicyDenied) {
+				switch {
+				case errors.Is(err, storage.ErrEmbeddingPolicy), errors.Is(err, storage.ErrPolicyDenied):
 					persistErr := s.work.Block(context.Background(), workClaim(claim), "embedding_policy_denied")
 					s.logPersistenceError(context.Background(), "block_index_job", claim, persistErr)
-					return
+				case errors.Is(err, storage.ErrProviderInvalidOutput):
+					s.failPermanentJob(claim, string(domain.ProcessingInvalidOutput), "provider returned invalid output")
+				case errors.Is(err, storage.ErrProviderPermanent):
+					s.failPermanentJob(claim, string(domain.ProcessingPermanentFailure), "provider rejected the request permanently")
+				default:
+					s.failTransientJob(claim, string(domain.ProcessingTransientFailure), "index operation failed")
 				}
-				s.failTransientJob(claim, string(domain.ProcessingTransientFailure), "index operation failed")
 				return
 			}
 			persistErr := s.repository.CompleteJob(context.Background(), claim, storage.JobResult{Code: outcomeIndexRebuilt})
@@ -976,6 +1032,22 @@ func workClaim(claim storage.ClaimedJob) extraction.WorkClaim {
 func (s *Service) failTransientJob(claim storage.ClaimedJob, code, message string) {
 	err := s.repository.FailJob(context.Background(), claim, storage.JobFailure{Code: code, Message: message, Transient: true, Backoff: s.backoff(claim.Job.AttemptCount)})
 	s.logPersistenceError(context.Background(), "fail_index_job", claim, err)
+}
+
+// failPermanentJob terminates a claimed job whose failure cannot be fixed by
+// retrying, so permanent provider rejections and malformed model output do not
+// consume the retry budget forever.
+func (s *Service) failPermanentJob(claim storage.ClaimedJob, code, message string) {
+	err := s.repository.FailJob(context.Background(), claim, storage.JobFailure{Code: code, Message: message, Transient: false})
+	s.logPersistenceError(context.Background(), "fail_index_job", claim, err)
+}
+
+// failDisabledModelJob terminates a model job that was claimed while the dMem
+// Provider Route had no processor. It is not a successful no-op: the job is
+// recorded as a permanent failure and no extraction result is committed.
+func (s *Service) failDisabledModelJob(claim storage.ClaimedJob) {
+	err := s.repository.FailJob(context.Background(), claim, storage.JobFailure{Code: "processing_disabled", Message: "processing provider is not enabled", Transient: false})
+	s.logPersistenceError(context.Background(), "fail_disabled_model_job", claim, err)
 }
 
 func (s *Service) backoff(attempt int) time.Duration {

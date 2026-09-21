@@ -249,31 +249,3 @@ func TestProcessingOutcomeStatusesAndTransientExhaustion(t *testing.T) {
 		t.Fatalf("late commit error = %v", err)
 	}
 }
-
-func TestProcessingReplayUsesExistingResultForSameVersionAndCreatesForNewVersion(t *testing.T) {
-	repository, _ := newMemoryTestRepository(t)
-	claim, input := claimProcessingJob(t, repository, 3)
-	if err := commitProcessing(t, repository, claim, input, domain.ProcessingResult{Code: domain.ProcessingNoMemory}); err != nil {
-		t.Fatal(err)
-	}
-	identity := WriteIdentity{CallerID: "caller", IdempotencyKey: "same-version", RequestID: "request", Method: "POST", Route: "/v1/events/{event_id}/replay", RequestHash: HashRequest("event-1")}
-	replay, replayed, err := repository.ReplayEvent(context.Background(), identity, "event-1")
-	if err != nil || !replayed || replay.JobID != claim.Job.JobID {
-		t.Fatalf("same-version replay = %+v replayed=%v err=%v", replay, replayed, err)
-	}
-	var jobs int
-	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM jobs WHERE target_id='event-1'`).Scan(&jobs); err != nil || jobs != 1 {
-		t.Fatalf("same-version jobs = %d err=%v", jobs, err)
-	}
-
-	repository = NewRepository(repository.store, repository.runtime, repository.queueSoftLimit, repository.queueHardLimit, repository.maxAttempts, "test-v2")
-	identity.IdempotencyKey = "new-version"
-	identity.RequestHash = HashRequest("event-1-v2")
-	created, replayed, err := repository.ReplayEvent(context.Background(), identity, "event-1")
-	if err != nil || replayed || created.JobID == claim.Job.JobID {
-		t.Fatalf("new-version replay = %+v replayed=%v err=%v", created, replayed, err)
-	}
-	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM jobs WHERE target_id='event-1'`).Scan(&jobs); err != nil || jobs != 2 {
-		t.Fatalf("new-version jobs = %d err=%v", jobs, err)
-	}
-}

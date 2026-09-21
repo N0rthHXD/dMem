@@ -562,7 +562,7 @@ func (r *Repository) confirmEvolutionRevision(ctx context.Context, tx *sql.Tx, p
 	if err != nil {
 		return nil, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,created_at) VALUES (?,?,'rebuild_fts','index','memory_fts',?,'pending',?,?,?) ON CONFLICT DO NOTHING`, jobID, operationID, r.processingVersion, r.maxAttempts, now, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO jobs(job_id,operation_id,job_type,target_type,target_id,processing_version,status,max_attempts,next_run_at,created_at) VALUES (?,?,'rebuild_fts','index','memory_fts',?,'pending',?,?,?) ON CONFLICT DO NOTHING`, jobID, operationID, r.processingVersion(), r.maxAttempts, now, now); err != nil {
 		return nil, err
 	}
 	return []domain.EvolutionResultRef{{ResultType: "memory", ResultID: memoryID}, {ResultType: "revision", ResultID: revisionID}}, nil
@@ -592,7 +592,7 @@ func (r *Repository) confirmEvolutionReplacement(ctx context.Context, tx *sql.Tx
 	if _, err = tx.ExecContext(ctx, `INSERT INTO relation_state_events(state_event_id,relation_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,NULL,'active','replacement confirmed',?,?)`, stateID, relationID, operationID, caller, now); err != nil {
 		return nil, err
 	}
-	if _, err = enqueueRelationIndexJob(ctx, tx, jobID, operationID, r.processingVersion, r.maxAttempts, now); err != nil {
+	if _, err = enqueueRelationIndexJob(ctx, tx, jobID, operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
 		return nil, err
 	}
 	refs = append(refs, domain.EvolutionResultRef{ResultType: "relation", ResultID: relationID})
@@ -643,7 +643,7 @@ func (r *Repository) confirmEvolutionConflict(ctx context.Context, tx *sql.Tx, p
 			return nil, err
 		}
 	}
-	if _, err = enqueueRelationIndexJob(ctx, tx, relationJobID, operationID, r.processingVersion, r.maxAttempts, now); err != nil {
+	if _, err = enqueueRelationIndexJob(ctx, tx, relationJobID, operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO conflict_cases(case_id,space_id,state,opened_by,processing_version,created_at) VALUES (?,?,'open',?,?,?)`, caseID, p.SpaceID, caller, p.ProcessingVersion, now); err != nil {

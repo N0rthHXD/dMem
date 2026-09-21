@@ -18,7 +18,6 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/instance"
-	"github.com/N0rthHXD/dMem/internal/jobs"
 	"github.com/N0rthHXD/dMem/internal/provider"
 )
 
@@ -44,7 +43,6 @@ func runtimeConfig(t *testing.T) config.Config {
 		RetryMaxBackoff:     time.Second,
 		DiskSoftFree:        1 << 30,
 		DiskHardFree:        1 << 28,
-		ProcessingVersion:   config.DefaultProcessingVersion,
 		GraphEnabled:        true,
 	}
 }
@@ -79,12 +77,9 @@ disk_hard_free_bytes = 268435456
 `, dataDir)
 	if !processing {
 		builder.WriteString(`[processing]
-version = "builtin-noop-v1"
-
-[processing.provider]
 enabled = false
 
-[embedding.provider]
+[embedding]
 enabled = false
 `)
 		return builder.String()
@@ -93,10 +88,9 @@ enabled = false
 		processingModel = "processing-a"
 	}
 	fmt.Fprintf(&builder, `[processing]
-version = "processor-v1"
+enabled = true
 
 [processing.provider]
-enabled = true
 kind = "openai-compatible"
 endpoint = "https://provider.invalid/v1/chat/completions"
 model = %q
@@ -129,7 +123,7 @@ space_id = "11111111-1111-4111-8111-111111111111"
 effect = "allow"
 include_descendants = true
 
-[embedding.provider]
+[embedding]
 enabled = false
 `, processingModel)
 	return builder.String()
@@ -153,7 +147,7 @@ func writeManagedConfigModel(t *testing.T, path, dataDir string, processing bool
 func TestRuntimeComposesHandlerAndLifecycle(t *testing.T) {
 	t.Parallel()
 	cfg := runtimeConfig(t)
-	d, err := start(context.Background(), cfg, jobs.NoopProcessor{})
+	d, err := start(context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -190,13 +184,13 @@ func TestRuntimeComposesHandlerAndLifecycle(t *testing.T) {
 func TestRuntimeRejectsSecondInstance(t *testing.T) {
 	t.Parallel()
 	cfg := runtimeConfig(t)
-	first, err := start(context.Background(), cfg, jobs.NoopProcessor{})
+	first, err := start(context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close(context.Background())
 
-	second, err := start(context.Background(), cfg, jobs.NoopProcessor{})
+	second, err := start(context.Background(), cfg, nil)
 	if second != nil {
 		second.Close(context.Background())
 	}

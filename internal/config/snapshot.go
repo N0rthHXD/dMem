@@ -43,7 +43,7 @@ func newSnapshot(cfg Config, generation int, activationID string) Snapshot {
 		Policy:                cfg.ProcessingProvider.Policy,
 		ConfigurationIdentity: CapabilityIdentity(cfg.ProcessingProvider),
 		CompatibilityIdentity: CompatibilityIdentity(cfg.ProcessingProvider, true),
-		PolicyIdentity:        PolicyIdentity(cfg.ProcessingProvider.Policy),
+		PolicyIdentity:        CapabilityPolicyIdentity(cfg.ProcessingProvider),
 	}
 	emb := CapabilitySnapshot{
 		Enabled:               cfg.EmbeddingProvider.Enabled,
@@ -57,7 +57,7 @@ func newSnapshot(cfg Config, generation int, activationID string) Snapshot {
 		Policy:                cfg.EmbeddingProvider.Policy,
 		ConfigurationIdentity: CapabilityIdentity(cfg.EmbeddingProvider),
 		CompatibilityIdentity: CompatibilityIdentity(cfg.EmbeddingProvider, false),
-		PolicyIdentity:        PolicyIdentity(cfg.EmbeddingProvider.Policy),
+		PolicyIdentity:        CapabilityPolicyIdentity(cfg.EmbeddingProvider),
 	}
 	return Snapshot{
 		Config:               cfg,
@@ -67,6 +67,15 @@ func newSnapshot(cfg Config, generation int, activationID string) Snapshot {
 		ProcessingCapability: proc,
 		EmbeddingCapability:  emb,
 	}
+}
+
+// CapabilityPolicyIdentity returns the policy identity only for an enabled
+// provider. A disabled provider has no egress policy and must not look like one.
+func CapabilityPolicyIdentity(pcfg provider.Config) string {
+	if !pcfg.Enabled {
+		return ""
+	}
+	return PolicyIdentity(pcfg.Policy)
 }
 
 type RedactedConfig struct {

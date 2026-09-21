@@ -11,6 +11,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
@@ -39,9 +40,18 @@ func (stubScopes) Get(context.Context, gateway.CallContext, scope.GetQuery) (dom
 	return domain.Space{}, nil
 }
 
+type stubEvents struct{}
+
+func (stubEvents) Ingest(context.Context, gateway.CallContext, extraction.IngestCommand) (extraction.IngestResult, error) {
+	return extraction.IngestResult{}, nil
+}
+func (stubEvents) GetEvent(context.Context, gateway.CallContext, extraction.GetEventQuery) (domain.RawEvent, error) {
+	return domain.RawEvent{}, nil
+}
+
 func errorHandler(t *testing.T, err error) *Handler {
 	t.Helper()
-	handler, newErr := New(Dependencies{AgentTools: failingTools{err: err}, Scopes: stubScopes{}})
+	handler, newErr := New(Dependencies{AgentTools: failingTools{err: err}, Scopes: stubScopes{}, Events: stubEvents{}})
 	if newErr != nil {
 		t.Fatal(newErr)
 	}

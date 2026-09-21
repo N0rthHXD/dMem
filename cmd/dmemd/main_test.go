@@ -51,12 +51,9 @@ disk_soft_free_bytes = 1073741824
 disk_hard_free_bytes = 268435456
 
 [processing]
-version = "builtin-noop-v1"
-
-[processing.provider]
 enabled = false
 
-[embedding.provider]
+[embedding]
 enabled = false
 `, dataDir)
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {

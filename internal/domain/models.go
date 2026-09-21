@@ -197,6 +197,11 @@ const (
 	ProcessingPolicyRejected      ProcessingOutcome = "policy_rejected"
 )
 
+// LocalProcessingVersion labels deterministic, non-model work such as index
+// maintenance when the dMem Provider Route is disabled. It is never a model
+// identity and never authorizes extraction.
+const LocalProcessingVersion = "local-deterministic-v1"
+
 type ProcessingResult struct {
 	Code                ProcessingOutcome
 	Proposals           []MemoryCandidateProposal

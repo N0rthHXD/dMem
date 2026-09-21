@@ -41,10 +41,10 @@ func (b testConfigBuilder) String() string {
 		if model == "" {
 			model = "model-a"
 		}
-		fmt.Fprintf(&sb, "[processing]\nversion = \"processor-v1\"\n\n[processing.provider]\nenabled = true\nkind = \"openai-compatible\"\nendpoint = \"https://provider.example/v1/chat/completions\"\nmodel = %q\ntelemetry_disabled = true\n\n", model)
+		fmt.Fprintf(&sb, "[processing]\nenabled = true\n\n[processing.provider]\nkind = \"openai-compatible\"\nendpoint = \"https://provider.example/v1/chat/completions\"\nmodel = %q\ntelemetry_disabled = true\n\n", model)
 		sb.WriteString("[processing.provider.secret]\nsource = \"environment\"\nname = \"DMEM_PROCESSING_API_KEY\"\n\n[processing.provider.limits]\nmax_egress_input_chars = 12000\nmax_aggregate_input_chars = 48000\nmax_context_items = 8\nmax_candidate_chars = 12000\nmax_total_candidate_chars = 48000\nmax_response_bytes = 1048576\nrequest_timeout = \"30s\"\nmax_concurrent = 2\nrequests_per_minute = 60\n\n[processing.provider.policy]\ndefault = \"deny\"\ncontent_types = [\"application/json\", \"text/plain\"]\nsource_types = [\"manual\", \"message\"]\nsensitivities = [\"normal\"]\n\n[[processing.provider.policy.assignments]]\nselector = \"space\"\nspace_id = \"11111111-1111-4111-8111-111111111111\"\neffect = \"allow\"\ninclude_descendants = true\n\n")
 	} else {
-		sb.WriteString("[processing]\nversion = \"builtin-noop-v1\"\n\n[processing.provider]\nenabled = false\n\n")
+		sb.WriteString("[processing]\nenabled = false\n\n")
 	}
 	if b.embedding {
 		model := b.embeddingModel
@@ -55,11 +55,11 @@ func (b testConfigBuilder) String() string {
 		if dims == 0 {
 			dims = 1024
 		}
-		fmt.Fprintf(&sb, "[embedding.provider]\nenabled = true\nkind = \"openai-compatible\"\nendpoint = \"https://provider.example/v1/embeddings\"\nmodel = %q\ntelemetry_disabled = true\n\n", model)
+		fmt.Fprintf(&sb, "[embedding]\nenabled = true\n\n[embedding.provider]\nkind = \"openai-compatible\"\nendpoint = \"https://provider.example/v1/embeddings\"\nmodel = %q\ntelemetry_disabled = true\n\n", model)
 		fmt.Fprintf(&sb, "[embedding.provider.secret]\nsource = \"environment\"\nname = \"DMEM_EMBEDDING_API_KEY\"\n\n[embedding.provider.options]\ndimensions = %d\nquery_instructions = \"query: \"\n\n", dims)
 		sb.WriteString("[embedding.provider.limits]\nmax_egress_input_chars = 12000\nmax_response_bytes = 1048576\nrequest_timeout = \"30s\"\nmax_concurrent = 2\nrequests_per_minute = 60\n\n[embedding.provider.policy]\ndefault = \"deny\"\nquery = \"allow\"\ncontent_types = [\"text/plain\"]\nsource_types = [\"manual\", \"message\"]\nsensitivities = [\"normal\"]\n\n[[embedding.provider.policy.assignments]]\nselector = \"space_type\"\nspace_type = \"project\"\neffect = \"allow\"\npriority = 100\n\n")
 	} else {
-		sb.WriteString("[embedding.provider]\nenabled = false\n\n")
+		sb.WriteString("[embedding]\nenabled = false\n\n")
 	}
 	return sb.String()
 }
@@ -320,6 +320,9 @@ func TestManager_DisableCapability(t *testing.T) {
 	}
 	if len(r.ChangedCapabilities) != 1 || r.ChangedCapabilities[0] != "processing" {
 		t.Errorf("changed = %v, want [processing]", r.ChangedCapabilities)
+	}
+	if len(r.ReconciliationClasses) != 1 || r.ReconciliationClasses[0] != "processing:disable" {
+		t.Errorf("reconciliation classes = %v, want [processing:disable]", r.ReconciliationClasses)
 	}
 	if m.Snapshot().ProcessingCapability.Enabled {
 		t.Error("processing capability should be disabled after reload")

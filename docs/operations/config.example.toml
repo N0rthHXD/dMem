@@ -77,29 +77,28 @@ max_context_tokens = 4000
 max_context_chars = 16000
 max_results = 20
 
+# dMem Provider Route 默认关闭。关闭状态下不需要 endpoint、model、secret 或出网
+# 策略；Agent Tool Route 只使用 FTS、search hints、实体和图谱召回。启用后才要求
+# 补全对应 provider 的连接、密钥引用、限制和默认拒绝的出网策略。
 [processing]
-version = "builtin-noop-v1"
-# 控制知识图谱抽取（extract_graph）。默认 true，使图谱抽取跟随处理 provider。
+enabled = false
+# 控制知识图谱抽取（extract_graph）。默认 true，仅在 processing 启用时生效。
 # 设为 false 可以在不进行图谱抽取的情况下运行处理（例如隔离检索基线）。
 # graph_enabled = true
 
-[processing.provider]
+[embedding]
 enabled = false
 
-[embedding.provider]
-enabled = false
-
-# 启用 provider 的方法是：用一个完整 section 替换其最小禁用 section。密钥值
-# 从外部提供，永不存储在此。处理 provider 同时驱动记忆候选抽取
-# （extract_memory）与知识图谱抽取（extract_graph）。图谱抽取还额外受
-# [processing].graph_enabled 门控。
+# 启用 Provider Route 的方法是：把对应 section 的 enabled 设为 true，并用完整的
+# provider section 提供连接配置。密钥值从外部提供，永不存储在此。处理 provider
+# 同时驱动记忆候选抽取（extract_memory）与知识图谱抽取（extract_graph）。图谱
+# 抽取还额外受 [processing].graph_enabled 门控。
 #
 # [processing]
-# version = "processor-v1"
+# enabled = true
 # graph_enabled = true
 #
 # [processing.provider]
-# enabled = true
 # kind = "openai-compatible"
 # endpoint = "https://provider.example/v1/chat/completions"
 # model = "model-a"
@@ -132,8 +131,10 @@ enabled = false
 # effect = "allow"
 # include_descendants = true
 #
-# [embedding.provider]
+# [embedding]
 # enabled = true
+#
+# [embedding.provider]
 # kind = "openai-compatible"
 # endpoint = "https://provider.example/v1/embeddings"
 # model = "embedding-a"

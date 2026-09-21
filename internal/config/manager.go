@@ -137,11 +137,11 @@ func (m *Manager) tryReload(ctx context.Context, trigger ActivationTrigger, star
 	if prev != nil {
 		if cfg.ProcessingVersion != prev.Config.ProcessingVersion ||
 			CapabilityIdentity(cfg.ProcessingProvider) != prev.ProcessingCapability.ConfigurationIdentity ||
-			PolicyIdentity(cfg.ProcessingProvider.Policy) != prev.ProcessingCapability.PolicyIdentity {
+			CapabilityPolicyIdentity(cfg.ProcessingProvider) != prev.ProcessingCapability.PolicyIdentity {
 			changed = append(changed, "processing")
 		}
 		if CapabilityIdentity(cfg.EmbeddingProvider) != prev.EmbeddingCapability.ConfigurationIdentity ||
-			PolicyIdentity(cfg.EmbeddingProvider.Policy) != prev.EmbeddingCapability.PolicyIdentity {
+			CapabilityPolicyIdentity(cfg.EmbeddingProvider) != prev.EmbeddingCapability.PolicyIdentity {
 			changed = append(changed, "embedding")
 		}
 	} else {

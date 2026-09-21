@@ -92,17 +92,17 @@ type storageTable struct {
 }
 
 type processingTable struct {
-	Version      string                  `toml:"version"`
+	Enabled      *bool                   `toml:"enabled"`
 	GraphEnabled *bool                   `toml:"graph_enabled"`
 	Provider     processingProviderTable `toml:"provider"`
 }
 
 type embeddingTable struct {
+	Enabled  *bool                  `toml:"enabled"`
 	Provider embeddingProviderTable `toml:"provider"`
 }
 
 type processingProviderTable struct {
-	Enabled           bool                  `toml:"enabled"`
 	Kind              string                `toml:"kind"`
 	Endpoint          string                `toml:"endpoint"`
 	Model             string                `toml:"model"`
@@ -113,7 +113,6 @@ type processingProviderTable struct {
 }
 
 type embeddingProviderTable struct {
-	Enabled           bool                 `toml:"enabled"`
 	Kind              string               `toml:"kind"`
 	Endpoint          string               `toml:"endpoint"`
 	Model             string               `toml:"model"`

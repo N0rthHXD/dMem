@@ -168,7 +168,7 @@ func TestRelationIndexDegradedAuthorityAndRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = enqueueRelationIndexJob(context.Background(), tx, ids[0], ids[1], r.processingVersion, r.maxAttempts, formatTime(r.runtime.Now())); err != nil {
+	if _, err = enqueueRelationIndexJob(context.Background(), tx, ids[0], ids[1], r.processingVersion(), r.maxAttempts, formatTime(r.runtime.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(); err != nil {

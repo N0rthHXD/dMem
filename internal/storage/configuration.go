@@ -410,7 +410,28 @@ func (r *Repository) Reconcile(ctx context.Context, run ClaimedReconciliationRun
 		return batch, tx.Commit()
 	}
 	if run.Capability == "processing" {
-		if run.ChangeClass == "disable" || run.ChangeClass == "runtime_limits" {
+		if run.ChangeClass == "runtime_limits" {
+			batch.Complete = true
+			return finish()
+		}
+		if run.ChangeClass == "disable" {
+			// The route is off: supersede model jobs that can no longer run and
+			// leave their raw events stored. Running jobs are asked to cancel so
+			// no provider call is committed after the capability was disabled.
+			nowText := formatTime(r.runtime.Now())
+			if _, err := tx.ExecContext(ctx, `UPDATE raw_events SET processing_status='stored' WHERE event_id IN (SELECT target_id FROM jobs WHERE job_type='extract_memory' AND status IN ('pending','waiting','retrying','blocked_policy'))`); err != nil {
+				return batch, err
+			}
+			result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='superseded', lease_owner=NULL, lease_until=NULL, blocked_reason_code='processing_disabled', finished_at=? WHERE job_type IN ('extract_memory','extract_graph') AND status IN ('pending','waiting','retrying','blocked_policy')`, nowText)
+			if err != nil {
+				return batch, err
+			}
+			if affected, err := result.RowsAffected(); err == nil {
+				batch.Affected = int(affected)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET cancel_requested_at=coalesce(cancel_requested_at,?) WHERE job_type IN ('extract_memory','extract_graph') AND status='running'`, nowText); err != nil {
+				return batch, err
+			}
 			batch.Complete = true
 			return finish()
 		}

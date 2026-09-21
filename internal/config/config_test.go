@@ -56,7 +56,7 @@ func TestLoadValidMinimal(t *testing.T) {
 	if cfg.ProcessingProvider.Enabled || cfg.EmbeddingProvider.Enabled {
 		t.Error("providers should be disabled in minimal config")
 	}
-	if cfg.ProcessingVersion != DefaultProcessingVersion {
+	if cfg.ProcessingVersion != LocalProcessingVersion {
 		t.Errorf("ProcessingVersion = %q", cfg.ProcessingVersion)
 	}
 }
@@ -267,13 +267,10 @@ disk_soft_free_bytes = 1073741824
 disk_hard_free_bytes = 268435456
 
 [processing]
-version = "builtin-noop-v1"
+enabled = false
 graph_enabled = false
 
-[processing.provider]
-enabled = false
-
-[embedding.provider]
+[embedding]
 enabled = false
 `
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
@@ -317,13 +314,10 @@ disk_soft_free_bytes = 1073741824
 disk_hard_free_bytes = 268435456
 
 [processing]
-version = "builtin-noop-v1"
+enabled = false
 %s
 
-[processing.provider]
-enabled = false
-
-[embedding.provider]
+[embedding]
 enabled = false
 `
 	if err := os.WriteFile(enabledPath, []byte(fmt.Sprintf(base, "graph_enabled = true")), 0o600); err != nil {
@@ -508,16 +502,125 @@ disk_soft_free_bytes = 1073741824
 disk_hard_free_bytes = 268435456
 
 [processing]
-version = "builtin-noop-v1"
-
-[processing.provider]
 enabled = false
 
-[embedding.provider]
+[embedding]
 enabled = false
 `, extraServer)
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func writeProviderConfig(t *testing.T, block string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	doc := `config_version = 1
+
+[instance]
+data_dir = "/tmp/dmem-test/data"
+database_filename = "dmem.db"
+
+[server]
+shutdown_grace_period = "15s"
+
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+` + block
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestDisabledProviderRouteIgnoresProviderConfiguration proves the disabled
+// Provider Route does not require or validate endpoint, model, secret, or
+// egress policy.
+func TestDisabledProviderRouteIgnoresProviderConfiguration(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(writeProviderConfig(t, `[processing]
+enabled = false
+
+[processing.provider]
+endpoint = "not-a-url"
+model = "ignored"
+
+[embedding]
+enabled = false
+
+[embedding.provider]
+kind = "unsupported"
+`))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ProcessingProvider.Enabled || cfg.EmbeddingProvider.Enabled {
+		t.Fatal("providers should be disabled")
+	}
+	if cfg.ProcessingVersion != LocalProcessingVersion {
+		t.Fatalf("ProcessingVersion = %q, want %q", cfg.ProcessingVersion, LocalProcessingVersion)
+	}
+}
+
+// TestEnabledProviderRouteRequiresProviderConfiguration proves that enabling the
+// route strictly requires a complete provider configuration.
+func TestEnabledProviderRouteRequiresProviderConfiguration(t *testing.T) {
+	t.Parallel()
+	for name, block := range map[string]string{
+		"missing provider": `[processing]
+enabled = true
+
+[embedding]
+enabled = false
+`,
+		"incomplete provider": `[processing]
+enabled = true
+
+[processing.provider]
+kind = "openai-compatible"
+endpoint = "https://provider.example/v1/chat/completions"
+model = "model-a"
+
+[embedding]
+enabled = false
+`,
+		"embedding without provider": `[processing]
+enabled = false
+
+[embedding]
+enabled = true
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeProviderConfig(t, block)); err == nil {
+				t.Fatal("Load() accepted an enabled route without a complete provider configuration")
+			}
+		})
+	}
+}
+
+// TestEnabledProviderRouteDerivesProcessingVersion proves a configured model
+// becomes the provenance version instead of a user-supplied label.
+func TestEnabledProviderRouteDerivesProcessingVersion(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(filepath.Join("testdata", "enabled-processing", "processing.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProcessingVersion != "openai-compatible/model-a" {
+		t.Fatalf("ProcessingVersion = %q, want the provider identity", cfg.ProcessingVersion)
+	}
 }

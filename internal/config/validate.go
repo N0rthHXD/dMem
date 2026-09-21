@@ -78,12 +78,6 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if doc.Processing.Version == "" {
-		return Config{}, newValidationError("config_missing_field", Diagnostic{Code: "config_missing_field", Path: "processing.version"})
-	}
-	if doc.Processing.Version == DefaultProcessingVersion && processing.Enabled {
-		return Config{}, newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_processing_version", Path: "processing.version"})
-	}
 	consolidation, err := buildConsolidationConfig(doc.Consolidation)
 	if err != nil {
 		return Config{}, err
@@ -131,7 +125,7 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 		RetryMaxBackoff:     parseDuration(doc.Jobs.RetryMaxBackoff),
 		DiskSoftFree:        doc.Storage.DiskSoftFreeBytes,
 		DiskHardFree:        doc.Storage.DiskHardFreeBytes,
-		ProcessingVersion:   doc.Processing.Version,
+		ProcessingVersion:   ProcessingVersionFor(processing),
 		ProcessingProvider:  processing,
 		EmbeddingProvider:   embedding,
 		GraphEnabled:        graphEnabled,
@@ -243,8 +237,9 @@ func validateStorage(t *storageTable) error {
 }
 
 func buildProcessingProvider(t processingTable) (provider.Config, error) {
+	enabled := t.Enabled != nil && *t.Enabled
 	pcfg := provider.Config{
-		Enabled:           t.Provider.Enabled,
+		Enabled:           enabled,
 		Kind:              t.Provider.Kind,
 		Endpoint:          t.Provider.Endpoint,
 		Model:             t.Provider.Model,
@@ -281,8 +276,9 @@ func buildProcessingProvider(t processingTable) (provider.Config, error) {
 }
 
 func buildEmbeddingProvider(t embeddingTable) (provider.Config, error) {
+	enabled := t.Enabled != nil && *t.Enabled
 	pcfg := provider.Config{
-		Enabled:           t.Provider.Enabled,
+		Enabled:           enabled,
 		Kind:              t.Provider.Kind,
 		Endpoint:          t.Provider.Endpoint,
 		Model:             t.Provider.Model,
