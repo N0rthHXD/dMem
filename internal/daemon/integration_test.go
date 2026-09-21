@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -230,6 +231,56 @@ func TestGatewayIntegrationEnforcesRoutePolicy(t *testing.T) {
 	}, true)
 	if recallWithoutIdempotency.Code == http.StatusUnprocessableEntity {
 		t.Fatalf("recall must not require an idempotency key: %s", recallWithoutIdempotency.Body.String())
+	}
+}
+
+// TestManagedDefaultConfigCommitsAuthoritativeMemory drives the managed startup
+// path, which is the only path that persists capability_states rows. Providers
+// stay disabled, so those rows carry a NULL policy identity and generation, and
+// the authoritative commit path must still succeed end to end.
+func TestManagedDefaultConfigCommitsAuthoritativeMemory(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	path := filepath.Join(root, "config.toml")
+	writeManagedConfig(t, path, dataDir, false)
+
+	d, err := StartManaged(context.Background(), config.NewManager(path, nil))
+	if err != nil {
+		t.Fatalf("StartManaged() error = %v", err)
+	}
+	defer d.Close(context.Background())
+
+	states, err := d.repository.CurrentCapabilityStates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, ok := states["embedding"]; !ok || state.Enabled || state.PolicyIdentity != "" {
+		t.Fatalf("managed embedding capability state = %+v (present=%t); want disabled without a policy identity", state, ok)
+	}
+
+	handler := d.Handler()
+	scopeID := ensureScope(t, handler, "managed-default")
+	commit := callHandler(t, handler, http.MethodPost, "/v1/memory-commits", "managed-default-key", memoryCommitBody(scopeID, "managed default memory"), true)
+	if commit.Code != http.StatusCreated {
+		t.Fatalf("commit status = %d: %s", commit.Code, commit.Body.String())
+	}
+	var response toolcontract.MemoryCommitOutput
+	decodeInto(t, commit, &response)
+	if len(response.Memories) != 1 || response.Memories[0].Status != "authority" || response.Memories[0].MemoryID == "" {
+		t.Fatalf("commit response = %+v", response)
+	}
+
+	// The deduplicating attach path projects the matched revision through the
+	// same eligibility evaluation and must survive the same default state.
+	duplicate := callHandler(t, handler, http.MethodPost, "/v1/memory-commits", "managed-default-duplicate", memoryCommitBody(scopeID, "managed default memory"), true)
+	if duplicate.Code != http.StatusCreated {
+		t.Fatalf("duplicate commit status = %d: %s", duplicate.Code, duplicate.Body.String())
+	}
+	var deduplicated toolcontract.MemoryCommitOutput
+	decodeInto(t, duplicate, &deduplicated)
+	if len(deduplicated.Memories) != 1 || deduplicated.Memories[0].Status != "deduplicated" || deduplicated.Memories[0].MemoryID != response.Memories[0].MemoryID {
+		t.Fatalf("duplicate response = %+v; want deduplicated onto %s", deduplicated, response.Memories[0].MemoryID)
 	}
 }
 

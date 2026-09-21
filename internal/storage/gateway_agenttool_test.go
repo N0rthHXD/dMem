@@ -96,6 +96,34 @@ func TestAgentToolCommitClassifiesPersistsAndSuppressesExtractionJobs(t *testing
 	}
 }
 
+// TestAgentToolCommitWithoutProviderPolicyStaysAuthoritative pins the
+// authoritative commit path under the default configuration, where the
+// embedding capability state carries a NULL policy identity and generation. The
+// commit must succeed and record the projection as ineligible for embedding.
+func TestAgentToolCommitWithoutProviderPolicyStaysAuthoritative(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	if _, err := repository.store.writer.Exec(`INSERT INTO capability_states(capability, enabled, health_state, reconciliation_state) VALUES ('embedding', 0, 'disabled', 'idle')`); err != nil {
+		t.Fatal(err)
+	}
+	params := agentToolCommit()
+	record, replay, err := NewAgentToolCapability(repository).CommitMemory(context.Background(), agentToolIdentity(t, "no-provider-policy", params, agenttool.OperationMemoryCommit), params)
+	if err != nil || replay {
+		t.Fatalf("CommitMemory() replay=%t error=%v", replay, err)
+	}
+	authority := record.Memories[0]
+	if authority.Status != agenttool.CommitAuthority || authority.MemoryID == "" || authority.RevisionID == "" {
+		t.Fatalf("authority outcome = %+v", authority)
+	}
+	var eligible int
+	var reason string
+	if err := repository.store.reader.QueryRow(`SELECT eligible, reason_code FROM embedding_eligibility WHERE memory_id=? AND revision_id=?`, authority.MemoryID, authority.RevisionID).Scan(&eligible, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if eligible != 0 || reason != "capability_disabled" {
+		t.Fatalf("embedding eligibility = %d/%q; want 0/capability_disabled", eligible, reason)
+	}
+}
+
 func TestAgentToolCommitReplayConflictDedupAndRollback(t *testing.T) {
 	repository, runtime := newMemoryTestRepository(t)
 	capability := NewAgentToolCapability(repository)

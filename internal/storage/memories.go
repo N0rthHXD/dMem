@@ -1001,11 +1001,16 @@ func (r *Repository) upsertCurrentEmbeddingEligibility(ctx context.Context, tx *
 	eligible, reason := false, "not_searchable"
 	if searchable {
 		state, err := r.currentCapabilityState(ctx, tx, "embedding")
-		if errors.Is(err, ErrNotFound) {
+		switch {
+		case errors.Is(err, ErrNotFound):
 			eligible, reason = true, "unconfigured"
-		} else if err != nil {
+		case err != nil:
 			return false, err
-		} else {
+		case !state.Enabled:
+			// A disabled capability has no egress policy to evaluate, so it
+			// fails closed on its own state instead of on an absent identity.
+			eligible, reason = false, "capability_disabled"
+		default:
 			policy, err := r.resolveEffectivePolicy(ctx, tx, "embedding", spaceID, state.PolicyIdentity, runtime.PolicyGeneration)
 			if err != nil {
 				return false, err

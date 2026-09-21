@@ -98,11 +98,14 @@ func (r *Repository) authorizeSemanticQueryScope(ctx context.Context, q policyQu
 func (r *Repository) persistCurrentSpacePolicies(ctx context.Context, tx *sql.Tx, spaceID string) error {
 	for _, capability := range []string{"processing", "embedding"} {
 		state, err := r.currentCapabilityState(ctx, tx, capability)
-		if errors.Is(err, ErrNotFound) || !state.Enabled {
+		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return err
+		}
+		if !state.Enabled {
+			continue
 		}
 		decision, err := r.resolveEffectivePolicy(ctx, tx, capability, spaceID, state.PolicyIdentity, state.PolicyGeneration)
 		if err != nil {
@@ -120,10 +123,18 @@ type policyQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// currentCapabilityState reads the active policy identity and generation for one
+// capability. Both columns are nullable: a capability without a configured
+// provider has no egress policy, and persistCapabilityState stores that absence
+// as NULL rather than as an empty string. The NULL therefore means exactly the
+// empty identity and zero generation the policy resolver already fails closed
+// on, so the columns are scanned through null-capable types.
 func (r *Repository) currentCapabilityState(ctx context.Context, q policyQuerier, capability string) (CapabilityStateRecord, error) {
 	var state CapabilityStateRecord
 	var enabled int
-	err := q.QueryRowContext(ctx, `SELECT enabled, policy_identity, policy_generation FROM capability_states WHERE capability=?`, capability).Scan(&enabled, &state.PolicyIdentity, &state.PolicyGeneration)
+	var policyIdentity sql.NullString
+	var policyGeneration sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT enabled, policy_identity, policy_generation FROM capability_states WHERE capability=?`, capability).Scan(&enabled, &policyIdentity, &policyGeneration)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state, ErrNotFound
 	}
@@ -131,6 +142,10 @@ func (r *Repository) currentCapabilityState(ctx context.Context, q policyQuerier
 		return state, err
 	}
 	state.Capability, state.Enabled = capability, enabled == 1
+	state.PolicyIdentity = policyIdentity.String
+	if policyGeneration.Valid {
+		state.PolicyGeneration = int(policyGeneration.Int64)
+	}
 	return state, nil
 }
 

@@ -2,10 +2,42 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 )
+
+// TestDisabledCapabilityWithoutProviderPolicyResolvesAsNoPolicy pins the default
+// deployment shape: a capability without a configured provider keeps NULL policy
+// identity and generation, and every reader must treat that as an absent policy
+// instead of failing the scan.
+func TestDisabledCapabilityWithoutProviderPolicyResolvesAsNoPolicy(t *testing.T) {
+	repo, _ := newMemoryTestRepository(t)
+	commitPolicy(t, repo, nil)
+
+	var identity sql.NullString
+	var generation sql.NullInt64
+	if err := repo.store.reader.QueryRowContext(context.Background(), `SELECT policy_identity, policy_generation FROM capability_states WHERE capability='embedding'`).Scan(&identity, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if identity.Valid || generation.Valid {
+		t.Fatalf("embedding capability state = %v/%v; want NULL/NULL", identity, generation)
+	}
+
+	state, err := repo.currentCapabilityState(context.Background(), repo.store.reader, "embedding")
+	if err != nil || state.Enabled || state.PolicyIdentity != "" || state.PolicyGeneration != 0 {
+		t.Fatalf("currentCapabilityState() = %+v, err = %v", state, err)
+	}
+	decision, err := repo.EffectivePolicy(context.Background(), "embedding", "space-1")
+	if err != nil || decision.Decision != "deny" || decision.ReasonCode != "default_deny" {
+		t.Fatalf("EffectivePolicy() = %+v, err = %v", decision, err)
+	}
+	if err := repo.RequireSemanticQueryPolicy(context.Background(), "space-1"); !errors.Is(err, ErrPolicyDenied) {
+		t.Fatalf("RequireSemanticQueryPolicy() error = %v; want %v", err, ErrPolicyDenied)
+	}
+}
 
 func TestEffectivePolicyResolution(t *testing.T) {
 	repo := newConfigTestRepository(t)
