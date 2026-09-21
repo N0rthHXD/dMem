@@ -141,25 +141,25 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 
 ### 任务
 
-- [ ] 设计新的 application HTTP API，路径由资源语义决定，不受当前九路由约束。
-- [ ] 实现原子 memory commit：source、memories、knowledge proposals、evidence、audit、
+- [x] 设计新的 application HTTP API，路径由资源语义决定，不受当前九路由约束。
+- [x] 实现原子 memory commit：source、memories、knowledge proposals、evidence、audit、
       idempotency response 在同一事务提交。
-- [ ] 复用或重构现有 memory、knowledge、consolidation 能力，保持 revision 和 proposal
+- [x] 复用或重构现有 memory、knowledge、consolidation 能力，保持 revision 和 proposal
       不变量。
-- [ ] 确保 Tool Route commit 不创建 `extract_memory`/`extract_graph` job。
-- [ ] 写入后只调度必要的确定性派生工作和已启用 Provider Route 的 embedding 工作。
-- [ ] 实现 recall、feedback、forget 和 scope bootstrap 的目标 API。
-- [ ] 明确 recall 的幂等策略；若继续写遥测，修复当前重复请求重复写遥测的问题。
-- [ ] 生成或手写严格 DTO 映射，保持 protocol 不能直接访问 storage/jobs。
-- [ ] 用新 API 测试替换旧 HTTP 契约测试。
-- [ ] 删除被替换的路由、DTO、转换器和仅为旧路由存在的 gateway 方法。
+- [x] 确保 Tool Route commit 不创建 `extract_memory`/`extract_graph` job。
+- [x] 写入后只调度必要的确定性派生工作和已启用 Provider Route 的 embedding 工作。
+- [x] 实现 recall、feedback、forget 和 scope bootstrap 的目标 API。
+- [x] 明确 recall 的幂等策略；若继续写遥测，修复当前重复请求重复写遥测的问题。
+- [x] 生成或手写严格 DTO 映射，保持 protocol 不能直接访问 storage/jobs。
+- [x] 用新 API 测试替换旧 HTTP 契约测试。
+- [x] 删除被替换的路由、DTO、转换器和仅为旧路由存在的 gateway 方法。
 
 ### 数据与 schema 工作
 
-- [ ] 评估现有 revision attributes 是否足以存放 search hints；不足时更新 schema。
-- [ ] 为 tool origin、contract version、conversation/turn identity 增加必要 provenance。
-- [ ] 确保 source/event 与 memory commit 的关系可审计但不会重复触发 provider extraction。
-- [ ] 更新 schema 一致性、触发器和逻辑导入导出；项目未发布时直接更新 Schema v1。
+- [x] 评估现有 revision attributes 是否足以存放 search hints；不足时更新 schema。
+- [x] 为 tool origin、contract version、conversation/turn identity 增加必要 provenance。
+- [x] 确保 source/event 与 memory commit 的关系可审计但不会重复触发 provider extraction。
+- [x] 更新 schema 一致性、触发器和逻辑导入导出；项目未发布时直接更新 Schema v1。
 
 ### 完成条件
 
@@ -167,6 +167,52 @@ Phase 3、4 与 Phase 5 在 Phase 2 后可以并行，但共享契约或 schema 
 - HTTP 重试不会产生重复 authority、proposal、evidence 或 audit；
 - Tool Route 集成测试证明没有模型 job 被创建；
 - 旧路由已经移除，或有明确仍被目标架构使用的保留理由。
+
+### Phase 2 实施记录
+
+- 状态：completed
+- 完成日期：2026-09-20
+- 主要变更：
+  - `internal/gateway/agenttool`：新增 `ServiceImpl`、consumer-owned `Store`/`RecallPort`/
+    `Authorizer` 端口与 gateway 持久化 DTO；校验、canonical write identity、authority
+    write 授权、稳定 operation ID 与降级能力映射。
+  - `internal/storage/gateway_agenttool.go`：单事务 `commitAgentToolMemory`、原生
+    `appendAgentToolFeedback`、修订围栏 `forgetAgentToolMemory`；复用 revision/evidence/
+    projection 助手与 `classifyCandidateForConsolidation` 确定性整合规则。
+  - `internal/protocol/httpapi`：以 `pkg/toolcontract` v1 schema 为唯一来源，替换为
+    `/v1/capabilities`、`/v1/memory-commits`、`/v1/recall`、`/v1/feedback`、
+    `/v1/forget`、`/v1/scopes/ensure`、`/v1/scopes/{scope_id}`；recall 为读操作并返回
+    `operation_id`。
+  - `internal/gateway/scope`：原子 `Ensure`/`EnsureScope` 端口与校验。
+  - Schema v1：新增权威 `agent_tool_sources`、`agent_tool_search_hints`、
+    `agent_tool_proposals`（含审核终态触发器），扩展 `feedback_events` 的
+    `agent_tool_feedback` 与五类 kind，新增
+    `query_telemetry(operation_id, query_hash)` 唯一索引；两份 SQL 与内嵌 schema 同步。
+  - `internal/portability`、`internal/storage/imports.go`、`internal/maintenance`：
+    导出/导入 Agent Tool provenance、search hints 与 proposal，并纳入恢复权威清单。
+  - `internal/daemon`：组装 Agent Tool 服务、recall 适配器与 policy 适配器，删除旧
+    memory/feedback/extraction HTTP 依赖。
+  - 文档：重写 `docs/api/http-rest-contract.md`、`docs/api/usage.md`、README 与相关
+    架构/存储文档以描述当前实现。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `make build`、`make test`、`make test-race`、`make vet`；
+  - `make schema-check`、`make quality`、`make offline-default`、`make config-check`、
+    `make restore-drill`、`make portability-drill`；
+  - `git diff --check`；全部通过。
+- 删除内容：旧九路由 handler/DTO/转换器与测试（`/v1/memories`、`/v1/events`、
+  `/v1/scopes` create、旧 recall/feedback DTO、`routes_test.go`、`fakes_test.go`、
+  `decode_test.go`、`errors_test.go`）；daemon 对 memory/feedback/extraction HTTP 服务
+  的组装；旧 purpose/type/reason feedback 的 HTTP 入口。
+- 遗留问题：无消费者的 `gateway/memory`、`gateway/feedback` 模块与其存储适配器仍保留，
+  由 Phase 7 全仓调用图清理；Tool knowledge proposal 以统一 `agent_tool_proposals`
+  envelope 持久化（审核物化到 entity/fact/relation 权威属于后续审核阶段）；scope ensure
+  为 resolve-then-create，依赖 `memory_spaces` 唯一约束处理并发；MCP、薄 client、
+  Provider Route 收敛与 search hints 进入 FTS 属于 Phase 3-5。
+- 下一阶段前置条件：Phase 3 必须在同一版本化契约下把 canonical content 与 search hints
+  纳入 FTS 文档、建立无 provider 固定检索质量门禁，并在 response capability metadata 中
+  稳定报告 semantic 降级；不得改变 Phase 2 已稳定的 application API 与原子提交语义。
 
 ## Phase 3：无 Provider 的检索闭环
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://dmem.dev/schemas/agent-tool/v1/remember-input.json",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/memory-commit-input.json",
   "type": "object", "additionalProperties": false,
   "required": ["scope_id", "source", "memories"],
   "properties": {

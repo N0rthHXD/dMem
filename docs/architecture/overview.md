@@ -93,9 +93,10 @@ provider 网络调用位于 SQLite 写事务之外，并通过既有的租约、
 
 | 模块 | 职责 | 稳定操作名 |
 | --- | --- | --- |
-| `memory` | 直接记忆权威的写入与读取 | `memory.remember`、`memory.forget` |
-| `scope` | Scope 层级与稳定外部身份 | `scope.create` |
-| `feedback` | 反馈追加与聚合健康 | `feedback.append` |
+| `agenttool` | Agent Tool Route 的协议中立命令、原子 memory commit、召回/反馈/遗忘适配 | `agent_tool.recall`、`agent_tool.memory_commit`、`agent_tool.feedback`、`agent_tool.forget` |
+| `memory` | 直接记忆权威的底层写入与读取（由存储适配器与测试复用） | `memory.remember`、`memory.forget` |
+| `scope` | Scope 层级、稳定外部身份与原子 ensure | `scope.ensure`、`scope.get` |
+| `feedback` | provider 来源反馈追加与聚合健康 | `feedback.append` |
 | `retrieval` | 召回规划、融合、排序、上下文选择、游标、explain | `retrieval.recall` |
 | `extraction` | 原始事件入口与面向 worker 的处理 | `extraction.ingest` |
 | `consolidation` | 候选确认/拒绝与确定性分类 | `consolidation.confirm`、`consolidation.reject` |
@@ -179,8 +180,9 @@ generation 可以提交结果。启动时会围栏过期工作并把它恢复到
 
 ## 可观测性
 
-运行时不提供健康检查端点；运维可见性来自进程日志与 SQLite 中的持久状态。每次
-召回都会追加一条有界、无内容的决策遥测记录，覆盖查询计划类型与身份、请求与
+运行时不提供健康检查端点；运维可见性来自进程日志与 SQLite 中的持久状态。每个
+稳定召回身份（operation identity + query hash）最多追加一条有界、无内容的决策
+遥测记录，因此相同请求身份的重复召回不会重复写遥测；记录覆盖查询计划类型与身份、请求与
 实际执行的能力、各来源候选数量、门控拒绝、分数摘要、图谱种子/边/路径/提升
 计数、重复聚类、上下文 token 与字符预算、排序/上下文/反馈身份、降级原因与各
 阶段延迟。遥测永不记录查询文本、记忆正文、证据片段或 provider 载荷。

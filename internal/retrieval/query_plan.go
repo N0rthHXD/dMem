@@ -30,6 +30,10 @@ const (
 	RankingWeightsVersion  = "ranking-weights-v1"
 )
 
+// maxEntityHints bounds the caller-supplied entity hints folded into a query
+// plan. Hints only add exact terms; they never replace deterministic analysis.
+const maxEntityHints = 32
+
 // QuestionType is the deterministic classification of a recall query.
 type QuestionType string
 
@@ -163,6 +167,7 @@ type PlanOptions struct {
 	MaxChars        int
 	RequestedKinds  []string
 	RequestedScope  []string
+	EntityHints     []string
 }
 
 var (
@@ -229,6 +234,11 @@ func BuildQueryPlan(query string, options PlanOptions) QueryPlan {
 			if trimmed != "" {
 				plan.QuotedPhrases = append(plan.QuotedPhrases, trimmed)
 			}
+		}
+	}
+	for _, hint := range boundedUnique(options.EntityHints, maxEntityHints) {
+		if trimmed := strings.TrimSpace(hint); trimmed != "" {
+			plan.QuotedPhrases = append(plan.QuotedPhrases, trimmed)
 		}
 	}
 	for _, match := range datePattern.FindAllString(normalized, -1) {

@@ -2,101 +2,70 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
-	"github.com/N0rthHXD/dMem/internal/gateway/retrieval"
+	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
-// recallRequest is the wire representation of a recall query. Optional fields
-// use pointers where the gateway distinguishes "omitted" from "explicitly
-// false" or "explicitly empty".
-type recallRequest struct {
-	Query                  string    `json:"query"`
-	ScopeIDs               []string  `json:"scope_ids"`
-	IncludeAncestors       *bool     `json:"include_ancestors,omitempty"`
-	MemoryTypes            *[]string `json:"memory_types,omitempty"`
-	States                 []string  `json:"states,omitempty"`
-	ReferenceTime          *string   `json:"reference_time,omitempty"`
-	Intent                 string    `json:"intent,omitempty"`
-	MaxResults             *int      `json:"max_results,omitempty"`
-	MaxChars               *int      `json:"max_chars,omitempty"`
-	MaxContextTokens       *int      `json:"max_context_tokens,omitempty"`
-	IncludeEvidence        *bool     `json:"include_evidence,omitempty"`
-	Explain                *bool     `json:"explain,omitempty"`
-	ExcludeStaleAggregates *bool     `json:"exclude_stale_aggregates,omitempty"`
-	Cursor                 string    `json:"cursor,omitempty"`
-	SkipDiversification    *bool     `json:"skip_diversification,omitempty"`
+func (h *Handler) handleCapabilities(ex *exchange, _ routeParams) {
+	ex.writeJSON(http.StatusOK, toolcontract.V1Capabilities())
 }
 
-// recallResponse is the recall result envelope.
-type recallResponse struct {
-	Context   domain.ContextPackage          `json:"context"`
-	Execution domain.RecallExecutionMetadata `json:"execution"`
-}
-
-// handleRecall serves POST /v1/recall.
 func (h *Handler) handleRecall(ex *exchange, _ routeParams) {
-	var request recallRequest
-	if err := ex.decodeBody(&request); err != nil {
+	var input toolcontract.RecallInput
+	if err := ex.decodeContractBody(toolcontract.SchemaRecallInput, &input); err != nil {
 		ex.writeError(err)
 		return
 	}
-	result, err := h.recall.Recall(ex.context(), ex.call, retrieval.Query{
-		OperationID:               ex.requestID,
-		Query:                     request.Query,
-		SpaceIDs:                  request.ScopeIDs,
-		IncludeAncestors:          derefBool(request.IncludeAncestors),
-		IncludeAncestorsSet:       request.IncludeAncestors != nil,
-		MemoryTypes:               derefStrings(request.MemoryTypes),
-		MemoryTypesSet:            request.MemoryTypes != nil,
-		States:                    request.States,
-		ReferenceTime:             derefString(request.ReferenceTime),
-		ReferenceTimeSet:          request.ReferenceTime != nil,
-		Intent:                    domain.RecallIntent(request.Intent),
-		Limit:                     derefInt(request.MaxResults),
-		LimitSet:                  request.MaxResults != nil,
-		MaxChars:                  derefInt(request.MaxChars),
-		MaxCharsSet:               request.MaxChars != nil,
-		MaxContextTokens:          derefInt(request.MaxContextTokens),
-		MaxContextTokensSet:       request.MaxContextTokens != nil,
-		IncludeEvidence:           derefBool(request.IncludeEvidence),
-		Explain:                   derefBool(request.Explain),
-		ExcludeStaleAggregates:    derefBool(request.ExcludeStaleAggregates),
-		ExcludeStaleAggregatesSet: request.ExcludeStaleAggregates != nil,
-		Cursor:                    request.Cursor,
-		SkipDiversification:       derefBool(request.SkipDiversification),
+	referenceTime, err := optionalTime(input.ReferenceTime)
+	if err != nil {
+		ex.writeError(invalidContractBody())
+		return
+	}
+	limit := 0
+	if input.Limit != nil {
+		limit = *input.Limit
+	}
+	result, err := h.agentTools.Recall(ex.context(), ex.call, agenttool.RecallCommand{
+		Query: input.Query, ScopeIDs: input.ScopeIDs, Intent: domain.RecallIntent(input.Intent), EntityHints: input.Entities,
+		ReferenceTime: referenceTime, Limit: limit, Cursor: input.Cursor,
 	})
 	if err != nil {
 		ex.writeError(err)
 		return
 	}
-	ex.writeJSON(http.StatusOK, recallResponse{Context: result.Context, Execution: result.Execution})
-}
-
-func derefBool(value *bool) bool {
-	if value == nil {
-		return false
+	operationID := result.OperationID
+	if operationID == "" {
+		operationID = ex.requestID
 	}
-	return *value
+	ex.writeJSON(http.StatusOK, recallOutput(operationID, result))
 }
 
-func derefInt(value *int) int {
-	if value == nil {
-		return 0
+func recallOutput(operationID string, result agenttool.RecallResult) toolcontract.RecallOutput {
+	output := toolcontract.RecallOutput{OperationID: operationID, Memories: make([]toolcontract.RecalledMemory, len(result.Memories)),
+		DegradedCapabilities: make([]string, len(result.DegradedCapabilities)), NextCursor: result.NextCursor}
+	for i, capability := range result.DegradedCapabilities {
+		output.DegradedCapabilities[i] = string(capability)
 	}
-	return *value
-}
-
-func derefString(value *string) string {
-	if value == nil {
-		return ""
+	for i, memory := range result.Memories {
+		output.Memories[i] = toolcontract.RecalledMemory{MemoryID: memory.MemoryID, RevisionID: memory.RevisionID, Kind: string(memory.Kind),
+			Content: memory.Content, ValidFrom: formatTime(memory.ValidFrom), ValidUntil: formatTime(memory.ValidUntil), Confidence: memory.Confidence,
+			Evidence: make([]toolcontract.EvidenceReference, len(memory.Evidence))}
+		for j, evidence := range memory.Evidence {
+			output.Memories[i].Evidence[j] = toolcontract.EvidenceReference{EvidenceID: evidence.EvidenceID, EventID: evidence.EventID,
+				Role: string(evidence.Role), EventTime: formatTime(evidence.EventTime), EventSequence: evidence.EventSequence,
+				StartOffset: evidence.StartOffset, EndOffset: evidence.EndOffset}
+		}
 	}
-	return *value
+	return output
 }
 
-func derefStrings(value *[]string) []string {
+func formatTime(value *time.Time) *string {
 	if value == nil {
 		return nil
 	}
-	return *value
+	formatted := value.UTC().Format(time.RFC3339Nano)
+	return &formatted
 }

@@ -5,7 +5,7 @@ dMem 使用一个 SQLite 数据库作为领域权威。Schema v1 由
 一致，`TestDocumentedSchemaMatchesEmbeddedSchema` 强制这一点。`SchemaVersion`
 为 `1`。
 
-共 92 张表：91 张 `CREATE TABLE` 与 1 张虚拟表 `memory_fts`，全部为 `STRICT`
+共 95 张表：94 张 `CREATE TABLE` 与 1 张虚拟表 `memory_fts`，全部为 `STRICT`
 表。`schema_metadata` 保存 `schema_version`。
 
 Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新的数据目录；不兼容
@@ -32,6 +32,14 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 | `memory_state_events` | 仅追加生命周期状态事件。 |
 | `memory_evidence` | 修订证据片段及其角色、偏移。 |
 | `revision_attributes` | 修订的类型化属性键值。 |
+| `agent_tool_sources` | Agent Tool 提交的来源溯源（contract、conversation、turn、tool-call、occurred time、metadata），每个来源事件一行且不可变。 |
+| `agent_tool_search_hints` | 受 revision 约束的 Agent 生成检索辅助文本，保留来源事件、顺序和 local ID；不进入 canonical content hash。 |
+
+### Agent Tool 建议
+
+| 表 | 用途 |
+| --- | --- |
+| `agent_tool_proposals` | 协议中立 Tool knowledge/敏感或聚合 memory 建议的持久审核 envelope；保存规范化 JSON、specification hash、local 引用与终态审核状态，不伪造权威实体或修订 ID。 |
 
 ### 候选与整合
 

@@ -7,9 +7,12 @@
 日期：2026-09-20
 
 本文固化 Agent Tool Route 与 dMem Provider Route 重构开始前的产品决策、当前调用图
-和测试基线。它约束后续 Phase 1 及以上的实现，但不表示目标 application API、工具
-契约、client 或 MCP server 已经可用。当前九条 HTTP 路由仍由守护进程组装并作为
-重构前测试入口；它们不是兼容性边界，将在 Phase 2 被目标 application API 替换。
+和测试基线。它约束后续 Phase 1 及以上的实现。
+
+> **Phase 2 后状态**：九条旧 HTTP 路由及其 DTO 已被目标 application API 替换并
+> 删除，`agent_tool` 单事务原子提交、`agent_tool_feedback`、修订围栏遗忘、原子
+> scope ensure 与 `search_hints` 持久化均已实现。MCP server、薄 client 与
+> Provider Route 收敛仍属后续阶段。本文其余调用图与矩阵保留为重构前基线记录。
 
 ## 产品决策
 

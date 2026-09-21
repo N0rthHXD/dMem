@@ -226,6 +226,67 @@ CREATE TABLE memory_evidence (
 CREATE INDEX memory_evidence_event_idx
 ON memory_evidence(event_id, revision_id);
 
+CREATE TABLE agent_tool_sources (
+    source_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE REFERENCES raw_events(event_id) ON DELETE RESTRICT,
+    operation_id TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK (source_type = 'agent_tool'),
+    source_name TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    tool_call_id TEXT,
+    occurred_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json) AND json_type(metadata_json) = 'object'),
+    created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX agent_tool_sources_conversation_idx
+ON agent_tool_sources(conversation_id, turn_id, source_id);
+
+CREATE TABLE agent_tool_search_hints (
+    event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
+    local_id TEXT NOT NULL,
+    revision_id TEXT REFERENCES memory_revisions(revision_id) ON DELETE RESTRICT,
+    hint_order INTEGER NOT NULL CHECK (hint_order >= 0),
+    hint TEXT NOT NULL CHECK (length(hint) > 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (event_id, local_id, hint_order),
+    UNIQUE (event_id, local_id, hint)
+) WITHOUT ROWID, STRICT;
+
+CREATE TABLE agent_tool_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES raw_events(event_id) ON DELETE RESTRICT,
+    space_id TEXT NOT NULL REFERENCES memory_spaces(space_id) ON DELETE RESTRICT,
+    suggestion_type TEXT NOT NULL CHECK (suggestion_type IN ('memory', 'entity', 'fact', 'relation')),
+    local_id TEXT NOT NULL,
+    normalized_json TEXT NOT NULL CHECK (json_valid(normalized_json) AND json_type(normalized_json) = 'object'),
+    specification_hash TEXT NOT NULL,
+    review_state TEXT NOT NULL DEFAULT 'pending' CHECK (review_state IN ('pending', 'confirmed', 'rejected')),
+    result_memory_id TEXT,
+    result_revision_id TEXT,
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    UNIQUE (event_id, suggestion_type, local_id),
+    CHECK ((result_memory_id IS NULL) = (result_revision_id IS NULL)),
+    CHECK ((review_state = 'pending' AND reviewed_at IS NULL AND result_memory_id IS NULL) OR
+           (review_state = 'rejected' AND reviewed_at IS NOT NULL AND result_memory_id IS NULL) OR
+           (review_state = 'confirmed' AND reviewed_at IS NOT NULL AND result_memory_id IS NOT NULL)),
+    FOREIGN KEY (result_memory_id, result_revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX agent_tool_proposals_review_idx
+ON agent_tool_proposals(space_id, review_state, suggestion_type, created_at, proposal_id);
+
+CREATE TRIGGER agent_tool_sources_no_update BEFORE UPDATE ON agent_tool_sources BEGIN SELECT RAISE(ABORT, 'agent tool sources are immutable'); END;
+CREATE TRIGGER agent_tool_sources_no_delete BEFORE DELETE ON agent_tool_sources BEGIN SELECT RAISE(ABORT, 'agent tool sources are immutable'); END;
+CREATE INDEX agent_tool_search_hints_revision_idx ON agent_tool_search_hints(revision_id, event_id, hint_order) WHERE revision_id IS NOT NULL;
+CREATE TRIGGER agent_tool_search_hints_no_update BEFORE UPDATE ON agent_tool_search_hints BEGIN SELECT RAISE(ABORT, 'agent tool search hints are immutable'); END;
+CREATE TRIGGER agent_tool_search_hints_no_delete BEFORE DELETE ON agent_tool_search_hints BEGIN SELECT RAISE(ABORT, 'agent tool search hints are immutable'); END;
+CREATE TRIGGER agent_tool_proposals_immutable_fields BEFORE UPDATE ON agent_tool_proposals WHEN OLD.event_id IS NOT NEW.event_id OR OLD.space_id IS NOT NEW.space_id OR OLD.suggestion_type IS NOT NEW.suggestion_type OR OLD.local_id IS NOT NEW.local_id OR OLD.normalized_json IS NOT NEW.normalized_json OR OLD.specification_hash IS NOT NEW.specification_hash OR OLD.created_at IS NOT NEW.created_at BEGIN SELECT RAISE(ABORT, 'agent tool proposal specification is immutable'); END;
+CREATE TRIGGER agent_tool_proposals_terminal_state BEFORE UPDATE ON agent_tool_proposals WHEN OLD.review_state <> 'pending' OR NEW.review_state NOT IN ('confirmed', 'rejected') BEGIN SELECT RAISE(ABORT, 'agent tool proposal review state is terminal'); END;
+CREATE TRIGGER agent_tool_proposals_no_delete BEFORE DELETE ON agent_tool_proposals BEGIN SELECT RAISE(ABORT, 'agent tool proposals cannot be deleted'); END;
+
 CREATE UNIQUE INDEX memory_evidence_once
 ON memory_evidence(revision_id, event_id, COALESCE(start_offset, -1), COALESCE(end_offset, -1));
 
@@ -1000,8 +1061,8 @@ CREATE TABLE feedback_events (
     caller_id TEXT NOT NULL,
     memory_id TEXT NOT NULL,
     revision_id TEXT NOT NULL,
-    feedback_purpose TEXT NOT NULL CHECK (feedback_purpose IN ('memory_quality_feedback', 'retrieval_feedback', 'answer_feedback')),
-    feedback_type TEXT NOT NULL CHECK (feedback_type IN ('confirm', 'correct', 'contest', 'supplement', 'useful', 'irrelevant', 'supported', 'unsupported')),
+    feedback_purpose TEXT NOT NULL CHECK (feedback_purpose IN ('memory_quality_feedback', 'retrieval_feedback', 'answer_feedback', 'agent_tool_feedback')),
+    feedback_type TEXT NOT NULL CHECK (feedback_type IN ('confirm', 'correct', 'contest', 'supplement', 'useful', 'irrelevant', 'supported', 'unsupported', 'used', 'not_used', 'incorrect', 'outdated', 'duplicate')),
     reason_code TEXT NOT NULL CHECK (reason_code IN ('fact_incorrect', 'fact_incomplete', 'fact_outdated', 'conflicts_with_evidence', 'duplicate', 'answered_query', 'relevant_context', 'not_relevant', 'evidence_supported', 'evidence_insufficient', 'evidence_contradicted', 'other')),
     note TEXT,
     search_operation_id TEXT,
@@ -1037,6 +1098,12 @@ CREATE TABLE feedback_events (
             AND ranking_identity IS NOT NULL AND feature_identity IS NOT NULL AND context_identity IS NOT NULL
             AND result_rank IS NOT NULL AND selection_state IS NOT NULL AND matched_signals_json IS NOT NULL
             AND answer_identity IS NOT NULL)
+        OR (feedback_purpose = 'agent_tool_feedback'
+            AND feedback_type IN ('used', 'not_used', 'incorrect', 'outdated', 'duplicate')
+            AND reason_code IN ('fact_incorrect', 'fact_outdated', 'duplicate', 'other')
+            AND query_hash IS NULL AND query_type IS NULL AND entity_ids_json IS NULL
+            AND ranking_identity IS NULL AND feature_identity IS NULL AND context_identity IS NULL
+            AND result_rank IS NULL AND selection_state IS NULL AND matched_signals_json IS NULL AND answer_identity IS NULL)
     ),
     FOREIGN KEY (memory_id, revision_id) REFERENCES memory_revisions(memory_id, revision_id) ON DELETE RESTRICT
 ) STRICT;
@@ -1273,7 +1340,7 @@ CREATE TRIGGER import_space_mappings_no_delete BEFORE DELETE ON import_space_map
 CREATE TABLE import_object_mappings (
     mapping_id TEXT PRIMARY KEY,
     source_id TEXT NOT NULL REFERENCES import_sources(source_id) ON DELETE RESTRICT,
-    source_object_type TEXT NOT NULL CHECK (source_object_type IN ('space', 'raw_content', 'raw_event', 'memory', 'revision', 'revision_subject_entity', 'revision_object_entity', 'memory_evidence', 'memory_state_event', 'entity', 'entity_event', 'entity_alias', 'entity_alias_event', 'entity_mention', 'relation', 'relation_evidence', 'relation_state_event', 'entity_fact', 'entity_fact_evidence', 'entity_fact_state_event', 'conflict_case', 'conflict_participant', 'conflict_relation', 'conflict_resolution', 'conflict_resolution_ref', 'feedback_event', 'aggregate_descriptor')),
+    source_object_type TEXT NOT NULL CHECK (source_object_type IN ('space', 'raw_content', 'raw_event', 'memory', 'revision', 'revision_subject_entity', 'revision_object_entity', 'memory_evidence', 'memory_state_event', 'entity', 'entity_event', 'entity_alias', 'entity_alias_event', 'entity_mention', 'relation', 'relation_evidence', 'relation_state_event', 'entity_fact', 'entity_fact_evidence', 'entity_fact_state_event', 'conflict_case', 'conflict_participant', 'conflict_relation', 'conflict_resolution', 'conflict_resolution_ref', 'feedback_event', 'aggregate_descriptor', 'agent_tool_source', 'agent_tool_search_hint', 'agent_tool_proposal')),
     source_object_id TEXT NOT NULL,
     export_id TEXT NOT NULL,
     local_object_id TEXT NOT NULL,
@@ -1906,6 +1973,9 @@ CREATE TABLE query_telemetry (
 
 CREATE INDEX query_telemetry_operation_idx
 ON query_telemetry(operation_id, created_at, telemetry_id);
+
+CREATE UNIQUE INDEX query_telemetry_operation_once
+ON query_telemetry(operation_id, query_hash);
 
 CREATE TABLE context_decisions (
     decision_id TEXT PRIMARY KEY,

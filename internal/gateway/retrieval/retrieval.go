@@ -32,6 +32,7 @@ type Query struct {
 	ReferenceTime             string
 	ReferenceTimeSet          bool
 	Intent                    domain.RecallIntent
+	EntityHints               []string
 	Channels                  []string
 	Limit                     int
 	LimitSet                  bool

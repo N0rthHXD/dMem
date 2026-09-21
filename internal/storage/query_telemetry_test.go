@@ -101,6 +101,33 @@ func TestRecallTelemetryPersistsRejectedDecisions(t *testing.T) {
 	}
 }
 
+// TestRecallTelemetryIsIdempotentPerOperationIdentity proves a repeated recall
+// with the same stable operation identity and query records telemetry exactly
+// once instead of duplicating rows and context decisions on every retry.
+func TestRecallTelemetryIsIdempotentPerOperationIdentity(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	createMemoryWithContent(t, repository, "telemetry-dedup", "dedupword content")
+	params := SearchParams{
+		OperationID: "telemetry-dedup", Query: "dedupword", SpaceIDs: []string{"space-1"},
+		States: []string{"active"}, Channels: []string{"keyword"}, Limit: 5, MaxChars: 1000, MaxContextTokens: 1000,
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := repository.SearchMemories(context.Background(), params); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows, decisions int
+	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM query_telemetry WHERE operation_id='telemetry-dedup'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.store.reader.QueryRow(`SELECT count(*) FROM context_decisions WHERE operation_id='telemetry-dedup'`).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || decisions != 1 {
+		t.Fatalf("telemetry rows=%d decisions=%d, want one each", rows, decisions)
+	}
+}
+
 func TestDegradedSemanticRecallPersistsOneCompleteTelemetryRecord(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	createMemoryWithContent(t, repository, "telemetry-fallback", "fallbackword content")

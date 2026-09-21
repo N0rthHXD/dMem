@@ -112,6 +112,7 @@ func (s *ServiceImpl) Recall(ctx context.Context, call gateway.CallContext, quer
 	params.Plan = coreretrieval.BuildQueryPlan(params.Query, coreretrieval.PlanOptions{
 		ReferenceTime: parsed, Intent: params.Intent, Limit: params.Limit, CandidateBudget: budget,
 		MaxChars: params.MaxChars, RequestedKinds: params.MemoryTypes, RequestedScope: params.SpaceIDs,
+		EntityHints: params.EntityHints,
 	})
 	params.Plan = coreretrieval.EnrichPlan(ctx, params.Plan, enricher, allowed, 8, 8)
 	params.QueryTime, _, params.QueryTimeSet = coreretrieval.ParseQueryTime(params.Query, parsed)
@@ -639,7 +640,7 @@ func recallParams(query Query) RecallParams {
 	return RecallParams{
 		OperationID: query.OperationID, Query: query.Query, SpaceIDs: copyStrings(query.SpaceIDs), IncludeAncestors: query.IncludeAncestors,
 		MemoryTypes: copyStrings(query.MemoryTypes), MemoryTypesSet: query.MemoryTypesSet, States: copyStrings(query.States),
-		ReferenceTime: query.ReferenceTime, ReferenceTimeSet: query.ReferenceTimeSet, Channels: copyStrings(query.Channels),
+		ReferenceTime: query.ReferenceTime, ReferenceTimeSet: query.ReferenceTimeSet, EntityHints: copyStrings(query.EntityHints), Channels: copyStrings(query.Channels),
 		Limit: query.Limit, MaxChars: query.MaxChars, MaxContextTokens: query.MaxContextTokens,
 		IncludeEvidence: query.IncludeEvidence, ExcludeStaleAggregates: query.ExcludeStaleAggregates, Explain: query.Explain,
 		Cursor: query.Cursor, Intent: string(query.Intent), GraphPolicy: coreretrieval.GraphPolicy(query.GraphPolicy), SkipDiversification: query.SkipDiversification,

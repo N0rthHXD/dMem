@@ -11,16 +11,19 @@ import (
 )
 
 var examples = map[string]string{
-	SchemaCapabilities:   `{"contract_version":"dmem-agent-tool-v1","tools":["dmem_recall","dmem_remember","dmem_feedback","dmem_forget"],"predicate_registry_version":"predicate-registry-v2","evidence_disclosure":"references_only"}`,
-	SchemaError:          `{"error":{"code":"invalid_input","message":"invalid command","request_id":"req-1","retryable":false}}`,
-	SchemaRecallInput:    `{"query":"database choice","scope_ids":["project-1"],"intent":"lookup","limit":10}`,
-	SchemaRecallOutput:   `{"memories":[{"memory_id":"mem-1","revision_id":"rev-1","kind":"preference","content":"PostgreSQL is preferred.","confidence":0.9,"evidence":[]}],"degraded_capabilities":["semantic"],"next_cursor":null}`,
-	SchemaRememberInput:  `{"scope_id":"project-1","source":{"type":"agent_tool","name":"assistant","conversation_id":"conv-1","turn_id":"turn-1","occurred_at":"2026-09-20T10:00:00Z"},"memories":[{"local_id":"memory-1","kind":"preference","content":"PostgreSQL is preferred.","sensitivity":"normal","confidence":0.9,"search_hints":["database choice"]}]}`,
-	SchemaRememberOutput: `{"operation_id":"op-1","replayed":false,"source_event_id":"event-1","memories":[{"local_id":"memory-1","status":"authority","memory_id":"mem-1","revision_id":"rev-1"}],"entities":[],"facts":[],"relations":[]}`,
-	SchemaFeedbackInput:  `{"scope_id":"project-1","memory_id":"mem-1","revision_id":"rev-1","kind":"used"}`,
-	SchemaFeedbackOutput: `{"operation_id":"op-2","replayed":false,"feedback_id":"feedback-1","memory_id":"mem-1","revision_id":"rev-1","kind":"used"}`,
-	SchemaForgetInput:    `{"scope_id":"project-1","memory_id":"mem-1","expected_revision_id":"rev-1","reason":"user requested deletion"}`,
-	SchemaForgetOutput:   `{"operation_id":"op-3","replayed":false,"memory_id":"mem-1","revision_id":"rev-1","state":"deleted"}`,
+	SchemaCapabilities:       `{"contract_version":"dmem-agent-tool-v1","tools":["dmem_recall","dmem_remember","dmem_feedback","dmem_forget"],"predicate_registry_version":"predicate-registry-v2","evidence_disclosure":"references_only"}`,
+	SchemaError:              `{"error":{"code":"invalid_input","message":"invalid command","request_id":"req-1","retryable":false}}`,
+	SchemaRecallInput:        `{"query":"database choice","scope_ids":["project-1"],"intent":"lookup","limit":10}`,
+	SchemaRecallOutput:       `{"operation_id":"recall-1","memories":[{"memory_id":"mem-1","revision_id":"rev-1","kind":"preference","content":"PostgreSQL is preferred.","confidence":0.9,"evidence":[]}],"degraded_capabilities":["semantic"],"next_cursor":null}`,
+	SchemaMemoryCommitInput:  `{"scope_id":"project-1","source":{"type":"agent_tool","name":"assistant","conversation_id":"conv-1","turn_id":"turn-1","occurred_at":"2026-09-20T10:00:00Z"},"memories":[{"local_id":"memory-1","kind":"preference","content":"PostgreSQL is preferred.","sensitivity":"normal","confidence":0.9,"search_hints":["database choice"]}]}`,
+	SchemaMemoryCommitOutput: `{"operation_id":"op-1","replayed":false,"source_event_id":"event-1","memories":[{"local_id":"memory-1","status":"authority","memory_id":"mem-1","revision_id":"rev-1"}],"entities":[],"facts":[],"relations":[]}`,
+	SchemaFeedbackInput:      `{"scope_id":"project-1","memory_id":"mem-1","revision_id":"rev-1","kind":"used"}`,
+	SchemaFeedbackOutput:     `{"operation_id":"op-2","replayed":false,"feedback_id":"feedback-1","memory_id":"mem-1","revision_id":"rev-1","kind":"used"}`,
+	SchemaForgetInput:        `{"scope_id":"project-1","memory_id":"mem-1","expected_revision_id":"rev-1","reason":"user requested deletion"}`,
+	SchemaForgetOutput:       `{"operation_id":"op-3","replayed":false,"memory_id":"mem-1","revision_id":"rev-1","state":"deleted"}`,
+	SchemaScopeEnsureInput:   `{"parent_scope_id":null,"scope_type":"project","external_id":"ext","display_name":"Project"}`,
+	SchemaScopeEnsureOutput:  `{"operation_id":"op-4","replayed":false,"scope":{"scope_id":"scope-1","parent_scope_id":null,"scope_type":"project","external_id":"ext","display_name":"Project","created_at":"2026-09-20T10:00:00Z"}}`,
+	SchemaScopeOutput:        `{"scope":{"scope_id":"scope-1","parent_scope_id":null,"scope_type":"project","external_id":"ext","display_name":"Project","created_at":"2026-09-20T10:00:00Z"}}`,
 }
 
 func TestSchemasCompileAndValidateGoldenExamples(t *testing.T) {
@@ -40,7 +43,7 @@ func TestSchemasRejectUnknownFieldsAndBoundaries(t *testing.T) {
 		{"unknown", SchemaRecallInput, `{"query":"x","scope_ids":["s"],"channels":["semantic"]}`},
 		{"limit", SchemaRecallInput, `{"query":"x","scope_ids":["s"],"limit":101}`},
 		{"feedback enum", SchemaFeedbackInput, `{"scope_id":"s","memory_id":"m","revision_id":"r","kind":"irrelevant"}`},
-		{"forbidden authority", SchemaRememberInput, `{"scope_id":"s","source":{"type":"agent_tool","name":"a","conversation_id":"c","turn_id":"t","occurred_at":"2026-09-20T10:00:00Z"},"memories":[{"local_id":"m","kind":"fact","content":"x","sensitivity":"normal","confidence":1,"confirmed":true}]}`},
+		{"forbidden authority", SchemaMemoryCommitInput, `{"scope_id":"s","source":{"type":"agent_tool","name":"a","conversation_id":"c","turn_id":"t","occurred_at":"2026-09-20T10:00:00Z"},"memories":[{"local_id":"m","kind":"fact","content":"x","sensitivity":"normal","confidence":1,"confirmed":true}]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -54,7 +57,7 @@ func TestSchemasRejectUnknownFieldsAndBoundaries(t *testing.T) {
 func TestRememberOutputAcceptsEveryClosedOutcome(t *testing.T) {
 	for _, status := range []string{"authority", "deduplicated", "proposal", "rejected"} {
 		document := `{"operation_id":"op-1","replayed":false,"source_event_id":"event-1","memories":[{"local_id":"memory-1","status":"` + status + `"}],"entities":[],"facts":[],"relations":[]}`
-		if err := Validate(SchemaRememberOutput, []byte(document)); err != nil {
+		if err := Validate(SchemaMemoryCommitOutput, []byte(document)); err != nil {
 			t.Fatalf("status %s: %v", status, err)
 		}
 	}
@@ -80,7 +83,7 @@ func TestStrictDecodeEnforcesDocumentLimit(t *testing.T) {
 }
 
 func TestRememberPredicateEnumMatchesRegistry(t *testing.T) {
-	data, err := Schema(SchemaRememberInput)
+	data, err := Schema(SchemaMemoryCommitInput)
 	if err != nil {
 		t.Fatal(err)
 	}

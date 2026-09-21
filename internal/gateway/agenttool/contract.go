@@ -59,6 +59,7 @@ type RecallCommand struct {
 }
 
 type RecallResult struct {
+	OperationID          string
 	Memories             []RecalledMemory
 	DegradedCapabilities []Capability
 	NextCursor           *string

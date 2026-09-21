@@ -1065,7 +1065,7 @@ func insertEvidence(ctx context.Context, tx *sql.Tx, revisionID string, evidence
 	return nil
 }
 
-func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, memoryID, revisionID, spaceID, state, now string) error {
+func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, memoryID, revisionID, spaceID, state, now string, scheduleExtraction ...bool) error {
 	revision, err := getRevision(ctx, tx, memoryID, revisionID)
 	if err != nil {
 		return err
@@ -1123,7 +1123,7 @@ func (r *Repository) upsertMemoryProjection(ctx context.Context, tx *sql.Tx, mem
 			return err
 		}
 	}
-	if revisionChanged && searchable {
+	if revisionChanged && searchable && (len(scheduleExtraction) == 0 || scheduleExtraction[0]) {
 		if err := r.scheduleGraphExtraction(ctx, tx, revisionID, now); err != nil {
 			return err
 		}

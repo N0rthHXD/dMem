@@ -2,158 +2,145 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
-	"github.com/N0rthHXD/dMem/internal/gateway/memory"
+	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
-// rememberRequest is the wire representation of a remember command.
-type rememberRequest struct {
-	ScopeID         string         `json:"scope_id"`
-	Content         string         `json:"content"`
-	Kind            string         `json:"kind,omitempty"`
-	Sensitivity     string         `json:"sensitivity,omitempty"`
-	ValidFrom       *string        `json:"valid_from,omitempty"`
-	ValidUntil      *string        `json:"valid_until,omitempty"`
-	SourceName      string         `json:"source_name,omitempty"`
-	SourceEventID   *string        `json:"source_event_id,omitempty"`
-	SourceStreamKey string         `json:"source_stream_key,omitempty"`
-	Sequence        *int64         `json:"sequence,omitempty"`
-	OccurredAt      string         `json:"occurred_at,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
-	Reason          string         `json:"reason,omitempty"`
-}
-
-// forgetRequest is the wire representation of a forget command.
-type forgetRequest struct {
-	Reason string `json:"reason"`
-}
-
-// memoryResource is the public representation of a memory. It renames the
-// storage-era space field to the public scope terminology; nested revision and
-// conflict values are protocol-neutral domain projections.
-type memoryResource struct {
-	MemoryID                string                `json:"memory_id"`
-	ScopeID                 string                `json:"scope_id"`
-	Kind                    domain.MemoryKind     `json:"kind"`
-	CurrentState            string                `json:"current_state"`
-	Frozen                  bool                  `json:"frozen"`
-	Sensitivity             string                `json:"sensitivity,omitempty"`
-	CurrentRevision         domain.MemoryRevision `json:"current_revision"`
-	CreatedAt               string                `json:"created_at"`
-	UpdatedAt               string                `json:"updated_at"`
-	ConflictRefs            []domain.ConflictRef  `json:"conflict_refs,omitempty"`
-	AggregateStale          bool                  `json:"aggregate_stale,omitempty"`
-	AggregateStaleReasons   []string              `json:"aggregate_stale_reasons,omitempty"`
-	AggregateProvenanceRefs []string              `json:"aggregate_provenance_refs,omitempty"`
-}
-
-// newMemoryResource converts a domain memory into its public representation.
-func newMemoryResource(value domain.Memory) memoryResource {
-	return memoryResource{
-		MemoryID:                value.MemoryID,
-		ScopeID:                 value.SpaceID,
-		Kind:                    value.Kind,
-		CurrentState:            value.CurrentState,
-		Frozen:                  value.Frozen,
-		Sensitivity:             value.Sensitivity,
-		CurrentRevision:         value.CurrentRevision,
-		CreatedAt:               value.CreatedAt,
-		UpdatedAt:               value.UpdatedAt,
-		ConflictRefs:            value.ConflictRefs,
-		AggregateStale:          value.AggregateStale,
-		AggregateStaleReasons:   value.AggregateStaleReasons,
-		AggregateProvenanceRefs: value.AggregateProvenanceRefs,
-	}
-}
-
-// memoryWriteResponse is the result envelope shared by memory writes.
-type memoryWriteResponse struct {
-	OperationID string         `json:"operation_id"`
-	Replayed    bool           `json:"replayed"`
-	Memory      memoryResource `json:"memory"`
-	EventID     string         `json:"event_id,omitempty"`
-}
-
-// memoryGetResponse is the single-memory read envelope.
-type memoryGetResponse struct {
-	Memory memoryResource `json:"memory"`
-}
-
-// handleRemember serves POST /v1/memories.
-func (h *Handler) handleRemember(ex *exchange, _ routeParams) {
-	var request rememberRequest
-	if err := ex.decodeBody(&request); err != nil {
+func (h *Handler) handleMemoryCommit(ex *exchange, _ routeParams) {
+	var input toolcontract.MemoryCommitInput
+	if err := ex.decodeContractBody(toolcontract.SchemaMemoryCommitInput, &input); err != nil {
 		ex.writeError(err)
 		return
 	}
-	result, err := h.memory.Remember(ex.context(), ex.call, memory.RememberCommand{
-		SpaceID:         request.ScopeID,
-		Content:         request.Content,
-		Kind:            request.Kind,
-		Sensitivity:     request.Sensitivity,
-		ValidFrom:       request.ValidFrom,
-		ValidUntil:      request.ValidUntil,
-		SourceName:      request.SourceName,
-		SourceEventID:   request.SourceEventID,
-		SourceStreamKey: request.SourceStreamKey,
-		Sequence:        request.Sequence,
-		OccurredAt:      request.OccurredAt,
-		Metadata:        request.Metadata,
-		Reason:          request.Reason,
+	command, err := memoryCommitCommand(input)
+	if err != nil {
+		ex.writeError(err)
+		return
+	}
+	result, err := h.agentTools.MemoryCommit(ex.context(), ex.call, command)
+	if err != nil {
+		ex.writeError(err)
+		return
+	}
+	ex.setReplay(result.Replay)
+	ex.writeJSON(http.StatusCreated, memoryCommitOutput(result))
+}
+
+func (h *Handler) handleForget(ex *exchange, _ routeParams) {
+	var input toolcontract.ForgetInput
+	if err := ex.decodeContractBody(toolcontract.SchemaForgetInput, &input); err != nil {
+		ex.writeError(err)
+		return
+	}
+	result, err := h.agentTools.Forget(ex.context(), ex.call, agenttool.ForgetCommand{
+		ScopeID: input.ScopeID, MemoryID: input.MemoryID,
+		ExpectedRevisionID: input.ExpectedRevisionID, Reason: input.Reason,
 	})
 	if err != nil {
 		ex.writeError(err)
 		return
 	}
 	ex.setReplay(result.Replay)
-	ex.writeJSON(http.StatusCreated, memoryWriteResponse{
-		OperationID: result.OperationID,
-		Replayed:    result.Replay,
-		Memory:      newMemoryResource(result.Memory),
-		EventID:     result.EventID,
+	ex.writeJSON(http.StatusOK, toolcontract.ForgetOutput{
+		WriteMetadata: toolcontract.WriteMetadata{OperationID: result.OperationID, Replayed: result.Replay},
+		MemoryID:      result.MemoryID, RevisionID: result.RevisionID, State: result.State,
 	})
 }
 
-// handleGetMemory serves GET /v1/memories/{memory_id}.
-func (h *Handler) handleGetMemory(ex *exchange, params routeParams) {
-	memoryID, err := requirePathID(params, "memory_id")
+func memoryCommitCommand(input toolcontract.MemoryCommitInput) (agenttool.MemoryCommitCommand, error) {
+	occurredAt, err := time.Parse(time.RFC3339, input.Source.OccurredAt)
 	if err != nil {
-		ex.writeError(err)
-		return
+		return agenttool.MemoryCommitCommand{}, invalidContractBody()
 	}
-	found, err := h.memory.Get(ex.context(), ex.call, memory.GetQuery{MemoryID: memoryID})
-	if err != nil {
-		ex.writeError(err)
-		return
+	command := agenttool.MemoryCommitCommand{
+		ScopeID: input.ScopeID,
+		Source: agenttool.Source{Type: input.Source.Type, Name: input.Source.Name, ConversationID: input.Source.ConversationID,
+			TurnID: input.Source.TurnID, ToolCallID: input.Source.ToolCallID, OccurredAt: occurredAt, Metadata: input.Source.Metadata},
+		Memories: make([]agenttool.MemorySuggestion, len(input.Memories)), Entities: make([]agenttool.EntitySuggestion, len(input.Entities)),
+		Facts: make([]agenttool.FactSuggestion, len(input.Facts)), Relations: make([]agenttool.RelationSuggestion, len(input.Relations)),
 	}
-	ex.writeJSON(http.StatusOK, memoryGetResponse{Memory: newMemoryResource(found)})
+	for i, value := range input.Memories {
+		validFrom, err := optionalTime(value.ValidFrom)
+		if err != nil {
+			return agenttool.MemoryCommitCommand{}, invalidContractBody()
+		}
+		validUntil, err := optionalTime(value.ValidUntil)
+		if err != nil {
+			return agenttool.MemoryCommitCommand{}, invalidContractBody()
+		}
+		command.Memories[i] = agenttool.MemorySuggestion{LocalID: value.LocalID, Kind: domain.MemoryKind(value.Kind), Content: value.Content,
+			Sensitivity: agenttool.Sensitivity(value.Sensitivity), Confidence: value.Confidence, SearchHints: value.SearchHints, ValidFrom: validFrom, ValidUntil: validUntil}
+	}
+	for i, value := range input.Entities {
+		command.Entities[i] = agenttool.EntitySuggestion{LocalID: value.LocalID, Type: agenttool.EntityType(value.Type), Name: value.Name, Aliases: value.Aliases, Confidence: value.Confidence}
+	}
+	for i, value := range input.Facts {
+		validFrom, err := optionalTime(value.ValidFrom)
+		if err != nil {
+			return agenttool.MemoryCommitCommand{}, invalidContractBody()
+		}
+		validUntil, err := optionalTime(value.ValidUntil)
+		if err != nil {
+			return agenttool.MemoryCommitCommand{}, invalidContractBody()
+		}
+		object := agenttool.FactObject{Entity: entityReference(value.Object.Entity), StringValue: value.Object.StringValue, BooleanValue: value.Object.BooleanValue}
+		if value.Object.NumberValue != nil {
+			number, err := value.Object.NumberValue.Float64()
+			if err != nil {
+				return agenttool.MemoryCommitCommand{}, invalidContractBody()
+			}
+			object.NumberValue = &number
+		}
+		command.Facts[i] = agenttool.FactSuggestion{LocalID: value.LocalID, Subject: toEntityReference(value.Subject), Predicate: value.Predicate,
+			Object: object, EvidenceMemory: value.EvidenceMemory, Confidence: value.Confidence, ValidFrom: validFrom, ValidUntil: validUntil}
+	}
+	for i, value := range input.Relations {
+		command.Relations[i] = agenttool.RelationSuggestion{LocalID: value.LocalID, Type: agenttool.RelationType(value.Type),
+			Source: toMemoryReference(value.Source), Target: toMemoryReference(value.Target), EvidenceMemory: value.EvidenceMemory, Confidence: value.Confidence}
+	}
+	return command, nil
 }
 
-// handleForget serves POST /v1/memories/{memory_id}/forget.
-func (h *Handler) handleForget(ex *exchange, params routeParams) {
-	memoryID, err := requirePathID(params, "memory_id")
+func optionalTime(value *string) (*time.Time, error) {
+	if value == nil {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, *value)
 	if err != nil {
-		ex.writeError(err)
-		return
+		return nil, err
 	}
-	var request forgetRequest
-	if err := ex.decodeBody(&request); err != nil {
-		ex.writeError(err)
-		return
+	return &parsed, nil
+}
+
+func entityReference(value *toolcontract.EntityReference) *agenttool.EntityReference {
+	if value == nil {
+		return nil
 	}
-	result, err := h.memory.Forget(ex.context(), ex.call, memory.ForgetCommand{
-		MemoryID: memoryID,
-		Reason:   request.Reason,
-	})
-	if err != nil {
-		ex.writeError(err)
-		return
+	converted := toEntityReference(*value)
+	return &converted
+}
+
+func toEntityReference(value toolcontract.EntityReference) agenttool.EntityReference {
+	return agenttool.EntityReference{LocalID: value.LocalID, EntityID: value.EntityID}
+}
+
+func toMemoryReference(value toolcontract.MemoryReference) agenttool.MemoryReference {
+	return agenttool.MemoryReference{LocalID: value.LocalID, MemoryID: value.MemoryID, RevisionID: value.RevisionID}
+}
+
+func memoryCommitOutput(result agenttool.MemoryCommitResult) toolcontract.MemoryCommitOutput {
+	return toolcontract.MemoryCommitOutput{WriteMetadata: toolcontract.WriteMetadata{OperationID: result.OperationID, Replayed: result.Replay},
+		SourceEventID: result.SourceEventID, Memories: outcomes(result.Memories), Entities: outcomes(result.Entities), Facts: outcomes(result.Facts), Relations: outcomes(result.Relations)}
+}
+
+func outcomes(values []agenttool.CommitOutcome) []toolcontract.CommitOutcome {
+	result := make([]toolcontract.CommitOutcome, len(values))
+	for i, value := range values {
+		result[i] = toolcontract.CommitOutcome{LocalID: value.LocalID, Status: string(value.Status), MemoryID: value.MemoryID,
+			RevisionID: value.RevisionID, ProposalID: value.ProposalID, ReasonCode: value.ReasonCode}
 	}
-	ex.setReplay(result.Replay)
-	ex.writeJSON(http.StatusOK, memoryWriteResponse{
-		OperationID: result.OperationID,
-		Replayed:    result.Replay,
-		Memory:      newMemoryResource(result.Memory),
-	})
+	return result
 }

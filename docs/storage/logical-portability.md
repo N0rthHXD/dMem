@@ -20,7 +20,10 @@ conflicts       feedback        aggregate_provenance
 ```
 
 每条记录的形状为 `{object_id, object_type, data}`。FTS、embedding、向量数据、
-派生反馈聚合、作业、租约、密钥与日志不会被导出。
+派生反馈聚合、作业、租约、密钥与日志不会被导出。`aggregate_provenance.jsonl`
+同时携带 Agent Tool 来源溯源（`agent_tool_source`）、受 revision 约束的
+search hints（`agent_tool_search_hint`）与待审核 Tool proposal
+（`agent_tool_proposal`），因此它们随权威一起可移植并在导入后重建 FTS。
 
 ## 选择与一致性
 

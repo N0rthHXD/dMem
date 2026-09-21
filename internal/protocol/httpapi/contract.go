@@ -6,10 +6,7 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
-	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
-	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
-	"github.com/N0rthHXD/dMem/internal/gateway/memory"
-	"github.com/N0rthHXD/dMem/internal/gateway/retrieval"
+	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 )
 
@@ -18,9 +15,8 @@ import (
 // stays identical to the module contract. Read operations are not idempotent
 // writes and their names are adapter-declared identifiers.
 const (
-	OperationMemoryGet gateway.OperationName = "memory.get"
-	OperationEventGet  gateway.OperationName = "extraction.event.get"
-	OperationScopeGet  gateway.OperationName = "scope.get"
+	OperationCapabilities gateway.OperationName = "agent_tool.capabilities"
+	OperationScopeGet     gateway.OperationName = "scope.get"
 )
 
 // AccessMode classifies a route as a read or a state-changing write.
@@ -46,56 +42,30 @@ const (
 // Route body limits, in bytes. Read routes declare no body. The values are part
 // of the frozen contract in docs/api/http-rest-contract.md.
 const (
-	MaxScopeBodyBytes    int64 = 64 << 10
-	MaxMemoryBodyBytes   int64 = 1 << 20
-	MaxForgetBodyBytes   int64 = 64 << 10
-	MaxFeedbackBodyBytes int64 = 256 << 10
-	MaxRecallBodyBytes   int64 = 256 << 10
-	MaxEventBodyBytes    int64 = 4 << 20
+	MaxScopeBodyBytes        int64 = 64 << 10
+	MaxMemoryCommitBodyBytes int64 = 1 << 20
+	MaxForgetBodyBytes       int64 = 64 << 10
+	MaxFeedbackBodyBytes     int64 = 256 << 10
+	MaxRecallBodyBytes       int64 = 256 << 10
 )
 
-// MemoryService is the consumer-owned view of the Memory gateway module. The
-// adapter declares only the operations it uses. A concrete Memory service
-// satisfies it structurally.
-type MemoryService interface {
-	Remember(context.Context, gateway.CallContext, memory.RememberCommand) (memory.RememberResult, error)
-	Get(context.Context, gateway.CallContext, memory.GetQuery) (domain.Memory, error)
-	Forget(context.Context, gateway.CallContext, memory.ForgetCommand) (memory.ForgetResult, error)
+type AgentToolService interface {
+	Recall(context.Context, gateway.CallContext, agenttool.RecallCommand) (agenttool.RecallResult, error)
+	MemoryCommit(context.Context, gateway.CallContext, agenttool.MemoryCommitCommand) (agenttool.MemoryCommitResult, error)
+	Feedback(context.Context, gateway.CallContext, agenttool.FeedbackCommand) (agenttool.FeedbackResult, error)
+	Forget(context.Context, gateway.CallContext, agenttool.ForgetCommand) (agenttool.ForgetResult, error)
 }
 
-// RecallService is the consumer-owned view of the Retrieval gateway module.
-type RecallService interface {
-	Recall(context.Context, gateway.CallContext, retrieval.Query) (retrieval.Result, error)
-}
-
-// FeedbackService is the consumer-owned view of the Feedback gateway module.
-// Aggregate inspection is not exposed by the initial Agent surface.
-type FeedbackService interface {
-	Append(context.Context, gateway.CallContext, feedback.AppendCommand) (feedback.AppendResult, error)
-}
-
-// EventService is the consumer-owned view of the Extraction ingress module.
-// Worker-facing prepare, commit, block, and fail ports are never reachable here.
-type EventService interface {
-	Ingest(context.Context, gateway.CallContext, extraction.IngestCommand) (extraction.IngestResult, error)
-	GetEvent(context.Context, gateway.CallContext, extraction.GetEventQuery) (domain.RawEvent, error)
-}
-
-// ScopeService is the consumer-owned view of the Scope gateway module. Resolve
-// and List are not exposed by the initial Agent surface.
 type ScopeService interface {
-	Create(context.Context, gateway.CallContext, scope.CreateCommand) (scope.CreateResult, error)
+	Ensure(context.Context, gateway.CallContext, scope.EnsureCommand) (scope.EnsureResult, error)
 	Get(context.Context, gateway.CallContext, scope.GetQuery) (domain.Space, error)
 }
 
 // Dependencies are the gateway module interfaces the adapter depends on. Every
 // field is an interface owned by this package, never a concrete gateway service.
 type Dependencies struct {
-	Memory   MemoryService
-	Recall   RecallService
-	Feedback FeedbackService
-	Events   EventService
-	Scopes   ScopeService
+	AgentTools AgentToolService
+	Scopes     ScopeService
 }
 
 // RouteInfo is the declarative, inspectable metadata of one frozen route. It is

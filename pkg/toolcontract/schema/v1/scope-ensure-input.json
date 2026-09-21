@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/scope-ensure-input.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["scope_type", "external_id", "display_name"],
+  "properties": {
+    "parent_scope_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "scope_type": {"type": "string", "minLength": 1, "maxLength": 128},
+    "external_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 256}
+  }
+}

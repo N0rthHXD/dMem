@@ -101,8 +101,8 @@ func TestScopeCapabilityCreateAndListCursor(t *testing.T) {
 	capability := NewScopeCapability(repository)
 	for _, external := range []string{"project-a", "project-b", "project-c"} {
 		call := gatewayCall("gateway-caller", "scope-"+external, "request-scope-"+external)
-		command := scope.CreateCommand{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: external, DisplayName: external}
-		identity := gatewayIdentity(t, call, scope.OperationCreate, command)
+		command := scope.EnsureCommand{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: external, DisplayName: external}
+		identity := gatewayIdentity(t, call, scope.OperationEnsure, command)
 		if _, replay, err := capability.CreateScope(ctx, identity, scope.CreateParams{ParentSpaceID: command.ParentSpaceID, SpaceType: command.SpaceType, ExternalID: command.ExternalID, DisplayName: command.DisplayName}); err != nil || replay {
 			t.Fatalf("CreateScope(%s) replay=%t error=%v", external, replay, err)
 		}
@@ -122,8 +122,8 @@ func TestScopeCapabilityResolveByExternalIdentity(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	capability := NewScopeCapability(repository)
 	call := gatewayCall("gateway-caller", "scope-resolve", "request-scope-resolve")
-	command := scope.CreateCommand{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: "resolvable", DisplayName: "Resolvable"}
-	identity := gatewayIdentity(t, call, scope.OperationCreate, command)
+	command := scope.EnsureCommand{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: "resolvable", DisplayName: "Resolvable"}
+	identity := gatewayIdentity(t, call, scope.OperationEnsure, command)
 	created, _, err := capability.CreateScope(ctx, identity, scope.CreateParams{ParentSpaceID: command.ParentSpaceID, SpaceType: command.SpaceType, ExternalID: command.ExternalID, DisplayName: command.DisplayName})
 	if err != nil {
 		t.Fatalf("CreateScope() error = %v", err)

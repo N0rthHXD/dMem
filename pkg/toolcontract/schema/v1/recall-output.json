@@ -2,8 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dmem.dev/schemas/agent-tool/v1/recall-output.json",
   "type": "object", "additionalProperties": false,
-  "required": ["memories", "degraded_capabilities", "next_cursor"],
+  "required": ["operation_id", "memories", "degraded_capabilities", "next_cursor"],
   "properties": {
+    "operation_id": {"$ref": "#/$defs/id"},
     "memories": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/memory"}},
     "degraded_capabilities": {"type": "array", "uniqueItems": true, "items": {"enum": ["keyword", "graph", "semantic"]}},
     "next_cursor": {"type": ["string", "null"], "maxLength": 4096}

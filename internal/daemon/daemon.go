@@ -26,9 +26,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/config"
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
-	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
-	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
-	"github.com/N0rthHXD/dMem/internal/gateway/memory"
+	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
@@ -198,12 +196,14 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		ReferenceTime: recall, Capabilities: recall, Candidates: recall, Telemetry: recall,
 		Policy: retrievalPolicyAuthorizer{authorizer: policyService},
 	}, recallDefaults(cfg))
+	agentTools := agenttool.NewService(
+		storage.NewAgentToolCapability(repository),
+		agentToolRecallAdapter{service: d.retrievalService},
+		agentToolPolicyAuthorizer{authorizer: policyService},
+	)
 	handler, err := httpapi.New(httpapi.Dependencies{
-		Memory:   memory.NewService(storage.NewMemoryCapability(repository)),
-		Recall:   d.retrievalService,
-		Feedback: feedback.NewService(storage.NewFeedbackCapability(repository)),
-		Events:   extraction.NewService(storage.NewEventCapability(repository)),
-		Scopes:   scope.NewService(storage.NewScopeCapability(repository)),
+		AgentTools: agentTools,
+		Scopes:     scope.NewService(storage.NewScopeCapability(repository)),
 	})
 	if err != nil {
 		return nil, err
@@ -563,6 +563,68 @@ func (a retrievalPolicyAuthorizer) Authorize(ctx context.Context, call gateway.C
 		return gwretrieval.PolicyDecision{}, err
 	}
 	return gwretrieval.PolicyDecision{Allowed: decision.Allowed, ReasonCode: decision.ReasonCode}, nil
+}
+
+// agentToolRecallAdapter adapts the shared Retrieval service to the Agent Tool
+// module's consumer-owned recall port. It owns only parameter and result
+// translation; the recall pipeline, ranking, and degradation stay in one place.
+type agentToolRecallAdapter struct{ service *gwretrieval.ServiceImpl }
+
+func (a agentToolRecallAdapter) Recall(ctx context.Context, call gateway.CallContext, params agenttool.RecallParams) (agenttool.RecallRecord, error) {
+	query := gwretrieval.Query{
+		OperationID:     params.OperationID,
+		Query:           params.Query,
+		SpaceIDs:        append([]string(nil), params.ScopeIDs...),
+		Intent:          params.Intent,
+		EntityHints:     append([]string(nil), params.EntityHints...),
+		Limit:           params.Limit,
+		LimitSet:        params.Limit > 0,
+		IncludeEvidence: params.IncludeEvidence,
+		Cursor:          params.Cursor,
+	}
+	if params.ReferenceTime != nil {
+		query.ReferenceTime = params.ReferenceTime.UTC().Format(time.RFC3339Nano)
+		query.ReferenceTimeSet = true
+	}
+	result, err := a.service.Recall(ctx, call, query)
+	if err != nil {
+		return agenttool.RecallRecord{}, err
+	}
+	record := agenttool.RecallRecord{
+		OperationID:           result.Execution.OperationID,
+		RequestedCapabilities: agentToolCapabilities(result.Execution.RequestedCapabilities),
+		ExecutedCapabilities:  agentToolCapabilities(result.Execution.ExecutedCapabilities),
+		DegradationReasons:    append([]string(nil), result.Execution.DegradationReasons...),
+		NextCursor:            result.Context.NextCursor,
+	}
+	record.Memories = make([]agenttool.RecallMemory, len(result.Context.Items))
+	for i, item := range result.Context.Items {
+		record.Memories[i] = agenttool.RecallMemory{
+			MemoryID: item.MemoryID, RevisionID: item.RevisionID, Kind: item.Kind, Content: item.DisplayContent,
+			ValidFrom: item.ValidFrom, ValidUntil: item.ValidUntil, Confidence: item.Confidence, Evidence: item.Evidence,
+		}
+	}
+	return record, nil
+}
+
+func agentToolCapabilities(values []string) []agenttool.Capability {
+	result := make([]agenttool.Capability, len(values))
+	for i, value := range values {
+		result[i] = agenttool.Capability(value)
+	}
+	return result
+}
+
+// agentToolPolicyAuthorizer adapts the Policy module to the Agent Tool module's
+// consumer-owned authorization port.
+type agentToolPolicyAuthorizer struct{ authorizer policy.Authorizer }
+
+func (a agentToolPolicyAuthorizer) Authorize(ctx context.Context, call gateway.CallContext, request agenttool.AuthorizationRequest) (agenttool.AuthorizationDecision, error) {
+	decision, err := a.authorizer.Authorize(ctx, call, policy.Request{Capability: policy.Capability(request.Capability), SpaceIDs: request.ScopeIDs})
+	if err != nil {
+		return agenttool.AuthorizationDecision{}, err
+	}
+	return agenttool.AuthorizationDecision{Allowed: decision.Allowed, ReasonCode: decision.ReasonCode}, nil
 }
 
 func recallDefaults(cfg config.Config) gwretrieval.Defaults {

@@ -496,6 +496,13 @@ func TestExportFreshImportRebuildsEquivalentAuthorityAndRetrieval(t *testing.T) 
 	if mappings != status.TotalObjects || provenance != mappings || importedMemories != 1 {
 		t.Fatalf("imported authority/mapping counts = %d/%d/%d, import objects=%d package objects=%d", mappings, provenance, importedMemories, status.TotalObjects, planObjectCount(plan))
 	}
+	var sources, hints, proposals int
+	if err := fresh.writer.QueryRow(`SELECT (SELECT count(*) FROM agent_tool_sources),(SELECT count(*) FROM agent_tool_search_hints),(SELECT count(*) FROM agent_tool_proposals)`).Scan(&sources, &hints, &proposals); err != nil {
+		t.Fatal(err)
+	}
+	if sources != 1 || hints != 1 || proposals != 1 {
+		t.Fatalf("agent tool authority not preserved: sources=%d hints=%d proposals=%d", sources, hints, proposals)
+	}
 }
 
 func TestPortabilityPerformanceAtTargetScale(t *testing.T) {

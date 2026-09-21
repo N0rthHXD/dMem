@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
 // decodeBody enforces the route body policy and strictly decodes one JSON
@@ -19,6 +21,24 @@ func (ex *exchange) decodeBody(dst any) error {
 		return err
 	}
 	return decodeStrict(body, dst)
+}
+
+func (ex *exchange) decodeContractBody(schema string, dst any) error {
+	if err := requireJSONContentType(ex.request); err != nil {
+		return err
+	}
+	body, err := readBoundedBody(ex.writer, ex.request, ex.route.MaxBodyBytes)
+	if err != nil {
+		return err
+	}
+	if err := toolcontract.DecodeStrict(schema, body, dst); err != nil {
+		return invalidContractBody()
+	}
+	return nil
+}
+
+func invalidContractBody() error {
+	return &requestError{status: http.StatusBadRequest, code: codeInvalidJSON, message: "request body does not match the contract"}
 }
 
 // readBoundedBody reads the request body under a hard byte limit. The limit is

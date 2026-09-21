@@ -5,325 +5,228 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
-	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
-	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
-	"github.com/N0rthHXD/dMem/internal/gateway/memory"
-	"github.com/N0rthHXD/dMem/internal/gateway/retrieval"
+	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
+	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
-func TestRememberRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	headers := writeHeaders()
-	headers[requestIDHeader] = "req-fixed"
-	headers[correlationHeader] = "corr-1"
-
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/memories",
-		`{"scope_id":"scope-1","content":"hello","kind":"fact","sensitivity":"normal","source_name":"agent","metadata":{"n":9007199254740993},"reason":"test"}`,
-		headers)
-
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	if got := recorder.Header().Get(replayHeader); got != "false" {
-		t.Errorf("replay header = %q, want false", got)
-	}
-	if got := recorder.Header().Get(requestIDHeader); got != "req-fixed" {
-		t.Errorf("request id header = %q, want req-fixed", got)
-	}
-
-	recorded := lastCommand(t, fake, "memory.remember")
-	if recorded.call.RequestID != "req-fixed" || recorded.call.CorrelationID != "corr-1" {
-		t.Errorf("call metadata = %+v", recorded.call)
-	}
-	if recorded.call.Caller.SubjectID != "agent-1" || recorded.call.Caller.ClientID != "client-1" {
-		t.Errorf("caller = %+v", recorded.call.Caller)
-	}
-	if recorded.call.IdempotencyKey() != "key-1" {
-		t.Errorf("idempotency key = %q", recorded.call.IdempotencyKey())
-	}
-	command, ok := recorded.command.(memory.RememberCommand)
-	if !ok {
-		t.Fatalf("command type = %T", recorded.command)
-	}
-	if command.SpaceID != "scope-1" || command.Content != "hello" || command.Kind != "fact" {
-		t.Errorf("command = %+v", command)
-	}
-	if got, want := command.Metadata["n"], json.Number("9007199254740993"); got != want {
-		t.Errorf("metadata number = %#v (%T), want json.Number %q", got, got, want)
-	}
-
-	response := mustJSONMap(t, recorder)
-	memoryBody := response["memory"].(map[string]any)
-	if memoryBody["scope_id"] != "scope-1" {
-		t.Errorf("memory.scope_id = %v", memoryBody["scope_id"])
-	}
-	if _, present := memoryBody["space_id"]; present {
-		t.Errorf("memory response leaked storage-era space_id")
-	}
+type fakeTools struct {
+	call    gateway.CallContext
+	command any
 }
 
-func TestRememberReplayHeader(t *testing.T) {
-	fake := newTestGateway()
-	fake.memory.rememberFunc = func(_ context.Context, call gateway.CallContext, command memory.RememberCommand) (memory.RememberResult, error) {
-		return memory.RememberResult{
-			WriteResult: gateway.WriteResult{OperationID: call.RequestID, Replay: true},
-			Memory:      domain.Memory{MemoryID: "mem-1", SpaceID: command.SpaceID},
-		}, nil
-	}
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/memories", `{"scope_id":"s","content":"c"}`, writeHeaders())
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", recorder.Code)
-	}
-	if got := recorder.Header().Get(replayHeader); got != "true" {
-		t.Errorf("replay header = %q, want true", got)
-	}
-	if response := mustJSONMap(t, recorder); response["replayed"] != true {
-		t.Errorf("replayed = %v, want true", response["replayed"])
-	}
+func (f *fakeTools) Recall(_ context.Context, call gateway.CallContext, command agenttool.RecallCommand) (agenttool.RecallResult, error) {
+	f.call, f.command = call, command
+	return agenttool.RecallResult{OperationID: "recall-op", Memories: []agenttool.RecalledMemory{{MemoryID: "m", RevisionID: "r", Kind: domain.MemoryKindFact,
+		Content: "answer", Confidence: 1, Evidence: []agenttool.EvidenceReference{}}}, DegradedCapabilities: []agenttool.Capability{}, NextCursor: nil}, nil
+}
+func (f *fakeTools) MemoryCommit(_ context.Context, call gateway.CallContext, command agenttool.MemoryCommitCommand) (agenttool.MemoryCommitResult, error) {
+	f.call, f.command = call, command
+	return agenttool.MemoryCommitResult{WriteResult: gateway.WriteResult{OperationID: "op", Replay: true}, SourceEventID: "event",
+		Memories: []agenttool.CommitOutcome{{LocalID: "local", Status: agenttool.CommitAuthority, MemoryID: "m", RevisionID: "r"}},
+		Entities: []agenttool.CommitOutcome{}, Facts: []agenttool.CommitOutcome{}, Relations: []agenttool.CommitOutcome{}}, nil
+}
+func (f *fakeTools) Feedback(_ context.Context, call gateway.CallContext, command agenttool.FeedbackCommand) (agenttool.FeedbackResult, error) {
+	f.call, f.command = call, command
+	return agenttool.FeedbackResult{WriteResult: gateway.WriteResult{OperationID: "op"}, FeedbackID: "fb", MemoryID: command.MemoryID, RevisionID: command.RevisionID, Kind: command.Kind}, nil
+}
+func (f *fakeTools) Forget(_ context.Context, call gateway.CallContext, command agenttool.ForgetCommand) (agenttool.ForgetResult, error) {
+	f.call, f.command = call, command
+	return agenttool.ForgetResult{WriteResult: gateway.WriteResult{OperationID: "op"}, MemoryID: command.MemoryID, RevisionID: command.ExpectedRevisionID, State: "deleted"}, nil
 }
 
-func TestGetMemoryRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodGet, "/v1/memories/mem-42", "", callerHeaders())
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	recorded := lastCommand(t, fake, "memory.get")
-	query := recorded.command.(memory.GetQuery)
-	if query.MemoryID != "mem-42" {
-		t.Errorf("memory id = %q", query.MemoryID)
-	}
-	response := mustJSONMap(t, recorder)
-	if response["memory"].(map[string]any)["memory_id"] != "mem-42" {
-		t.Errorf("response = %v", response)
-	}
+type fakeScopes struct{ calls []string }
+
+func (f *fakeScopes) Ensure(_ context.Context, _ gateway.CallContext, command scope.EnsureCommand) (scope.EnsureResult, error) {
+	f.calls = append(f.calls, "ensure")
+	return scope.EnsureResult{WriteResult: gateway.WriteResult{OperationID: "op"}, Scope: testScope(command)}, nil
+}
+func (f *fakeScopes) Get(_ context.Context, _ gateway.CallContext, query scope.GetQuery) (domain.Space, error) {
+	f.calls = append(f.calls, "get")
+	return domain.Space{SpaceID: query.SpaceID, SpaceType: "project", ExternalID: "external", DisplayName: "Project", CreatedAt: "2026-09-20T10:00:00Z"}, nil
+}
+func testScope(command scope.EnsureCommand) domain.Space {
+	return domain.Space{SpaceID: "scope", ParentSpaceID: command.ParentSpaceID, SpaceType: command.SpaceType, ExternalID: command.ExternalID,
+		DisplayName: command.DisplayName, CreatedAt: "2026-09-20T10:00:00Z"}
 }
 
-func TestForgetRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/memories/mem-42/forget", `{"reason":"cleanup"}`, writeHeaders())
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	recorded := lastCommand(t, fake, "memory.forget")
-	command := recorded.command.(memory.ForgetCommand)
-	if command.MemoryID != "mem-42" || command.Reason != "cleanup" {
-		t.Errorf("command = %+v", command)
-	}
-}
-
-func TestFeedbackRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/memories/mem-42/feedback",
-		`{"scope_id":"scope-1","purpose":"memory_quality_feedback","feedback_type":"confirm","reason_code":"other","note":"ok"}`,
-		writeHeaders())
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	recorded := lastCommand(t, fake, "feedback.append")
-	command := recorded.command.(feedback.AppendCommand)
-	if command.MemoryID != "mem-42" || command.SpaceID != "scope-1" || command.Purpose != "memory_quality_feedback" {
-		t.Errorf("command = %+v", command)
-	}
-	if command.Note == nil || *command.Note != "ok" {
-		t.Errorf("note = %v", command.Note)
-	}
-	response := mustJSONMap(t, recorder)
-	if response["feedback"].(map[string]any)["feedback_id"] != "fb-1" {
-		t.Errorf("response = %v", response)
-	}
-}
-
-func TestRecallRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	headers := writeHeaders()
-	headers[requestIDHeader] = "req-recall"
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/recall",
-		`{"query":"what happened","scope_ids":["scope-1"],"include_ancestors":false,"memory_types":[],"max_results":5,"explain":true}`,
-		headers)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	recorded := lastCommand(t, fake, "retrieval.recall")
-	query := recorded.command.(retrieval.Query)
-	if query.OperationID != "req-recall" || query.Query != "what happened" {
-		t.Errorf("query = %+v", query)
-	}
-	if len(query.SpaceIDs) != 1 || query.SpaceIDs[0] != "scope-1" {
-		t.Errorf("scope ids = %v", query.SpaceIDs)
-	}
-	if query.IncludeAncestors || !query.IncludeAncestorsSet {
-		t.Errorf("include_ancestors mapping = %v set=%v", query.IncludeAncestors, query.IncludeAncestorsSet)
-	}
-	if !query.MemoryTypesSet || len(query.MemoryTypes) != 0 {
-		t.Errorf("memory_types mapping = %v set=%v", query.MemoryTypes, query.MemoryTypesSet)
-	}
-	if query.Limit != 5 || !query.LimitSet {
-		t.Errorf("max_results mapping = %d set=%v", query.Limit, query.LimitSet)
-	}
-	if !query.Explain {
-		t.Errorf("explain mapping = false")
-	}
-	response := mustJSONMap(t, recorder)
-	if _, present := response["context"]; !present {
-		t.Errorf("response missing context: %v", response)
-	}
-	if _, present := response["execution"]; !present {
-		t.Errorf("response missing execution: %v", response)
-	}
-}
-
-func TestRecallOmittedOptionalFieldsAreUnset(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/recall", `{"query":"q","scope_ids":["s"]}`, writeHeaders())
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	query := lastCommand(t, fake, "retrieval.recall").command.(retrieval.Query)
-	if query.IncludeAncestorsSet || query.MemoryTypesSet || query.LimitSet || query.MaxCharsSet ||
-		query.MaxContextTokensSet || query.ReferenceTimeSet || query.ExcludeStaleAggregatesSet {
-		t.Errorf("omitted optional fields were marked set: %+v", query)
-	}
-}
-
-func TestIngestEventRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/events",
-		`{"scope_id":"scope-1","source_type":"message","source_name":"agent","sequence":3,"occurred_at":"2024-01-01T00:00:00Z","content":{"kind":"text","media_type":"text/plain","text":"hello"},"metadata":{"k":"v"}}`,
-		writeHeaders())
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	recorded := lastCommand(t, fake, "extraction.ingest")
-	command := recorded.command.(extraction.IngestCommand)
-	if command.SpaceID != "scope-1" || command.SourceType != "message" || command.SourceName != "agent" {
-		t.Errorf("command = %+v", command)
-	}
-	if command.Sequence == nil || *command.Sequence != 3 {
-		t.Errorf("sequence = %v", command.Sequence)
-	}
-	if command.Content.Kind != "text" || command.Content.Text != "hello" || command.Content.MediaType != "text/plain" {
-		t.Errorf("content = %+v", command.Content)
-	}
-	response := mustJSONMap(t, recorder)
-	if response["event_id"] != "evt-1" || response["status"] != "accepted" {
-		t.Errorf("response = %v", response)
-	}
-}
-
-func TestIngestEventJSONContentPreservesNumbers(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/events",
-		`{"scope_id":"s","source_type":"message","source_name":"agent","content":{"kind":"json","media_type":"application/json","value":{"n":9007199254740993}}}`,
-		writeHeaders())
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	command := lastCommand(t, fake, "extraction.ingest").command.(extraction.IngestCommand)
-	value, ok := command.Content.Value.(map[string]any)
-	if !ok {
-		t.Fatalf("content value type = %T", command.Content.Value)
-	}
-	if got, want := value["n"], json.Number("9007199254740993"); got != want {
-		t.Errorf("content value number = %#v (%T), want json.Number %q", got, got, want)
-	}
-}
-
-func TestGetEventRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodGet, "/v1/events/evt-9", "", callerHeaders())
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	query := lastCommand(t, fake, "extraction.event.get").command.(extraction.GetEventQuery)
-	if query.EventID != "evt-9" {
-		t.Errorf("event id = %q", query.EventID)
-	}
-	event := mustJSONMap(t, recorder)["event"].(map[string]any)
-	if event["event_id"] != "evt-9" || event["scope_id"] != "scope-1" {
-		t.Errorf("event = %v", event)
-	}
-	if _, present := event["space_id"]; present {
-		t.Errorf("event response leaked storage-era space_id")
-	}
-}
-
-func TestCreateScopeRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/scopes",
-		`{"parent_scope_id":null,"scope_type":"project","external_id":"ext-1","display_name":"Project"}`,
-		writeHeaders())
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	command := lastCommand(t, fake, "scope.create").command.(scope.CreateCommand)
-	if command.ParentSpaceID != nil || command.SpaceType != "project" || command.ExternalID != "ext-1" || command.DisplayName != "Project" {
-		t.Errorf("command = %+v", command)
-	}
-	response := mustJSONMap(t, recorder)
-	scopeBody := response["scope"].(map[string]any)
-	if scopeBody["scope_id"] != "scope-1" || scopeBody["scope_type"] != "project" {
-		t.Errorf("scope = %v", scopeBody)
-	}
-	if _, present := scopeBody["space_id"]; present {
-		t.Errorf("scope response leaked storage-era space_id")
-	}
-}
-
-func TestCreateScopeWithParent(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodPost, "/v1/scopes",
-		`{"parent_scope_id":"scope-parent","scope_type":"task","external_id":"ext-2","display_name":"Task"}`,
-		writeHeaders())
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	command := lastCommand(t, fake, "scope.create").command.(scope.CreateCommand)
-	if command.ParentSpaceID == nil || *command.ParentSpaceID != "scope-parent" {
-		t.Errorf("parent = %v", command.ParentSpaceID)
-	}
-}
-
-func TestGetScopeRoute(t *testing.T) {
-	fake := newTestGateway()
-	handler := newTestHandler(t, fake)
-	recorder := doRequest(t, handler, http.MethodGet, "/v1/scopes/scope-7", "", callerHeaders())
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	query := lastCommand(t, fake, "scope.get").command.(scope.GetQuery)
-	if query.SpaceID != "scope-7" {
-		t.Errorf("scope id = %q", query.SpaceID)
-	}
-	scopeBody := mustJSONMap(t, recorder)["scope"].(map[string]any)
-	if scopeBody["scope_id"] != "scope-7" {
-		t.Errorf("scope = %v", scopeBody)
-	}
-}
-
-// mustJSONMap decodes a JSON object response.
-func mustJSONMap(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
+func testHandler(t *testing.T) (*Handler, *fakeTools, *fakeScopes) {
 	t.Helper()
-	var response map[string]any
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
+	tools, scopes := &fakeTools{}, &fakeScopes{}
+	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes})
+	if err != nil {
+		t.Fatal(err)
 	}
+	return handler, tools, scopes
+}
+
+var targetRoutes = []RouteInfo{
+	{Operation: OperationCapabilities, Method: http.MethodGet, Path: "/v1/capabilities", Public: true, Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: agenttool.OperationMemoryCommit, Method: http.MethodPost, Path: "/v1/memory-commits", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxMemoryCommitBodyBytes},
+	{Operation: agenttool.OperationRecall, Method: http.MethodPost, Path: "/v1/recall", Access: AccessRead, Idempotency: IdempotencyNotRequired, MaxBodyBytes: MaxRecallBodyBytes},
+	{Operation: agenttool.OperationFeedback, Method: http.MethodPost, Path: "/v1/feedback", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxFeedbackBodyBytes},
+	{Operation: agenttool.OperationForget, Method: http.MethodPost, Path: "/v1/forget", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxForgetBodyBytes},
+	{Operation: scope.OperationEnsure, Method: http.MethodPost, Path: "/v1/scopes/ensure", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxScopeBodyBytes},
+	{Operation: OperationScopeGet, Method: http.MethodGet, Path: "/v1/scopes/{scope_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+}
+
+func TestRoutesAreExactPhaseTwoSurface(t *testing.T) {
+	handler, _, _ := testHandler(t)
+	if got := handler.Routes(); !reflect.DeepEqual(got, targetRoutes) {
+		t.Fatalf("routes = %+v", got)
+	}
+	for _, path := range []string{"/v1/memories/m", "/v1/events/e", "/v1/scopes"} {
+		if response := request(t, handler, http.MethodGet, path, "", nil); response.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d", path, response.Code)
+		}
+	}
+}
+
+func TestCapabilitiesIsPublic(t *testing.T) {
+	handler, _, _ := testHandler(t)
+	response := request(t, handler, http.MethodGet, "/v1/capabilities", "", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var got toolcontract.Capabilities
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, toolcontract.V1Capabilities()) {
+		t.Fatalf("capabilities = %+v", got)
+	}
+}
+
+func TestRecallIsReadSemanticsAndReturnsOperationID(t *testing.T) {
+	handler, tools, _ := testHandler(t)
+	response := request(t, handler, http.MethodPost, "/v1/recall", `{"query":"what","scope_ids":["s"],"limit":5}`, caller())
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	if tools.call.Idempotency != nil {
+		t.Fatal("recall received idempotency metadata")
+	}
+	command := tools.command.(agenttool.RecallCommand)
+	if command.Query != "what" || command.Limit != 5 {
+		t.Fatalf("command = %+v", command)
+	}
+	var output toolcontract.RecallOutput
+	if err := json.Unmarshal(response.Body.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.OperationID != "recall-op" {
+		t.Fatalf("operation_id = %q", output.OperationID)
+	}
+	if err := toolcontract.Validate(toolcontract.SchemaRecallOutput, response.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMemoryCommitMapsContractAndPreservesMetadataNumbers(t *testing.T) {
+	handler, tools, _ := testHandler(t)
+	body := `{"scope_id":"s","source":{"type":"agent_tool","name":"assistant","conversation_id":"c","turn_id":"t","occurred_at":"2026-09-20T10:00:00Z","metadata":{"n":9007199254740993}},"memories":[{"local_id":"local","kind":"fact","content":"answer","sensitivity":"normal","confidence":1}]}`
+	response := request(t, handler, http.MethodPost, "/v1/memory-commits", body, writes())
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	command := tools.command.(agenttool.MemoryCommitCommand)
+	if command.Source.Metadata["n"] != json.Number("9007199254740993") {
+		t.Fatalf("metadata = %#v", command.Source.Metadata)
+	}
+	if response.Header().Get(replayHeader) != "true" {
+		t.Fatal("missing replay header")
+	}
+	if err := toolcontract.Validate(toolcontract.SchemaMemoryCommitOutput, response.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFeedbackAndForgetUseBodyIdentities(t *testing.T) {
+	handler, tools, _ := testHandler(t)
+	feedback := request(t, handler, http.MethodPost, "/v1/feedback", `{"scope_id":"s","memory_id":"m","revision_id":"r","kind":"used","recall_operation_id":"recall"}`, writes())
+	if feedback.Code != http.StatusCreated {
+		t.Fatalf("feedback status = %d: %s", feedback.Code, feedback.Body.String())
+	}
+	if command := tools.command.(agenttool.FeedbackCommand); command.MemoryID != "m" || command.RecallOperationID != "recall" {
+		t.Fatalf("feedback = %+v", command)
+	}
+	forget := request(t, handler, http.MethodPost, "/v1/forget", `{"scope_id":"s","memory_id":"m","expected_revision_id":"r","reason":"delete"}`, writes())
+	if forget.Code != http.StatusOK {
+		t.Fatalf("forget status = %d: %s", forget.Code, forget.Body.String())
+	}
+	if command := tools.command.(agenttool.ForgetCommand); command.MemoryID != "m" || command.ExpectedRevisionID != "r" {
+		t.Fatalf("forget = %+v", command)
+	}
+}
+
+func TestScopeEnsureResolvesThenCreatesAndScopeGet(t *testing.T) {
+	handler, _, scopes := testHandler(t)
+	body := `{"parent_scope_id":null,"scope_type":"project","external_id":"external","display_name":"Project"}`
+	response := request(t, handler, http.MethodPost, "/v1/scopes/ensure", body, writes())
+	if response.Code != http.StatusOK {
+		t.Fatalf("ensure status = %d: %s", response.Code, response.Body.String())
+	}
+	if !reflect.DeepEqual(scopes.calls, []string{"ensure"}) {
+		t.Fatalf("calls = %v", scopes.calls)
+	}
+	response = request(t, handler, http.MethodGet, "/v1/scopes/scope", "", caller())
+	if response.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", response.Code, response.Body.String())
+	}
+	if err := toolcontract.Validate(toolcontract.SchemaScopeOutput, response.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStrictBodiesLimitsAndWriteIdempotency(t *testing.T) {
+	handler, tools, _ := testHandler(t)
+	valid := `{"query":"q","scope_ids":["s"]}`
+	for name, body := range map[string]string{"unknown": `{"query":"q","scope_ids":["s"],"unknown":true}`, "trailing": valid + ` {}`, "non-object": `[]`} {
+		t.Run(name, func(t *testing.T) {
+			response := request(t, handler, http.MethodPost, "/v1/recall", body, caller())
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+	response := request(t, handler, http.MethodPost, "/v1/feedback", `{}`, caller())
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing idempotency status = %d", response.Code)
+	}
+	requestValue := httptest.NewRequest(http.MethodPost, "/v1/recall", strings.NewReader(`{"query":"`+strings.Repeat("x", int(MaxRecallBodyBytes))+`","scope_ids":["s"]}`))
+	requestValue.Header.Set("Content-Type", "application/json")
+	requestValue.Header.Set(callerSubjectHeader, "agent")
+	requestValue.ContentLength = -1
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, requestValue)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize status = %d", response.Code)
+	}
+	if tools.command != nil {
+		t.Fatal("gateway called for rejected requests")
+	}
+}
+
+func request(t *testing.T, handler http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	value := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		value.Header.Set("Content-Type", "application/json")
+	}
+	for name, header := range headers {
+		value.Header.Set(name, header)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, value)
 	return response
+}
+func caller() map[string]string { return map[string]string{callerSubjectHeader: "agent"} }
+func writes() map[string]string {
+	return map[string]string{callerSubjectHeader: "agent", idempotencyHeader: "key"}
 }

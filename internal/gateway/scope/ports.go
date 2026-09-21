@@ -7,20 +7,21 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway"
 )
 
-// Store is the narrow persistence port the Scope module needs.
+// Store is the narrow atomic persistence capability required by Scope.
 type Store interface {
-	// CreateScope atomically persists the scope and its initial effective
-	// policy. The bool reports an idempotent replay.
-	CreateScope(context.Context, gateway.WriteIdentity, CreateParams) (domain.Space, bool, error)
-	// ResolveScope returns the scope matching a stable external identity.
-	ResolveScope(context.Context, ResolveParams) (domain.Space, error)
-	// GetScope returns one scope by identifier.
+	EnsureScope(context.Context, gateway.WriteIdentity, EnsureParams) (domain.Space, bool, error)
 	GetScope(context.Context, string) (domain.Space, error)
-	// ListScopes returns one page of scopes.
-	ListScopes(context.Context, ListParams) (Page, error)
 }
 
-// CreateParams is the transport-free persistence input for scope creation.
+type EnsureParams struct {
+	ParentSpaceID *string
+	SpaceType     string
+	ExternalID    string
+	DisplayName   string
+}
+
+// The repository's administrative adapter still uses these transport-free
+// values internally; they are intentionally absent from the inbound Service.
 type CreateParams struct {
 	ParentSpaceID *string
 	SpaceType     string
@@ -28,15 +29,12 @@ type CreateParams struct {
 	DisplayName   string
 }
 
-// ResolveParams is the transport-free persistence input for scope resolution by
-// stable external identity.
 type ResolveParams struct {
 	ParentSpaceID *string
 	SpaceType     string
 	ExternalID    string
 }
 
-// ListParams is the transport-free persistence input for scope listing.
 type ListParams struct {
 	ParentSpaceID *string
 	Limit         int

@@ -247,6 +247,9 @@ func verifySchema(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("%w: schema metadata must contain exactly one row", ErrIncompatibleSchema)
 	}
 	for _, table := range []string{
+		"agent_tool_proposals",
+		"agent_tool_search_hints",
+		"agent_tool_sources",
 		"aggregate_descriptors",
 		"aggregate_freshness",
 		"aggregate_proposal_inputs",

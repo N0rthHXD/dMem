@@ -2,8 +2,9 @@
 
 ## 状态
 
-Phase 1 契约定义已实现。本文描述后续 HTTP 与 MCP 适配器必须共同使用的协议中立
-契约，不表示这些适配器已经实现。
+Phase 1 契约定义已实现，Phase 2 已把该契约映射到 application HTTP API 与单事务
+原子提交。本文描述 HTTP、MCP 与 client 适配器共同使用的协议中立契约；MCP server
+与薄 client 尚未实现。
 
 Go wire package 位于 `pkg/toolcontract`。`internal/gateway/agenttool` 包含命令、
 结果、领域校验与规范幂等哈希。两个包都不导入 HTTP、MCP、storage、jobs 或
@@ -58,9 +59,18 @@ Canonical hash 包含 contract version 与 operation name。规范化会折叠�
 同 caller、operation、idempotency key 和 hash 是 replay；同 key 不同 hash 是
 idempotency conflict。
 
-## 后续集成
+## 集成进度
 
-`pkg/toolcontract/schema/v1` 中的嵌入式 schema 是后续 HTTP、MCP 与 client 的唯一
-schema 来源。Phase 2 将其映射到原子 application memory commit，并确定
-`search_hints` 的持久化表示；Phase 3 将 search hints 纳入 FTS；Phase 4 将同一
-schema 暴露给薄 client 和 MCP server。
+`pkg/toolcontract/schema/v1` 中的嵌入式 schema 是 HTTP、MCP 与 client 的唯一
+schema 来源。
+
+- Phase 2 已将同一 schema 映射到 application HTTP API（`/v1/memory-commits`、
+  `/v1/recall`、`/v1/feedback`、`/v1/forget`、`/v1/scopes/ensure`、
+  `/v1/capabilities`）与单事务原子 memory commit，并把 `search_hints` 持久化为受
+  revision 约束的权威；`semantic` 降级通过 `degraded_capabilities` 报告。
+- Phase 3 将把 search hints 纳入 FTS 文档并建立无 provider 的固定检索质量门禁。
+- Phase 4 将同一 schema 暴露给薄 client 和 MCP server。
+- Phase 5 收敛 Provider Route 的原始事件摄取与配置状态。
+
+MCP、HTTP 和 client 不得各自发明领域语义；`internal/gateway/agenttool` 的命令与
+结果仍是唯一协议中立契约。

@@ -9,21 +9,15 @@ import (
 	"strings"
 
 	"github.com/N0rthHXD/dMem/internal/gateway"
-	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
-	"github.com/N0rthHXD/dMem/internal/gateway/feedback"
-	"github.com/N0rthHXD/dMem/internal/gateway/memory"
-	"github.com/N0rthHXD/dMem/internal/gateway/retrieval"
+	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 )
 
 // Handler is the Agent-neutral REST+JSON protocol adapter. It implements
 // http.Handler and holds only gateway module interfaces.
 type Handler struct {
-	memory   MemoryService
-	recall   RecallService
-	feedback FeedbackService
-	events   EventService
-	scopes   ScopeService
+	agentTools AgentToolService
+	scopes     ScopeService
 
 	routes []route
 	newID  func() string
@@ -37,24 +31,15 @@ var _ http.Handler = (*Handler)(nil)
 // than at request time.
 func New(deps Dependencies) (*Handler, error) {
 	switch {
-	case deps.Memory == nil:
-		return nil, fmt.Errorf("%w: memory", errMissingDependency)
-	case deps.Recall == nil:
-		return nil, fmt.Errorf("%w: recall", errMissingDependency)
-	case deps.Feedback == nil:
-		return nil, fmt.Errorf("%w: feedback", errMissingDependency)
-	case deps.Events == nil:
-		return nil, fmt.Errorf("%w: events", errMissingDependency)
+	case deps.AgentTools == nil:
+		return nil, fmt.Errorf("%w: agent tools", errMissingDependency)
 	case deps.Scopes == nil:
 		return nil, fmt.Errorf("%w: scopes", errMissingDependency)
 	}
 	h := &Handler{
-		memory:   deps.Memory,
-		recall:   deps.Recall,
-		feedback: deps.Feedback,
-		events:   deps.Events,
-		scopes:   deps.Scopes,
-		newID:    newRequestID,
+		agentTools: deps.AgentTools,
+		scopes:     deps.Scopes,
+		newID:      newRequestID,
 	}
 	h.routes = h.buildRoutes()
 	return h, nil
@@ -76,41 +61,42 @@ func (h *Handler) buildRoutes() []route {
 	return []route{
 		{
 			RouteInfo: RouteInfo{
-				Operation:    memory.OperationRemember,
-				Method:       http.MethodPost,
-				Path:         "/v1/memories",
-				Access:       AccessWrite,
-				Idempotency:  IdempotencyRequired,
-				MaxBodyBytes: MaxMemoryBodyBytes,
-			},
-			handle: h.handleRemember,
-		},
-		{
-			RouteInfo: RouteInfo{
-				Operation:   OperationMemoryGet,
+				Operation:   OperationCapabilities,
 				Method:      http.MethodGet,
-				Path:        "/v1/memories/{memory_id}",
+				Path:        "/v1/capabilities",
+				Public:      true,
 				Access:      AccessRead,
 				Idempotency: IdempotencyNotRequired,
 			},
-			handle: h.handleGetMemory,
+			handle: h.handleCapabilities,
 		},
 		{
 			RouteInfo: RouteInfo{
-				Operation:    memory.OperationForget,
+				Operation:    agenttool.OperationMemoryCommit,
 				Method:       http.MethodPost,
-				Path:         "/v1/memories/{memory_id}/forget",
+				Path:         "/v1/memory-commits",
 				Access:       AccessWrite,
 				Idempotency:  IdempotencyRequired,
-				MaxBodyBytes: MaxForgetBodyBytes,
+				MaxBodyBytes: MaxMemoryCommitBodyBytes,
 			},
-			handle: h.handleForget,
+			handle: h.handleMemoryCommit,
 		},
 		{
 			RouteInfo: RouteInfo{
-				Operation:    feedback.OperationAppend,
+				Operation:    agenttool.OperationRecall,
 				Method:       http.MethodPost,
-				Path:         "/v1/memories/{memory_id}/feedback",
+				Path:         "/v1/recall",
+				Access:       AccessRead,
+				Idempotency:  IdempotencyNotRequired,
+				MaxBodyBytes: MaxRecallBodyBytes,
+			},
+			handle: h.handleRecall,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    agenttool.OperationFeedback,
+				Method:       http.MethodPost,
+				Path:         "/v1/feedback",
 				Access:       AccessWrite,
 				Idempotency:  IdempotencyRequired,
 				MaxBodyBytes: MaxFeedbackBodyBytes,
@@ -119,46 +105,25 @@ func (h *Handler) buildRoutes() []route {
 		},
 		{
 			RouteInfo: RouteInfo{
-				Operation:    retrieval.OperationRecall,
+				Operation:    agenttool.OperationForget,
 				Method:       http.MethodPost,
-				Path:         "/v1/recall",
+				Path:         "/v1/forget",
 				Access:       AccessWrite,
 				Idempotency:  IdempotencyRequired,
-				MaxBodyBytes: MaxRecallBodyBytes,
+				MaxBodyBytes: MaxForgetBodyBytes,
 			},
-			handle: h.handleRecall,
+			handle: h.handleForget,
 		},
 		{
 			RouteInfo: RouteInfo{
-				Operation:    extraction.OperationIngest,
+				Operation:    scope.OperationEnsure,
 				Method:       http.MethodPost,
-				Path:         "/v1/events",
-				Access:       AccessWrite,
-				Idempotency:  IdempotencyRequired,
-				MaxBodyBytes: MaxEventBodyBytes,
-			},
-			handle: h.handleIngestEvent,
-		},
-		{
-			RouteInfo: RouteInfo{
-				Operation:   OperationEventGet,
-				Method:      http.MethodGet,
-				Path:        "/v1/events/{event_id}",
-				Access:      AccessRead,
-				Idempotency: IdempotencyNotRequired,
-			},
-			handle: h.handleGetEvent,
-		},
-		{
-			RouteInfo: RouteInfo{
-				Operation:    scope.OperationCreate,
-				Method:       http.MethodPost,
-				Path:         "/v1/scopes",
+				Path:         "/v1/scopes/ensure",
 				Access:       AccessWrite,
 				Idempotency:  IdempotencyRequired,
 				MaxBodyBytes: MaxScopeBodyBytes,
 			},
-			handle: h.handleCreateScope,
+			handle: h.handleEnsureScope,
 		},
 		{
 			RouteInfo: RouteInfo{
@@ -205,7 +170,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ex.route = matched
 
-	if matched.Access == AccessRead && r.ContentLength > 0 {
+	if matched.MaxBodyBytes == 0 && r.ContentLength != 0 {
 		ex.writeSafeError(http.StatusBadRequest, codeUnexpectedBody, "request body is not accepted", false, nil, nil)
 		return
 	}

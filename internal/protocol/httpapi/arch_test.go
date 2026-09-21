@@ -102,8 +102,8 @@ func TestProtocolPackagesDoNotReferenceConcreteServicesOrTransport(t *testing.T)
 // interfaces declared by this package rather than on concrete gateway services.
 func TestDependenciesAreConsumerOwnedInterfaces(t *testing.T) {
 	typ := reflect.TypeOf(Dependencies{})
-	if typ.NumField() != 5 {
-		t.Fatalf("Dependencies has %d fields, want 5", typ.NumField())
+	if typ.NumField() != 2 {
+		t.Fatalf("Dependencies has %d fields, want 2", typ.NumField())
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)

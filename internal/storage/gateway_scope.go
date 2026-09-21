@@ -20,6 +20,19 @@ func NewScopeCapability(repo *Repository) *ScopeCapability {
 	return &ScopeCapability{repo: repo}
 }
 
+// EnsureScope implements the current scope port while preserving CreateScope
+// for administrative callers that still use the explicit create operation.
+func (c *ScopeCapability) EnsureScope(ctx context.Context, identity gateway.WriteIdentity, params scope.EnsureParams) (domain.Space, bool, error) {
+	resolved, err := c.repo.GetSpaceByExternalIdentity(ctx, params.ParentSpaceID, params.SpaceType, params.ExternalID)
+	if err == nil {
+		return resolved, true, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return domain.Space{}, false, gatewayError(err)
+	}
+	return c.CreateScope(ctx, identity, scope.CreateParams(params))
+}
+
 // CreateScope atomically persists the scope, its initial effective policy,
 // audit record, and idempotency result.
 func (c *ScopeCapability) CreateScope(ctx context.Context, identity gateway.WriteIdentity, params scope.CreateParams) (domain.Space, bool, error) {

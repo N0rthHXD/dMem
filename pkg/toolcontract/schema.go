@@ -19,17 +19,18 @@ var schemaFiles embed.FS
 const schemaBase = "https://dmem.dev/schemas/agent-tool/v1/"
 
 const (
-	MaxRecallDocument   = 256 << 10
-	MaxRememberDocument = 1 << 20
-	MaxFeedbackDocument = 64 << 10
-	MaxForgetDocument   = 64 << 10
-	MaxGenericDocument  = 256 << 10
+	MaxRecallDocument       = 256 << 10
+	MaxMemoryCommitDocument = 1 << 20
+	MaxFeedbackDocument     = 64 << 10
+	MaxForgetDocument       = 64 << 10
+	MaxGenericDocument      = 256 << 10
 )
 
 var schemaNames = []string{
 	SchemaCapabilities, SchemaError, SchemaRecallInput, SchemaRecallOutput,
-	SchemaRememberInput, SchemaRememberOutput, SchemaFeedbackInput,
+	SchemaMemoryCommitInput, SchemaMemoryCommitOutput, SchemaFeedbackInput,
 	SchemaFeedbackOutput, SchemaForgetInput, SchemaForgetOutput,
+	SchemaScopeEnsureInput, SchemaScopeEnsureOutput, SchemaScopeOutput,
 }
 
 type compiledSchemas struct {
@@ -123,8 +124,8 @@ func DecodeStrict(name string, document []byte, destination any) error {
 
 func DocumentLimit(name string) int {
 	switch name {
-	case SchemaRememberInput:
-		return MaxRememberDocument
+	case SchemaMemoryCommitInput:
+		return MaxMemoryCommitDocument
 	case SchemaFeedbackInput:
 		return MaxFeedbackDocument
 	case SchemaForgetInput:

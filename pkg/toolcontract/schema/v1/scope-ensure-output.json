@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmem.dev/schemas/agent-tool/v1/scope-ensure-output.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["operation_id", "replayed", "scope"],
+  "properties": {
+    "operation_id": {"$ref": "scope-output.json#/$defs/id"},
+    "replayed": {"type": "boolean"},
+    "scope": {"$ref": "scope-output.json#/$defs/scope"}
+  }
+}

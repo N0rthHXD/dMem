@@ -372,6 +372,15 @@ func importAuthorityObject(ctx context.Context, tx *sql.Tx, o ImportObject, targ
 	case "memory_evidence":
 		_, err := tx.ExecContext(ctx, `INSERT INTO memory_evidence(evidence_id,revision_id,event_id,role,start_offset,end_offset,created_at) VALUES (?,?,?,?,?,?,?)`, o.LocalID, local("revision_id"), local("event_id"), s("role"), s("start_offset"), s("end_offset"), s("created_at"))
 		return err
+	case "agent_tool_source":
+		_, err := tx.ExecContext(ctx, `INSERT INTO agent_tool_sources(source_id,event_id,operation_id,source_type,source_name,conversation_id,turn_id,tool_call_id,occurred_at,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("event_id"), operationID, s("source_type"), s("source_name"), s("conversation_id"), s("turn_id"), s("tool_call_id"), s("occurred_at"), s("metadata_json"), s("created_at"))
+		return err
+	case "agent_tool_search_hint":
+		_, err := tx.ExecContext(ctx, `INSERT INTO agent_tool_search_hints(event_id,local_id,revision_id,hint_order,hint,created_at) VALUES (?,?,?,?,?,?)`, local("event_id"), s("local_id"), local("revision_id"), s("hint_order"), s("hint"), s("created_at"))
+		return err
+	case "agent_tool_proposal":
+		_, err := tx.ExecContext(ctx, `INSERT INTO agent_tool_proposals(proposal_id,event_id,space_id,suggestion_type,local_id,normalized_json,specification_hash,review_state,result_memory_id,result_revision_id,created_at,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, o.LocalID, local("event_id"), targetSpace, s("suggestion_type"), s("local_id"), s("normalized_json"), s("specification_hash"), s("review_state"), local("result_memory_id"), local("result_revision_id"), s("created_at"), s("reviewed_at"))
+		return err
 	case "feedback_event":
 		resultRank, rankErr := importedSequence(s("result_rank"))
 		if rankErr != nil {

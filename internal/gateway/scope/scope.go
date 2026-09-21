@@ -10,37 +10,25 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway"
 )
 
-// OperationCreate is the stable operation name for scope creation.
-const OperationCreate gateway.OperationName = "scope.create"
+// OperationEnsure atomically resolves or creates a stable external scope.
+const OperationEnsure gateway.OperationName = "scope.ensure"
 
 // Service is the inbound, protocol-facing Scope module surface.
 type Service interface {
-	Create(context.Context, gateway.CallContext, CreateCommand) (CreateResult, error)
-	Resolve(context.Context, gateway.CallContext, ResolveQuery) (domain.Space, error)
 	Get(context.Context, gateway.CallContext, GetQuery) (domain.Space, error)
-	List(context.Context, gateway.CallContext, ListQuery) (Page, error)
+	Ensure(context.Context, gateway.CallContext, EnsureCommand) (EnsureResult, error)
 }
 
-// CreateCommand creates one scope in the hierarchy.
-type CreateCommand struct {
+type EnsureCommand struct {
 	ParentSpaceID *string
 	SpaceType     string
 	ExternalID    string
 	DisplayName   string
 }
 
-// CreateResult is the outcome of a scope creation.
-type CreateResult struct {
+type EnsureResult struct {
 	gateway.WriteResult
 	Scope domain.Space
-}
-
-// ResolveQuery looks up one scope by its stable external identity: the parent,
-// the scope type, and the caller-supplied external identifier.
-type ResolveQuery struct {
-	ParentSpaceID *string
-	SpaceType     string
-	ExternalID    string
 }
 
 // GetQuery reads one scope by identifier.
@@ -48,13 +36,6 @@ type GetQuery struct {
 	SpaceID string
 }
 
-// ListQuery lists scopes, optionally filtered by parent.
-type ListQuery struct {
-	ParentSpaceID *string
-	Page          gateway.PageRequest
-}
-
-// Page is one page of scopes.
 type Page struct {
 	Items      []domain.Space
 	NextCursor *string

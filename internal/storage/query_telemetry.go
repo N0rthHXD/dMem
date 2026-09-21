@@ -33,16 +33,23 @@ func (r *Repository) recordQueryTelemetry(ctx context.Context, record gwretrieva
 	}
 	defer tx.Rollback()
 	now := formatTime(r.runtime.Now())
-	if _, err := tx.ExecContext(ctx, `INSERT INTO query_telemetry(
+	inserted, err := tx.ExecContext(ctx, `INSERT INTO query_telemetry(
 		telemetry_id,operation_id,query_plan_version,query_plan_identity,query_hash,query_type,requested_scope_json,reference_time,candidate_budget,context_budget,requested_capabilities_json,executed_capabilities_json,
 		candidate_counts_json,rejection_counts_json,score_summary_json,graph_counts_json,duplicate_cluster_count,
 		context_tokens,context_chars,ranking_identity,context_identity,feedback_identity,degradation_reasons_json,phase_latency_ms_json,created_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?)`,
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?)
+	ON CONFLICT(operation_id, query_hash) DO NOTHING`,
 		ids[0], record.OperationID, record.QueryPlanVersion, record.QueryPlanIdentity, record.QueryHash, record.QueryType,
 		string(scope), record.ReferenceTime, record.CandidateBudget, record.ContextBudget, string(requested), string(executed),
 		string(candidates), string(rejections), string(scoreJSON), string(graph), record.DuplicateClusters, record.ContextTokens,
-		record.ContextChars, record.RankingIdentity, record.ContextIdentity, record.FeedbackIdentity, string(degraded), string(latency), now); err != nil {
+		record.ContextChars, record.RankingIdentity, record.ContextIdentity, record.FeedbackIdentity, string(degraded), string(latency), now)
+	if err != nil {
 		return err
+	}
+	if affected, err := inserted.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return tx.Commit()
 	}
 	for i, item := range record.Selected {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO context_decisions(

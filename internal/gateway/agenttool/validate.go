@@ -28,7 +28,13 @@ func ValidateRecall(command RecallCommand) error {
 	if len(command.EntityHints) > MaxEntityHints {
 		return invalid("entity hints exceed the limit")
 	}
-	return validateUniqueStrings("scope_ids", command.ScopeIDs, MaxIdentifierRunes)
+	if err := validateUniqueStrings("scope_ids", command.ScopeIDs, MaxIdentifierRunes); err != nil {
+		return err
+	}
+	if err := validateUniqueStrings("entity hints", command.EntityHints, MaxSearchHintRunes); err != nil {
+		return err
+	}
+	return boundedText("cursor", command.Cursor, 0, 4096)
 }
 
 func ValidateMemoryCommit(command MemoryCommitCommand) error {
@@ -141,6 +147,11 @@ func ValidateFeedback(command FeedbackCommand) error {
 	}
 	if !command.Kind.Valid() {
 		return invalid("feedback kind is unsupported")
+	}
+	if command.RecallOperationID != "" {
+		if err := identifier("recall_operation_id", command.RecallOperationID); err != nil {
+			return err
+		}
 	}
 	return boundedText("reason", command.Reason, 0, MaxReasonRunes)
 }

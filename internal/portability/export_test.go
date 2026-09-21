@@ -74,6 +74,9 @@ func seedAuthority(t *testing.T, db *sql.DB) {
 		`INSERT INTO entity_facts(fact_id,space_id,subject_entity_id,predicate,object_entity_id,source_memory_id,source_revision_id,confidence,state,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES ('fact-a','` + taskSpace + `','entity-alice','participates_in','entity-project','memory-a','revision-a',0.9,'active','human_confirmation','fact-spec','test','v1','2026-08-25T10:00:00Z','2026-08-25T10:00:00Z')`,
 		`INSERT INTO entity_fact_evidence(evidence_id,fact_id,evidence_type,created_by,created_at) VALUES ('fact-evidence-a','fact-a','human_confirmation','test','2026-08-25T10:00:00Z')`,
 		`INSERT INTO entity_fact_state_events(state_event_id,fact_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES ('fact-state-a','fact-a','op-a',NULL,'active','confirmed','test','2026-08-25T10:00:00Z')`,
+		`INSERT INTO agent_tool_sources(source_id,event_id,operation_id,source_type,source_name,conversation_id,turn_id,tool_call_id,occurred_at,metadata_json,created_at) VALUES ('source-a','event-a','op-a','agent_tool','assistant','conv-a','turn-a','call-a','2026-08-25T10:00:00Z','{}','2026-08-25T10:00:00Z')`,
+		`INSERT INTO agent_tool_search_hints(event_id,local_id,revision_id,hint_order,hint,created_at) VALUES ('event-a','local-a','revision-a',0,'alpha hint','2026-08-25T10:00:00Z')`,
+		`INSERT INTO agent_tool_proposals(proposal_id,event_id,space_id,suggestion_type,local_id,normalized_json,specification_hash,created_at) VALUES ('proposal-a','event-a','` + taskSpace + `','entity','entity-local','{}','hash-p','2026-08-25T10:00:00Z')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

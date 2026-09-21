@@ -1,31 +1,30 @@
-# dMem HTTP REST+JSON 契约
+# dMem Application HTTP 契约
 
 ## 状态
 
-本文档描述当前 Agent 中立 REST+JSON 协议适配器的可执行契约。它是
-`internal/protocol/httpapi` 当前实现的设计来源；此前的 Unix socket
-`docs/api/openapi.yaml` 已删除。`internal/protocol/httpapi` 中的路由元数据及其
-一致性测试是本文档的可执行形式。
+本文档描述当前已实现的 Agent Tool application HTTP 适配器。它是
+`internal/protocol/httpapi` 当前实现的设计来源，路由元数据及其一致性测试是本文档的
+可执行形式。项目尚未发布，本文档不是外部兼容性承诺；路径、DTO 和状态码可在后续
+阶段按目标架构调整。
 
-项目尚未发布，本文档不是外部兼容性承诺。目标 API 将按
-[Agent Tool 与 dMem Provider 双路线架构](../architecture/agent-tool-and-provider-routes.md)
-重构，当前路由和对应底层流程可以替换或移除。在替换完成前，修改当前实现仍必须
-同步更新本文档、路由元数据和契约测试，避免代码与文档失配。
+线格式（wire DTO 与 JSON Schema）的唯一来源是 `pkg/toolcontract`。HTTP 适配器只做
+严格解码、协议中立命令映射和错误转换，不拥有领域语义。`internal/server` 是生产
+传输层：它在回环 TCP 地址上监听，可选终止 TLS 并通过 ALPN 协商 HTTP/2，并优雅
+关闭。本契约不定义监听地址、TLS 或传输加固参数。
 
-适配器返回一个 `http.Handler`。`internal/server` 是生产传输层：它在回环 TCP 地址
-上监听，可选终止 TLS 并通过 ALPN 协商 HTTP/2，并优雅关闭。本契约不定义监听地址、
-TLS 或传输加固参数；它们属于配置与运维文档。
+旧九条 `/v1` 路由、旧 purpose/type/reason feedback DTO、`GET /v1/memories/{id}` 与
+`/v1/events` 入口已在 Phase 2 删除；原始事件摄取与异步 operation/event status 属于
+后续 Provider Route 阶段。
 
 ## 范围
 
 包含：
 
-- `/v1` 下的九条 Agent 中立路由；
-- 这些路由的请求与响应 DTO；
+- `/v1` 下的七条 Agent Tool application 路由；
+- 这些路由的请求与响应 DTO（来自 `pkg/toolcontract/schema/v1`）；
 - 请求标识、调用方身份与幂等请求头；
 - 严格 JSON 解码规则与请求体上限；
 - 统一错误体与状态码映射；
-- 为后续列表路由预留的分页约定；
 - handler 的 HTTP/2 兼容性要求。
 
 不包含，且有意从本契约中排除：
@@ -38,8 +37,7 @@ TLS 或传输加固参数；它们属于配置与运维文档。
 
 ## 传输
 
-- 协议方案：由调用方决定。handler 与传输无关。生产服务层默认明文监听并只提供
-  HTTP/1.1；配置 TLS 后提供 HTTP/1.1 与 HTTP/2。
+- 协议方案：由调用方决定。handler 与传输无关。
 - 协议版本：HTTP/1.1 或 HTTP/2。handler 不得依赖 `r.ProtoMajor` 分支；协议协商
   由服务层负责，不提供 h2c。
 - 基础路径：`/v1`。
@@ -48,20 +46,18 @@ TLS 或传输加固参数；它们属于配置与运维文档。
 
 ## 通用请求头
 
-请求头：
-
 | 请求头 | 是否必需 | 规则 |
 | --- | --- | --- |
-| `Content-Type` | 写操作 | 必须可解析为 `application/json`；忽略可选参数。 |
+| `Content-Type` | 有请求体 | 必须可解析为 `application/json`；忽略可选参数。 |
 | `X-Request-ID` | 否 | 不透明令牌，1–128 个可见 ASCII 字符。缺失时自动生成。 |
 | `X-Correlation-ID` | 否 | 不透明令牌，1–128 个可见 ASCII 字符。 |
 | `X-Caller-Subject-ID` | 条件必需 | 不透明令牌，1–128 个可见 ASCII 字符。 |
 | `X-Caller-Client-ID` | 条件必需 | 不透明令牌，1–128 个可见 ASCII 字符。 |
 | `Idempotency-Key` | 写操作 | 不透明令牌，1–128 个可见 ASCII 字符。 |
 
-调用方身份：本契约中的每条路由都是非公开路由。`X-Caller-Subject-ID` 与
-`X-Caller-Client-ID` 至少需要一个。两者同时存在时，subject 是主要审计身份，
-client 标识实际发起的客户端。两个请求头的名称与语义都不针对特定 Agent。
+调用方身份：`GET /v1/capabilities` 是公开路由，其余每条路由都要求
+`X-Caller-Subject-ID` 与 `X-Caller-Client-ID` 至少一个。两者同时存在时，subject 是
+主要审计身份，client 标识实际发起的客户端。
 
 响应头：
 
@@ -71,25 +67,20 @@ client 标识实际发起的客户端。两个请求头的名称与语义都不�
 | `Content-Type` | 是 | `application/json`。 |
 | `Idempotency-Replayed` | 写操作 | 响应来自已提交的幂等写时返回 `true`，否则返回 `false`。 |
 
-不透明令牌是指长度不超过 128 字节、每个字节都位于 `0x21`–`0x7E` 范围
-（不含空格与控制字符）的非空字符串。
+不透明令牌是指长度不超过 128 字节、每个字节都位于 `0x21`–`0x7E` 范围（不含空格
+与控制字符）的非空字符串。
 
-### 请求 ID
+### 请求 ID 与幂等
 
-- `X-Request-ID` 缺失时，适配器生成 UUIDv4 形状的值。
-- 存在时进行校验；非法值返回 `422 invalid_request`。
-- 响应始终携带 `X-Request-ID`，错误响应也不例外。
-- 请求 ID 会进入 gateway 的 `CallContext.RequestID`。它仅用于审计关联，永不参与
-  幂等身份，也永不改变规范化命令哈希。
-
-### 幂等
-
-- 每条写路由都要求 `Idempotency-Key`。
-- 适配器只负责传递该 key。gateway 由调用方身份 + 操作名 + 幂等 key + 规范化命令
-  哈希构成写身份。HTTP 方法与路由永不参与该身份。
+- `X-Request-ID` 缺失时，适配器生成 UUIDv4 形状的值；存在时进行校验，非法值返回
+  `422 invalid_request`。响应始终携带 `X-Request-ID`。
+- 每条写路由都要求 `Idempotency-Key`。适配器只负责传递该 key；gateway 由调用方
+  身份 + 操作名 + 幂等 key + 规范化命令哈希构成写身份。HTTP 方法与路由永不参与
+  该身份。
 - 用相同 key 提交等价命令时，返回原始结果并带 `Idempotency-Replayed: true`。
 - 用相同 key 提交不同命令时，返回 `409 idempotency_conflict`。
-- 读路由忽略存在的 `Idempotency-Key`。
+- `POST /v1/recall` 是读操作：它不需要也不使用 `Idempotency-Key`。相同稳定请求身份
+  的重复召回不会重复写入无内容遥测。
 
 ## 路由
 
@@ -97,231 +88,156 @@ client 标识实际发起的客户端。两个请求头的名称与语义都不�
 
 | # | 操作 | 方法与路径 | 访问 | 调用方 | 幂等 | 请求体上限 | 成功状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `memory.remember` | `POST /v1/memories` | 写 | 必需 | 必需 | 1 MiB | `201` |
-| 2 | `memory.get` | `GET /v1/memories/{memory_id}` | 读 | 必需 | 不需要 | 无 | `200` |
-| 3 | `memory.forget` | `POST /v1/memories/{memory_id}/forget` | 写 | 必需 | 必需 | 64 KiB | `200` |
-| 4 | `feedback.append` | `POST /v1/memories/{memory_id}/feedback` | 写 | 必需 | 必需 | 256 KiB | `201` |
-| 5 | `retrieval.recall` | `POST /v1/recall` | 写 | 必需 | 必需 | 256 KiB | `200` |
-| 6 | `extraction.ingest` | `POST /v1/events` | 写 | 必需 | 必需 | 4 MiB | `202` |
-| 7 | `extraction.event.get` | `GET /v1/events/{event_id}` | 读 | 必需 | 不需要 | 无 | `200` |
-| 8 | `scope.create` | `POST /v1/scopes` | 写 | 必需 | 必需 | 64 KiB | `201` |
-| 9 | `scope.get` | `GET /v1/scopes/{scope_id}` | 读 | 必需 | 不需要 | 无 | `200` |
+| 1 | `agent_tool.capabilities` | `GET /v1/capabilities` | 读 | 公开 | 不需要 | 无 | `200` |
+| 2 | `agent_tool.memory_commit` | `POST /v1/memory-commits` | 写 | 必需 | 必需 | 1 MiB | `201` |
+| 3 | `agent_tool.recall` | `POST /v1/recall` | 读 | 必需 | 不需要 | 256 KiB | `200` |
+| 4 | `agent_tool.feedback` | `POST /v1/feedback` | 写 | 必需 | 必需 | 256 KiB | `201` |
+| 5 | `agent_tool.forget` | `POST /v1/forget` | 写 | 必需 | 必需 | 64 KiB | `200` |
+| 6 | `scope.ensure` | `POST /v1/scopes/ensure` | 写 | 必需 | 必需 | 64 KiB | `200` |
+| 7 | `scope.get` | `GET /v1/scopes/{scope_id}` | 读 | 必需 | 不需要 | 无 | `200` |
 
 说明：
 
-- `POST /v1/recall` 被归类为写操作，因为它会记录有界的召回遥测，因此要求幂等
-  key。它不修改记忆权威数据。
-- 读路由拒绝非空请求体，返回 `400 unexpected_body`。
+- 写路由的成功状态由操作语义决定：`memory-commits` 与 `feedback` 返回 `201`，
+  `forget` 与 `scopes/ensure` 返回 `200`。
+- 读路由拒绝非空请求体，返回 `400 unexpected_body`；`recall` 例外，它接受有界请求体。
 - 路径标识符是 1–128 个字符的不透明非空字符串。适配器不强制 UUID 格式；未知
   标识符由 gateway 返回 `404 not_found`。
-- 元数据表中的路由顺序稳定，即为声明顺序。
+- 路由顺序稳定，即为声明顺序。
 
-## 命名
+## DTO 与语义
 
-公开 HTTP 接口统一使用 **scope** 术语：`scope_id`、`scope_ids`、
-`parent_scope_id`、`scope_type` 以及 `/v1/scopes` 路径。内部存储可以继续使用
-`space`。本契约的任何响应都不输出 `space_id` 字段。
+字段、枚举、数组与字符串上限由 `pkg/toolcontract/schema/v1` 的 JSON Schema 定义。
+适配器先做 schema 校验，再做严格单值解码，然后映射为协议中立 gateway 命令。
 
-资源体中的嵌套协议中立值（记忆修订、上下文包、反馈事件、内容）使用 gateway
-领域 JSON 形状。适配器拥有外层信封以及为公开契约重命名的字段。
+### `GET /v1/capabilities`
 
-## DTO
+公开路由。响应 `200` 报告 `contract_version`、四个工具名、predicate registry 版本与
+`references_only` evidence 披露模式。
 
-### `POST /v1/memories`
+### `POST /v1/memory-commits`
 
-请求：
+一次调用原子提交一个 `agent_tool` source、一到多条 memory 建议以及可选 entity、
+fact、relation 建议：
 
 ```json
 {
-  "scope_id": "string, required",
-  "content": "string, required",
-  "kind": "string, optional",
-  "sensitivity": "string, optional",
-  "valid_from": "RFC3339 string, optional",
-  "valid_until": "RFC3339 string, optional",
-  "source_name": "string, optional",
-  "source_event_id": "string, optional",
-  "source_stream_key": "string, optional",
-  "sequence": "non-negative integer, optional",
-  "occurred_at": "RFC3339 string, optional",
-  "metadata": "JSON object, optional",
-  "reason": "string, optional"
+  "scope_id": "project-123",
+  "source": {
+    "type": "agent_tool",
+    "name": "assistant",
+    "conversation_id": "conv-123",
+    "turn_id": "turn-456",
+    "tool_call_id": "call-789",
+    "occurred_at": "2026-09-20T10:00:00Z"
+  },
+  "memories": [
+    {
+      "local_id": "memory-1",
+      "kind": "preference",
+      "content": "用户为该项目选择 PostgreSQL。",
+      "sensitivity": "normal",
+      "confidence": 0.96,
+      "search_hints": ["项目数据库选择", "PostgreSQL"]
+    }
+  ],
+  "entities": [],
+  "facts": [],
+  "relations": []
 }
 ```
 
-响应 `201`：
+响应 `201` 返回 `operation_id`、`replayed`、`source_event_id` 和每个 `local_id` 的
+`status`：
 
 ```json
 {
-  "operation_id": "string",
+  "operation_id": "op-1",
   "replayed": false,
-  "memory": { "memory_id": "string", "scope_id": "string", "kind": "fact", "current_state": "active", "frozen": false, "sensitivity": "normal", "current_revision": {}, "created_at": "string", "updated_at": "string" },
-  "event_id": "string"
+  "source_event_id": "event-1",
+  "memories": [{"local_id": "memory-1", "status": "authority", "memory_id": "mem-1", "revision_id": "rev-1"}],
+  "entities": [], "facts": [], "relations": []
 }
 ```
 
-语义默认值（`kind`、`sensitivity`、`source_name`、`occurred_at`、`metadata`、
-`reason`）由 gateway 应用，而不是适配器。字段省略时不会进入命令，由 gateway
-应用默认值。
-
-### `GET /v1/memories/{memory_id}`
-
-响应 `200`：
-
-```json
-{ "memory": { "memory_id": "string", "scope_id": "string", "current_revision": {} } }
-```
-
-### `POST /v1/memories/{memory_id}/forget`
-
-请求：
-
-```json
-{ "reason": "string, required, 1-1024 characters" }
-```
-
-响应 `200`：
-
-```json
-{ "operation_id": "string", "replayed": false, "memory": { "memory_id": "string", "scope_id": "string" } }
-```
-
-### `POST /v1/memories/{memory_id}/feedback`
-
-请求：
-
-```json
-{
-  "scope_id": "string, required",
-  "purpose": "memory_quality_feedback | retrieval_feedback | answer_feedback",
-  "feedback_type": "string, required",
-  "reason_code": "string, required",
-  "note": "string, optional",
-  "decision": "decision context object, optional",
-  "create_proposal": false,
-  "source_event_id": "string, optional",
-  "proposed_content": "string, optional"
-}
-```
-
-响应 `201`：
-
-```json
-{ "operation_id": "string", "replayed": false, "feedback": {}, "proposal": { "status": "string" } }
-```
-
-用途、类型、原因、决策上下文与提案规则由 Feedback gateway 模块强制，而不是
-适配器。
+`status` 封闭为 `authority`、`deduplicated`、`proposal`、`rejected`。Agent 提交的是
+结构化建议：它不能设置 `confirmed`、`skip_policy` 或 `skip_review`，confidence 也
+不能授权覆盖、遗忘、冲突确认或降低敏感度。敏感内容、聚合 kind 与全部 knowledge
+建议进入 proposal 路径。Tool Route commit 不创建 `extract_memory` 或
+`extract_graph` job。
 
 ### `POST /v1/recall`
 
-请求：
+请求表达查询意图，不暴露内部通道开关：
 
 ```json
-{
-  "query": "string, required",
-  "scope_ids": ["string, required, at least one"],
-  "include_ancestors": "boolean, optional",
-  "memory_types": ["string, optional"],
-  "states": ["string, optional"],
-  "reference_time": "RFC3339 string, optional",
-  "intent": "string, optional",
-  "max_results": "integer, optional",
-  "max_chars": "integer, optional",
-  "max_context_tokens": "integer, optional",
-  "include_evidence": "boolean, optional",
-  "explain": "boolean, optional",
-  "exclude_stale_aggregates": "boolean, optional",
-  "cursor": "string, optional",
-  "skip_diversification": "boolean, optional"
-}
+{"query": "用户为这个项目选择了什么数据库？", "scope_ids": ["project-123"], "intent": "lookup", "entities": ["database"], "limit": 10}
 ```
 
-初始 Agent 契约不暴露能力或图谱策略调试覆盖项。响应 `200`：
+响应 `200` 返回面向模型消费的有界上下文与显式降级：
 
 ```json
-{ "context": { "items": [], "tokens_used": 0, "chars_used": 0, "truncated": false, "next_cursor": null }, "execution": {} }
+{"operation_id": "recall-1", "memories": [{"memory_id": "mem-1", "revision_id": "rev-1", "kind": "preference", "content": "...", "confidence": 0.96, "evidence": []}], "degraded_capabilities": ["semantic"], "next_cursor": null}
 ```
 
-### `POST /v1/events`
+evidence 始终是有界引用（`evidence_id`、`event_id`、role、时间/序号、span offset），
+不包含来源正文。未配置 dMem embedding provider 时，`semantic` 必须出现在
+`degraded_capabilities` 中。
 
-请求：
+### `POST /v1/feedback`
+
+请求绑定具体 memory revision，只接受 `used`、`not_used`、`incorrect`、`outdated`、
+`duplicate` 五个封闭类别：
 
 ```json
-{
-  "scope_id": "string, required",
-  "source_type": "string, required",
-  "source_name": "string, required",
-  "source_event_id": "string, optional",
-  "source_stream_key": "string, optional",
-  "sequence": "non-negative integer, optional",
-  "occurred_at": "RFC3339 string, optional",
-  "content": { "kind": "text | json | reference", "media_type": "string", "text": "string", "value": "any JSON", "reference_uri": "string", "declared_size": 0, "declared_hash": "string" },
-  "metadata": "JSON object, optional"
-}
+{"scope_id": "project-123", "memory_id": "mem-1", "revision_id": "rev-1", "kind": "used", "reason": "可选", "recall_operation_id": "recall-1"}
 ```
 
-内容 kind、必需字段与互斥字段规则由 Extraction gateway 模块强制。响应 `202`：
+响应 `201` 回显 `feedback_id`、`memory_id`、`revision_id` 与 `kind`。旧
+purpose/type/reason 组合不属于本契约。
+
+### `POST /v1/forget`
+
+请求要求期望修订与非空 reason：
 
 ```json
-{ "operation_id": "string", "replayed": false, "event_id": "string", "status": "string", "job_ids": [], "accepted_at": "string" }
+{"scope_id": "project-123", "memory_id": "mem-1", "expected_revision_id": "rev-1", "reason": "用户要求遗忘"}
 ```
 
-### `GET /v1/events/{event_id}`
+响应 `200` 返回 `memory_id`、`revision_id` 与 `state: "deleted"`。期望修订不匹配时
+返回 `409 conflict`。逻辑遗忘保留修订、证据、状态事件与审计。
 
-响应 `200`：
+### `POST /v1/scopes/ensure`
+
+按稳定外部身份原子解析或创建 scope：
 
 ```json
-{ "event": { "event_id": "string", "scope_id": "string", "source_type": "string", "content": {}, "processing_status": "string" } }
+{"parent_scope_id": null, "scope_type": "project", "external_id": "project-123", "display_name": "Project 123"}
 ```
 
-### `POST /v1/scopes`
-
-请求：
-
-```json
-{
-  "parent_scope_id": "string or null, optional",
-  "scope_type": "user | agent | application | project | task | session",
-  "external_id": "string, required, 1-128 characters",
-  "display_name": "string, required, 1-256 characters"
-}
-```
-
-响应 `201`：
-
-```json
-{ "operation_id": "string", "replayed": false, "scope": { "scope_id": "string", "parent_scope_id": null, "scope_type": "string", "external_id": "string", "display_name": "string", "created_at": "string" } }
-```
+响应 `200` 返回 `scope`。重复 ensure 返回同一 scope。
 
 ### `GET /v1/scopes/{scope_id}`
 
-响应 `200`：
-
-```json
-{ "scope": { "scope_id": "string", "parent_scope_id": null, "scope_type": "string", "external_id": "string", "display_name": "string", "created_at": "string" } }
-```
+响应 `200` 返回 scope 资源。
 
 ## JSON 解码规则
 
-每个写请求体都严格解码：
+每个请求体都严格解码：
 
 1. 请求体受路由上限约束。超限返回 `413 request_too_large`。
 2. `Content-Type` 必须是 `application/json`，否则返回 `415 unsupported_media_type`。
 3. 请求体必须恰好包含一个顶层 JSON 对象。空请求体、非对象值（`null`、数组、
    字符串、数字、布尔值）或第二个 JSON 值都返回 `400 invalid_json`。
 4. 未知对象字段返回 `400 invalid_json`。
-5. 字段类型不匹配返回 `400 invalid_json`。
-6. 数字使用 `json.Number` 解码，整数值不会经过 `float64` 舍入。类型化的整数字段
-   仍然拒绝小数或指数形式的值。
-7. 承载任意用户数据的 JSON 对象值（`metadata`、`content.value`）保留
-   `json.Number` 语义。
+5. 字段类型不匹配或不符合 `pkg/toolcontract` schema 返回 `400 invalid_json`。
+6. 数字使用 `json.Number` 解码，整数值不会经过 `float64` 舍入。
 
-读路由不解析请求体。读路由上的非空请求体返回 `400 unexpected_body`。
+读路由不解析请求体；非空请求体返回 `400 unexpected_body`。
 
 ## 错误模型
 
-每个错误响应使用同一种请求体形状：
+错误响应使用 `pkg/toolcontract` 的 `error` schema：
 
 ```json
 {
@@ -349,7 +265,7 @@ client 标识实际发起的客户端。两个请求头的名称与语义都不�
 | `method_not_allowed` | 405 | 适配器 |
 | `request_too_large` | 413 | 适配器 |
 | `unsupported_media_type` | 415 | 适配器 |
-| `invalid_request` | 422 | 适配器（请求头、路径标识符、分页） |
+| `invalid_request` | 422 | 适配器（请求头、路径标识符） |
 | `invalid_input` | 422 | gateway |
 | `permission_denied` | 403 | gateway |
 | `conflict` | 409 | gateway |
@@ -365,19 +281,8 @@ client 标识实际发起的客户端。两个请求头的名称与语义都不�
 - gateway 的 `*gateway.Error` 只贡献其声明为安全的 message、可重试性、重试提示和
   字符串 details。
 - 被包装的内部原因永不序列化。
-- 非 gateway 错误以 `500 internal` 和通用 message 报告，其文本永不回显。
-- 恢复的 panic 以 `500 internal` 和通用 message 报告，恢复值永不回显。
-
-## 分页
-
-当前契约中没有路由返回分页。以下约定由当前实现使用；目标 API 可以在重构时替换：
-
-- 查询参数：`limit`（整数，`1`–`200`，默认 `50`）与 `cursor`（不透明字符串，
-  最多 512 个字符）。
-- 非法值返回 `422 invalid_request`。
-- 列表响应使用 `{"items": [...], "next_cursor": "string"|null}`。
-- cursor 是不透明的，由所属 gateway 模块生成；客户端不得构造或解析。
-- `internal/protocol/httpapi` 导出 `ParsePageRequest` 实现该约定。
+- 非 gateway 错误与恢复的 panic 以 `500 internal` 和通用 message 报告，文本永不
+  回显。
 
 ## HTTP/2 兼容性
 

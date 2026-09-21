@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/internal/gateway"
+	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
 // Adapter-level wire error codes. Gateway error codes are the gateway.ErrorCode
@@ -37,21 +38,6 @@ type requestError struct {
 // Error implements the error interface.
 func (e *requestError) Error() string {
 	return e.code + ": " + e.message
-}
-
-// errorBody is the stable wire error representation.
-type errorBody struct {
-	Code         string            `json:"code"`
-	Message      string            `json:"message"`
-	RequestID    string            `json:"request_id"`
-	Retryable    bool              `json:"retryable"`
-	RetryAfterMS *int64            `json:"retry_after_ms,omitempty"`
-	Details      map[string]string `json:"details,omitempty"`
-}
-
-// errorResponse wraps the error body so every failure shares one shape.
-type errorResponse struct {
-	Error errorBody `json:"error"`
 }
 
 // responseWriter tracks whether a response has started so panic recovery and
@@ -136,7 +122,7 @@ func (ex *exchange) writeSafeError(status int, code, message string, retryable b
 	if ex.writer.Written() {
 		return
 	}
-	body, err := json.Marshal(errorResponse{Error: errorBody{
+	body, err := json.Marshal(toolcontract.ErrorResponse{Error: toolcontract.ContractError{
 		Code:         code,
 		Message:      message,
 		RequestID:    ex.requestID,

@@ -390,6 +390,15 @@ func (e *Exporter) plan(ctx context.Context, request Request) (Plan, error) {
 		}
 		objects["evidence.jsonl"] = append(objects["evidence.jsonl"], makeRecord("entity_fact_evidence", text(row["evidence_id"]), row))
 	}
+	agentToolProposals, err := queryMaps(ctx, tx, `SELECT * FROM agent_tool_proposals ORDER BY proposal_id`)
+	if err != nil {
+		return Plan{}, err
+	}
+	for _, row := range agentToolProposals {
+		if spaceSet[text(row["space_id"])] {
+			eventIDs[text(row["event_id"])] = true
+		}
+	}
 	for _, row := range rawRows {
 		if eventIDs[text(row["event_id"])] {
 			objects["raw_events.jsonl"] = append(objects["raw_events.jsonl"], makeRecord("raw_event", text(row["event_id"]), row))
@@ -438,6 +447,24 @@ func (e *Exporter) plan(ctx context.Context, request Request) (Plan, error) {
 		return Plan{}, err
 	}
 	if err := collectFiltered(ctx, tx, &objects, "aggregate_provenance.jsonl", "aggregate_descriptor", "aggregate_id", `SELECT * FROM aggregate_descriptors ORDER BY aggregate_id`, func(r map[string]any) bool { return memoryIDs[text(r["memory_id"])] }); err != nil {
+		return Plan{}, err
+	}
+	if err := collectFiltered(ctx, tx, &objects, "aggregate_provenance.jsonl", "agent_tool_source", "source_id", `SELECT * FROM agent_tool_sources ORDER BY source_id`, func(r map[string]any) bool { return eventIDs[text(r["event_id"])] }); err != nil {
+		return Plan{}, err
+	}
+	hintRows, err := queryMaps(ctx, tx, `SELECT *, (event_id || '/' || local_id || '/' || hint_order) AS record_id FROM agent_tool_search_hints ORDER BY event_id,local_id,hint_order`)
+	if err != nil {
+		return Plan{}, err
+	}
+	for _, row := range hintRows {
+		recordID := text(row["record_id"])
+		delete(row, "record_id")
+		revisionID := text(row["revision_id"])
+		if eventIDs[text(row["event_id"])] && (revisionID == "" || revisionIDs[revisionID]) {
+			objects["aggregate_provenance.jsonl"] = append(objects["aggregate_provenance.jsonl"], makeRecord("agent_tool_search_hint", recordID, row))
+		}
+	}
+	if err := collectFiltered(ctx, tx, &objects, "aggregate_provenance.jsonl", "agent_tool_proposal", "proposal_id", `SELECT * FROM agent_tool_proposals ORDER BY proposal_id`, func(r map[string]any) bool { return spaceSet[text(r["space_id"])] && eventIDs[text(r["event_id"])] }); err != nil {
 		return Plan{}, err
 	}
 	refusals := []string{}

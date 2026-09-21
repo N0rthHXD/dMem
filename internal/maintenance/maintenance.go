@@ -29,6 +29,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/instance"
 	"github.com/N0rthHXD/dMem/internal/storage"
+	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -95,6 +96,7 @@ type RestoreResult struct {
 }
 
 var authorityTables = []string{
+	"agent_tool_sources", "agent_tool_search_hints", "agent_tool_proposals",
 	"entities", "entity_events", "entity_aliases", "entity_alias_events", "entity_mentions",
 	"entity_proposals", "entity_proposal_reviews", "memory_relations",
 	"relation_evidence", "relation_state_events", "relation_proposals", "relation_proposal_reviews",
@@ -666,9 +668,9 @@ func probeStagingHandler(ctx context.Context, handler http.Handler) error {
 		{"common", "00000000-0000-4000-8000-000000000064"},
 	} {
 		body, err := json.Marshal(map[string]any{
-			"query":       probe.query,
-			"scope_ids":   []string{"00000000-0000-4000-8000-000000000062"},
-			"max_results": 10,
+			"query":     probe.query,
+			"scope_ids": []string{"00000000-0000-4000-8000-000000000062"},
+			"limit":     10,
 		})
 		if err != nil {
 			return err
@@ -679,23 +681,19 @@ func probeStagingHandler(ctx context.Context, handler http.Handler) error {
 		}
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Caller-Subject-ID", "restore-probe")
-		request.Header.Set("Idempotency-Key", "restore-probe-"+probe.query)
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusOK {
 			return fmt.Errorf("staging retrieval probe %q status %d: %s", probe.query, recorder.Code, strings.TrimSpace(recorder.Body.String()))
 		}
-		var result domain.RecallResponse
+		var result toolcontract.RecallOutput
 		if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
 			return err
 		}
-		if len(result.Context.Items) != 1 || result.Context.Items[0].MemoryID != probe.wantID {
+		if len(result.Memories) != 1 || result.Memories[0].MemoryID != probe.wantID {
 			return errors.New("staging retrieval probe failed")
 		}
-		if !slices.Contains(result.Execution.ExecutedCapabilities, "keyword") {
-			return errors.New("staging retrieval probe did not execute the keyword capability")
-		}
-		if !result.Execution.Degraded || slices.Contains(result.Execution.ExecutedCapabilities, "semantic") {
+		if !slices.Contains(result.DegradedCapabilities, "semantic") {
 			return errors.New("staging retrieval probe did not report provider-free semantic degradation")
 		}
 	}

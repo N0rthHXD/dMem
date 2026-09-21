@@ -13,16 +13,19 @@ const (
 )
 
 const (
-	SchemaCapabilities   = "capabilities"
-	SchemaError          = "error"
-	SchemaRecallInput    = "recall-input"
-	SchemaRecallOutput   = "recall-output"
-	SchemaRememberInput  = "remember-input"
-	SchemaRememberOutput = "remember-output"
-	SchemaFeedbackInput  = "feedback-input"
-	SchemaFeedbackOutput = "feedback-output"
-	SchemaForgetInput    = "forget-input"
-	SchemaForgetOutput   = "forget-output"
+	SchemaCapabilities       = "capabilities"
+	SchemaError              = "error"
+	SchemaRecallInput        = "recall-input"
+	SchemaRecallOutput       = "recall-output"
+	SchemaMemoryCommitInput  = "memory-commit-input"
+	SchemaMemoryCommitOutput = "memory-commit-output"
+	SchemaFeedbackInput      = "feedback-input"
+	SchemaFeedbackOutput     = "feedback-output"
+	SchemaForgetInput        = "forget-input"
+	SchemaForgetOutput       = "forget-output"
+	SchemaScopeEnsureInput   = "scope-ensure-input"
+	SchemaScopeEnsureOutput  = "scope-ensure-output"
+	SchemaScopeOutput        = "scope-output"
 )
 
 type Capabilities struct {
@@ -73,12 +76,13 @@ type RecalledMemory struct {
 }
 
 type RecallOutput struct {
+	OperationID          string           `json:"operation_id"`
 	Memories             []RecalledMemory `json:"memories"`
 	DegradedCapabilities []string         `json:"degraded_capabilities"`
 	NextCursor           *string          `json:"next_cursor"`
 }
 
-type RememberInput struct {
+type MemoryCommitInput struct {
 	ScopeID   string               `json:"scope_id"`
 	Source    Source               `json:"source"`
 	Memories  []MemorySuggestion   `json:"memories"`
@@ -168,7 +172,7 @@ type CommitOutcome struct {
 	ReasonCode string `json:"reason_code,omitempty"`
 }
 
-type RememberOutput struct {
+type MemoryCommitOutput struct {
 	WriteMetadata
 	SourceEventID string          `json:"source_event_id"`
 	Memories      []CommitOutcome `json:"memories"`
@@ -206,6 +210,31 @@ type ForgetOutput struct {
 	MemoryID   string `json:"memory_id"`
 	RevisionID string `json:"revision_id"`
 	State      string `json:"state"`
+}
+
+type ScopeEnsureInput struct {
+	ParentScopeID *string `json:"parent_scope_id"`
+	ScopeType     string  `json:"scope_type"`
+	ExternalID    string  `json:"external_id"`
+	DisplayName   string  `json:"display_name"`
+}
+
+type Scope struct {
+	ScopeID       string  `json:"scope_id"`
+	ParentScopeID *string `json:"parent_scope_id"`
+	ScopeType     string  `json:"scope_type"`
+	ExternalID    string  `json:"external_id"`
+	DisplayName   string  `json:"display_name"`
+	CreatedAt     string  `json:"created_at"`
+}
+
+type ScopeEnsureOutput struct {
+	WriteMetadata
+	Scope Scope `json:"scope"`
+}
+
+type ScopeOutput struct {
+	Scope Scope `json:"scope"`
 }
 
 type ErrorResponse struct {

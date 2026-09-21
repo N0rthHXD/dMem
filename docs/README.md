@@ -6,9 +6,11 @@ dMem 是一个以 SQLite 为后端的本地 Linux 守护进程。当前产品面
 审核的 scene/topic/timeline 聚合、决策遥测与 explain 输出、备份与恢复，以及
 逻辑导入导出。
 
-语义位于协议无关的 Memory Gateway 模块中。第一个入站协议适配器是 Agent 中立的
-REST+JSON `http.Handler`。`internal/server` 是生产传输层：它在回环地址上监听，
-可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。认证与网络边缘授权仍属后续独立工作。
+语义位于协议无关的 Memory Gateway 模块中。当前入站协议适配器是 Agent Tool
+application REST+JSON `http.Handler`（Phase 2），它使用 `pkg/toolcontract` 的版本化
+schema 并提供原子 memory commit。`internal/server` 是生产传输层：它在回环地址上
+监听，可选 TLS 与 ALPN 协商的 HTTP/2，并优雅关闭。认证与网络边缘授权仍属后续独立
+工作。MCP server、薄 client 与 Provider Route 收敛尚未实现。
 
 Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新的数据目录，而不是
 复用不兼容的数据库。
@@ -20,7 +22,7 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 - [Agent Tool 与 dMem Provider 双路线架构](architecture/agent-tool-and-provider-routes.md)：
   Agent 工具、MCP server、无 provider 检索、dMem provider 处理及 API 重构边界。
 - [Phase 0 决策与基线](architecture/phase-0-decisions-and-baseline.md)：双路线重构的
-  authority/proposal、枚举、MCP/client 决策，当前九路由调用图与测试基线。
+  authority/proposal、枚举、MCP/client 决策，重构前九路由调用图与测试基线。
 - [领域模型与权威数据](architecture/domain-model.md)：scope、记忆与修订、结构化
   字段、证据、生命周期、实体/关系/事实、冲突、演化与聚合。
 - [处理、审核与演化](architecture/processing.md)：事件摄取、处理 provider、候选
@@ -30,8 +32,8 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 
 ## 接口
 
-- [HTTP REST+JSON 契约](api/http-rest-contract.md)：当前实现的路由、DTO、请求头、
-  解码规则与错误模型；预发布期间将按双路线架构替换。
+- [Application HTTP 契约](api/http-rest-contract.md)：Phase 2 实现的路由、DTO、
+  请求头、解码规则与错误模型；线格式来自 `pkg/toolcontract`。
 - [API 使用说明](api/usage.md)：gateway 语义如何映射到契约。
 
 ## 存储

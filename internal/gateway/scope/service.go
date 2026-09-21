@@ -20,8 +20,7 @@ var validScopeTypes = map[string]bool{
 }
 
 // ServiceImpl is the default protocol-independent Scope service. It owns scope
-// type and identity validation, paging defaults, idempotency identity, and
-// stable error mapping, and delegates persistence to the Store port.
+// identity validation, idempotency identity, and stable error mapping.
 type ServiceImpl struct {
 	store Store
 }
@@ -31,51 +30,13 @@ func NewService(store Store) *ServiceImpl {
 	return &ServiceImpl{store: store}
 }
 
-// Create validates the scope identity and atomically persists the scope, its
-// initial effective policy, and the idempotency result.
-func (s *ServiceImpl) Create(ctx context.Context, call gateway.CallContext, command CreateCommand) (CreateResult, error) {
-	if err := validateCreate(command); err != nil {
-		return CreateResult{}, gateway.WrapError(gateway.ErrorInvalidInput, err.Error(), err)
-	}
-	identity, err := gateway.NewWriteIdentity(call, OperationCreate, command)
-	if err != nil {
-		return CreateResult{}, gateway.WriteIdentityError(err)
-	}
-	created, replay, err := s.store.CreateScope(ctx, identity, CreateParams{
-		ParentSpaceID: command.ParentSpaceID,
-		SpaceType:     command.SpaceType,
-		ExternalID:    command.ExternalID,
-		DisplayName:   command.DisplayName,
-	})
-	if err != nil {
-		return CreateResult{}, normalizeError(err)
-	}
-	return CreateResult{
-		WriteResult: gateway.WriteResult{OperationID: call.RequestID, Replay: replay},
-		Scope:       created,
-	}, nil
-}
-
-// Resolve looks up one scope by its stable external identity.
-func (s *ServiceImpl) Resolve(ctx context.Context, call gateway.CallContext, query ResolveQuery) (domain.Space, error) {
-	if err := validateResolve(query); err != nil {
-		return domain.Space{}, gateway.WrapError(gateway.ErrorInvalidInput, err.Error(), err)
-	}
-	resolved, err := s.store.ResolveScope(ctx, ResolveParams{
-		ParentSpaceID: query.ParentSpaceID,
-		SpaceType:     query.SpaceType,
-		ExternalID:    query.ExternalID,
-	})
-	if err != nil {
-		return domain.Space{}, normalizeError(err)
-	}
-	return resolved, nil
-}
-
 // Get reads one scope by identifier.
 func (s *ServiceImpl) Get(ctx context.Context, call gateway.CallContext, query GetQuery) (domain.Space, error) {
 	if strings.TrimSpace(query.SpaceID) == "" {
 		return domain.Space{}, gateway.NewError(gateway.ErrorInvalidInput, "space_id is required")
+	}
+	if s.store == nil {
+		return domain.Space{}, gateway.NewError(gateway.ErrorCapabilityUnavailable, "scope lookup is unavailable")
 	}
 	found, err := s.store.GetScope(ctx, query.SpaceID)
 	if err != nil {
@@ -84,41 +45,33 @@ func (s *ServiceImpl) Get(ctx context.Context, call gateway.CallContext, query G
 	return found, nil
 }
 
-// List returns one bounded cursor page of scopes.
-func (s *ServiceImpl) List(ctx context.Context, call gateway.CallContext, query ListQuery) (Page, error) {
-	if err := query.Page.Validate(); err != nil {
-		return Page{}, gateway.WrapError(gateway.ErrorInvalidInput, err.Error(), err)
+func (s *ServiceImpl) Ensure(ctx context.Context, call gateway.CallContext, command EnsureCommand) (EnsureResult, error) {
+	if err := validateEnsure(command); err != nil {
+		return EnsureResult{}, gateway.WrapError(gateway.ErrorInvalidInput, err.Error(), err)
 	}
-	page, err := s.store.ListScopes(ctx, ListParams{
-		ParentSpaceID: query.ParentSpaceID,
-		Limit:         query.Page.EffectiveLimit(),
-		Cursor:        query.Page.Cursor,
-	})
+	identity, err := gateway.NewWriteIdentity(call, OperationEnsure, command)
 	if err != nil {
-		return Page{}, normalizeError(err)
+		return EnsureResult{}, gateway.WriteIdentityError(err)
 	}
-	return page, nil
+	ensured, replay, err := s.store.EnsureScope(ctx, identity, EnsureParams(command))
+	if err != nil {
+		return EnsureResult{}, normalizeError(err)
+	}
+	return EnsureResult{WriteResult: gateway.WriteResult{OperationID: call.RequestID, Replay: replay}, Scope: ensured}, nil
 }
 
-func validateCreate(command CreateCommand) error {
+func validateEnsure(command EnsureCommand) error {
 	if !validScopeTypes[command.SpaceType] {
 		return errors.New("space_type is invalid")
 	}
-	if utf8.RuneCountInString(command.ExternalID) < 1 || utf8.RuneCountInString(command.ExternalID) > 128 {
+	if command.ParentSpaceID != nil && (strings.TrimSpace(*command.ParentSpaceID) != *command.ParentSpaceID || utf8.RuneCountInString(*command.ParentSpaceID) < 1 || utf8.RuneCountInString(*command.ParentSpaceID) > 128) {
+		return errors.New("parent_space_id is invalid")
+	}
+	if strings.TrimSpace(command.ExternalID) != command.ExternalID || utf8.RuneCountInString(command.ExternalID) < 1 || utf8.RuneCountInString(command.ExternalID) > 128 {
 		return errors.New("external_id length must be between 1 and 128")
 	}
-	if utf8.RuneCountInString(command.DisplayName) < 1 || utf8.RuneCountInString(command.DisplayName) > 256 {
+	if strings.TrimSpace(command.DisplayName) != command.DisplayName || utf8.RuneCountInString(command.DisplayName) < 1 || utf8.RuneCountInString(command.DisplayName) > 256 {
 		return errors.New("display_name length must be between 1 and 256")
-	}
-	return nil
-}
-
-func validateResolve(query ResolveQuery) error {
-	if !validScopeTypes[query.SpaceType] {
-		return errors.New("space_type is invalid")
-	}
-	if utf8.RuneCountInString(query.ExternalID) < 1 || utf8.RuneCountInString(query.ExternalID) > 128 {
-		return errors.New("external_id length must be between 1 and 128")
 	}
 	return nil
 }

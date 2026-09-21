@@ -94,28 +94,27 @@ cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/c
 ## 接口状态
 
 当前可执行契约见 [docs/api/http-rest-contract.md](docs/api/http-rest-contract.md)。
-项目尚未发布，当前九条路由不是外部兼容性边界，将按
+项目尚未发布，当前路由不是外部兼容性边界，将继续按
 [Agent Tool 与 dMem Provider 双路线架构](docs/architecture/agent-tool-and-provider-routes.md)
-重构：
+演进。Phase 2 的 application API 为：
 
 ```text
-POST /v1/memories
-GET  /v1/memories/{memory_id}
-POST /v1/memories/{memory_id}/forget
-POST /v1/memories/{memory_id}/feedback
+GET  /v1/capabilities
+POST /v1/memory-commits
 POST /v1/recall
-POST /v1/events
-GET  /v1/events/{event_id}
-POST /v1/scopes
+POST /v1/feedback
+POST /v1/forget
+POST /v1/scopes/ensure
 GET  /v1/scopes/{scope_id}
 ```
 
-每条路由都要求调用方身份（`X-Caller-Subject-ID` 和/或 `X-Caller-Client-ID`），
-每次写操作都要求 `Idempotency-Key`。请求是严格的单值 JSON，具有按路由的请求体
-上限，每个响应都携带 `X-Request-ID`。`internal/protocol/httpapi` 返回
+`GET /v1/capabilities` 是唯一的公开路由；其余路由都要求调用方身份
+（`X-Caller-Subject-ID` 和/或 `X-Caller-Client-ID`），写操作要求
+`Idempotency-Key`，`POST /v1/recall` 是读操作。请求是严格的单值 JSON，具有按
+路由的请求体上限，每个响应都携带 `X-Request-ID`。线格式由
+`pkg/toolcontract` 的版本化 schema 唯一定义。`internal/protocol/httpapi` 返回
 `http.Handler`；`internal/server` 在回环地址上提供监听、可选 TLS 与优雅关闭。
-当前契约由适配器的路由、解码、错误与 HTTP/2 兼容性测试，以及服务层的真实监听
-测试共同验证。服务层不提供认证。后续多阶段实施见
+服务层不提供认证。MCP server、薄 client 与 Provider Route 收敛见
 [双路线架构开发任务](docs/development/tasks-agent-tool-and-provider-routes.md)。
 
 ## 文档

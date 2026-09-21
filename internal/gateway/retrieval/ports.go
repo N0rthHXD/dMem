@@ -187,6 +187,7 @@ type RecallParams struct {
 	States                 []string
 	ReferenceTime          string
 	ReferenceTimeSet       bool
+	EntityHints            []string
 	Channels               []string
 	EffectiveChannels      []string
 	DegradationReasons     []string

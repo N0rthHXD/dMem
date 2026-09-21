@@ -56,7 +56,7 @@ func TestEndToEndServesGatewayRoutes(t *testing.T) {
 		_ = srv.Shutdown(ctx)
 	})
 
-	request, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/v1/scopes", strings.NewReader(`{"scope_type":"user","external_id":"e2e","display_name":"E2E"}`))
+	request, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/v1/scopes/ensure", strings.NewReader(`{"scope_type":"user","external_id":"e2e","display_name":"E2E"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +65,11 @@ func TestEndToEndServesGatewayRoutes(t *testing.T) {
 	request.Header.Set("Idempotency-Key", "e2e-scope")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		t.Fatalf("POST /v1/scopes error = %v", err)
+		t.Fatalf("POST /v1/scopes/ensure error = %v", err)
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
-	if response.StatusCode != http.StatusCreated {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d body = %s", response.StatusCode, body)
 	}
 	if !strings.Contains(string(body), `"scope_id"`) {

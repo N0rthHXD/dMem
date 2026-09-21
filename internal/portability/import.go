@@ -300,7 +300,7 @@ type validatedPackage struct {
 
 var importOrder = []string{"spaces.jsonl", "raw_events.jsonl", "memories.jsonl", "revisions.jsonl", "evidence.jsonl", "entities.jsonl", "entity_mentions.jsonl", "relations.jsonl", "conflicts.jsonl", "feedback.jsonl", "aggregate_provenance.jsonl"}
 var memberTypes = map[string]map[string]bool{
-	"spaces.jsonl": {"space": true}, "raw_events.jsonl": {"raw_event": true}, "memories.jsonl": {"memory": true, "memory_state_event": true}, "revisions.jsonl": {"revision": true, "revision_subject_entity": true, "revision_object_entity": true}, "evidence.jsonl": {"memory_evidence": true, "relation_evidence": true, "entity_fact_evidence": true}, "entities.jsonl": {"entity": true, "entity_event": true, "entity_alias": true, "entity_alias_event": true}, "entity_mentions.jsonl": {"entity_mention": true}, "relations.jsonl": {"relation": true, "relation_state_event": true, "entity_fact": true, "entity_fact_state_event": true, "external_reference_stub": true}, "conflicts.jsonl": {"conflict_case": true, "conflict_participant": true, "conflict_relation": true, "conflict_resolution": true, "conflict_resolution_ref": true}, "feedback.jsonl": {"feedback_event": true}, "aggregate_provenance.jsonl": {"aggregate_descriptor": true},
+	"spaces.jsonl": {"space": true}, "raw_events.jsonl": {"raw_event": true}, "memories.jsonl": {"memory": true, "memory_state_event": true}, "revisions.jsonl": {"revision": true, "revision_subject_entity": true, "revision_object_entity": true}, "evidence.jsonl": {"memory_evidence": true, "relation_evidence": true, "entity_fact_evidence": true}, "entities.jsonl": {"entity": true, "entity_event": true, "entity_alias": true, "entity_alias_event": true}, "entity_mentions.jsonl": {"entity_mention": true}, "relations.jsonl": {"relation": true, "relation_state_event": true, "entity_fact": true, "entity_fact_state_event": true, "external_reference_stub": true}, "conflicts.jsonl": {"conflict_case": true, "conflict_participant": true, "conflict_relation": true, "conflict_resolution": true, "conflict_resolution_ref": true}, "feedback.jsonl": {"feedback_event": true}, "aggregate_provenance.jsonl": {"aggregate_descriptor": true, "agent_tool_source": true, "agent_tool_search_hint": true, "agent_tool_proposal": true},
 }
 
 func validatePackage(directory string, limits ImportLimits) (validatedPackage, error) {
@@ -558,6 +558,9 @@ func validateGraph(records map[string][]record, ids map[string]bool) error {
 		"conflict_resolution_ref": {"resolution_event_id": "conflict_resolution"},
 		"feedback_event":          {"memory_id": "memory", "revision_id": "revision"},
 		"aggregate_descriptor":    {"memory_id": "memory"},
+		"agent_tool_source":       {"event_id": "raw_event"},
+		"agent_tool_search_hint":  {"event_id": "raw_event"},
+		"agent_tool_proposal":     {"space_id": "space", "event_id": "raw_event"},
 	}
 	for _, member := range dataMembers {
 		for _, r := range records[member] {
@@ -576,6 +579,17 @@ func validateGraph(records map[string][]record, ids map[string]bool) error {
 			if r.ObjectType == "entity_fact" {
 				if object := text(r.Data["object_entity_id"]); object != "" && !ids["entity\x00"+object] {
 					return fmt.Errorf("%w: entity fact object", ErrInvalidPackage)
+				}
+			}
+			if r.ObjectType == "agent_tool_search_hint" {
+				if revision := text(r.Data["revision_id"]); revision != "" && !ids["revision\x00"+revision] {
+					return fmt.Errorf("%w: agent tool search hint revision", ErrInvalidPackage)
+				}
+			}
+			if r.ObjectType == "agent_tool_proposal" {
+				memory, revision := text(r.Data["result_memory_id"]), text(r.Data["result_revision_id"])
+				if memory != "" && (!ids["memory\x00"+memory] || !ids["revision\x00"+revision]) {
+					return fmt.Errorf("%w: agent tool proposal result", ErrInvalidPackage)
 				}
 			}
 		}
@@ -598,7 +612,7 @@ func hashRecord(r record) string {
 	return hex.EncodeToString(s[:])
 }
 func rewriteReferences(data map[string]any, ids map[string]string) {
-	types := map[string]string{"space_id": "space", "parent_space_id": "space", "memory_id": "memory", "source_memory_id": "memory", "target_memory_id": "memory", "revision_id": "revision", "current_revision_id": "revision", "parent_revision_id": "revision", "restored_from_revision_id": "revision", "source_revision_id": "revision", "target_revision_id": "revision", "event_id": "raw_event", "entity_id": "entity", "subject_entity_id": "entity", "object_entity_id": "entity", "relation_id": "relation", "alias_id": "entity_alias", "fact_id": "entity_fact"}
+	types := map[string]string{"space_id": "space", "parent_space_id": "space", "memory_id": "memory", "source_memory_id": "memory", "target_memory_id": "memory", "result_memory_id": "memory", "revision_id": "revision", "current_revision_id": "revision", "parent_revision_id": "revision", "restored_from_revision_id": "revision", "source_revision_id": "revision", "target_revision_id": "revision", "result_revision_id": "revision", "event_id": "raw_event", "entity_id": "entity", "subject_entity_id": "entity", "object_entity_id": "entity", "relation_id": "relation", "alias_id": "entity_alias", "fact_id": "entity_fact"}
 	for field, typ := range types {
 		if id := text(data[field]); id != "" {
 			if local := ids[typ+"\x00"+id]; local != "" {
@@ -776,6 +790,9 @@ var objectDataFields = map[string]string{
 	"external_reference_stub": "object_id object_type referenced_by",
 	"feedback_event":          "feedback_id operation_id caller_id memory_id revision_id feedback_purpose feedback_type reason_code note search_operation_id query_hash query_type entity_ids_json ranking_identity feature_identity context_identity result_rank selection_state matched_signals_json answer_identity created_at",
 	"aggregate_descriptor":    "aggregate_id memory_id aggregate_kind policy_version processing_version sensitivity created_by created_at",
+	"agent_tool_source":       "source_id event_id operation_id source_type source_name conversation_id turn_id tool_call_id occurred_at metadata_json created_at",
+	"agent_tool_search_hint":  "event_id local_id revision_id hint_order hint created_at",
+	"agent_tool_proposal":     "proposal_id event_id space_id suggestion_type local_id normalized_json specification_hash review_state result_memory_id result_revision_id created_at reviewed_at",
 	"conflict_case":           "case_id space_id state opened_by processing_version created_at closed_at",
 	"conflict_participant":    "case_id participant_order memory_id revision_id input_state input_sensitivity created_at",
 	"conflict_relation":       "case_id relation_id created_at",
