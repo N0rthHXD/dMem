@@ -1,0 +1,105 @@
+# LoCoMo 中文评估子集：dMem 评估配置
+#
+# 运行：
+#   export DMEM_PROVIDER_KEY=...        # 或在 shell rc 中已导出
+#   /home/ut005426@uos/miniforge3/envs/agent/bin/python eval/run_eval.py \
+#       --config eval/config.zh-subset.yaml
+#
+# 命令行只保留 --config / --phases / --run-id，其余全部在这里配置。
+# 相对路径以本文件所在目录为基准。
+
+run_id: zh-subset
+output_dir: results
+
+# 默认依次执行三个阶段；也可以用 --phases 覆盖。
+phases: [build, retrieval, qa]
+
+dataset:
+  path: /home/ut005426@uos/data/locomo/zh-subset/locomo10.zh-subset.json
+  sample_ids: []      # 空 = 全部样本
+  categories: []      # 空 = 全部问题类型
+
+dmem:
+  # true：评估自己 init/启动/关闭一个独立 daemon（独立 data_dir，不碰现有实例）。
+  manage_daemon: true
+  # dmemd 二进制；相对路径以本配置文件目录为基准。请先构建：
+  #   CGO_ENABLED=1 go build -tags sqlite_fts5 -o dmemd ./cmd/dmemd
+  binary: ../dmemd
+  listen_address: 127.0.0.1:17373
+  data_dir: ""        # 空 = <output_dir>/<run_id>/daemon/data
+  startup_timeout_seconds: 90
+  # 等待 embed_memory / rebuild_semantic 作业清空、投影全部 current 的超时。
+  indexing_timeout_seconds: 1800
+  settle_seconds: 2.0
+  worker_count: 8
+  graph_policy: features_only
+  # 语义召回所需的 embedding provider。Agent Tool 路线的记忆来源事件
+  # source_type 是 tool_call，因此策略允许 tool_call。
+  embedding:
+    enabled: true
+    endpoint: https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal
+    model: doubao-embedding-vision-251215
+    api_key_env: DMEM_PROVIDER_KEY
+    dimensions: 1024
+    query_instructions: "Target_modality: text.\nInstruction:Retrieve semantically similar text\nQuery:"
+    max_egress_input_chars: 30000
+    max_response_bytes: 1048576
+    request_timeout: 60s
+    max_concurrent: 16
+    requests_per_minute: 300
+
+# 用于记忆抽取、答案生成与评分的 OpenAI 兼容 LLM。
+llm:
+  base_url: https://ark.cn-beijing.volces.com/api/v3
+  model: deepseek-v4-flash-ga-260731
+  api_key_env: DMEM_PROVIDER_KEY
+  temperature: 0.0
+  max_tokens: 8192
+  timeout_seconds: 180
+  max_concurrent: 8
+  max_retries: 4
+
+build:
+  scope_root_external_id: locomo-zh-eval
+  max_memories_per_commit: 24
+  max_content_runes: 4096
+  max_search_hints: 8
+  include_image_captions: true
+
+retrieval:
+  limit: 30
+  cutoffs: [1, 3, 5, 10, 30]
+  # 按 LoCoMo 问题类型选择 recall intent：
+  # 1 multi-hop / 2 temporal / 3 open-domain / 4 single-hop / 5 adversarial
+  intent_by_category:
+    1: multi_hop
+    2: temporal
+    3: auto
+    4: lookup
+    5: verification
+  workers: 8
+  # 检索通道消融（--phases ablation）。dMem 的 Agent Tool 召回契约不暴露通道选择，
+  # 因此每个模式用一个 daemon 配置实现：graph_policy=off 关闭图谱通道；
+  # embedding=false 关闭 embedding provider，使 semantic 通道降级；keyword 始终可用。
+  # 所有模式复用 build 阶段的同一份数据目录与索引，仅重启 daemon。
+  # 顺序建议：先 embedding=true 再 embedding=false，避免关闭后重新开启触发整库重嵌入。
+  ablation:
+    modes:
+      - name: hybrid          # keyword + semantic + graph
+        graph_policy: features_only
+        embedding: true
+      - name: graph-off       # keyword + semantic
+        graph_policy: "off"
+        embedding: true
+      - name: semantic-off    # keyword + graph
+        graph_policy: features_only
+        embedding: false
+      - name: keyword-only    # keyword
+        graph_policy: "off"
+        embedding: false
+
+qa:
+  answer_cutoff: 10
+  max_context_chars: 12000
+  workers: 8
+  judge: true

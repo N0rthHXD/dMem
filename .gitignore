@@ -19,3 +19,5 @@ dmemd
 .dmem-e2e/
 .gocache/
 .gomodcache/
+__pycache__/
+eval/results/

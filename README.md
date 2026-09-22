@@ -156,6 +156,7 @@ GET  /v1/events/{event_id}
 - [运维手册](docs/operations/runbook.md)
 - [测试与质量门禁](docs/development/testing.md)
 - [双路线架构开发任务](docs/development/tasks-agent-tool-and-provider-routes.md)
+- [LoCoMo 中文子集评估模块](eval/README.md)
 
 ## 许可证
 
