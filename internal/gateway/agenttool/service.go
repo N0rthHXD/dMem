@@ -45,9 +45,10 @@ func (s *ServiceImpl) Recall(ctx context.Context, call gateway.CallContext, comm
 	if s.recall == nil {
 		return RecallResult{}, gateway.NewError(gateway.ErrorCapabilityUnavailable, "recall is unavailable")
 	}
+	entityHints := normalizeEntityHints(command.EntityHints)
 	record, err := s.recall.Recall(ctx, call, RecallParams{
 		OperationID: operationID, Query: command.Query, ScopeIDs: append([]string(nil), command.ScopeIDs...),
-		Intent: intent, EntityHints: append([]string(nil), command.EntityHints...),
+		Intent: intent, EntityHints: entityHints,
 		ReferenceTime: utcTime(command.ReferenceTime), Limit: limit, Cursor: command.Cursor, IncludeEvidence: true,
 	})
 	if err != nil {
@@ -66,6 +67,23 @@ func (s *ServiceImpl) Recall(ctx context.Context, call gateway.CallContext, comm
 		}
 	}
 	return result, nil
+}
+
+func normalizeEntityHints(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *ServiceImpl) MemoryCommit(ctx context.Context, call gateway.CallContext, command MemoryCommitCommand) (MemoryCommitResult, error) {
