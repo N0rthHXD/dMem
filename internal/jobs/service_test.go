@@ -99,32 +99,53 @@ type capturedLog struct {
 	attrs   map[string]any
 }
 
-type captureHandler struct {
+type captureState struct {
 	mu      sync.Mutex
 	records []capturedLog
+}
+
+type captureHandler struct {
+	state *captureState
+	attrs []slog.Attr
+}
+
+func (h *captureHandler) ensure() *captureState {
+	if h.state == nil {
+		h.state = &captureState{}
+	}
+	return h.state
 }
 
 func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h *captureHandler) Handle(_ context.Context, record slog.Record) error {
 	attrs := make(map[string]any)
+	for _, attr := range h.attrs {
+		attrs[attr.Key] = attr.Value.Any()
+	}
 	record.Attrs(func(attr slog.Attr) bool {
 		attrs[attr.Key] = attr.Value.Any()
 		return true
 	})
-	h.mu.Lock()
-	h.records = append(h.records, capturedLog{message: record.Message, attrs: attrs})
-	h.mu.Unlock()
+	state := h.ensure()
+	state.mu.Lock()
+	state.records = append(state.records, capturedLog{message: record.Message, attrs: attrs})
+	state.mu.Unlock()
 	return nil
 }
 
-func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+func (h *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	combined := append(append([]slog.Attr(nil), h.attrs...), attrs...)
+	return &captureHandler{state: h.ensure(), attrs: combined}
+}
+
+func (h *captureHandler) WithGroup(string) slog.Handler { return h }
 
 func (h *captureHandler) snapshot() []capturedLog {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]capturedLog(nil), h.records...)
+	state := h.ensure()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return append([]capturedLog(nil), state.records...)
 }
 
 func (r *fakeRepository) ClaimJob(_ context.Context, params storage.ClaimJobParams) (storage.ClaimedJob, error) {

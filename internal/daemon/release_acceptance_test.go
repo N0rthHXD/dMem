@@ -528,11 +528,8 @@ func TestReleaseAcceptanceLogsAndTelemetryDoNotLeakContent(t *testing.T) {
 	var buffer bytes.Buffer
 	var mutex sync.Mutex
 	logger := slog.New(slog.NewTextHandler(synchronizedWriter{writer: &buffer, mutex: &mutex}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	previous := slog.Default()
-	slog.SetDefault(logger)
-	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	instance, err := start(context.Background(), runtimeConfig(t), nil)
+	instance, err := start(context.Background(), runtimeConfig(t), nil, WithLogger(logger))
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}

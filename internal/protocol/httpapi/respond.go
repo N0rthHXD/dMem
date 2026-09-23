@@ -122,6 +122,7 @@ func (ex *exchange) writeSafeError(status int, code, message string, retryable b
 	if ex.writer.Written() {
 		return
 	}
+	ex.errorCode = code
 	body, err := json.Marshal(toolcontract.ErrorResponse{Error: toolcontract.ContractError{
 		Code:         code,
 		Message:      message,

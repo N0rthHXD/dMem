@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/N0rthHXD/dMem/pkg/client"
+	"github.com/N0rthHXD/dMem/pkg/logging"
 	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
@@ -190,7 +191,7 @@ func New(config Config) (*Server, error) {
 		instructions:    instructions,
 		requestTimeout:  timeout,
 		maxMessageBytes: maxMessageBytes,
-		logger:          config.Logger,
+		logger:          logging.WithComponent(config.Logger, logging.ComponentMCP),
 		now:             now,
 		newID:           newID,
 		inFlight:        newInFlightRegistry(),

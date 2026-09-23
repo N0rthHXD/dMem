@@ -3,15 +3,18 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
+	"github.com/N0rthHXD/dMem/pkg/logging"
 )
 
 // Handler is the Agent-neutral REST+JSON protocol adapter. It implements
@@ -23,15 +26,24 @@ type Handler struct {
 
 	routes []route
 	newID  func() string
+	logger *slog.Logger
 }
 
 var _ http.Handler = (*Handler)(nil)
+
+type Option func(*Handler)
+
+func WithLogger(logger *slog.Logger) Option {
+	return func(h *Handler) {
+		h.logger = logger
+	}
+}
 
 // New validates the dependencies and returns a handler over the implemented
 // route set. Every gateway module interface is required: the current surface has
 // no optional routes, and a missing dependency must fail at construction rather
 // than at request time.
-func New(deps Dependencies) (*Handler, error) {
+func New(deps Dependencies, opts ...Option) (*Handler, error) {
 	switch {
 	case deps.AgentTools == nil:
 		return nil, fmt.Errorf("%w: agent tools", errMissingDependency)
@@ -46,6 +58,12 @@ func New(deps Dependencies) (*Handler, error) {
 		events:     deps.Events,
 		newID:      newRequestID,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(h)
+		}
+	}
+	h.logger = logging.WithComponent(h.logger, logging.ComponentHTTP)
 	h.routes = h.buildRoutes()
 	return h, nil
 }
@@ -169,9 +187,12 @@ func (h *Handler) buildRoutes() []route {
 // module failure can never escape as a broken connection.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writer := &responseWriter{ResponseWriter: w}
+	started := time.Now()
 	requestID, validRequestID := h.resolveRequestID(r)
 	writer.Header().Set(requestIDHeader, requestID)
 	ex := &exchange{handler: h, writer: writer, request: r, requestID: requestID}
+
+	defer h.logRequest(ex, started)
 
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -283,6 +304,40 @@ type exchange struct {
 	route     *route
 	requestID string
 	call      gateway.CallContext
+	errorCode string
+}
+
+func (h *Handler) logRequest(ex *exchange, started time.Time) {
+	if h.logger == nil {
+		return
+	}
+	status := ex.writer.status
+	if !ex.writer.Written() {
+		status = http.StatusOK
+	}
+	operation, routePath := "", ""
+	if ex.route != nil {
+		operation = string(ex.route.Operation)
+		routePath = ex.route.Path
+	}
+	attrs := []any{
+		"request_id", ex.requestID,
+		"correlation_id", ex.call.CorrelationID,
+		logging.FieldOperation, operation,
+		"method", ex.request.Method,
+		"route", routePath,
+		"status", status,
+		"duration_ms", time.Since(started).Milliseconds(),
+		"error_code", ex.errorCode,
+	}
+	switch {
+	case status >= http.StatusInternalServerError:
+		h.logger.Error("http request", attrs...)
+	case status >= http.StatusBadRequest:
+		h.logger.Warn("http request", attrs...)
+	default:
+		h.logger.Info("http request", attrs...)
+	}
 }
 
 // context returns the request context, propagating cancellation to the gateway.

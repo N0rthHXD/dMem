@@ -5,10 +5,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/N0rthHXD/dMem/pkg/logging"
 )
 
 // Transport hardening defaults. They are deliberately not configuration keys:
@@ -29,6 +32,7 @@ type Config struct {
 	TLSCertFile         string
 	TLSKeyFile          string
 	ShutdownGracePeriod time.Duration
+	Logger              *slog.Logger
 }
 
 // Server owns one TCP listener and its http.Server. Start binds synchronously so
@@ -50,7 +54,10 @@ func New(handler http.Handler, cfg Config) (*Server, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	logger := slog.Default()
+	logger := logging.WithComponent(cfg.Logger, logging.ComponentServer)
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	tlsConfig, err := loadTLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile)
 	if err != nil {
 		return nil, err

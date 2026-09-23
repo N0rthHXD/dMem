@@ -15,6 +15,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	"github.com/N0rthHXD/dMem/internal/storage"
+	"github.com/N0rthHXD/dMem/pkg/logging"
 )
 
 const maintenanceInterval = time.Second
@@ -172,9 +173,6 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 	if cfg.WorkerCount <= 0 || cfg.LeaseDuration <= 0 || cfg.PerJobTimeout <= 0 || cfg.RetryInitialBackoff <= 0 || cfg.RetryMaxBackoff < cfg.RetryInitialBackoff {
 		return nil, errors.New("invalid job service configuration")
 	}
-	if dependencies.Logger == nil {
-		dependencies.Logger = slog.Default()
-	}
 	maxContentChars, maxTotalCandidateChars, maxContext := cfg.ProcessingProvider.Limits.MaxCandidateChars, cfg.ProcessingProvider.Limits.MaxTotalCandidateChars, cfg.ProcessingProvider.Limits.MaxContextItems
 	if maxContentChars <= 0 {
 		maxContentChars = 12000
@@ -216,7 +214,7 @@ func NewService(repository Repository, cfg config.Config, processor Processor, d
 		diskPressure:       dependencies.DiskPressure,
 		serviceID:          nextServiceID.Add(1),
 		processorState:     state,
-		logger:             dependencies.Logger,
+		logger:             logging.WithComponent(dependencies.Logger, logging.ComponentJobs),
 		done:               make(chan struct{}),
 	}
 	s.SetProcessing(ProcessingConfig{
@@ -1065,13 +1063,16 @@ func (s *Service) backoff(attempt int) time.Duration {
 }
 
 func (s *Service) logPersistenceError(ctx context.Context, operation string, claim storage.ClaimedJob, err error) {
+	if s.logger == nil {
+		return
+	}
 	if err == nil || errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrLeaseLost) || (ctx.Err() != nil && errors.Is(err, context.Canceled)) {
 		return
 	}
-	attrs := []any{"component", "jobs", "operation", operation}
+	attrs := []any{logging.FieldOperation, operation}
 	if claim.Job.JobID != "" {
 		attrs = append(attrs, "job_id", claim.Job.JobID, "lease_generation", claim.LeaseGeneration)
 	}
-	attrs = append(attrs, "error", err)
+	attrs = append(attrs, logging.FieldError, err)
 	s.logger.ErrorContext(ctx, "jobs persistence operation failed", attrs...)
 }

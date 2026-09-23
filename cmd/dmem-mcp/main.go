@@ -13,7 +13,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/protocol/mcp"
 	"github.com/N0rthHXD/dMem/pkg/client"
+	"github.com/N0rthHXD/dMem/pkg/logging"
 	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
 
@@ -75,17 +75,17 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 	if err != nil {
 		return fmt.Errorf("%w: %s", errUsage, err.Error())
 	}
-	level, err := parseLogLevel(*logLevel)
+	level, err := logging.ParseLevel(*logLevel)
 	if err != nil {
 		return fmt.Errorf("%w: %s", errUsage, err.Error())
 	}
-	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+	logger := logging.New(stderr, level)
 
 	applicationClient, err := client.New(client.Config{
 		Endpoint: *endpoint,
 		Caller:   client.Caller{SubjectID: *callerSubject, ClientID: *callerClient},
 		Timeout:  *requestTimeout,
-		Logger:   logger,
+		Logger:   logging.WithComponent(logger, logging.ComponentClient),
 	})
 	if err != nil {
 		return fmt.Errorf("%w: %s", errUsage, err.Error())
@@ -116,7 +116,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 		return fmt.Errorf("%w: %s", errUsage, err.Error())
 	}
 
-	logger.Info("dmem-mcp ready", "endpoint", *endpoint, "scope_external_id", strings.TrimSpace(*scopeExternalID), "integration_mode", string(mode))
+	logging.WithComponent(logger, logging.ComponentMCP).Info("dmem-mcp ready", "endpoint", *endpoint, "scope_external_id", strings.TrimSpace(*scopeExternalID), "integration_mode", string(mode))
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(ctx, stdin, stdout) }()
 	select {
@@ -157,19 +157,4 @@ func envDuration(getenv func(string) string, key string, fallback time.Duration)
 		return fallback
 	}
 	return parsed
-}
-
-func parseLogLevel(value string) (slog.Level, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "debug":
-		return slog.LevelDebug, nil
-	case "info", "":
-		return slog.LevelInfo, nil
-	case "warn", "warning":
-		return slog.LevelWarn, nil
-	case "error":
-		return slog.LevelError, nil
-	default:
-		return 0, fmt.Errorf("unknown log level %q", value)
-	}
 }

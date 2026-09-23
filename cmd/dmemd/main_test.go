@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,7 +192,7 @@ func TestHandleSIGHUPReloadsTriggersReloadAndCoalesces(t *testing.T) {
 	defer db.Close()
 
 	signals := make(chan os.Signal, 1)
-	go handleSIGHUPReloads(signals, d)
+	go handleSIGHUPReloads(signals, d, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	signals <- syscall.SIGHUP
 	deadline := time.Now().Add(5 * time.Second)

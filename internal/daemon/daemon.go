@@ -38,6 +38,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/N0rthHXD/dMem/internal/storage"
+	"github.com/N0rthHXD/dMem/pkg/logging"
 )
 
 // Daemon is the assembled runtime. It owns the storage adapters, gateway
@@ -52,6 +53,8 @@ type Daemon struct {
 	retrievalService *gwretrieval.ServiceImpl
 	handler          http.Handler
 	jobs             *jobs.Service
+	logger           *slog.Logger
+	rootLogger       *slog.Logger
 	reloadMu         sync.Mutex
 	lastAttempt      config.ActivationResult
 	closeOnce        sync.Once
@@ -59,8 +62,16 @@ type Daemon struct {
 	applySnapshotErr error
 }
 
+type Option func(*Daemon)
+
+func WithLogger(logger *slog.Logger) Option {
+	return func(d *Daemon) {
+		d.logger = logger
+	}
+}
+
 // StartManaged starts a daemon from the manager's immutable active snapshot.
-func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err error) {
+func StartManaged(ctx context.Context, manager *config.Manager, opts ...Option) (_ *Daemon, err error) {
 	if manager == nil {
 		return nil, errors.New("configuration manager is required")
 	}
@@ -85,7 +96,7 @@ func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err 
 	base := snapshot.Config
 	base.ProcessingProvider = config.ProviderConfig{}
 	base.EmbeddingProvider = config.ProviderConfig{}
-	d, err := startService(ctx, base, nil, nil, false)
+	d, err := startService(ctx, base, nil, nil, false, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +113,7 @@ func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err 
 		_ = d.Close(context.Background())
 		return nil, fmt.Errorf("prepare semantic recovery: %w", err)
 	}
+	d.logIndexRecovery(ctx)
 	d.lastAttempt = activation
 	if err := d.jobs.Start(ctx); err != nil {
 		_ = d.Close(context.Background())
@@ -110,15 +122,15 @@ func StartManaged(ctx context.Context, manager *config.Manager) (_ *Daemon, err 
 	return d, nil
 }
 
-func start(ctx context.Context, cfg config.Config, processor jobs.Processor) (_ *Daemon, err error) {
-	return startService(ctx, cfg, processor, nil, true)
+func start(ctx context.Context, cfg config.Config, processor jobs.Processor, opts ...Option) (_ *Daemon, err error) {
+	return startService(ctx, cfg, processor, nil, true, opts...)
 }
 
 // StartStaging starts the production service assembly without workers or providers.
-func StartStaging(ctx context.Context, cfg config.Config) (_ *Daemon, err error) {
+func StartStaging(ctx context.Context, cfg config.Config, opts ...Option) (_ *Daemon, err error) {
 	cfg.ProcessingProvider = config.ProviderConfig{}
 	cfg.EmbeddingProvider = config.ProviderConfig{}
-	return startService(ctx, cfg, nil, nil, false)
+	return startService(ctx, cfg, nil, nil, false, opts...)
 }
 
 // Handler returns the protocol handler assembled from the gateway modules. The
@@ -127,7 +139,7 @@ func (d *Daemon) Handler() http.Handler {
 	return d.handler
 }
 
-func startService(ctx context.Context, cfg config.Config, processor jobs.Processor, aggregateProvider domain.AggregateProvider, startWorkers bool) (_ *Daemon, err error) {
+func startService(ctx context.Context, cfg config.Config, processor jobs.Processor, aggregateProvider domain.AggregateProvider, startWorkers bool, opts ...Option) (_ *Daemon, err error) {
 	if err := prepareDir(cfg.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("prepare data directory: %w", err)
 	}
@@ -137,6 +149,13 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		return nil, err
 	}
 	d := &Daemon{lock: lock}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(d)
+		}
+	}
+	d.rootLogger = d.logger
+	d.logger = logging.WithComponent(d.logger, logging.ComponentDaemon)
 	defer func() {
 		if err != nil {
 			_ = d.cleanup()
@@ -152,8 +171,8 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	}
 	store := d.store
 	go func() {
-		if err := store.WaitIntegrity(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("storage integrity check failed", "error", err)
+		if err := store.WaitIntegrity(context.Background()); err != nil && !errors.Is(err, context.Canceled) && d.logger != nil {
+			d.logger.Error("storage integrity check failed", logging.FieldError, err)
 		}
 	}()
 	repository := storage.NewRepository(d.store, domain.Runtime{Now: time.Now, ID: identity.UUID}, cfg.QueueSoftLimit, cfg.QueueHardLimit, cfg.MaxAttempts, config.ProcessingVersionFor(cfg.ProcessingProvider))
@@ -161,6 +180,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 	repository.SetDiskFreeThresholds(cfg.DiskSoftFree, cfg.DiskHardFree)
 	repository.SetProcessingEnabled(cfg.ProcessingProvider.Enabled)
 	repository.SetGraphExtractionEnabled(cfg.ProcessingProvider.Enabled && cfg.GraphEnabled)
+	d.logDiskThresholds(cfg.DiskSoftFree, cfg.DiskHardFree)
 	if cfg.EmbeddingProvider.Enabled {
 		embedding, providerErr := provider.New(cfg.EmbeddingProvider, nil)
 		if providerErr != nil {
@@ -170,6 +190,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		if err := repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
 			return nil, fmt.Errorf("prepare semantic recovery: %w", err)
 		}
+		d.logIndexRecovery(ctx)
 	}
 	policyIdentity := config.PolicyIdentity(cfg.ProcessingProvider.Policy)
 	if !cfg.ProcessingProvider.Enabled {
@@ -184,6 +205,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		Disclosure: policyService,
 		Indexes:    repository, EntityIndexes: repository, RelationIndexes: repository, GraphIndexes: repository,
 		FeedbackAggregates: repository, AggregateRebuilder: aggregateService, DiskPressure: repository,
+		Logger: d.rootLogger,
 	})
 	if err != nil {
 		return nil, err
@@ -207,7 +229,7 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		AgentTools: agentTools,
 		Scopes:     scope.NewService(storage.NewScopeCapability(repository)),
 		Events:     extraction.NewService(storage.NewEventCapability(repository)),
-	})
+	}, httpapi.WithLogger(d.rootLogger))
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +260,7 @@ func (d *Daemon) Reload(ctx context.Context, trigger config.ActivationTrigger) (
 			d.manager.Revert(previous)
 			_ = d.applySnapshot(ctx, previous, nil)
 			_ = d.repository.EnsureSemanticRecoveryJobs(ctx)
+			d.logIndexRecovery(ctx)
 		}
 		return result, err
 	}
@@ -247,6 +270,8 @@ func (d *Daemon) Reload(ctx context.Context, trigger config.ActivationTrigger) (
 	if err := d.repository.EnsureSemanticRecoveryJobs(ctx); err != nil {
 		return result, err
 	}
+	d.logReloadApplied(ctx, result)
+	d.logIndexRecovery(ctx)
 	return result, nil
 }
 
@@ -520,6 +545,7 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		snapshot.ActivationGeneration,
 		processingPolicyGeneration,
 	)
+	d.logCapabilities(ctx, snapshot)
 	if embedding == nil {
 		d.repository.SetEmbedding(nil, "", "", "", "", 0, 0)
 		return nil
@@ -534,6 +560,77 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		embeddingPolicyGeneration,
 	)
 	return nil
+}
+
+func (d *Daemon) logReloadApplied(ctx context.Context, result config.ActivationResult) {
+	if d.logger == nil {
+		return
+	}
+	d.logger.InfoContext(ctx, "configuration reload applied",
+		"trigger", string(result.Trigger),
+		"attempt_id", result.AttemptID,
+		"effective_identity", result.EffectiveIdentity,
+		"previous_effective_identity", result.PreviousEffectiveIdentity,
+		"changed_capabilities", result.ChangedCapabilities,
+		"reconciliation_classes", result.ReconciliationClasses,
+	)
+}
+
+func (d *Daemon) logCapabilities(ctx context.Context, snapshot *config.Snapshot) {
+	if d.logger == nil || snapshot == nil {
+		return
+	}
+	if !snapshot.ProcessingCapability.Enabled {
+		d.logger.WarnContext(ctx, "processing provider disabled",
+			"effective_identity", snapshot.Config.EffectiveIdentity,
+		)
+	}
+	if !snapshot.EmbeddingCapability.Enabled {
+		d.logger.WarnContext(ctx, "embedding provider disabled, semantic retrieval degraded",
+			"effective_identity", snapshot.Config.EffectiveIdentity,
+		)
+	}
+	if !snapshot.ProcessingCapability.Enabled || !snapshot.Config.GraphEnabled {
+		d.logger.WarnContext(ctx, "graph extraction disabled, graph retrieval degraded",
+			"effective_identity", snapshot.Config.EffectiveIdentity,
+			"graph_enabled", snapshot.Config.GraphEnabled,
+		)
+	}
+}
+
+func (d *Daemon) logDiskThresholds(softFree, hardFree uint64) {
+	if d.logger == nil {
+		return
+	}
+	pressure, err := d.repository.DiskPressure()
+	if err != nil {
+		pressure = "unknown"
+	}
+	d.logger.Info("disk free thresholds configured",
+		"soft_free_bytes", softFree,
+		"hard_free_bytes", hardFree,
+		"pressure", pressure,
+	)
+}
+
+func (d *Daemon) logIndexRecovery(ctx context.Context) {
+	if d.logger == nil || d.repository == nil {
+		return
+	}
+	semanticState, semanticVersion := d.repository.SemanticHealth(ctx)
+	graphState, graphVersion := d.repository.GraphIndexHealth(ctx)
+	entityState, entityVersion := d.repository.EntityIndexHealth(ctx)
+	relationState, relationVersion := d.repository.RelationIndexHealth(ctx)
+	d.logger.InfoContext(ctx, "index recovery result",
+		"semantic_state", semanticState,
+		"semantic_version", semanticVersion,
+		"graph_state", graphState,
+		"graph_version", graphVersion,
+		"entity_state", entityState,
+		"entity_version", entityVersion,
+		"relation_state", relationState,
+		"relation_version", relationVersion,
+	)
 }
 
 func retrievalContracts(cfg config.Config) (retrieval.Weights, retrieval.Calibration, retrieval.GraphPolicy) {

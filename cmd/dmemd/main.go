@@ -22,6 +22,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/maintenance"
 	"github.com/N0rthHXD/dMem/internal/server"
 	"github.com/N0rthHXD/dMem/internal/storage"
+	"github.com/N0rthHXD/dMem/pkg/logging"
 )
 
 var version = "dev"
@@ -35,6 +36,11 @@ var (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	logger, err := newLogger(os.Getenv("DMEM_LOG_LEVEL"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	configPath, rest, err := extractGlobalConfig(os.Args[1:])
 	if err != nil || len(rest) == 0 {
 		fmt.Fprintln(os.Stderr, errUsage)
@@ -59,7 +65,7 @@ func main() {
 			}
 			return
 		case "daemon":
-			runDaemon(ctx, configPath)
+			runDaemon(ctx, configPath, logger)
 			return
 		case "config":
 			if err := runConfig(configPath, rest[1:], os.Stdout); err != nil {
@@ -71,6 +77,14 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, errUsage)
 	os.Exit(2)
+}
+
+func newLogger(value string) (*slog.Logger, error) {
+	level, err := logging.ParseLevel(value)
+	if err != nil {
+		return nil, err
+	}
+	return logging.New(os.Stderr, level), nil
 }
 
 func extractGlobalConfig(args []string) (configPath string, rest []string, err error) {
@@ -96,9 +110,10 @@ func extractGlobalConfig(args []string) (configPath string, rest []string, err e
 	return configPath, rest, nil
 }
 
-func runDaemon(ctx context.Context, configPath string) {
+func runDaemon(ctx context.Context, configPath string, logger *slog.Logger) {
+	processLogger := logging.WithComponent(logger, logging.ComponentDMEMD)
 	manager := config.NewManager(configPath, nil)
-	d, err := daemon.StartManaged(ctx, manager)
+	d, err := daemon.StartManaged(ctx, manager, daemon.WithLogger(logger))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -114,29 +129,30 @@ func runDaemon(ctx context.Context, configPath string) {
 		TLSCertFile:         snapshot.Config.TLSCertFile,
 		TLSKeyFile:          snapshot.Config.TLSKeyFile,
 		ShutdownGracePeriod: snapshot.Config.ShutdownGracePeriod,
+		Logger:              logger,
 	})
 	if err != nil {
-		slog.Error("http server configuration failed", "error", err)
+		processLogger.Error("http server configuration failed", "error", err)
 		_ = d.Close(context.Background())
 		os.Exit(2)
 	}
 	if err := srv.Start(); err != nil {
-		slog.Error("http server failed to start", "error", err)
+		processLogger.Error("http server failed to start", "error", err)
 		_ = d.Close(context.Background())
 		os.Exit(2)
 	}
-	slog.Info("daemon ready", "listen_address", srv.Addr())
+	processLogger.Info("daemon ready", "listen_address", srv.Addr())
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	go handleSIGHUPReloads(hup, d)
+	go handleSIGHUPReloads(hup, d, processLogger)
 
 	select {
 	case <-ctx.Done():
 	case serveErr := <-srv.Errors():
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			slog.Error("http server stopped", "error", serveErr)
+			processLogger.Error("http server stopped", "error", serveErr)
 		}
 	}
 
@@ -147,20 +163,20 @@ func runDaemon(ctx context.Context, configPath string) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("http server shutdown failed", "error", err)
+		processLogger.Error("http server shutdown failed", "error", err)
 	}
 	if err := d.Close(shutdownCtx); err != nil {
-		slog.Error("daemon shutdown failed", "error", err)
+		processLogger.Error("daemon shutdown failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func handleSIGHUPReloads(signals <-chan os.Signal, d *daemon.Daemon) {
+func handleSIGHUPReloads(signals <-chan os.Signal, d *daemon.Daemon, logger *slog.Logger) {
 	for range signals {
 		if result, err := d.Reload(context.Background(), config.TriggerSIGHUP); err != nil {
-			slog.Error("configuration reload failed", "error", err)
+			logger.Error("configuration reload failed", "error", err)
 		} else if result.Outcome == config.OutcomeRejected || result.Outcome == config.OutcomeFailed {
-			slog.Warn("configuration reload rejected", "code", result.ErrorCode)
+			logger.Warn("configuration reload rejected", "code", result.ErrorCode)
 		}
 	}
 }
