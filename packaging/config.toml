@@ -1,0 +1,169 @@
+# dMem 默认配置。
+#
+# Debian 包将本文件安装为 /usr/share/dmem/config.toml。${HOME} 会由 dmemd
+# 按当前运行用户展开。密钥值通过 [*.provider.secret] 引用的环境变量提供，
+# 永不存储在文件中。
+#
+# 启动守护进程前先离线校验：
+#   dmemd --config /absolute/path/config.toml config validate
+#
+# `dmemd daemon` 组装存储适配器、gateway 服务、provider、worker 与 REST+JSON
+# handler，并在回环地址上启动监听服务。默认监听 127.0.0.1:7373；设置
+# `tls_cert_file` 与 `tls_key_file` 后启用 TLS，并通过 ALPN 协商 HTTP/2。
+# 服务层不提供认证或网络安全边界，非回环绑定会在日志中产生警告。
+
+config_version = 1
+
+[instance]
+data_dir = "${HOME}/.local/share/dmem"
+database_filename = "dmem.db"
+
+[server]
+# 监听地址，host:port。默认 127.0.0.1:7373。
+listen_address = "127.0.0.1:7373"
+# 可选 TLS。两项必须同时设置、必须是绝对路径且不是符号链接。
+# tls_cert_file = "${HOME}/.config/dmem/tls/cert.pem"
+# tls_key_file = "${HOME}/.config/dmem/tls/key.pem"
+shutdown_grace_period = "15s"
+
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+# 确定性候选整合。余弦阈值本身永不取代、争议或删除任何内容。
+[consolidation]
+version = "consolidation-v1"
+max_candidates = 32
+exact_hash_enabled = true
+same_source_event_cosine = 0.90
+same_subject_kind_cosine = 0.94
+
+# 语义校准以绝对下限加 top-score 间距取代固定分数地板。
+[semantic]
+calibration_version = "semantic-calibration-v1"
+absolute_floor = 0.35
+top_margin = 0.08
+
+# 门控图谱检索。policy 取 off | features_only | direct | bounded_path 之一。
+[graph]
+policy = "features_only"
+min_entity_confidence = 0.60
+min_fact_confidence = 0.70
+boost_cap = 0.08
+
+# 确定性特征排序器。权重是起点值，而非固定真理。
+[ranking]
+version = "ranking-weights-v1"
+semantic_weight = 1.0
+keyword_weight = 0.35
+exact_weight = 0.15
+temporal_weight = 0.10
+quality_weight = 0.10
+agreement_weight = 0.05
+
+# 预算化上下文选择。max_context_chars 必须不小于 max_context_tokens。
+[context]
+max_context_tokens = 4000
+max_context_chars = 16000
+max_results = 20
+
+# dMem Provider Route 默认关闭。关闭状态下不需要 endpoint、model、secret 或出网
+# 策略；Agent Tool Route 只使用 FTS、search hints、实体和图谱召回。启用后才要求
+# 补全对应 provider 的连接、密钥引用、限制和默认拒绝的出网策略。
+[processing]
+enabled = false
+# 控制知识图谱抽取（extract_graph）。默认 true，仅在 processing 启用时生效。
+# 设为 false 可以在不进行图谱抽取的情况下运行处理（例如隔离检索基线）。
+# graph_enabled = true
+
+[embedding]
+enabled = false
+
+# 启用 Provider Route 的方法是：把对应 section 的 enabled 设为 true，并用完整的
+# provider section 提供连接配置。密钥值从外部提供，永不存储在此。处理 provider
+# 同时驱动记忆候选抽取（extract_memory）与知识图谱抽取（extract_graph）。图谱
+# 抽取还额外受 [processing].graph_enabled 门控。
+#
+# [processing]
+# enabled = true
+# graph_enabled = true
+#
+# [processing.provider]
+# kind = "openai-compatible"
+# endpoint = "https://provider.example/v1/chat/completions"
+# model = "model-a"
+# telemetry_disabled = true
+#
+# [processing.provider.secret]
+# source = "environment"
+# name = "DMEM_PROCESSING_API_KEY"
+#
+# [processing.provider.limits]
+# max_egress_input_chars = 12000
+# max_aggregate_input_chars = 48000
+# max_context_items = 8
+# max_candidate_chars = 12000
+# max_total_candidate_chars = 48000
+# max_response_bytes = 1048576
+# request_timeout = "30s"
+# max_concurrent = 2
+# requests_per_minute = 60
+#
+# [processing.provider.policy]
+# default = "deny"
+# content_types = ["application/json", "text/plain"]
+# source_types = ["manual", "message", "conversation"]
+# sensitivities = ["normal"]
+#
+# [[processing.provider.policy.assignments]]
+# selector = "space"
+# space_id = "11111111-1111-4111-8111-111111111111"
+# effect = "allow"
+# include_descendants = true
+#
+# [embedding]
+# enabled = true
+#
+# [embedding.provider]
+# kind = "openai-compatible"
+# endpoint = "https://provider.example/v1/embeddings"
+# model = "embedding-a"
+# telemetry_disabled = true
+#
+# [embedding.provider.secret]
+# source = "environment"
+# name = "DMEM_EMBEDDING_API_KEY"
+#
+# [embedding.provider.options]
+# dimensions = 1024
+# query_instructions = "query: "
+#
+# [embedding.provider.limits]
+# max_egress_input_chars = 12000
+# max_response_bytes = 1048576
+# request_timeout = "30s"
+# max_concurrent = 2
+# requests_per_minute = 60
+#
+# [embedding.provider.policy]
+# default = "deny"
+# query = "allow"
+# content_types = ["text/plain"]
+# source_types = ["manual", "message", "conversation"]
+# sensitivities = ["normal"]
+#
+# [[embedding.provider.policy.assignments]]
+# selector = "space_type"
+# space_type = "project"
+# effect = "allow"
+# priority = 100

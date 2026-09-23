@@ -42,6 +42,13 @@ func main() {
 	}
 	if len(rest) > 0 {
 		switch rest[0] {
+		case "version", "--version":
+			if len(rest) != 1 {
+				fmt.Fprintln(os.Stderr, errUsage)
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stdout, version)
+			return
 		case "backup", "restore", "init":
 			if err := runMaintenance(ctx, rest[0], rest[1:], os.Stdout, configPath); err != nil {
 				fmt.Fprintln(os.Stderr, maintenanceError(err))

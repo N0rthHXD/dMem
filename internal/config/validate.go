@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -57,6 +58,9 @@ func extractPath(err error) string {
 func normalize(doc fileDocument, data []byte) (Config, error) {
 	if doc.ConfigVersion != 1 {
 		return Config{}, newValidationError("config_invalid_value", Diagnostic{Code: "config_invalid_version", Path: "config_version"})
+	}
+	if err := expandUserPaths(&doc); err != nil {
+		return Config{}, err
 	}
 	if err := validateInstance(&doc.Instance); err != nil {
 		return Config{}, err
@@ -138,6 +142,23 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	cfg.SourceIdentity = sourceIdentity(data)
 	cfg.EffectiveIdentity = effectiveIdentity(cfg)
 	return cfg, nil
+}
+
+// expandUserPaths resolves the portable ${HOME} marker used by the packaged
+// default configuration. SourceIdentity still identifies the file bytes,
+// while EffectiveIdentity identifies the resolved runtime configuration.
+func expandUserPaths(doc *fileDocument) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return newValidationError("config_home_unavailable", Diagnostic{Code: "config_home_unavailable", Path: "instance.data_dir"})
+	}
+	expand := func(value string) string {
+		return strings.ReplaceAll(value, "${HOME}", filepath.Clean(home))
+	}
+	doc.Instance.DataDir = expand(doc.Instance.DataDir)
+	doc.Server.TLSCertFile = expand(doc.Server.TLSCertFile)
+	doc.Server.TLSKeyFile = expand(doc.Server.TLSKeyFile)
+	return nil
 }
 
 func validateInstance(t *instanceTable) error {

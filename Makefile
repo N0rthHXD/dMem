@@ -2,7 +2,25 @@ GO ?= go
 GO_TAGS := sqlite_fts5
 GOVULNCHECK ?= govulncheck
 
-.PHONY: build test test-race vet schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check mcp-check govulncheck check
+.PHONY: build package-deb test test-race vet schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check mcp-check govulncheck check
+
+VERSION ?= 0.1.0
+
+package-deb:
+	@set -eu; \
+		command -v dpkg-deb >/dev/null; \
+		arch="$$(dpkg --print-architecture)"; \
+		case "$$arch" in amd64|arm64) ;; *) echo "unsupported Debian architecture: $$arch" >&2; exit 2;; esac; \
+		case '$(VERSION)' in ''|*[!0-9A-Za-z.+:~_-]*) echo 'invalid VERSION' >&2; exit 2;; esac; \
+		stage="$$(mktemp -d)"; trap 'rm -rf "$$stage"' EXIT; \
+		install -d "$$stage/DEBIAN" "$$stage/usr/bin" "$$stage/usr/lib/systemd/user" "$$stage/usr/share/dmem" "$$stage/usr/share/doc/dmem" dist; \
+		sed -e 's/@VERSION@/$(VERSION)/g' -e "s/@ARCH@/$$arch/g" packaging/deb/control.in > "$$stage/DEBIAN/control"; \
+		CGO_ENABLED=1 $(GO) build -tags '$(GO_TAGS)' -trimpath -ldflags '-s -w -X main.version=$(VERSION)' -o "$$stage/usr/bin/dmemd" ./cmd/dmemd; \
+		install -m 0644 packaging/systemd/dmem.service "$$stage/usr/lib/systemd/user/dmem.service"; \
+		install -m 0644 packaging/config.toml "$$stage/usr/share/dmem/config.toml"; \
+		install -m 0644 README.md "$$stage/usr/share/doc/dmem/README.md"; \
+		install -m 0644 LICENSE "$$stage/usr/share/doc/dmem/LICENSE"; \
+		dpkg-deb --build --root-owner-group "$$stage" "dist/dmem_$(VERSION)_$$arch.deb"
 
 build:
 	CGO_ENABLED=1 $(GO) build -tags '$(GO_TAGS)' ./...

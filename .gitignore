@@ -21,3 +21,4 @@ dmemd
 .gomodcache/
 __pycache__/
 eval/results/
+dist/

@@ -110,6 +110,21 @@ func TestExampleConfigValidates(t *testing.T) {
 	}
 }
 
+func TestPackagedDefaultConfigExpandsHome(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "packaging", "config.toml"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".local", "share", "dmem")
+	if cfg.DataDir != want {
+		t.Fatalf("DataDir = %q, want %q", cfg.DataDir, want)
+	}
+}
+
 func TestProvidersDisabledByDefault(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))

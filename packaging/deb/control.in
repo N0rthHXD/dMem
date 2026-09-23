@@ -1,0 +1,8 @@
+Package: dmem
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: dMem Maintainers
+Description: Local memory daemon with HTTP API
+ dMem provides a per-user persistent memory service over HTTP.
