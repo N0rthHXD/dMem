@@ -1,6 +1,6 @@
 # dMem 配置示例。
 #
-# 把本文件复制到 ${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml，并按你的
+# 把本文件复制到 $HOME/.config/dmem/config.toml，并按你的
 # 用户修改下面的绝对路径。密钥值通过 [*.provider.secret] 引用的环境变量提供，
 # 永不存储在文件中。
 #

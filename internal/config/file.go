@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -251,13 +250,6 @@ func readFile(path string) ([]byte, error) {
 }
 
 func defaultConfigPath() (string, error) {
-	xdg := os.Getenv("XDG_CONFIG_HOME")
-	if xdg != "" {
-		if !filepath.IsAbs(xdg) {
-			return "", errors.New("XDG_CONFIG_HOME must be absolute when set")
-		}
-		return filepath.Join(xdg, "dmem", "config.toml"), nil
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

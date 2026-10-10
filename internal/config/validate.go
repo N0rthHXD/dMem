@@ -144,16 +144,23 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	return cfg, nil
 }
 
-// expandUserPaths resolves the portable ${HOME} marker used by the packaged
-// default configuration. SourceIdentity still identifies the file bytes,
+// expandUserPaths resolves the portable ${HOME} marker and a leading ~ used by
+// generated configurations. SourceIdentity still identifies the file bytes,
 // while EffectiveIdentity identifies the resolved runtime configuration.
 func expandUserPaths(doc *fileDocument) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return newValidationError("config_home_unavailable", Diagnostic{Code: "config_home_unavailable", Path: "instance.data_dir"})
 	}
+	home = filepath.Clean(home)
 	expand := func(value string) string {
-		return strings.ReplaceAll(value, "${HOME}", filepath.Clean(home))
+		if value == "~" {
+			return home
+		}
+		if strings.HasPrefix(value, "~/") {
+			return filepath.Join(home, value[2:])
+		}
+		return strings.ReplaceAll(value, "${HOME}", home)
 	}
 	doc.Instance.DataDir = expand(doc.Instance.DataDir)
 	doc.Server.TLSCertFile = expand(doc.Server.TLSCertFile)

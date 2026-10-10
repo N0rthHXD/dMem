@@ -6,7 +6,7 @@
 且不能经过不安全的符号链接。数据目录中的锁文件阻止第二个写入者。
 
 守护进程只读取一个严格 TOML 文件。默认位置为
-`${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`；`--config PATH` 是唯一与
+`$HOME/.config/dmem/config.toml`；`--config PATH` 是唯一与
 设置相关的命令行选项。建议从
 [config.example.toml](config.example.toml) 开始，替换示例中的绝对路径，并通过
 把私有临时文件原子重命名到目标位置来发布修改。文件不包含密钥值：启用的 provider

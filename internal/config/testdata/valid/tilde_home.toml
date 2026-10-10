@@ -1,0 +1,30 @@
+config_version = 1
+
+[instance]
+data_dir = "~/.local/share/dmem-tilde"
+database_filename = "dmem.db"
+
+[server]
+shutdown_grace_period = "15s"
+
+[jobs]
+worker_count = 2
+queue_soft_limit = 10000
+queue_hard_limit = 20000
+max_attempts = 3
+lease_duration = "30s"
+per_job_timeout = "2m"
+retry_initial_backoff = "1s"
+retry_max_backoff = "5m"
+
+[storage]
+disk_soft_free_bytes = 1073741824
+disk_hard_free_bytes = 268435456
+
+[processing]
+enabled = false
+[processing.provider]
+[embedding]
+enabled = false
+
+[embedding.provider]

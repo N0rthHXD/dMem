@@ -6,7 +6,7 @@ dMem 的守护进程设置来自**一个**严格 TOML 文件。它决定数据�
 
 ## 文件位置与加载
 
-默认路径为 `${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`。使用
+默认路径为 `$HOME/.config/dmem/config.toml`。使用
 `--config /absolute/path/config.toml`（或 `--config=/absolute/path`）选择其他
 实例。
 

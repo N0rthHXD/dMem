@@ -81,15 +81,15 @@ Agent 客户端 -> 传输服务层 -> 协议适配器 -> gateway 模块 -> 能�
 ```sh
 go mod download
 CGO_ENABLED=1 go build -tags sqlite_fts5 -o dmemd ./cmd/dmemd
-install -d -m 0700 "${XDG_CONFIG_HOME:-$HOME/.config}/dmem"
-cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml"
+install -d -m 0700 "$HOME/.config/dmem"
+cp docs/operations/config.example.toml "$HOME/.config/dmem/config.toml"
 # 编辑示例中的绝对 data_dir 路径
 ./dmemd config validate
 ./dmemd init
 ./dmemd daemon
 ```
 
-默认配置文件为 `${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`。使用
+默认配置文件为 `$HOME/.config/dmem/config.toml`。使用
 `--config /absolute/path/config.toml` 选择其他实例。该文件决定数据目录与所有
 守护进程设置，是守护进程设置的唯一来源。随仓库提供的示例中 provider 处于禁用
 状态。

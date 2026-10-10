@@ -125,6 +125,21 @@ func TestPackagedDefaultConfigExpandsHome(t *testing.T) {
 	}
 }
 
+func TestConfigExpandsTildeHome(t *testing.T) {
+	cfg, err := Load(filepath.Join("testdata", "valid", "tilde_home.toml"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".local", "share", "dmem-tilde")
+	if cfg.DataDir != want {
+		t.Fatalf("DataDir = %q, want %q", cfg.DataDir, want)
+	}
+}
+
 func TestProvidersDisabledByDefault(t *testing.T) {
 	t.Parallel()
 	cfg, err := Load(filepath.Join("testdata", "valid", "minimal.toml"))
