@@ -4,7 +4,7 @@ GOVULNCHECK ?= govulncheck
 
 .PHONY: build install test test-race vet schema schema-init schema-check restore-drill portability-drill quality performance offline-default config-check mcp-check govulncheck check
 
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 BINDIR ?= $(HOME)/.local/bin
 CONFIGDIR ?= $(HOME)/.config/dmem
 FORCE ?=

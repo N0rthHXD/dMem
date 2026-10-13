@@ -33,7 +33,7 @@ sh install.sh
 （`workflow_dispatch`）时可指定版本标签。指定版本安装：
 
 ```sh
-DMEM_VERSION=0.1.0 sh install.sh
+DMEM_VERSION=0.1.1 sh install.sh
 ```
 
 ### 网络受限（代理 / 镜像）
@@ -74,7 +74,7 @@ bash install.sh --daemon
 | `DMEM_PREBUILT=1` | 空 | 即使位于检出目录也强制下载预编译包 |
 | `DMEM_DOWNLOAD_BASE` | 发布资源 URL | 覆盖下载基址（镜像/代理） |
 | `https_proxy` | 空 | curl/wget 使用的标准代理 |
-| `VERSION` | `git describe --tags --always --dirty`，回退 `0.1.0` | 源码构建时写入二进制的版本 |
+| `VERSION` | `git describe --tags --always --dirty`，回退 `0.1.1` | 源码构建时写入二进制的版本 |
 
 若目标 `config.toml` 已存在，安装会保留它以避免覆盖本地修改；需要覆盖时使用
 `FORCE=1`。
@@ -84,7 +84,7 @@ bash install.sh --daemon
 `make install` 只做构建与拷贝，不做校验或初始化；`install.sh` 的源码路径复用它。
 
 ```sh
-make install VERSION=0.1.0
+make install VERSION=0.1.1
 ```
 
 随后手动完成初始化与启动：

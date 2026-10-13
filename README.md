@@ -110,7 +110,7 @@ bash install.sh --daemon     # 安装并后台启动守护进程
 `make install` 是底层原语，只做构建与拷贝，不做校验或初始化：
 
 ```sh
-make install VERSION=0.1.0
+make install VERSION=0.1.1
 ```
 
 发布包由 GitHub Actions（`.github/workflows/release.yml`）在推送 `v*` 标签时

@@ -107,7 +107,7 @@ fi
 
 if [ -n "$source_dir" ] && [ -z "$DMEM_PREBUILT" ]; then
     VERSION="${VERSION:-$(git -C "$source_dir" describe --tags --always --dirty 2>/dev/null || true)}"
-    [ -n "$VERSION" ] || VERSION=0.1.0
+    [ -n "$VERSION" ] || VERSION=0.1.1
     case "$VERSION" in
         ''|*[!0-9A-Za-z.+:~_-]*) die "invalid VERSION: $VERSION" ;;
     esac
