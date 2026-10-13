@@ -242,7 +242,7 @@ func TestSearchQualityContextSelectionMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	rawCandidates, _, _ := r.buildContextCandidates(context.Background(), tx, params, response.Results)
+	rawCandidates, _, _ := r.buildContextCandidates(context.Background(), tx, params, response.Results, true)
 	rawDuplicateRate := selectionDuplicateRate(rawCandidates)
 	selectedDuplicateRate := selectionDuplicateRateForItems(response.Context.Items)
 

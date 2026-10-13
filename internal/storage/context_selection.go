@@ -37,7 +37,7 @@ func (r *Repository) prepareContextSelection(ctx context.Context, tx *sql.Tx, pa
 			SkipDiversification: params.SkipDiversification,
 		}, state
 	}
-	candidates, index, aggregateInputs := r.buildContextCandidates(ctx, tx, params, response.Results)
+	candidates, index, aggregateInputs := r.buildContextCandidates(ctx, tx, params, response.Results, !hasChannel(response.ExecutedChannels, ChannelSemantic))
 	budget := domain.ContextBudget{
 		MaxTokens: params.MaxContextTokens, MaxChars: params.MaxChars,
 		MaxResults: params.Limit, MaxSources: params.MaxSources, MaxSensitive: params.MaxSensitive,
@@ -75,7 +75,7 @@ func (r *Repository) renderContextSelection(params SearchParams, response *domai
 	}
 }
 
-func (r *Repository) buildContextCandidates(ctx context.Context, tx *sql.Tx, params SearchParams, results []domain.SearchResult) ([]domain.ContextCandidate, map[string]*domain.SearchResult, map[string][]string) {
+func (r *Repository) buildContextCandidates(ctx context.Context, tx *sql.Tx, params SearchParams, results []domain.SearchResult, keywordFloor bool) ([]domain.ContextCandidate, map[string]*domain.SearchResult, map[string][]string) {
 	index := make(map[string]*domain.SearchResult, len(results))
 	memoryIDs := make([]string, 0, len(results))
 	for i := range results {
@@ -90,11 +90,13 @@ func (r *Repository) buildContextCandidates(ctx context.Context, tx *sql.Tx, par
 	for i := range results {
 		result := &results[i]
 		revision := result.Memory.CurrentRevision
-		relevance := selectionRelevance(revision, *result, terms)
+		relevance := selectionRelevance(revision, *result, terms, keywordFloor)
 		evidence := make([]string, 0, len(revision.Evidence))
 		sources := map[string]struct{}{}
 		for _, item := range revision.Evidence {
-			evidence = append(evidence, contextEvidenceKey(item))
+			if key := contextEvidenceKey(item); key != "" {
+				evidence = append(evidence, key)
+			}
 			if item.EventID != "" {
 				sources[item.EventID] = struct{}{}
 			}
@@ -190,17 +192,22 @@ func graphExplanation(paths []domain.GraphPath, signals []domain.GraphSignal) st
 // rather than the fused ranker total, so a legitimate direct match is never
 // discarded merely because rank-local calibration spread same-query results.
 //
-// A keyword-channel match is a primary relevance signal even when its literal
-// term coverage is low, for example a natural-language Chinese question that
-// shares only a subject name with the memory. Below the shared hint bound, such
-// a candidate receives 0.5 + 0.5*normalized keyword relevance, so the channel
-// establishes at least the hint-only bound and its rank scales above it.
-// Candidates already above the bound keep their coverage directly: raising
-// them too would turn rank-local BM25 spread into a relevance cliff that the
-// MMR score-discontinuity stop would treat as a quality drop. Exact canonical
-// matches remain protected and are chosen first; calibrated semantic and graph
-// scores still take the maximum.
-func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResult, terms []retrieval.KeywordTerm) float64 {
+// When no calibrated semantic channel executed — the default no-provider
+// deployment — any keyword-channel match, including a search-hint-only match,
+// receives a floor of hintSelectionRelevance + keywordSelectionFloorSpan *
+// normalized rank even when its literal term coverage is low; for example a
+// natural-language Chinese question that shares only a subject name with the
+// memory. The band is narrower than the smallest selection-policy
+// discontinuity, so rank spread inside the floor orders candidates without
+// tripping the MMR score-discontinuity stop.
+//
+// When semantic did execute, the floor is disabled: its values are not on the
+// same scale as calibrated semantic scores, and mixing them would let weak
+// keyword matches displace stronger calibrated candidates and regress hybrid
+// ordering. A search-hint-only match keeps its existing bounded relevance.
+//
+// Exact canonical matches remain protected and are chosen first.
+func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResult, terms []retrieval.KeywordTerm, keywordFloor bool) float64 {
 	if result.ProtectedPrimary {
 		return 1
 	}
@@ -211,8 +218,14 @@ func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResu
 	if result.KeywordHintMatched && relevance < hintSelectionRelevance {
 		relevance = hintSelectionRelevance
 	}
-	if result.KeywordRelevance != nil && relevance < hintSelectionRelevance {
-		relevance = keywordSelectionRelevance(*result.KeywordRelevance)
+	if keywordFloor && (result.KeywordHintMatched || result.KeywordRelevance != nil) {
+		keywordRelevance := 0.0
+		if result.KeywordRelevance != nil {
+			keywordRelevance = *result.KeywordRelevance
+		}
+		if floor := hintSelectionRelevance + keywordSelectionFloorSpan*retrieval.Clamp01(keywordRelevance); floor > relevance {
+			relevance = floor
+		}
 	}
 	if result.SemanticScore != nil && *result.SemanticScore > relevance {
 		relevance = *result.SemanticScore
@@ -223,19 +236,19 @@ func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResu
 	return retrieval.Clamp01(relevance)
 }
 
-// keywordSelectionRelevance maps the ranker's min-max normalized keyword score
-// onto a selection relevance floor. A keyword-channel hit has already been
-// recalled deterministically, so even a zero normalized score keeps it at the
-// hint-only bound instead of letting literal coverage alone discard the whole
-// result set.
-func keywordSelectionRelevance(keywordRelevance float64) float64 {
-	return hintSelectionRelevance + (1-hintSelectionRelevance)*retrieval.Clamp01(keywordRelevance)
-}
+const (
+	// hintSelectionRelevance is the bounded selection relevance granted to a
+	// search-hint-only keyword match. It is also the base of the keyword-channel
+	// relevance floor: any keyword-channel hit keeps at least this relevance.
+	hintSelectionRelevance = 0.5
 
-// hintSelectionRelevance is the bounded selection relevance granted to a
-// search-hint-only keyword match. It is also the base of the keyword-channel
-// relevance floor: any keyword-channel hit keeps at least this relevance.
-const hintSelectionRelevance = 0.5
+	// keywordSelectionFloorSpan scales the normalized keyword rank inside that
+	// floor. It must stay below the smallest selection-policy discontinuity
+	// (lookup 0.20) so rank spread inside the floor can never stop selection on
+	// its own, while still outranking the context-cost term that would
+	// otherwise order equal-relevance candidates by content length.
+	keywordSelectionFloorSpan = 0.15
+)
 
 func isAggregateKind(kind domain.MemoryKind) bool {
 	switch kind {
@@ -246,12 +259,15 @@ func isAggregateKind(kind domain.MemoryKind) bool {
 	}
 }
 
+// contextEvidenceKey identifies the exact source span behind one revision
+// evidence item. A shared span is what makes two memories evidence-duplicate:
+// a bare event can back a whole committed batch of distinct memories, so a
+// missing offset must not collapse them into one selection cluster.
 func contextEvidenceKey(evidence domain.RevisionEvidence) string {
-	key := evidence.EventID
-	if evidence.StartOffset != nil && evidence.EndOffset != nil {
-		key += ":" + formatInt(*evidence.StartOffset) + ":" + formatInt(*evidence.EndOffset)
+	if evidence.EventID == "" || evidence.StartOffset == nil || evidence.EndOffset == nil {
+		return ""
 	}
-	return key
+	return evidence.EventID + ":" + formatInt(*evidence.StartOffset) + ":" + formatInt(*evidence.EndOffset)
 }
 
 func contextClusterIDs(ctx context.Context, tx *sql.Tx, memoryIDs []string) map[string]string {

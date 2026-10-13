@@ -2,10 +2,11 @@ package storage
 
 import (
 	"context"
-	"math"
 	"testing"
+	"time"
 
 	"github.com/N0rthHXD/dMem/internal/domain"
+	agenttool "github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
@@ -16,44 +17,118 @@ func selectionSearchParams(query string, explain bool) SearchParams {
 	}
 }
 
-// TestSelectionRelevanceKeywordFloor locks the v3 keyword relevance floor: a
+// TestSelectionRelevanceKeywordFloor locks the v3 keyword relevance floor: any
 // keyword-channel hit must clear the selection utility floor even when its
-// literal term coverage does not. Semantic and graph maxima, literal coverage,
-// and exact-primary protection keep their existing precedence.
+// literal coverage does not. The floor scales with normalized keyword rank
+// inside a band narrower than the smallest selection discontinuity, so rank
+// orders candidates without tripping the MMR score-discontinuity stop.
+// Semantic and graph maxima, literal coverage, and exact-primary protection
+// keep their existing precedence.
 func TestSelectionRelevanceKeywordFloor(t *testing.T) {
 	terms := []retrieval.KeywordTerm{{Text: "Melanie"}}
 	revision := domain.MemoryRevision{DisplayContent: "database pool"}
 	score := func(value float64) *float64 { return &value }
+	floor := func(normalized float64) float64 {
+		return hintSelectionRelevance + keywordSelectionFloorSpan*normalized
+	}
 
-	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(1)}, terms); got != 1 {
-		t.Fatalf("normalized keyword 1 floor = %v, want 1", got)
+	for _, keywordRank := range []float64{1, 0.9, 0.4, 0} {
+		if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(keywordRank)}, terms, true); got != floor(keywordRank) {
+			t.Fatalf("normalized keyword %.1f floor = %v, want %v", keywordRank, got, floor(keywordRank))
+		}
 	}
-	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0)}, terms); got != hintSelectionRelevance {
-		t.Fatalf("normalized keyword 0 floor = %v, want %v", got, hintSelectionRelevance)
+	// The floor also applies to a hint-only match without a compiled score.
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordHintMatched: true}, terms, true); got != hintSelectionRelevance {
+		t.Fatalf("hint-only floor = %v, want %v", got, hintSelectionRelevance)
 	}
-	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0.4)}, terms); math.Abs(got-0.7) > 1e-9 {
-		t.Fatalf("normalized keyword 0.4 floor = %v, want 0.7", got)
+	// A hint-only match with a rank still receives the rank-scaled floor; the
+	// hint bound must not pin the relevance and skip rank scaling.
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordHintMatched: true, KeywordRelevance: score(1)}, terms, true); got != floor(1) {
+		t.Fatalf("hint-matched rank floor = %v, want %v", got, floor(1))
 	}
 	// Better literal coverage is never lowered by a weak keyword score.
-	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0)}, []retrieval.KeywordTerm{{Text: "database"}}); got != 1 {
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0)}, []retrieval.KeywordTerm{{Text: "database"}}, true); got != 1 {
 		t.Fatalf("full literal coverage = %v, want 1", got)
 	}
-	// Coverage above the bound is not re-scaled by keyword rank: raising it
-	// would turn rank-local BM25 spread into an MMR score-discontinuity cliff.
+	// Coverage above the floor keeps its value directly.
+	covered := domain.MemoryRevision{DisplayContent: "database pool Melanie"}
 	partial := []retrieval.KeywordTerm{{Text: "database"}, {Text: "pool"}, {Text: "Melanie"}, {Text: "Berlin"}}
-	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(1)}, partial); got != 0.5 {
-		t.Fatalf("partial literal coverage = %v, want 0.5", got)
+	if got := selectionRelevance(covered, domain.SearchResult{KeywordRelevance: score(1)}, partial, true); got != 0.75 {
+		t.Fatalf("partial literal coverage = %v, want 0.75", got)
+	}
+	// With the floor disabled (semantic executed), keyword matches keep only
+	// their coverage so calibrated semantic ordering stays authoritative.
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(1)}, terms, false); got != 0 {
+		t.Fatalf("disabled keyword floor = %v, want coverage 0", got)
+	}
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordHintMatched: true}, terms, false); got != hintSelectionRelevance {
+		t.Fatalf("disabled-floor hint match = %v, want %v", got, hintSelectionRelevance)
 	}
 	// Calibrated semantic and graph scores still take the maximum.
-	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0), SemanticScore: score(0.9)}, terms); got != 0.9 {
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0), SemanticScore: score(0.9)}, terms, true); got != 0.9 {
 		t.Fatalf("semantic maximum = %v, want 0.9", got)
 	}
-	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0), GraphScore: score(0.95)}, terms); got != 0.95 {
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0), GraphScore: score(0.95)}, terms, true); got != 0.95 {
 		t.Fatalf("graph maximum = %v, want 0.95", got)
 	}
 	// Protected exact primary matches remain canonical.
-	if got := selectionRelevance(revision, domain.SearchResult{ProtectedPrimary: true}, terms); got != 1 {
+	if got := selectionRelevance(revision, domain.SearchResult{ProtectedPrimary: true}, terms, true); got != 1 {
 		t.Fatalf("protected primary = %v, want 1", got)
+	}
+}
+
+// TestContextEvidenceKeyRequiresSourceSpan locks the duplicate-evidence key:
+// only an event plus its exact span identifies duplicate provenance. A bare
+// event backs a whole committed batch of distinct memories, so it must not
+// produce a cluster key.
+func TestContextEvidenceKeyRequiresSourceSpan(t *testing.T) {
+	if got := contextEvidenceKey(domain.RevisionEvidence{EventID: "event-1"}); got != "" {
+		t.Fatalf("span-less evidence key = %q, want empty", got)
+	}
+	start, end := int64(1), int64(5)
+	if got := contextEvidenceKey(domain.RevisionEvidence{EventID: "event-1", StartOffset: &start, EndOffset: &end}); got != "event-1:1:5" {
+		t.Fatalf("span evidence key = %q, want event-1:1:5", got)
+	}
+	if got := contextEvidenceKey(domain.RevisionEvidence{EventID: "event-1", StartOffset: &start}); got != "" {
+		t.Fatalf("half-span evidence key = %q, want empty", got)
+	}
+}
+
+// TestContextSelectionKeepsDistinctSpanlessEvidenceMemories is the regression
+// guard for committed batches: every memory of one Agent Tool commit cites the
+// same event without offsets. They are distinct memories and must each consume
+// a selection slot instead of collapsing into one duplicate cluster that hides
+// the actual match.
+func TestContextSelectionKeepsDistinctSpanlessEvidenceMemories(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	capability := NewAgentToolCapability(repository)
+	params := agenttool.CommitParams{
+		ScopeID: "space-1",
+		Source: agenttool.Source{
+			Type: "agent_tool", Name: "assistant", ConversationID: "spanless-conversation",
+			TurnID: "turn-1", OccurredAt: time.Date(2026, 8, 21, 11, 0, 0, 0, time.UTC),
+		},
+		Memories: []agenttool.MemorySuggestion{
+			{LocalID: "alpha", Kind: domain.MemoryKindFact, Content: "zephyr batch alpha", Sensitivity: agenttool.SensitivityNormal, Confidence: 0.9},
+			{LocalID: "beta", Kind: domain.MemoryKindFact, Content: "zephyr batch beta", Sensitivity: agenttool.SensitivityNormal, Confidence: 0.9},
+		},
+	}
+	record, replay, err := capability.CommitMemory(context.Background(), agentToolIdentity(t, "spanless-batch", params, agenttool.OperationMemoryCommit), params)
+	if err != nil || replay || len(record.Memories) != 2 {
+		t.Fatalf("commit span-less batch: record=%+v replay=%t err=%v", record, replay, err)
+	}
+	response, err := repository.SearchMemories(context.Background(), selectionSearchParams("zephyr batch", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := map[string]bool{}
+	for _, item := range response.Context.Items {
+		selected[item.MemoryID] = true
+	}
+	for _, outcome := range record.Memories {
+		if !selected[outcome.MemoryID] {
+			t.Fatalf("span-less batch collapsed: selected=%v missing %s", selected, outcome.MemoryID)
+		}
 	}
 }
 
