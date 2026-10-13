@@ -1,11 +1,11 @@
 # dMem 默认配置。
 #
-# Debian 包将本文件安装为 /usr/share/dmem/config.toml。${HOME} 会由 dmemd
-# 按当前运行用户展开。密钥值通过 [*.provider.secret] 引用的环境变量提供，
-# 永不存储在文件中。
+# `make install` 将本文件安装为 ~/.config/dmem/config.toml，即 dmemd 的默认
+# 配置读取路径。${HOME} 会由 dmemd 按当前运行用户展开。密钥值通过
+# [*.provider.secret] 引用的环境变量提供，永不存储在文件中。
 #
 # 启动守护进程前先离线校验：
-#   dmemd --config /absolute/path/config.toml config validate
+#   dmemd config validate
 #
 # `dmemd daemon` 组装存储适配器、gateway 服务、provider、worker 与 REST+JSON
 # handler，并在回环地址上启动监听服务。默认监听 127.0.0.1:7373；设置
