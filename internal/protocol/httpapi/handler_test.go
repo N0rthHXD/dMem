@@ -13,6 +13,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/pkg/toolcontract"
 )
@@ -73,10 +74,60 @@ func (f *fakeEvents) GetEvent(_ context.Context, _ gateway.CallContext, query ex
 		Content: domain.Content{Kind: "text", MediaType: "text/plain", Text: "body"}}, nil
 }
 
+type fakeReviews struct {
+	call    gateway.CallContext
+	command any
+	err     error
+}
+
+func (f *fakeReviews) ListCandidates(_ context.Context, call gateway.CallContext, query review.ListCandidatesQuery) (domain.CandidatePage, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return domain.CandidatePage{}, f.err
+	}
+	return domain.CandidatePage{Items: []domain.Candidate{testCandidate("candidate-1")}}, nil
+}
+func (f *fakeReviews) GetCandidate(_ context.Context, call gateway.CallContext, query review.GetCandidateQuery) (domain.Candidate, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return domain.Candidate{}, f.err
+	}
+	return testCandidate(query.CandidateID), nil
+}
+func (f *fakeReviews) ConfirmCandidate(_ context.Context, call gateway.CallContext, command review.ReviewCandidateCommand) (review.CandidateReviewResult, error) {
+	f.call, f.command = call, command
+	if f.err != nil {
+		return review.CandidateReviewResult{}, f.err
+	}
+	return review.CandidateReviewResult{
+		WriteResult: gateway.WriteResult{OperationID: "op", Replay: true},
+		Candidate:   testCandidate(command.CandidateID),
+		Memory:      &domain.Memory{MemoryID: "memory-1"},
+	}, nil
+}
+func (f *fakeReviews) RejectCandidate(_ context.Context, call gateway.CallContext, command review.ReviewCandidateCommand) (review.CandidateReviewResult, error) {
+	f.call, f.command = call, command
+	if f.err != nil {
+		return review.CandidateReviewResult{}, f.err
+	}
+	candidate := testCandidate(command.CandidateID)
+	candidate.ReviewState = "rejected"
+	return review.CandidateReviewResult{WriteResult: gateway.WriteResult{OperationID: "op"}, Candidate: candidate}, nil
+}
+
+func testCandidate(id string) domain.Candidate {
+	return domain.Candidate{
+		CandidateID: id, EventID: "event", SpaceID: "scope", ReviewState: "pending",
+		ProcessorIdentity: "processor/test", ProcessingVersion: "candidate-v1", SpecificationHash: "hash",
+		Revision: domain.MemoryRevision{Kind: domain.MemoryKindFact, DisplayContent: "content", CanonicalContent: "content", Sensitivity: "normal"},
+		Evidence: []domain.RevisionEvidence{}, CreatedAt: "2026-09-20T10:00:00Z",
+	}
+}
+
 func testHandler(t *testing.T) (*Handler, *fakeTools, *fakeScopes) {
 	t.Helper()
 	tools, scopes := &fakeTools{}, &fakeScopes{}
-	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes, Events: &fakeEvents{}})
+	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes, Events: &fakeEvents{}, Reviews: &fakeReviews{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +144,10 @@ var targetRoutes = []RouteInfo{
 	{Operation: OperationScopeGet, Method: http.MethodGet, Path: "/v1/scopes/{scope_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
 	{Operation: extraction.OperationIngest, Method: http.MethodPost, Path: "/v1/events", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxEventIngestBodyBytes},
 	{Operation: OperationEventGet, Method: http.MethodGet, Path: "/v1/events/{event_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationCandidateList, Method: http.MethodGet, Path: "/v1/candidates", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationCandidateGet, Method: http.MethodGet, Path: "/v1/candidates/{candidate_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: review.OperationCandidateConfirm, Method: http.MethodPost, Path: "/v1/candidates/{candidate_id}/confirm", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxCandidateReviewBodyBytes},
+	{Operation: review.OperationCandidateReject, Method: http.MethodPost, Path: "/v1/candidates/{candidate_id}/reject", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxCandidateReviewBodyBytes},
 }
 
 func TestRoutesAreExactProviderAndToolSurface(t *testing.T) {
@@ -205,7 +260,7 @@ func TestScopeEnsureResolvesThenCreatesAndScopeGet(t *testing.T) {
 
 func TestEventIngestAndStatusUseProviderRouteSurface(t *testing.T) {
 	events := &fakeEvents{}
-	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: events})
+	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: events, Reviews: &fakeReviews{}})
 	if err != nil {
 		t.Fatal(err)
 	}

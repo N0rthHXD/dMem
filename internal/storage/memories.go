@@ -1055,13 +1055,20 @@ func (r *Repository) ensureCurrentEmbeddingEligibility(ctx context.Context, tx *
 	return nil
 }
 
-func replayMemory(ctx context.Context, tx *sql.Tx, identity WriteIdentity, expectedStatus int) (domain.Memory, bool, error) {
+func replayMemory(ctx context.Context, tx *sql.Tx, identity WriteIdentity, expectedStatuses ...int) (domain.Memory, bool, error) {
 	status, body, found, err := readIdempotency(ctx, tx, identity)
 	if err != nil || !found {
 		return domain.Memory{}, false, err
 	}
+	accepted := false
+	for _, expected := range expectedStatuses {
+		if status == expected {
+			accepted = true
+			break
+		}
+	}
 	var result domain.Memory
-	if status != expectedStatus || json.Unmarshal([]byte(body), &result) != nil {
+	if !accepted || json.Unmarshal([]byte(body), &result) != nil {
 		return domain.Memory{}, false, errors.New("invalid stored idempotency response")
 	}
 	return result, true, nil

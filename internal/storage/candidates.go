@@ -295,28 +295,36 @@ func candidateRevision(candidate domain.Candidate, revisionID, memoryID, caller,
 	return revision, nil
 }
 
-func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentity, candidateID string, params ReviewCandidateParams) (domain.Memory, bool, error) {
+func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentity, candidateID string, params ReviewCandidateParams) (domain.Memory, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	defer tx.Rollback()
-	if result, replay, err := replayMemory(ctx, tx, identity, 201); err != nil || replay {
-		return result, replay, err
+	existing, replay, err := replayMemory(ctx, tx, identity, 200, 201)
+	if err != nil {
+		return domain.Memory{}, "", false, err
+	}
+	if replay {
+		operationID, err := readIdempotencyOperation(ctx, tx, identity)
+		if err != nil {
+			return domain.Memory{}, "", false, err
+		}
+		return existing, operationID, true, nil
 	}
 	if err := r.requireDiskWritable(); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	candidate, err := getCandidate(ctx, tx, candidateID)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if candidate.ReviewState != "pending" {
-		return domain.Memory{}, false, ErrCandidateReviewed
+		return domain.Memory{}, "", false, ErrCandidateReviewed
 	}
 	evidence := evidenceParams(candidate.Evidence)
 	if err := requireSpaceAndEvidence(ctx, tx, candidate.SpaceID, evidence); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	classificationRevision := candidate.Revision
 	if classificationRevision.CanonicalHash == "" {
@@ -324,22 +332,22 @@ func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentit
 	}
 	outcome, _, err := r.classifyCandidateForConsolidation(ctx, tx, candidate, classificationRevision)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	result, targetMemoryID, targetRevisionID, err := r.applyConsolidation(ctx, tx, identity, candidate, evidence, classificationRevision, outcome)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	decisionID, operationID, auditID, reviewID, err := r.fourIDs()
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	now := formatTime(r.runtime.Now())
 	if outcome.Action != domain.ConsolidationReject {
 		outcome.TargetMemoryID, outcome.TargetRevisionID = targetMemoryID, targetRevisionID
 	}
 	if err := r.recordConsolidationDecision(ctx, tx, decisionID, candidate, outcome); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	status := 201
 	toState := "confirmed"
@@ -348,20 +356,20 @@ func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentit
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE candidates SET review_state=?, confirmed_memory_id=?, confirmed_revision_id=?, reviewed_at=? WHERE candidate_id=? AND review_state='pending'`, toState, nullableConfirmRef(targetMemoryID), nullableConfirmRef(targetRevisionID), now, candidateID)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if count, err := updated.RowsAffected(); err != nil || count != 1 {
-		return domain.Memory{}, false, ErrCandidateReviewed
+		return domain.Memory{}, "", false, ErrCandidateReviewed
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_reviews(review_id, candidate_id, operation_id, from_state, to_state, reason_code, note, reviewer_id, memory_id, revision_id, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`, reviewID, candidateID, operationID, toState, params.ReasonCode, params.Note, identity.CallerID, nullableConfirmRef(targetMemoryID), nullableConfirmRef(targetRevisionID), now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	body, err := json.Marshal(result)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := writeIdempotency(ctx, tx, identity, operationID, status, body, now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	reason, _ := json.Marshal(map[string]any{
 		"reason": params.ReasonCode, "consolidation_action": outcome.Action,
@@ -373,12 +381,12 @@ func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentit
 		action = "reject_candidate"
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, reason, created_at) VALUES (?, ?, ?, ?, ?, 'candidate', ?, 'succeeded', ?, ?)`, auditID, operationID, identity.RequestID, identity.CallerID, action, candidateID, string(reason), now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
-	return result, false, nil
+	return result, operationID, false, nil
 }
 
 func nullableConfirmRef(value string) any {
@@ -488,65 +496,69 @@ func (r *Repository) refreshConsolidationProjections(ctx context.Context, tx *sq
 	return advanceProjectionGeneration(ctx, tx, now)
 }
 
-func (r *Repository) RejectCandidate(ctx context.Context, identity WriteIdentity, candidateID string, params ReviewCandidateParams) (domain.Candidate, bool, error) {
+func (r *Repository) RejectCandidate(ctx context.Context, identity WriteIdentity, candidateID string, params ReviewCandidateParams) (domain.Candidate, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	defer tx.Rollback()
 	status, body, found, err := readIdempotency(ctx, tx, identity)
 	if err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	if found {
 		var result domain.Candidate
 		if status != 200 || json.Unmarshal([]byte(body), &result) != nil {
-			return domain.Candidate{}, false, errors.New("invalid stored idempotency response")
+			return domain.Candidate{}, "", false, errors.New("invalid stored idempotency response")
 		}
-		return result, true, nil
+		operationID, err := readIdempotencyOperation(ctx, tx, identity)
+		if err != nil {
+			return domain.Candidate{}, "", false, err
+		}
+		return result, operationID, true, nil
 	}
 	if err := r.requireDiskWritable(); err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	candidate, err := getCandidate(ctx, tx, candidateID)
 	if err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	if candidate.ReviewState != "pending" {
-		return domain.Candidate{}, false, ErrCandidateReviewed
+		return domain.Candidate{}, "", false, ErrCandidateReviewed
 	}
 	ids, err := r.newIDs(3)
 	if err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	operationID, auditID, reviewID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
 	updated, err := tx.ExecContext(ctx, `UPDATE candidates SET review_state='rejected', reviewed_at=? WHERE candidate_id=? AND review_state='pending'`, now, candidateID)
 	if err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	if count, err := updated.RowsAffected(); err != nil || count != 1 {
-		return domain.Candidate{}, false, ErrCandidateReviewed
+		return domain.Candidate{}, "", false, ErrCandidateReviewed
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_reviews(review_id, candidate_id, operation_id, from_state, to_state, reason_code, note, reviewer_id, created_at) VALUES (?, ?, ?, 'pending', 'rejected', ?, ?, ?, ?)`, reviewID, candidateID, operationID, params.ReasonCode, params.Note, identity.CallerID, now); err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	result, err := getCandidate(ctx, tx, candidateID)
 	if err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	if err := writeIdempotency(ctx, tx, identity, operationID, 200, encoded, now); err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, reason, created_at) VALUES (?, ?, ?, ?, 'reject_candidate', 'candidate', ?, 'succeeded', ?, ?)`, auditID, operationID, identity.RequestID, identity.CallerID, candidateID, params.ReasonCode, now); err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return domain.Candidate{}, false, err
+		return domain.Candidate{}, "", false, err
 	}
-	return result, false, nil
+	return result, operationID, false, nil
 }

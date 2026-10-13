@@ -26,7 +26,8 @@ provider 默认关闭。
   产生并接受确定性校验与风险分类。Agent Tool 提交的知识建议持久化为
   `agent_tool_proposals` 审核对象，不直接发布权威；Provider Route 满足封闭谓词
   自动确认策略的事实可以自动确认（`auto-review-v1`），其余留在审核队列。
-  审核与冲突解决不变量由存储层强制，当前没有协议入口。
+  记忆候选的确认与拒绝通过 `/v1/candidates` 暴露；图谱/聚合提案与冲突解决不变量由
+  存储层强制，当前没有协议入口。
 - **混合检索**：关键词（SQLite FTS5）与语义（sqlite-vec 精确余弦）作为独立的
   主召回信号，叠加门控类型化图谱特征、确定性特征排序、预算化上下文选择与
   结果多样化。
@@ -47,9 +48,9 @@ provider 默认关闭。
 仓库围绕一个语义核心与轻量入站协议适配器组织：
 
 - **Memory Gateway**（`internal/gateway`）拥有应用语义，当前分为 `agenttool`、
-  `scope`、`retrieval`、`extraction`、`consolidation`（仅纯分类器）与 `policy`
-  六个模块。模块发布协议中立的命令、查询、结果、错误与窄能力端口，且永不导入
-  `net/http`、协议包或存储实现。
+  `scope`、`retrieval`、`extraction`、`review`、`consolidation`（仅纯分类器）与
+  `policy` 七个模块。模块发布协议中立的命令、查询、结果、错误与窄能力端口，且永不
+  导入 `net/http`、协议包或存储实现。
 - **协议适配器**把线上协议翻译为 gateway 调用。当前实现是
   `internal/protocol/httpapi` 与建立在同一 application contract 上的
   `internal/protocol/mcp`（stdio）。适配器负责严格解码、请求体上限、请求头、路由
@@ -156,14 +157,18 @@ POST /v1/scopes/ensure
 GET  /v1/scopes/{scope_id}
 POST /v1/events
 GET  /v1/events/{event_id}
+GET  /v1/candidates
+GET  /v1/candidates/{candidate_id}
+POST /v1/candidates/{candidate_id}/confirm
+POST /v1/candidates/{candidate_id}/reject
 ```
 
 `GET /v1/capabilities` 是唯一的公开路由；其余路由都要求调用方身份
 （`X-Caller-Subject-ID` 和/或 `X-Caller-Client-ID`），写操作要求
 `Idempotency-Key`，`POST /v1/recall` 是读操作。请求是严格的单值 JSON，具有按
 路由的请求体上限，每个响应都携带 `X-Request-ID`。Agent Tool 路由的线格式由
-`pkg/toolcontract` 的版本化 schema 唯一定义；`/v1/events` 是 Provider Route
-入口，processing 未启用时只把事件保存为 `stored`。
+`pkg/toolcontract` 的版本化 schema 唯一定义；`/v1/events` 与 `/v1/candidates`
+是 Provider Route 入口，processing 未启用时只把事件保存为 `stored`。
 `internal/protocol/httpapi` 返回
 `http.Handler`；`internal/server` 在回环地址上提供监听、可选 TLS 与优雅关闭。
 服务层不提供认证。`dmem-mcp` 通过 stdio 暴露同样的四个工具，并复用

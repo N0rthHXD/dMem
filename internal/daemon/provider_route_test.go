@@ -105,7 +105,7 @@ func TestProviderRouteEventToCandidateReviewEmbeddingAndRecall(t *testing.T) {
 	if processor.calls != 1 {
 		t.Fatalf("processor calls = %d, want 1", processor.calls)
 	}
-	confirmed, replay, err := repository.ConfirmCandidate(ctx, providerRouteIdentity("confirm-1", "provider_route.candidate_review"), candidateID, storage.ReviewCandidateParams{ReasonCode: "reviewed"})
+	confirmed, _, replay, err := repository.ConfirmCandidate(ctx, providerRouteIdentity("confirm-1", "provider_route.candidate_review"), candidateID, storage.ReviewCandidateParams{ReasonCode: "reviewed"})
 	if err != nil || replay {
 		t.Fatalf("ConfirmCandidate() replay=%t error=%v", replay, err)
 	}

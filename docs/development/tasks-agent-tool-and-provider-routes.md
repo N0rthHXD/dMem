@@ -717,6 +717,64 @@ client、schema 或配置项。
   向 entity/fact/relation 权威的物化、以及可选 Agent embedding adapter（仅当出现
   真实宿主支持时，前置条件见 Phase 6 决策）。
 
+## Phase 8：Provider Route 候选审核入口
+
+Phase 7 记录的“审核只有存储层消费者、没有协议入口”缺口在本阶段补齐，范围仅限记忆
+候选；图谱/实体/事实/关系/演化/聚合提案与冲突解决的审核仍只有存储层能力。
+
+### 任务
+
+- [x] 新增 `internal/gateway/review` 协议中立模块：候选 list/get/confirm/reject。
+- [x] 新增协议入口 `GET /v1/candidates`、`GET /v1/candidates/{candidate_id}`、
+      `POST /v1/candidates/{candidate_id}/confirm`、`POST /v1/candidates/{candidate_id}/reject`。
+- [x] 新增存储适配器 `ReviewCapability`，并让
+      `Repository.ConfirmCandidate`/`RejectCandidate` 返回 operation id。
+- [x] 修复整合归约为 `rejected` 的确认写入幂等状态 `200` 但重放只接受 `201` 的缺陷。
+
+### 完成条件
+
+- Provider Route 候选可从 HTTP 列出、读取、确认、拒绝，并保持幂等、审计与整合不变量；
+- 确认后的候选由共享召回流水线检索，拒绝不写入记忆权威；
+- 图谱/聚合提案与冲突解决的缺失入口被文档明确标注为后续工作。
+
+### Phase 8 实施记录
+
+- 状态：completed
+- 完成日期：2026-10-13
+- 主要变更：
+  - `internal/gateway/review`：新增 `Service`/`ServiceImpl`、`CandidateStore` 端口、
+    `ListCandidatesQuery`/`GetCandidateQuery`/`ReviewCandidateCommand`/
+    `CandidateReviewResult`、操作名 `review.candidate_confirm`/`review.candidate_reject`
+    与输入边界；只做校验、幂等写身份与错误映射。
+  - `internal/storage`：新增 `gateway_review.go` 的 `ReviewCapability` 适配器并在
+    `gateway_assert.go` 断言端口；`ConfirmCandidate`/`RejectCandidate` 各增返回
+    operation id；新增 `readIdempotencyOperation`；`replayMemory` 接受多个状态，
+    修复整合归约为拒绝时的重放缺陷。
+  - `internal/protocol/httpapi`：新增 `candidates.go` 协议本地 DTO 与
+    list/get/confirm/reject handler；`contract.go` 增加消费者自有 `ReviewService`、
+    `Dependencies.Reviews`、读操作名与 16 KiB body 上限；`handler.go` 注册四条路由并
+    更新模块注释；`arch_test.go` 依赖字段数 3→4。
+  - `internal/daemon`：组装 `review.NewService(storage.NewReviewCapability(repository))`。
+  - 测试：`internal/gateway/review/service_test.go`、
+    `internal/protocol/httpapi/candidates_test.go`、storage
+    `TestReviewCapabilityConfirmAndRejectIsIdempotent`；`release_acceptance_test.go` 的
+    Mixed 场景改为经 `/v1/candidates` 确认候选后再召回。
+  - 文档：更新 `docs/api/http-rest-contract.md`、`docs/api/usage.md`、
+    `docs/architecture/processing.md`、`docs/architecture/agent-tool-and-provider-routes.md`、
+    `docs/development/testing.md`、`docs/README.md`。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `make build`、`make test`、`make test-race`、`make vet`；
+  - `make schema-check`、`make quality`、`make offline-default`、
+    `make config-check`、`make restore-drill`、`make portability-drill`、`make mcp-check`；
+  - `git diff --check`；全部通过。
+- 删除内容：无。本阶段只新增审核入口并修复一个存储层重放缺陷。
+- 遗留问题：图谱/实体/事实/关系/演化/聚合提案审核与冲突解决仍只有存储层方法；候选
+  审核不做 policy 授权（当前实现整体无认证），与 events 入口一致。
+- 下一阶段前置条件：若需要图谱/聚合/冲突审核入口，应按同一“gateway 模块 +
+  storage 适配器 + 协议路由”模式扩展，并保持候选与提案共享同一审核状态机语义。
+
 ## 跨阶段测试矩阵
 
 | 维度 | 必测值 |

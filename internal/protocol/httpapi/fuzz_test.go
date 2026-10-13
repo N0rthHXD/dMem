@@ -144,7 +144,7 @@ func FuzzEventIngestBoundsAreEnforced(f *testing.F) {
 func fuzzHandler(f *testing.F) (*Handler, *fakeTools, *fakeScopes) {
 	f.Helper()
 	tools, scopes := &fakeTools{}, &fakeScopes{}
-	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes, Events: &fakeEvents{}})
+	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes, Events: &fakeEvents{}, Reviews: &fakeReviews{}})
 	if err != nil {
 		f.Fatalf("New() error = %v", err)
 	}

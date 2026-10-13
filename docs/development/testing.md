@@ -81,7 +81,7 @@ CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/domain -run '^$' -fuzz 'FuzzP
 | Native client | `TestReleaseAcceptanceNativeClientClosesMemoryLoop` | 无 MCP、无 provider 时经 `pkg/client` 与真实 HTTP 完成同等闭环，并报告 `semantic` 降级。 |
 | Native/MCP 等价 | `TestReleaseAcceptanceNativeClientMatchesMCPCommand` | 同一工具命令在两个传输上产生相同状态词汇与独立权威身份。 |
 | Provider-only | `TestProviderRouteEventToCandidateReviewEmbeddingAndRecall` | 原始事件经 durable job、processor、审核、embedding 进入可召回状态。 |
-| Mixed | `TestReleaseAcceptanceMixedRoutesShareOneAuthority` | 同实例两条路线并存：Tool 写入零模型 job，collector 事件恰好一个 job 且被 worker 消费为候选。 |
+| Mixed | `TestReleaseAcceptanceMixedRoutesShareOneAuthority` | 同实例两条路线并存：Tool 写入零模型 job，collector 事件恰好一个 job 且被 worker 消费为候选，候选经 `/v1/candidates` 审核入口确认后可召回。 |
 | Offline | `TestReleaseAcceptanceOfflineRestartKeepsToolRouteMemories` | provider 全关时重启后 Tool Route 记忆仍可召回，且零模型 job。 |
 | Degraded | `TestHybridFallbacksAndNeitherChannelAvailable`、`TestSemanticDimensionChangeInvalidatesVectorsAndRebuilds` | embedding 故障或旧向量空间时 keyword/graph 召回继续并明确报告降级。 |
 | Conflict | `TestReleaseAcceptanceAgentSuggestionCannotSilentlyOverwrite` | 敏感内容与聚合 kind 进入 proposal 且不发布权威；重复内容 deduplicated 到既有 revision。 |
@@ -198,8 +198,13 @@ make mcp-check
 - `TestAggregateRebuildUsesProcessingPolicyAndRecordsAttempt` 与
   `TestAggregateRebuildPolicyDenialBlocksBeforeProviderAttempt` 证明 aggregate
   rebuild 经过 processing policy 与 provider attempt 记录，被拒绝时在调用前阻塞。
-- `internal/protocol/httpapi` 覆盖 `POST /v1/events` 与 `GET /v1/events/{event_id}`
-  的路由元数据、DTO 映射、未知字段与畸形 body 拒绝。
+- `internal/protocol/httpapi` 覆盖 `POST /v1/events`、`GET /v1/events/{event_id}`
+  以及候选审核路由 `/v1/candidates`、`/v1/candidates/{candidate_id}` 与
+  `.../confirm`、`.../reject` 的路由元数据、DTO 映射、未知字段与畸形 body 拒绝。
+- `internal/gateway/review` 的 `TestConfirmCandidateReturnsMemoryOnlyWhenConfirmed`
+  与 `TestReviewValidatesReasonAndNote` 覆盖候选审核命令校验、幂等写身份与错误映射；
+  `internal/storage` 的 `TestReviewCapabilityConfirmAndRejectIsIdempotent` 证明存储
+  适配器的确认/拒绝幂等与冲突分类。
 - `internal/daemon` 的 `TestProviderRouteEventToCandidateReviewEmbeddingAndRecall`
   用真实 SQLite 与进程内确定性 processor/embedding 驱动 event -> durable job ->
   candidate -> review -> revision -> semantic index -> recall 全链路；

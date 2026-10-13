@@ -128,7 +128,7 @@ func TestCandidatePersistsStructuredRevisionThroughConfirmation(t *testing.T) {
 	}
 	review := ReviewCandidateParams{ReasonCode: "accepted"}
 	identity := candidateIdentity("structured-confirm", "confirm", candidate.CandidateID, review)
-	memory, _, err := repository.ConfirmCandidate(context.Background(), identity, candidate.CandidateID, review)
+	memory, _, _, err := repository.ConfirmCandidate(context.Background(), identity, candidate.CandidateID, review)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestCandidateConfirmCreatesExactlyOneActiveMemoryAtomicallyAndReplays(t *te
 	candidate := createTestCandidate(t, repository)
 	params := ReviewCandidateParams{ReasonCode: "accepted", Note: stringPointer("reviewed")}
 	identity := candidateIdentity("confirm", "confirm", candidate.CandidateID, params)
-	memory, replay, err := repository.ConfirmCandidate(context.Background(), identity, candidate.CandidateID, params)
+	memory, _, replay, err := repository.ConfirmCandidate(context.Background(), identity, candidate.CandidateID, params)
 	if err != nil || replay {
 		t.Fatalf("ConfirmCandidate() = %+v, replay=%t, error=%v", memory, replay, err)
 	}
@@ -170,11 +170,11 @@ func TestCandidateConfirmCreatesExactlyOneActiveMemoryAtomicallyAndReplays(t *te
 			t.Fatalf("%s count = %d, %v; want %d", table, got, err, want)
 		}
 	}
-	replayed, replay, err := repository.ConfirmCandidate(context.Background(), identity, candidate.CandidateID, params)
+	replayed, _, replay, err := repository.ConfirmCandidate(context.Background(), identity, candidate.CandidateID, params)
 	if err != nil || !replay || !reflect.DeepEqual(replayed, memory) {
 		t.Fatalf("confirm replay = %+v, replay=%t, error=%v", replayed, replay, err)
 	}
-	if _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("second-confirm", "confirm", candidate.CandidateID, params), candidate.CandidateID, params); !errors.Is(err, ErrCandidateReviewed) {
+	if _, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("second-confirm", "confirm", candidate.CandidateID, params), candidate.CandidateID, params); !errors.Is(err, ErrCandidateReviewed) {
 		t.Fatalf("second confirmation error = %v", err)
 	}
 }
@@ -192,7 +192,7 @@ func TestConcurrentCandidateConfirmsCreateOneMemory(t *testing.T) {
 		go func(key string) {
 			defer workers.Done()
 			<-start
-			_, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity(key, "confirm", candidate.CandidateID, params), candidate.CandidateID, params)
+			_, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity(key, "confirm", candidate.CandidateID, params), candidate.CandidateID, params)
 			results <- err
 		}(string(rune('a' + i)))
 	}
@@ -235,7 +235,7 @@ func TestCandidateConfirmRevalidatesEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	review := ReviewCandidateParams{ReasonCode: "accepted"}
-	if _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("invalid-confirm", "confirm", "invalid-candidate", review), "invalid-candidate", review); !errors.Is(err, ErrInvalidEvidence) {
+	if _, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("invalid-confirm", "confirm", "invalid-candidate", review), "invalid-candidate", review); !errors.Is(err, ErrInvalidEvidence) {
 		t.Fatalf("ConfirmCandidate() error = %v; want ErrInvalidEvidence", err)
 	}
 	var memories int
@@ -256,7 +256,7 @@ func TestCandidateConfirmRequiresValidStructuredRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	review := ReviewCandidateParams{ReasonCode: "accepted"}
-	if _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("scalar-confirm", "confirm", "scalar-candidate", review), "scalar-candidate", review); err == nil {
+	if _, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("scalar-confirm", "confirm", "scalar-candidate", review), "scalar-candidate", review); err == nil {
 		t.Fatal("ConfirmCandidate succeeded without a valid structured revision")
 	}
 	var memories int
@@ -309,7 +309,7 @@ func TestCandidateRejectCreatesNoMemoryAndReplays(t *testing.T) {
 	candidate := createTestCandidate(t, repository)
 	params := ReviewCandidateParams{ReasonCode: "unsupported"}
 	identity := candidateIdentity("reject", "reject", candidate.CandidateID, params)
-	rejected, replay, err := repository.RejectCandidate(context.Background(), identity, candidate.CandidateID, params)
+	rejected, _, replay, err := repository.RejectCandidate(context.Background(), identity, candidate.CandidateID, params)
 	if err != nil || replay || rejected.ReviewState != "rejected" || len(rejected.Reviews) != 1 {
 		t.Fatalf("RejectCandidate() = %+v, replay=%t, error=%v", rejected, replay, err)
 	}
@@ -317,7 +317,7 @@ func TestCandidateRejectCreatesNoMemoryAndReplays(t *testing.T) {
 	if err := repository.store.reader.QueryRow(`SELECT (SELECT count(*) FROM memories), (SELECT count(*) FROM candidate_reviews), (SELECT count(*) FROM audit_events WHERE action='reject_candidate')`).Scan(&memories, &reviews, &audits); err != nil || memories != 0 || reviews != 1 || audits != 1 {
 		t.Fatalf("reject rows = memories %d reviews %d audits %d, %v", memories, reviews, audits, err)
 	}
-	replayed, replay, err := repository.RejectCandidate(context.Background(), identity, candidate.CandidateID, params)
+	replayed, _, replay, err := repository.RejectCandidate(context.Background(), identity, candidate.CandidateID, params)
 	if err != nil || !replay || !reflect.DeepEqual(replayed, rejected) {
 		t.Fatalf("reject replay = %+v, replay=%t, error=%v", replayed, replay, err)
 	}
@@ -335,13 +335,13 @@ func TestCandidateConfirmRejectRaceHasOneTerminalReview(t *testing.T) {
 	go func() {
 		defer workers.Done()
 		<-start
-		_, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("race-confirm", "confirm", candidate.CandidateID, params), candidate.CandidateID, params)
+		_, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("race-confirm", "confirm", candidate.CandidateID, params), candidate.CandidateID, params)
 		results <- err
 	}()
 	go func() {
 		defer workers.Done()
 		<-start
-		_, _, err := repository.RejectCandidate(context.Background(), candidateIdentity("race-reject", "reject", candidate.CandidateID, params), candidate.CandidateID, params)
+		_, _, _, err := repository.RejectCandidate(context.Background(), candidateIdentity("race-reject", "reject", candidate.CandidateID, params), candidate.CandidateID, params)
 		results <- err
 	}()
 	close(start)
@@ -373,7 +373,7 @@ func TestCandidateConfirmFailureRollsBackToPending(t *testing.T) {
 	candidate := createTestCandidate(t, repository)
 	runtime.failAt = runtime.id + 6
 	params := ReviewCandidateParams{ReasonCode: "fault"}
-	if _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("fault", "confirm", candidate.CandidateID, params), candidate.CandidateID, params); err == nil {
+	if _, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("fault", "confirm", candidate.CandidateID, params), candidate.CandidateID, params); err == nil {
 		t.Fatal("confirmation succeeded with injected failure")
 	}
 	got, err := repository.GetCandidate(context.Background(), candidate.CandidateID)

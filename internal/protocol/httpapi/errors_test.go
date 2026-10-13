@@ -51,7 +51,7 @@ func (stubEvents) GetEvent(context.Context, gateway.CallContext, extraction.GetE
 
 func errorHandler(t *testing.T, err error) *Handler {
 	t.Helper()
-	handler, newErr := New(Dependencies{AgentTools: failingTools{err: err}, Scopes: stubScopes{}, Events: stubEvents{}})
+	handler, newErr := New(Dependencies{AgentTools: failingTools{err: err}, Scopes: stubScopes{}, Events: stubEvents{}, Reviews: &fakeReviews{}})
 	if newErr != nil {
 		t.Fatal(newErr)
 	}

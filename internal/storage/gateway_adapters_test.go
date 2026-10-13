@@ -11,6 +11,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
+	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
@@ -100,6 +101,56 @@ func TestScopeCapabilityResolveByExternalIdentity(t *testing.T) {
 	}
 	if _, err := capability.ResolveScope(ctx, scope.ResolveParams{ParentSpaceID: stringPointer("space-1"), SpaceType: "project", ExternalID: "missing"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing ResolveScope() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestReviewCapabilityConfirmAndRejectIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	repository, _ := newMemoryTestRepository(t)
+	capability := NewReviewCapability(repository)
+	candidate := createTestCandidate(t, repository)
+
+	page, err := capability.ListCandidates(ctx, review.CandidateFilter{SpaceID: candidate.SpaceID, Limit: 10})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("ListCandidates() = %+v error=%v", page, err)
+	}
+	if _, err := capability.GetCandidate(ctx, candidate.CandidateID); err != nil {
+		t.Fatalf("GetCandidate() error = %v", err)
+	}
+
+	call := gatewayCall("gateway-caller", "review-confirm", "request-review-confirm")
+	command := review.ReviewCandidateCommand{CandidateID: candidate.CandidateID, ReasonCode: "reviewed"}
+	identity := gatewayIdentity(t, call, review.OperationCandidateConfirm, command)
+	memory, operationID, replay, err := capability.ConfirmCandidate(ctx, identity, review.ReviewParams{CandidateID: command.CandidateID, ReasonCode: command.ReasonCode})
+	if err != nil || replay || memory.MemoryID == "" || operationID == "" {
+		t.Fatalf("ConfirmCandidate() = %+v op=%q replay=%t error=%v", memory, operationID, replay, err)
+	}
+	replayedMemory, replayedOperationID, replay, err := capability.ConfirmCandidate(ctx, identity, review.ReviewParams{CandidateID: command.CandidateID, ReasonCode: command.ReasonCode})
+	if err != nil || !replay || replayedMemory.MemoryID != memory.MemoryID || replayedOperationID != operationID {
+		t.Fatalf("replayed ConfirmCandidate() = %+v op=%q replay=%t error=%v", replayedMemory, replayedOperationID, replay, err)
+	}
+
+	params := candidateParams()
+	params.Revision.DisplayContent = "gateway review reject candidate"
+	params.Revision.CanonicalContent = "gateway review reject candidate"
+	rejectable, _, err := repository.CreateCandidate(ctx, params)
+	if err != nil {
+		t.Fatalf("CreateCandidate() error = %v", err)
+	}
+	rejectCall := gatewayCall("gateway-caller", "review-reject", "request-review-reject")
+	rejectCommand := review.ReviewCandidateCommand{CandidateID: rejectable.CandidateID, ReasonCode: "irrelevant"}
+	rejectIdentity := gatewayIdentity(t, rejectCall, review.OperationCandidateReject, rejectCommand)
+	rejected, rejectOperation, rejectReplay, err := capability.RejectCandidate(ctx, rejectIdentity, review.ReviewParams{CandidateID: rejectCommand.CandidateID, ReasonCode: rejectCommand.ReasonCode})
+	if err != nil || rejectReplay || rejected.ReviewState != "rejected" || rejectOperation == "" {
+		t.Fatalf("RejectCandidate() = %+v op=%q replay=%t error=%v", rejected, rejectOperation, rejectReplay, err)
+	}
+	replayedCandidate, replayedRejectOperation, replay, err := capability.RejectCandidate(ctx, rejectIdentity, review.ReviewParams{CandidateID: rejectCommand.CandidateID, ReasonCode: rejectCommand.ReasonCode})
+	if err != nil || !replay || replayedCandidate.ReviewState != "rejected" || replayedRejectOperation != rejectOperation {
+		t.Fatalf("replayed RejectCandidate() = %+v op=%q replay=%t error=%v", replayedCandidate, replayedRejectOperation, replay, err)
+	}
+	secondIdentity := gatewayIdentity(t, gatewayCall("gateway-caller", "review-reject-2", "request-review-reject-2"), review.OperationCandidateReject, rejectCommand)
+	if _, _, _, err := capability.RejectCandidate(ctx, secondIdentity, review.ReviewParams{CandidateID: rejectCommand.CandidateID, ReasonCode: rejectCommand.ReasonCode}); err == nil {
+		t.Fatal("second reject of a reviewed candidate must conflict")
 	}
 }
 

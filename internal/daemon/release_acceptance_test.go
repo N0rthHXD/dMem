@@ -312,8 +312,9 @@ func TestReleaseAcceptanceAgentSuggestionCannotSilentlyOverwrite(t *testing.T) {
 // scenario on one instance with the Provider Route capability enabled: an Agent
 // Tool commit becomes authority without any model job, a raw collector event
 // owns exactly one durable extraction job which the running worker consumes into
-// a review candidate, and the shared recall pipeline serves the Tool Route
-// authority. Neither route extracts the other route's source.
+// a review candidate, the candidate review entry confirms it, and the shared
+// recall pipeline serves both routes' authority. Neither route extracts the
+// other route's source.
 func TestReleaseAcceptanceMixedRoutesShareOneAuthority(t *testing.T) {
 	t.Parallel()
 	cfg := runtimeConfig(t)
@@ -380,6 +381,38 @@ func TestReleaseAcceptanceMixedRoutesShareOneAuthority(t *testing.T) {
 		t.Fatalf("processing provider calls = %d, want exactly 1 for one collector event", calls)
 	}
 	assertNoToolRouteModelJobs(t, instance, committed.SourceEventID)
+
+	// The candidate review entry is reachable over the application API: list the
+	// pending candidate, confirm it, and prove the shared recall pipeline now
+	// serves the Provider Route memory as authority.
+	list := callHandler(t, handler, http.MethodGet, "/v1/candidates?scope_id="+scopeID+"&review_state=pending", "", nil, true)
+	if list.Code != http.StatusOK {
+		t.Fatalf("candidate list status = %d: %s", list.Code, list.Body.String())
+	}
+	var candidates struct {
+		Items []struct {
+			CandidateID string `json:"candidate_id"`
+		} `json:"items"`
+	}
+	decodeInto(t, list, &candidates)
+	if len(candidates.Items) != 1 || candidates.Items[0].CandidateID == "" {
+		t.Fatalf("pending candidates = %+v", candidates.Items)
+	}
+	confirm := callHandler(t, handler, http.MethodPost, "/v1/candidates/"+candidates.Items[0].CandidateID+"/confirm", "mixed-review", map[string]any{"reason_code": "reviewed"}, true)
+	if confirm.Code != http.StatusOK {
+		t.Fatalf("candidate confirm status = %d: %s", confirm.Code, confirm.Body.String())
+	}
+	providerRecall := callHandler(t, handler, http.MethodPost, "/v1/recall", "", map[string]any{
+		"query": "collector memory from the provider route", "scope_ids": []string{scopeID}, "limit": 10,
+	}, true)
+	if providerRecall.Code != http.StatusOK {
+		t.Fatalf("provider recall status = %d: %s", providerRecall.Code, providerRecall.Body.String())
+	}
+	var providerRecalled toolcontract.RecallOutput
+	decodeInto(t, providerRecall, &providerRecalled)
+	if len(providerRecalled.Memories) == 0 {
+		t.Fatalf("confirmed Provider Route candidate was not recallable: %+v", providerRecalled.Memories)
+	}
 
 	recall := callHandler(t, handler, http.MethodPost, "/v1/recall", "", map[string]any{
 		"query": "mixed route tool", "scope_ids": []string{scopeID}, "limit": 10,

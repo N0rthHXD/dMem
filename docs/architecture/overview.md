@@ -98,20 +98,22 @@ provider 网络调用位于 SQLite 写事务之外，并通过既有的租约、
 | `scope` | Scope 层级、稳定外部身份与原子 ensure | `scope.ensure`、`scope.get` |
 | `retrieval` | 召回规划、融合、排序、上下文选择、游标、explain | `retrieval.recall` |
 | `extraction` | 原始事件入口与面向 worker 的处理 | `extraction.ingest` |
+| `review` | Provider Route 记忆候选的 list/get/confirm/reject 审核入口 | `review.candidate_confirm`、`review.candidate_reject` |
 | `consolidation` | 确定性候选整合分类与可选 provider 分类契约（纯函数，无入口服务） | 无独立写操作，作为分类器被存储适配器消费 |
 | `policy` | 能力授权与披露分区 | 无独立写操作，作为服务被消费 |
 
 Phase 7 已删除没有生产消费者的 `memory`、`feedback` 和 `knowledge` 网关模块及其
 存储适配器。直接记忆权威写入、provider 来源 feedback 追加、知识审核入口都被
 Agent Tool Route 的单一原子 application 面取代：`dmem_remember` 提交结构化建议，
-`dmem_feedback` 追加五类封闭反馈，`dmem_forget` 执行逻辑遗忘。审核、冲突解决和
-整合不变量保留在存储层，由 `Repository` 的评审方法与触发器继续强制，并通过存储
-层测试直接覆盖。
+`dmem_feedback` 追加五类封闭反馈，`dmem_forget` 执行逻辑遗忘。记忆候选的确认与拒绝
+由 `review` 模块经 `/v1/candidates` 暴露，状态机与整合分类仍在存储层。审核、冲突
+解决和整合不变量保留在存储层，由 `Repository` 的评审方法与触发器继续强制，并通过
+存储层测试直接覆盖。
 
 各模块声明自己的能力端口，例如 `scope.Store`、`retrieval.CandidateStore`、
-`extraction.EventStore`/`extraction.WorkStore`、`policy.Store`。SQLite 适配器通过
-`internal/storage/gateway_*.go` 中的 capability 结构满足这些端口，并由
-`internal/storage/gateway_assert.go` 在编译期断言端口签名。
+`extraction.EventStore`/`extraction.WorkStore`、`review.CandidateStore`、
+`policy.Store`。SQLite 适配器通过 `internal/storage/gateway_*.go` 中的 capability
+结构满足这些端口，并由 `internal/storage/gateway_assert.go` 在编译期断言端口签名。
 
 ## 共享 gateway 契约
 
