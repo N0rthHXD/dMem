@@ -86,9 +86,9 @@ func CompileKeyword(input string) KeywordQuery {
 	runes := []rune(remaining)
 	for start := 0; start < len(runes); {
 		r := runes[start]
-		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) {
+		if isCJK(r) {
 			end := start + 1
-			for end < len(runes) && (unicode.Is(unicode.Han, runes[end]) || unicode.Is(unicode.Hiragana, runes[end]) || unicode.Is(unicode.Katakana, runes[end])) {
+			for end < len(runes) && isCJK(runes[end]) {
 				end++
 			}
 			segment := runes[start:end]
@@ -188,8 +188,18 @@ func (t KeywordTerm) Width() int {
 	return len([]rune(t.Text))
 }
 
+// isCJK reports whether the rune belongs to a script the trigram tokenizer
+// serves without word boundaries. The keyword compiler scans CJK runs
+// separately because unicode.IsLetter is true for Han, Hiragana, and Katakana:
+// without the split, a latin or digit prefix swallows the following CJK text
+// into one mixed token and turns a natural-language question into a phrase
+// that can never match.
+func isCJK(r rune) bool {
+	return unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r)
+}
+
 func isTokenRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.'
+	return !isCJK(r) && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.')
 }
 
 func classifyToken(token string) KeywordTerm {

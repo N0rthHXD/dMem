@@ -78,6 +78,50 @@ func TestKeywordRecallServesShortCJKTermsInsideMixedQueries(t *testing.T) {
 	}
 }
 
+// TestKeywordRecallSplitsUnspacedMixedCJKQueries is the end-to-end regression
+// guard for the v3 compiler defect: a latin name glued to a Chinese question
+// compiled into one literal phrase, FTS MATCH returned zero rows, and the
+// keyword channel produced no candidate. v4 splits at the script boundary, so
+// the name and the CJK trigrams both participate in recall without a provider.
+func TestKeywordRecallSplitsUnspacedMixedCJKQueries(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	matched := createMemoryWithContent(t, repository, "mixed-nospace-match", "Melanie最近庆祝了她的生日，和家人一起。")
+	unrelated := createMemoryWithContent(t, repository, "mixed-nospace-other", "数据库连接池扩容到 200 个连接。")
+
+	compiled := compileKeyword("Melanie最近庆祝了谁的生日？")
+	if compiled.Match == "" {
+		t.Fatalf("unspaced mixed query did not compile: %+v", compiled)
+	}
+	for _, term := range compiled.Terms {
+		if term.Required {
+			t.Fatalf("natural-language mixed query produced required term %+v", term)
+		}
+	}
+
+	result, err := repository.SearchMemories(context.Background(), SearchParams{
+		Query: "Melanie最近庆祝了谁的生日？", SpaceIDs: []string{"space-1"}, States: []string{"active"},
+		Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range result.Results {
+		if item.Memory.MemoryID == matched.MemoryID {
+			found = true
+		}
+		if item.Memory.MemoryID == unrelated.MemoryID {
+			t.Fatalf("unrelated memory recalled for an unspaced mixed query: %s", unrelated.MemoryID)
+		}
+	}
+	if !found {
+		t.Fatalf("unspaced mixed query returned no candidate: %+v", result.Results)
+	}
+	if len(result.Context.Items) != 1 || result.Context.Items[0].MemoryID != matched.MemoryID {
+		t.Fatalf("unspaced mixed candidate was not selected into the returned context: %+v", result.Context.Items)
+	}
+}
+
 // TestKeywordSubstringFallbackRanksByLiteralCoverage proves the literal path has
 // a relevance order of its own. It has no BM25 score, so ranking only by
 // recency would let an arbitrary recent document win over a better literal
