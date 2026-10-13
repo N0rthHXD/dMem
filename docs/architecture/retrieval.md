@@ -41,7 +41,7 @@ PreparePrimary -> ExpandGraph -> RankingInput -> Rank
 
 关键词与语义是相互独立的主召回信号：
 
-- **关键词**：SQLite FTS5。查询文本被编译为 FTS 表达式（`keyword-compiler-v3`），
+- **关键词**：SQLite FTS5。查询文本被编译为 FTS 表达式（`keyword-compiler-v4`），
   而不是直接透传用户输入。`memory_fts` 有两个受索引字段：`content` 保存
   canonical retrieval document，`hints` 保存受 revision 约束的 Agent Tool
   search hints 投影（`canonical-search-hints-v1`）。字段来源保持区分：hint 永不
@@ -189,7 +189,7 @@ Agent 工具面不暴露内部管理列表，因此不返回 `items` 包裹形�
 | 向量空间 | `compatibility_identity` = provider/model 标记 + `dimensions` + 文档/查询格式 + canonical document 版本，哈希为 `sha256:` |
 | Embedding 作业身份 | `<provider>/<model>#<compatibility_identity>` |
 | 语义校准 | `semantic-calibration-v1`（floor 0.35，margin 0.08） |
-| 关键词编译器 | `keyword-compiler-v3` |
+| 关键词编译器 | `keyword-compiler-v4` |
 | Search hints 投影 | `canonical-search-hints-v1`（`memory_fts.hints`） |
 | 谓词注册表 | `predicate-registry-v2` |
 | 图谱抽取/评分 | `graph-typed-v1` / `graph-scoring-v3`；`auto-review-v1`、`entity-graph-statistics-v2` |

@@ -22,7 +22,7 @@ import (
 // temporal features, graph scoring, and feature ranking.
 const (
 	QueryPlanVersion       = "query-plan-v2"
-	KeywordCompilerVersion = "keyword-compiler-v3"
+	KeywordCompilerVersion = "keyword-compiler-v4"
 	SemanticCalibrationVer = "semantic-calibration-v1"
 	TemporalFeatureVersion = "temporal-features-v1"
 	GraphScoringVersion    = "graph-scoring-v3"
@@ -324,13 +324,17 @@ func detectLanguage(query string) string {
 	return "en"
 }
 
+// isIdentifier reports whether a token is a digit/letter identifier. Only
+// Latin letters count as letters: treating every unicode letter as one would
+// let a CJK run glued to a digit masquerade as a required identifier, which is
+// exactly the mixed-query defect the keyword compiler splits against.
 func isIdentifier(token string) bool {
 	hasDigit, hasLetter, hasSeparator := false, false, false
 	for _, r := range token {
 		switch {
 		case unicode.IsDigit(r):
 			hasDigit = true
-		case unicode.IsLetter(r):
+		case unicode.In(r, unicode.Latin):
 			hasLetter = true
 		case r == '-' || r == '_' || r == '.':
 			hasSeparator = true
