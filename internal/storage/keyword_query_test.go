@@ -217,6 +217,86 @@ func TestCompileKeywordKeepsAcronymIdentifierAndDateClassification(t *testing.T)
 	}
 }
 
+// TestCompileKeywordRelaxedMatchDemotesRequiredClauses locks the deterministic
+// relaxation contract: every non-fallback clause becomes optional, the
+// original expression is never returned as its own relaxation, and queries
+// without required clauses cannot produce a relaxed expression.
+func TestCompileKeywordRelaxedMatchDemotesRequiredClauses(t *testing.T) {
+	compiled := compileKeyword("Caroline是LGBTQ群体的一员吗？")
+	relaxed := compiled.RelaxedMatch()
+	if relaxed == "" || strings.Contains(relaxed, " AND ") {
+		t.Fatalf("relaxed match = %q", relaxed)
+	}
+	for _, clause := range []string{`"LGBTQ"`, `"Caroline"`, `"群体的"`} {
+		if !strings.Contains(relaxed, clause) {
+			t.Fatalf("relaxed match %q missing %s", relaxed, clause)
+		}
+	}
+	if !strings.Contains(compiled.Match, " AND ") {
+		t.Fatalf("original match is not required-bound: %q", compiled.Match)
+	}
+	if relaxed == compiled.Match {
+		t.Fatalf("relaxed match did not relax: %q", relaxed)
+	}
+
+	// A query with no required clause never relaxes.
+	if got := compileKeyword("all optional words").RelaxedMatch(); got != "" {
+		t.Fatalf("optional-only query produced relaxed match %q", got)
+	}
+	// A single required clause repeated as optional is not a relaxation.
+	if single := compileKeyword("ZXQ-1847"); single.RelaxedMatch() != "" {
+		t.Fatalf("single required term produced relaxed match %q", single.RelaxedMatch())
+	}
+	// A required identifier plus an optional word relaxes to a disjunction.
+	if identifier := compileKeyword("ZXQ-1847 report"); identifier.RelaxedMatch() != `"ZXQ-1847" OR "report"` {
+		t.Fatalf("identifier relaxed match = %q", identifier.RelaxedMatch())
+	}
+}
+
+// TestKeywordRequiredRelaxationRecallsPartialMatches is the P0-2 regression
+// guard: a query whose acronym never co-occurs with the other terms matches
+// zero rows under the required conjunction. The single relaxed recall must
+// return the acronym hits, withhold the exact feature, limit candidates to
+// memories that match some query term, and count the relaxation in telemetry.
+func TestKeywordRequiredRelaxationRecallsPartialMatches(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	acronym := createMemoryWithContent(t, repository, "relax-acronym", "LGBTQ 支持小组的公开介绍。")
+	unrelated := createMemoryWithContent(t, repository, "relax-unrelated", "数据库连接池扩容到 200 个连接。")
+
+	query := "Caroline是LGBTQ群体的一员吗？"
+	result, err := repository.SearchMemories(context.Background(), SearchParams{
+		OperationID: "keyword-relax", Query: query, SpaceIDs: []string{"space-1"}, States: []string{"active"},
+		Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000, Explain: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range result.Results {
+		if item.Memory.MemoryID == unrelated.MemoryID {
+			t.Fatalf("relaxed recall admitted a memory without any query term: %s", unrelated.MemoryID)
+		}
+		if item.Memory.MemoryID != acronym.MemoryID {
+			continue
+		}
+		found = true
+		if _, exact := item.RankingFeatures[retrieval.FeatureExact]; exact {
+			t.Fatalf("relaxed candidate received the exact feature: %+v", item.RankingFeatures)
+		}
+	}
+	if !found {
+		t.Fatalf("relaxed recall returned no acronym candidate: %+v", result.Results)
+	}
+	if len(result.Context.Items) != 1 || result.Context.Items[0].MemoryID != acronym.MemoryID {
+		t.Fatalf("relaxed candidate was not selected into the context: %+v", result.Context.Items)
+	}
+	row := readTelemetryRow(t, repository, "keyword-relax")
+	rejections := decodeObject(t, row.rejections)
+	if rejections["keyword_relaxed"] == nil || rejections["keyword_relaxed"].(float64) != 1 {
+		t.Fatalf("keyword_relaxed telemetry = %s", row.rejections)
+	}
+}
+
 func TestTermWeightRewardsRareTerms(t *testing.T) {
 	common := retrieval.TermWeight(0.6, 900, 1000)
 	rare := retrieval.TermWeight(0.6, 2, 1000)

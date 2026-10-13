@@ -53,6 +53,12 @@ PreparePrimary -> ExpandGraph -> RankingInput -> Rank
   BM25 顺序优先。字面通路没有 BM25，因此按编译词的命中覆盖数排序，再按
   `updated_at` 与 memory id 决胜。二者不能互斥：一旦以「FTS 表达式为空」作为
   fallback 的唯一开关，含拉丁词的中英混合查询会丢掉其中的中文词。
+  当编译结果含 Required 项（acronym、identifier、引号短语）且该表达式返回 0 行
+  时，同一快照、同一 limit 下最多追加一次**放宽查询**（`RelaxedMatch`）：Required
+  降级为 Optional，把部分匹配候选交给排序而不是返回空结果。放宽命中不获得
+   exact feature 与 exact-primary 保护，并通过内容无关的 `keyword_relaxed`
+  telemetry 计数；放宽表达式与原表达式相同（无 Required 项或无可降级项）时不再
+  发起第二次查询。
 - **中文精确层**：trigram 不尊重词边界，OR-of-trigrams 会召回仅与查询某个片段
   共享 3 字窗口的记忆（「数据库连接池的负责人」也会召回「数据库连接池：暂停
   两周」）。编译器用封闭类中文虚词把查询切成**内容片段**

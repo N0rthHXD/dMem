@@ -351,8 +351,13 @@ func candidateFeatures(candidate Candidate, input RankInput) coreretrieval.Featu
 	if candidate.SemanticRank > 0 && !candidate.SemanticRejected {
 		features.Semantic = floatPointer(candidate.SemanticScore)
 	}
-	exact := 0.5*coreretrieval.Coverage(candidate.FTSContent, input.Terms) + 0.5*boolScore(coreretrieval.ExactMatched(candidate.FTSContent, input.Terms))
-	features.Exact = &exact
+	// A relaxed candidate matched only part of the query after its required
+	// clauses were demoted, so it must not collect the exact-match feature or
+	// the exact-primary protection that depends on it.
+	if !candidate.Relaxed {
+		exact := 0.5*coreretrieval.Coverage(candidate.FTSContent, input.Terms) + 0.5*boolScore(coreretrieval.ExactMatched(candidate.FTSContent, input.Terms))
+		features.Exact = &exact
+	}
 	agreement := 0.0
 	if candidate.KeywordRank > 0 {
 		agreement += 0.5

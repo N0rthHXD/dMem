@@ -204,6 +204,7 @@ type searchCandidate struct {
 	graphRank                       int
 	contentMatched, hintMatched     bool
 	hintOnly                        bool
+	relaxed                         bool
 	shortTermMatches                int
 	graphSignals                    []domain.GraphSignal
 	graphFacts                      []domain.EntityFact
