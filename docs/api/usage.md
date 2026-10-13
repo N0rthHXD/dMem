@@ -41,8 +41,12 @@ Agent 宿主有两种接入方式：直接使用 application HTTP API，或只�
 | `GET /v1/scopes/{scope_id}` | `scope.get` | 返回一个 scope。 |
 | `POST /v1/events` | `extraction.ingest` | Provider Route 原始事件入口；processing 禁用时以 `stored` 保留且不创建模型 job。 |
 | `GET /v1/events/{event_id}` | `extraction.event_get` | 返回事件的 `processing_status` 与已存内容，不返回 job 列表。 |
+| `GET /v1/candidates` | `review.candidate_list` | 按 scope 与审核状态分页列出 Provider Route 候选。 |
+| `GET /v1/candidates/{candidate_id}` | `review.candidate_get` | 返回单个候选及其修订、证据与审核记录。 |
+| `POST /v1/candidates/{candidate_id}/confirm` | `review.candidate_confirm` | 确认候选；确定性整合决定创建/附加记忆或归约为拒绝。 |
+| `POST /v1/candidates/{candidate_id}/reject` | `review.candidate_reject` | 拒绝候选，不写入记忆权威。 |
 
-前七条属于 Agent Tool Route，后两条属于 Provider Route，只有启用
+前七条属于 Agent Tool Route，其后六条属于 Provider Route，只有启用
 `[processing].enabled` 时才会创建 `extract_memory` job。完整 DTO、输入边界与状态码
 见 [Application HTTP 契约](http-rest-contract.md)。
 
@@ -88,12 +92,13 @@ Tool Route commit 不创建 `extract_memory` 或 `extract_graph` job。
 
 ## 契约之外的操作
 
-候选审核、作业控制、索引重建、配置重载、图谱维护以及更广泛的管理接口不属于
-Agent 协议。原始事件摄取由独立的 Provider Route 入口 `POST /v1/events` 承担：
-启用 processing 时它创建持久抽取 job，禁用时只把事件保留为 `stored`，不创建模型
-job；事件状态通过 `GET /v1/events/{event_id}` 查询。它不进入 Agent 工具集合。逻辑
-导出/导入与备份/恢复不是 HTTP 操作，参见
-[逻辑可移植性](../storage/logical-portability.md) 与
+作业控制、索引重建、配置重载、图谱维护以及更广泛的管理接口不属于 Agent 协议。
+原始事件摄取由独立的 Provider Route 入口 `POST /v1/events` 承担：启用 processing
+时它创建持久抽取 job，禁用时只把事件保留为 `stored`，不创建模型 job；事件状态通过
+`GET /v1/events/{event_id}` 查询。候选审核入口 `/v1/candidates` 与其 confirm/reject
+子资源属于 Provider Route 管理面，也不进入 Agent 工具集合；图谱/聚合提案审核与
+冲突解决仍只有存储层能力，没有协议入口。逻辑导出/导入与备份/恢复不是 HTTP 操作，
+参见 [逻辑可移植性](../storage/logical-portability.md) 与
 [运维手册](../operations/runbook.md)。
 
 ## MCP 接入

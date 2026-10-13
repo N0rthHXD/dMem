@@ -13,6 +13,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/pkg/logging"
 )
@@ -23,6 +24,7 @@ type Handler struct {
 	agentTools AgentToolService
 	scopes     ScopeService
 	events     ExtractionService
+	reviews    ReviewService
 
 	routes []route
 	newID  func() string
@@ -51,11 +53,14 @@ func New(deps Dependencies, opts ...Option) (*Handler, error) {
 		return nil, fmt.Errorf("%w: scopes", errMissingDependency)
 	case deps.Events == nil:
 		return nil, fmt.Errorf("%w: extraction", errMissingDependency)
+	case deps.Reviews == nil:
+		return nil, fmt.Errorf("%w: review", errMissingDependency)
 	}
 	h := &Handler{
 		agentTools: deps.AgentTools,
 		scopes:     deps.Scopes,
 		events:     deps.Events,
+		reviews:    deps.Reviews,
 		newID:      newRequestID,
 	}
 	for _, opt := range opts {
@@ -77,9 +82,10 @@ func (h *Handler) Routes() []RouteInfo {
 	return infos
 }
 
-// buildRoutes declares the initial Agent-neutral surface. Candidate review, job
-// control, index rebuild, configuration reload, and graph maintenance routes are
-// deliberately absent.
+// buildRoutes declares the Agent-neutral surface. Job control, index rebuild,
+// configuration reload, and graph maintenance routes are deliberately absent.
+// Candidate review is a Provider Route management surface: it is reachable over
+// this application adapter but is not part of the Agent Tool contract.
 func (h *Handler) buildRoutes() []route {
 	return []route{
 		{
@@ -178,6 +184,48 @@ func (h *Handler) buildRoutes() []route {
 				Idempotency: IdempotencyNotRequired,
 			},
 			handle: h.handleGetEvent,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationCandidateList,
+				Method:      http.MethodGet,
+				Path:        "/v1/candidates",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleListCandidates,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationCandidateGet,
+				Method:      http.MethodGet,
+				Path:        "/v1/candidates/{candidate_id}",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleGetCandidate,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    review.OperationCandidateConfirm,
+				Method:       http.MethodPost,
+				Path:         "/v1/candidates/{candidate_id}/confirm",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxCandidateReviewBodyBytes,
+			},
+			handle: h.handleConfirmCandidate,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    review.OperationCandidateReject,
+				Method:       http.MethodPost,
+				Path:         "/v1/candidates/{candidate_id}/reject",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxCandidateReviewBodyBytes,
+			},
+			handle: h.handleRejectCandidate,
 		},
 	}
 }

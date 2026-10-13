@@ -56,13 +56,16 @@ invalid_output 直接终止，避免永久错误被无差别重试。
 抽取产生候选，候选在确认或拒绝之前是独立的审核对象。整合
 （consolidation）把新候选与现有修订比较，产生以下动作之一。
 
-> **当前实现边界**：`internal/gateway/consolidation` 现在只提供纯分类器
-> （`classifier.go`）与 `Classifier` 端口。其入口服务（`Confirm`/`Reject`/
-> `Decision` 命令）在 Phase 7 被删除，因为没有任何协议入口消费它；候选的确认与
-> 拒绝目前只能由存储层的 `Repository.ConfirmCandidate`/`RejectCandidate` 执行，
-> 并由存储层测试覆盖。Agent Tool 提交的知识建议不进入候选表，而是持久化为
-> `agent_tool_proposals` 审核对象。因此“进入审核队列”描述的是权威状态，不代表
-> 当前存在审核 API。
+> **当前实现边界**：`internal/gateway/consolidation` 只提供纯分类器
+> （`classifier.go`）与 `Classifier` 端口；其旧入口服务（`Confirm`/`Reject`/
+> `Decision` 命令）在 Phase 7 被删除。记忆候选的确认与拒绝现在通过
+> `internal/gateway/review` 模块与 HTTP 入口 `/v1/candidates`、
+> `/v1/candidates/{candidate_id}`、`/v1/candidates/{candidate_id}/confirm`、
+> `/v1/candidates/{candidate_id}/reject` 暴露；`internal/gateway/review` 只做输入
+> 校验、幂等写身份与错误映射，审核状态机、整合分类与审计仍由存储层的
+> `Repository.ConfirmCandidate`/`RejectCandidate` 执行。图谱/实体/事实/关系/演化/
+> 聚合提案与冲突解决的审核仍只有存储层方法，没有协议入口。Agent Tool 提交的知识
+> 建议不进入候选表，而是持久化为 `agent_tool_proposals` 审核对象。
 
 | 动作 | 含义 |
 | --- | --- |

@@ -123,7 +123,7 @@ func confirmStructuredMemory(t *testing.T, repository *Repository, key, content 
 		t.Fatalf("CreateCandidate(%s) = %+v dup=%t err=%v", key, candidate, duplicate, err)
 	}
 	review := ReviewCandidateParams{ReasonCode: "accepted"}
-	memory, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("structured-"+key, "confirm", candidate.CandidateID, review), candidate.CandidateID, review)
+	memory, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("structured-"+key, "confirm", candidate.CandidateID, review), candidate.CandidateID, review)
 	if err != nil {
 		t.Fatalf("ConfirmCandidate(%s) error = %v", key, err)
 	}
@@ -143,7 +143,7 @@ func TestConsolidationConfirmAttachesEvidenceWithoutNewMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	review := ReviewCandidateParams{ReasonCode: "accepted"}
-	memory, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("attach-confirm", "confirm", candidate.CandidateID, review), candidate.CandidateID, review)
+	memory, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("attach-confirm", "confirm", candidate.CandidateID, review), candidate.CandidateID, review)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestConsolidationConfirmRecordsCreateDecision(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	candidate := createTestCandidate(t, repository)
 	review := ReviewCandidateParams{ReasonCode: "accepted"}
-	memory, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("create-decision", "confirm", candidate.CandidateID, review), candidate.CandidateID, review)
+	memory, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("create-decision", "confirm", candidate.CandidateID, review), candidate.CandidateID, review)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestConsolidationConfirmRefineCreatesEvolutionProposal(t *testing.T) {
 		t.Fatal(err)
 	}
 	review := ReviewCandidateParams{ReasonCode: "accepted"}
-	if _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("refine-confirm", "confirm", candidate.CandidateID, review), candidate.CandidateID, review); err != nil {
+	if _, _, _, err := repository.ConfirmCandidate(context.Background(), candidateIdentity("refine-confirm", "confirm", candidate.CandidateID, review), candidate.CandidateID, review); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.GetMemory(context.Background(), base.MemoryID); err != nil {

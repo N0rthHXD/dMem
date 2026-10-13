@@ -342,7 +342,10 @@ client 中提供可选 adapter，并让 recall/remember 接受版本化向量信
 
 dMem Provider Route 保留现有持久异步处理模型，但收敛为显式选择的独立路线。Phase 5
 已实现本节的能力开关、事件入口和 provider 失败分类；原始事件通过
-`POST /v1/events` 摄取，禁用时只以 `stored` 状态保留：
+`POST /v1/events` 摄取，禁用时只以 `stored` 状态保留。候选审核入口
+（`GET /v1/candidates`、`GET /v1/candidates/{candidate_id}`、
+`POST /v1/candidates/{candidate_id}/confirm`、`POST /v1/candidates/{candidate_id}/reject`）
+补齐了 `event -> candidate -> review -> memory` 闭环：
 
 ```text
 raw event
@@ -448,6 +451,7 @@ HTTP 是 client 和 MCP server 共用的 dMem application transport。目标资�
 | scope ensure/get | client bootstrap 和稳定 scope 映射 |
 | raw event ingest | 仅供启用 Provider Route 的原始输入 |
 | operation/event status | 仅在异步 provider 处理需要时查询 |
+| candidate review | Provider Route 候选的 list/get/confirm/reject 审核入口 |
 
 实现阶段可以重新设计路径和 DTO，不以 Phase 2 之前的旧九条 `/v1` 路由为兼容目标。
 应先确定 gateway 命令和版本化 tool schema，再决定 REST 资源形状；MCP 与 HTTP 不得

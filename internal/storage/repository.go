@@ -754,6 +754,18 @@ func readIdempotency(ctx context.Context, tx *sql.Tx, identity WriteIdentity) (i
 	return status, body, true, nil
 }
 
+// readIdempotencyOperation returns the operation identifier persisted with an
+// existing idempotency record so a replay can report the same operation id as
+// the original write.
+func readIdempotencyOperation(ctx context.Context, tx *sql.Tx, identity WriteIdentity) (string, error) {
+	var operationID string
+	err := tx.QueryRowContext(ctx, `SELECT operation_id FROM idempotency_records WHERE caller_id=? AND http_method=? AND normalized_route=? AND idempotency_key=?`, identity.CallerID, identity.Method, identity.Route, identity.IdempotencyKey).Scan(&operationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return operationID, err
+}
+
 func writeIdempotency(ctx context.Context, tx *sql.Tx, identity WriteIdentity, operationID string, status int, body []byte, now string) error {
 	id := sha256.Sum256([]byte(identity.CallerID + "\x00" + identity.Method + "\x00" + identity.Route + "\x00" + identity.IdempotencyKey))
 	_, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(idempotency_id, caller_id, http_method, normalized_route, idempotency_key, request_hash, operation_id, response_status, response_body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, hex.EncodeToString(id[:]), identity.CallerID, identity.Method, identity.Route, identity.IdempotencyKey, identity.RequestHash, operationID, status, string(body), now)

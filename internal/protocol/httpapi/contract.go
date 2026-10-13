@@ -8,6 +8,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 )
 
@@ -16,9 +17,11 @@ import (
 // stays identical to the module contract. Read operations are not idempotent
 // writes and their names are adapter-declared identifiers.
 const (
-	OperationCapabilities gateway.OperationName = "agent_tool.capabilities"
-	OperationScopeGet     gateway.OperationName = "scope.get"
-	OperationEventGet     gateway.OperationName = "extraction.event_get"
+	OperationCapabilities  gateway.OperationName = "agent_tool.capabilities"
+	OperationScopeGet      gateway.OperationName = "scope.get"
+	OperationEventGet      gateway.OperationName = "extraction.event_get"
+	OperationCandidateList gateway.OperationName = "review.candidate_list"
+	OperationCandidateGet  gateway.OperationName = "review.candidate_get"
 )
 
 // AccessMode classifies a route as a read or a state-changing write.
@@ -44,12 +47,13 @@ const (
 // Route body limits, in bytes. Read routes declare no body. The values are
 // documented in docs/api/http-rest-contract.md as current implemented behavior.
 const (
-	MaxScopeBodyBytes        int64 = 64 << 10
-	MaxMemoryCommitBodyBytes int64 = 1 << 20
-	MaxForgetBodyBytes       int64 = 64 << 10
-	MaxFeedbackBodyBytes     int64 = 256 << 10
-	MaxRecallBodyBytes       int64 = 256 << 10
-	MaxEventIngestBodyBytes  int64 = 1 << 20
+	MaxScopeBodyBytes           int64 = 64 << 10
+	MaxMemoryCommitBodyBytes    int64 = 1 << 20
+	MaxForgetBodyBytes          int64 = 64 << 10
+	MaxFeedbackBodyBytes        int64 = 256 << 10
+	MaxRecallBodyBytes          int64 = 256 << 10
+	MaxEventIngestBodyBytes     int64 = 1 << 20
+	MaxCandidateReviewBodyBytes int64 = 16 << 10
 )
 
 type AgentToolService interface {
@@ -71,12 +75,23 @@ type ExtractionService interface {
 	GetEvent(context.Context, gateway.CallContext, extraction.GetEventQuery) (domain.RawEvent, error)
 }
 
+// ReviewService is the Provider Route candidate review surface. Review is a
+// management operation: it is absent from the Agent Tool Route and the MCP tool
+// set, and it never reaches a model provider.
+type ReviewService interface {
+	ListCandidates(context.Context, gateway.CallContext, review.ListCandidatesQuery) (domain.CandidatePage, error)
+	GetCandidate(context.Context, gateway.CallContext, review.GetCandidateQuery) (domain.Candidate, error)
+	ConfirmCandidate(context.Context, gateway.CallContext, review.ReviewCandidateCommand) (review.CandidateReviewResult, error)
+	RejectCandidate(context.Context, gateway.CallContext, review.ReviewCandidateCommand) (review.CandidateReviewResult, error)
+}
+
 // Dependencies are the gateway module interfaces the adapter depends on. Every
 // field is an interface owned by this package, never a concrete gateway service.
 type Dependencies struct {
 	AgentTools AgentToolService
 	Scopes     ScopeService
 	Events     ExtractionService
+	Reviews    ReviewService
 }
 
 // RouteInfo is the declarative, inspectable metadata of one implemented route.

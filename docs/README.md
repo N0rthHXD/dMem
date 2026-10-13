@@ -71,7 +71,7 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 当散文描述与可执行契约冲突时，以可执行契约为准：
 
 - [HTTP REST+JSON 契约](api/http-rest-contract.md) 描述当前
-  `internal/protocol/httpapi` 实现。当前九条路由是**已实现行为**，不是冻结契约，
+  `internal/protocol/httpapi` 实现。当前十三条路由是**已实现行为**，不是冻结契约，
   也不构成外部兼容性承诺；项目发布前路径与 DTO 仍可调整。
 - [SQLite Schema v1](storage/schema-v1.sql) 定义新数据库初始化，并由
   `internal/storage` 内嵌并校验一致。

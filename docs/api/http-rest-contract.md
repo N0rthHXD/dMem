@@ -7,7 +7,7 @@
 可执行形式。项目尚未发布，本文档不是外部兼容性承诺；路径、DTO 和状态码可在后续
 阶段按目标架构调整。
 
-Phase 7 已从路由注释、测试名与文档中移除“冻结路由集”的表述：当前九条路由是**已
+Phase 7 已从路由注释、测试名与文档中移除“冻结路由集”的表述：当前十三条路由是**已
 实现行为**，不是冻结契约，也不是旧九条路由的延续。唯一仍然稳定的是
 `pkg/toolcontract` 的版本化 v1 schema 与各模块发布的稳定操作名。
 
@@ -19,16 +19,18 @@ Phase 7 已从路由注释、测试名与文档中移除“冻结路由集”的
 旧九条 `/v1` 路由、旧 purpose/type/reason feedback DTO 与 `GET /v1/memories/{id}` 已在
 Phase 2 删除。Phase 5 重新引入 Provider Route 的原始事件入口
 （`POST /v1/events`、`GET /v1/events/{event_id}`）；它们在 processing 未启用时只把
-事件保存为 `stored`，不创建模型 job。
+事件保存为 `stored`，不创建模型 job。候选审核入口
+（`/v1/candidates` 及 `/{candidate_id}/confirm`、`/{candidate_id}/reject`）补齐了
+Provider Route 的 `event -> candidate -> review -> memory` 闭环。
 
 ## 范围
 
 包含：
 
-- `/v1` 下当前已实现的九条 application 路由：七条 Agent Tool/scope 路由加两条
-  Provider Route 原始事件路由；
+- `/v1` 下当前已实现的十三条 application 路由：七条 Agent Tool/scope 路由、两条
+  Provider Route 原始事件路由，以及四条 Provider Route 候选审核路由；
 - 这些路由的请求与响应 DTO（Agent Tool 路由来自 `pkg/toolcontract/schema/v1`，
-  事件路由是协议本地 DTO）；
+  事件与候选审核路由是协议本地 DTO）；
 - 请求标识、调用方身份与幂等请求头；
 - 严格 JSON 解码规则与请求体上限；
 - 统一错误体与状态码映射；
@@ -40,7 +42,8 @@ Phase 2 删除。Phase 5 重新引入 Provider Route 的原始事件入口
 - 认证、网络边缘授权、限流或任何网络安全边界。当前实现**没有认证**：
   默认监听地址是回环地址 `127.0.0.1:7373`，绑定到非回环地址时
   `internal/server` 会记录一条明确的警告，运维必须自行提供网络边缘保护；
-- 候选审核、作业控制、索引重建、配置重载、图谱维护或任何其他管理操作；
+- 记忆候选以外的管理操作：作业控制、索引重建、配置重载、图谱维护、图谱/聚合提案
+  审核与冲突解决；
 - 面向 Claude、OpenCode 或其他具体客户端的路由、DTO 或行为。所有路由都是
   调用方中立、客户端中立的。
 
@@ -106,17 +109,23 @@ Phase 2 删除。Phase 5 重新引入 Provider Route 的原始事件入口
 | 7 | `scope.get` | `GET /v1/scopes/{scope_id}` | 读 | 必需 | 不需要 | 无 | `200` |
 | 8 | `extraction.ingest` | `POST /v1/events` | 写 | 必需 | 必需 | 1 MiB | `202` |
 | 9 | `extraction.event_get` | `GET /v1/events/{event_id}` | 读 | 必需 | 不需要 | 无 | `200` |
+| 10 | `review.candidate_list` | `GET /v1/candidates` | 读 | 必需 | 不需要 | 无 | `200` |
+| 11 | `review.candidate_get` | `GET /v1/candidates/{candidate_id}` | 读 | 必需 | 不需要 | 无 | `200` |
+| 12 | `review.candidate_confirm` | `POST /v1/candidates/{candidate_id}/confirm` | 写 | 必需 | 必需 | 16 KiB | `200` |
+| 13 | `review.candidate_reject` | `POST /v1/candidates/{candidate_id}/reject` | 写 | 必需 | 必需 | 16 KiB | `200` |
 
 说明：
 
 - 写路由的成功状态由操作语义决定：`memory-commits` 与 `feedback` 返回 `201`，
-  `forget` 与 `scopes/ensure` 返回 `200`，`events` 返回 `202`。
+  `forget`、`scopes/ensure` 与候选审核返回 `200`，`events` 返回 `202`。
 - 读路由拒绝非空请求体，返回 `400 unexpected_body`；`recall` 例外，它接受有界请求体。
 - 路径标识符是 1–128 个字符的不透明非空字符串。适配器不强制 UUID 格式；未知
   标识符由 gateway 返回 `404 not_found`。
 - 路由顺序稳定，即为声明顺序。
 - `POST /v1/events` 是 Provider Route 入口，不属于 Agent Tool 契约。`GET /v1/events/{event_id}`
   只返回事件状态与已存内容，不返回 job 列表。
+- 候选审核路由也是 Provider Route 管理面，不属于 Agent Tool 契约，不进入 MCP 工具
+  集合；它们不调用模型 provider，只读取或终止候选审核状态。
 
 ## DTO 与语义
 
@@ -308,6 +317,52 @@ Provider Route 原始事件入口。请求包含 scope、来源与内容：
 
 响应 `200` 返回事件的 `processing_status`（`stored`、`processing`、`processed`、
 `failed`）、来源标识与已存内容。它不返回 job 列表或 provider 载荷。
+
+### `GET /v1/candidates`
+
+Provider Route 候选审核列表。查询参数：
+
+| 参数 | 必需 | 规则 |
+| --- | --- | --- |
+| `scope_id` | 是 | 候选所属 scope 的不透明标识；缺失返回 `422 invalid_input`。 |
+| `review_state` | 否 | 封闭为 `pending`、`confirmed`、`rejected`。 |
+| `memory_type` | 否 | 候选记忆类型。 |
+| `processor_identity` / `processing_version` | 否 | 按处理身份过滤。 |
+| `created_from` / `created_until` | 否 | 创建时间半开区间。 |
+| `limit` / `cursor` | 否 | 共享分页约定：`limit` 1–200（默认 50），`cursor` 为不透明游标。 |
+
+响应 `200` 返回有界候选页：
+
+```json
+{"items":[{"candidate_id":"candidate-1","event_id":"event-1","scope_id":"project-123","review_state":"pending","revision":{"kind":"fact","display_content":"...","canonical_content":"...","sensitivity":"normal"},"evidence":[],"processor_identity":"processor/test","processing_version":"candidate-v1","specification_hash":"...","reviews":[],"created_at":"2026-09-20T10:00:00Z"}],"next_cursor":null}
+```
+
+### `GET /v1/candidates/{candidate_id}`
+
+响应 `200` 返回单个候选，包含其修订、证据引用、处理 provenance 与审核记录；未知
+候选返回 `404 not_found`。
+
+### `POST /v1/candidates/{candidate_id}/confirm` 与 `POST /v1/candidates/{candidate_id}/reject`
+
+确认或拒绝一个待审核候选。请求体：
+
+```json
+{"reason_code": "reviewed", "note": "可选"}
+```
+
+`reason_code` 是 1–128 runes 的必填审核原因码；`note` 可选且不超过 1024 runes。
+确认在存储层执行确定性整合（`consolidation-v1`）：它可能发布一条新记忆、把候选作为
+证据附加到现有修订，或对冗余证据以 `rejected` 终态结束。响应 `200` 返回：
+
+```json
+{"operation_id":"op-1","replayed":false,"candidate":{"candidate_id":"candidate-1","review_state":"confirmed","confirmed_memory_id":"mem-1","confirmed_revision_id":"rev-1","reviews":[]},"memory":{"memory_id":"mem-1"}}
+```
+
+当确认被整合归约为拒绝时，`candidate.review_state` 为 `rejected` 且省略 `memory`。
+拒绝响应始终省略 `memory`。已审核候选返回 `409 conflict`；候选不存在返回
+`404 not_found`。两条路由都是幂等写：相同 `Idempotency-Key` 重放返回首次结果并带
+`Idempotency-Replayed: true`，不同命令复用同一 key 返回 `409 idempotency_conflict`。
+候选审核不调用模型 provider，也不返回 job 或 provider 请求/响应载荷。
 
 ## JSON 解码规则
 

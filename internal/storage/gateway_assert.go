@@ -4,6 +4,7 @@ import (
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
+	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 )
 
@@ -28,4 +29,6 @@ var (
 	_ extraction.WorkStore  = (*ExtractionWorkCapability)(nil)
 
 	_ policy.Store = (*PolicyCapability)(nil)
+
+	_ review.CandidateStore = (*ReviewCapability)(nil)
 )
