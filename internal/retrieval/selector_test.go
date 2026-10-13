@@ -375,6 +375,22 @@ func TestMaximumResultsDoesNotForceIrrelevantContext(t *testing.T) {
 	}
 }
 
+// TestNearEqualUtilityKeepsRankOrderOverContentCost proves MMR does not let
+// content size alone reorder candidates whose relevance and coverage are
+// otherwise equal: the better-ranked candidate wins even when a later
+// candidate is smaller. Without the utility tie tolerance, the context-cost
+// term would pick the shorter candidate and bury the top-ranked match.
+func TestNearEqualUtilityKeepsRankOrderOverContentCost(t *testing.T) {
+	candidates := []domain.ContextCandidate{
+		selCandidate("ranked-first", "r1", 0.5, func(c *domain.ContextCandidate) { c.Rank = 1; c.EstimatedTokens = 40; c.EstimatedChars = 40 }),
+		selCandidate("shorter-later", "r2", 0.5, func(c *domain.ContextCandidate) { c.Rank = 2; c.EstimatedTokens = 6; c.EstimatedChars = 6 }),
+	}
+	output := SelectContext(SelectInput{QuestionType: QuestionLookup, Budget: selectionBudget(), Candidates: candidates})
+	if len(output.Items) != 2 || output.Items[0].MemoryID != "ranked-first" {
+		t.Fatalf("selection order = %v, want ranked-first before shorter-later", selectedMemoryIDs(output.Items))
+	}
+}
+
 func TestLowQualityCandidatesStopSelection(t *testing.T) {
 	output := SelectContext(SelectInput{QuestionType: QuestionLookup, Budget: domain.ContextBudget{MaxResults: 10, MaxTokens: 100000, MaxChars: 100000, MaxSources: 100}, Candidates: []domain.ContextCandidate{
 		selCandidate("a", "ra", 0.80, func(c *domain.ContextCandidate) { c.Rank = 1 }),

@@ -24,7 +24,13 @@ const (
 	// candidates in the same space with compatible time to share a cluster.
 	clusterSemanticCosineFloor = 0.94
 
-	selectionTieEpsilon = 1e-12
+	// selectionTieEpsilon is the utility tolerance under which the deterministic
+	// cluster order (exact protection, then rank) decides instead. It must stay
+	// below the smallest diversity weight (Session 0.01) so coverage gains still
+	// reorder candidates, and above the context-cost spread of ordinary
+	// candidates so size alone never outranks a better-ranked candidate at the
+	// same relevance.
+	selectionTieEpsilon = 0.001
 )
 
 // Selection stop and rejection reasons. Rejections are policy-safe metadata
