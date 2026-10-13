@@ -67,6 +67,12 @@ func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params Searc
 		if err != nil {
 			return nil, err
 		}
+		if len(candidates) == 0 {
+			candidates, err = r.keywordRelaxedRecall(ctx, tx, params, spaces, compiled, limit)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if len(compiled.ShortTerms) == 0 {
 		return candidates, nil
@@ -80,6 +86,34 @@ func (r *Repository) keywordRecall(ctx context.Context, tx *sql.Tx, params Searc
 		return nil, err
 	}
 	return mergeShortTermCandidates(candidates, short), nil
+}
+
+// keywordRelaxedRecall re-runs the compiled expression with every required
+// clause demoted to optional. It runs at most once per recall, only after the
+// exact expression returned no row, over the same snapshot and limit, so a
+// required term that never co-occurs with the rest of the query yields partial
+// candidates for ranking instead of an empty package. Relaxed candidates are
+// marked so ranking withholds the exact-match feature, and the relaxation is
+// counted through the content-free telemetry gate.
+func (r *Repository) keywordRelaxedRecall(ctx context.Context, tx *sql.Tx, params SearchParams, spaces []string, compiled retrieval.KeywordQuery, limit int) ([]searchCandidate, error) {
+	relaxed := compiled.RelaxedMatch()
+	if relaxed == "" {
+		return nil, nil
+	}
+	query := compiled
+	query.Match = relaxed
+	candidates, err := r.keywordMatchRecall(ctx, tx, params, spaces, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	for i := range candidates {
+		candidates[i].relaxed = true
+	}
+	params.telemetry.AddGate("keyword_relaxed", 1)
+	return candidates, nil
 }
 
 // mergeShortTermCandidates appends literal fallback candidates that FTS did not

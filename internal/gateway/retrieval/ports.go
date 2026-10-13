@@ -99,8 +99,12 @@ type Candidate struct {
 	// from the Agent Tool search-hint projection rather than canonical content.
 	// They are deterministic ordering and explain inputs, never content signals.
 	ContentMatched, HintMatched, HintOnly bool
-	Quality, DuplicateRisk, Overbreadth   *float64
-	LifecyclePenalty                      *float64
+	// Relaxed marks a keyword candidate recalled by demoting the query's
+	// required clauses to optional because the exact expression returned no
+	// row. Relaxed candidates never receive the exact-match feature.
+	Relaxed                             bool
+	Quality, DuplicateRisk, Overbreadth *float64
+	LifecyclePenalty                    *float64
 }
 
 type PrimaryInput struct {

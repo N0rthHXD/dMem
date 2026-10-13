@@ -276,6 +276,37 @@ func buildKeywordMatch(terms []KeywordTerm) string {
 	return strings.Join(parts, " AND ")
 }
 
+// RelaxedMatch returns the compiled expression with every required clause
+// demoted to optional. Callers run it at most once, after the original Match
+// returned no row, so a query whose acronym or identifier never co-occurs with
+// the other terms still hands partial candidates to ranking instead of
+// returning an empty result.
+//
+// It is empty when the query has no required clause or when the relaxation
+// would repeat the original expression, so an extra query is never issued
+// without a deterministic benefit.
+func (q KeywordQuery) RelaxedMatch() string {
+	var clauses []string
+	hasRequired := false
+	for _, term := range q.Terms {
+		if term.Required {
+			hasRequired = true
+		}
+		if term.Fallback {
+			continue
+		}
+		clauses = append(clauses, quoteFTS(term.Text))
+	}
+	if !hasRequired || len(clauses) == 0 {
+		return ""
+	}
+	relaxed := strings.Join(clauses, " OR ")
+	if relaxed == q.Match {
+		return ""
+	}
+	return relaxed
+}
+
 func quoteFTS(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
