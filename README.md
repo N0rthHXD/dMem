@@ -115,6 +115,10 @@ make install VERSION=0.1.0
 发布包由 GitHub Actions（`.github/workflows/release.yml`）在推送 `v*` 标签时
 构建，提供 `linux/amd64` 与 `linux/arm64` 两种归档及配套 SHA-256。
 
+下载报 TLS 连接重置（`curl: (56)` / `GnuTLS recv error`）时，脚本会重试并回退
+HTTP/1.1；仍失败可用代理或镜像覆盖下载地址，详见
+[docs/operations/packaging.md](docs/operations/packaging.md)。
+
 默认配置文件为 `$HOME/.config/dmem/config.toml`。使用
 `--config /absolute/path/config.toml` 选择其他实例。该文件决定数据目录与所有
 守护进程设置，是守护进程设置的唯一来源。随仓库提供的示例中 provider 处于禁用

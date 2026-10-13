@@ -34,18 +34,34 @@ Environment:
   DMEM_VERSION  release tag to download, or "latest" (default: latest)
   DMEM_PREBUILT set to 1 to always download a prebuilt release
   DMEM_REPO     repository override for forks/tests (default: N0rthHXD/dMem)
+  DMEM_DOWNLOAD_BASE  override the asset base URL (mirror/proxy), e.g.
+                      https://ghproxy.com/https://github.com/N0rthHXD/dMem/releases/latest/download
+  https_proxy   standard proxy honored by curl/wget
   VERSION       version stamped when building from source (default: git describe)
 EOF
 }
 
 fetch() {
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$1" -o "$2"
+        curl -fsSL --retry 4 --retry-delay 2 --retry-connrefused "$1" -o "$2"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$2" "$1"
+        wget --tries=4 --timeout=30 -qO "$2" "$1"
     else
         die "curl or wget is required to download the release"
     fi
+}
+
+download() {
+    # Retry, then fall back to HTTP/1.1 which avoids some TLS resets on
+    # networks that terminate HTTP/2 connections.
+    if fetch "$1" "$2"; then
+        return 0
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        printf '%s\n' "install: retrying $1 over HTTP/1.1" >&2
+        curl -fsSL --http1.1 --retry 4 --retry-delay 2 --retry-connrefused "$1" -o "$2" && return 0
+    fi
+    return 1
 }
 
 install_config() {
@@ -113,7 +129,9 @@ else
         aarch64|arm64) arch=arm64 ;;
         *) die "unsupported architecture: $machine (prebuilt releases: amd64, arm64)" ;;
     esac
-    if [ "$DMEM_VERSION" = "latest" ]; then
+    if [ -n "${DMEM_DOWNLOAD_BASE:-}" ]; then
+        base="${DMEM_DOWNLOAD_BASE%/}"
+    elif [ "$DMEM_VERSION" = "latest" ]; then
         base="$REPO_URL/releases/latest/download"
     else
         tag="$DMEM_VERSION"
@@ -125,8 +143,8 @@ else
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT INT TERM
     printf '%s\n' "downloading $base/$asset"
-    fetch "$base/$asset" "$tmp/$asset" || die "failed to download $base/$asset (is the release published?)"
-    if fetch "$base/$asset.sha256" "$tmp/$asset.sha256" 2>/dev/null; then
+    download "$base/$asset" "$tmp/$asset" || die "failed to download $base/$asset; check your network or set https_proxy/DMEM_DOWNLOAD_BASE"
+    if download "$base/$asset.sha256" "$tmp/$asset.sha256" 2>/dev/null; then
         if command -v sha256sum >/dev/null 2>&1; then
             ( cd "$tmp" && sha256sum -c "$asset.sha256" >/dev/null ) || die "checksum verification failed for $asset"
         fi
