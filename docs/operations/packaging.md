@@ -36,6 +36,20 @@ sh install.sh
 DMEM_VERSION=0.1.0 sh install.sh
 ```
 
+### 网络受限（代理 / 镜像）
+
+下载失败且报 `curl: (56) ... TLS ...` 或 `GnuTLS recv error` 时，通常是网络重置了
+到 GitHub 发布资源主机（`release-assets.githubusercontent.com`）的连接。脚本已内置
+重试与 HTTP/1.1 回退；仍失败时可设置标准代理，或用镜像覆盖下载基址：
+
+```sh
+https_proxy=http://127.0.0.1:7890 sh install.sh
+DMEM_DOWNLOAD_BASE=https://ghproxy.com/https://github.com/N0rthHXD/dMem/releases/latest/download sh install.sh
+```
+
+`DMEM_DOWNLOAD_BASE` 指向包含归档文件的目录（`<base>/dmem_linux_<arch>.tar.gz`）。
+在源码检出目录中运行 `install.sh` 会本地构建，不需要下载发布包。
+
 ## 源码检出安装
 
 在源码检出目录中运行同一个脚本时改为本地构建（需要 Go 1.24 或更新版本、C 编译器
@@ -58,6 +72,8 @@ bash install.sh --daemon
 | `FORCE=1` | 空 | 覆盖已存在的 `config.toml` |
 | `DMEM_VERSION` | `latest` | 要下载的发布标签，或 `latest` |
 | `DMEM_PREBUILT=1` | 空 | 即使位于检出目录也强制下载预编译包 |
+| `DMEM_DOWNLOAD_BASE` | 发布资源 URL | 覆盖下载基址（镜像/代理） |
+| `https_proxy` | 空 | curl/wget 使用的标准代理 |
 | `VERSION` | `git describe --tags --always --dirty`，回退 `0.1.0` | 源码构建时写入二进制的版本 |
 
 若目标 `config.toml` 已存在，安装会保留它以避免覆盖本地修改；需要覆盖时使用
