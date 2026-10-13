@@ -133,8 +133,17 @@ score = 加权主召回分数 + 有界图谱提升 + 反馈信号 - 惩罚项
 
 `SelectContext`（`context-selection-v3`）在硬预算内做预算化覆盖选择：
 
-- 使用并查集对重复候选聚类并选择代表项；
-- 使用 MMR 效用平衡相关性与多样性；
+- 使用并查集对重复候选聚类并选择代表项。重复证据只能由**共享的来源片段**
+  （event + offset）判定；只有 event、没有 offset 的批量提交记忆是不同记忆，
+  不会塌缩成一个聚类。
+- 使用 MMR 效用平衡相关性与多样性。效用差在
+  `selectionTieEpsilon`（0.001，低于最小多样性权重）以内时按确定性聚类序
+  （exact 保护优先，然后按 rank）决胜，避免内容长度（cost 项）单独把排名更
+  好的候选挤出。
+- 无校准 semantic 通道执行时（无 provider 部署），keyword 通道命中获得
+  `0.5 + 0.15 × 归一化关键词分` 的选择相关性下限：至少进入选择，且名次带内
+  排序不会触发 MMR 的 score-discontinuity 停止。semantic 执行时该下限关闭，
+  校准分数保持权威，hybrid 排序不回退。
 - 强制结果数、token 与字符预算（默认 20 条结果、4000 token、16000 字符，
   token 格式版本 `context-tokens-v1`）。
 
