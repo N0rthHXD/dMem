@@ -81,10 +81,12 @@ esac
 
 mkdir -p "$BINDIR" "$CONFIGDIR"
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || printf '%s' "$PWD")
 source_dir=""
-if [ -f "$script_dir/Makefile" ] && [ -d "$script_dir/cmd/dmemd" ]; then
-    source_dir="$script_dir"
+if [ -f "$0" ]; then
+    script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || printf '%s' "$PWD")
+    if [ -f "$script_dir/Makefile" ] && [ -d "$script_dir/cmd/dmemd" ]; then
+        source_dir="$script_dir"
+    fi
 fi
 
 if [ -n "$source_dir" ] && [ -z "$DMEM_PREBUILT" ]; then
