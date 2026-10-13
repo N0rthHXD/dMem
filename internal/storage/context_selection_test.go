@@ -2,13 +2,88 @@ package storage
 
 import (
 	"context"
+	"math"
 	"testing"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
+	"github.com/N0rthHXD/dMem/internal/retrieval"
 )
 
 func selectionSearchParams(query string, explain bool) SearchParams {
 	return SearchParams{
 		Query: query, SpaceIDs: []string{"space-1"}, States: []string{"active"},
 		Channels: []string{"keyword"}, Limit: 10, MaxChars: 10000, MaxContextTokens: 10000, Explain: explain,
+	}
+}
+
+// TestSelectionRelevanceKeywordFloor locks the v3 keyword relevance floor: a
+// keyword-channel hit must clear the selection utility floor even when its
+// literal term coverage does not. Semantic and graph maxima, literal coverage,
+// and exact-primary protection keep their existing precedence.
+func TestSelectionRelevanceKeywordFloor(t *testing.T) {
+	terms := []retrieval.KeywordTerm{{Text: "Melanie"}}
+	revision := domain.MemoryRevision{DisplayContent: "database pool"}
+	score := func(value float64) *float64 { return &value }
+
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(1)}, terms); got != 1 {
+		t.Fatalf("normalized keyword 1 floor = %v, want 1", got)
+	}
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0)}, terms); got != hintSelectionRelevance {
+		t.Fatalf("normalized keyword 0 floor = %v, want %v", got, hintSelectionRelevance)
+	}
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0.4)}, terms); math.Abs(got-0.7) > 1e-9 {
+		t.Fatalf("normalized keyword 0.4 floor = %v, want 0.7", got)
+	}
+	// Better literal coverage is never lowered by a weak keyword score.
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0)}, []retrieval.KeywordTerm{{Text: "database"}}); got != 1 {
+		t.Fatalf("full literal coverage = %v, want 1", got)
+	}
+	// Coverage above the bound is not re-scaled by keyword rank: raising it
+	// would turn rank-local BM25 spread into an MMR score-discontinuity cliff.
+	partial := []retrieval.KeywordTerm{{Text: "database"}, {Text: "pool"}, {Text: "Melanie"}, {Text: "Berlin"}}
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(1)}, partial); got != 0.5 {
+		t.Fatalf("partial literal coverage = %v, want 0.5", got)
+	}
+	// Calibrated semantic and graph scores still take the maximum.
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0), SemanticScore: score(0.9)}, terms); got != 0.9 {
+		t.Fatalf("semantic maximum = %v, want 0.9", got)
+	}
+	if got := selectionRelevance(revision, domain.SearchResult{KeywordRelevance: score(0), GraphScore: score(0.95)}, terms); got != 0.95 {
+		t.Fatalf("graph maximum = %v, want 0.95", got)
+	}
+	// Protected exact primary matches remain canonical.
+	if got := selectionRelevance(revision, domain.SearchResult{ProtectedPrimary: true}, terms); got != 1 {
+		t.Fatalf("protected primary = %v, want 1", got)
+	}
+}
+
+// TestKeywordSelectionFloorKeepsLowCoverageMatches is the v3 regression guard
+// for selection relevance. The memory is recalled by the keyword channel
+// because it shares the subject name with a natural-language Chinese question,
+// but its literal compiled-term coverage is far below the selection utility
+// floor. The keyword relevance floor must keep it selected instead of letting
+// selection clear the whole context.
+func TestKeywordSelectionFloorKeepsLowCoverageMatches(t *testing.T) {
+	repository, _ := newMemoryTestRepository(t)
+	memory := createMemoryWithContent(t, repository, "selection-floor", "Melanie moved to Berlin last year.")
+
+	query := "Melanie最近庆祝了谁的生日？"
+	compiled := compileKeyword(query)
+	if coverage := retrieval.Coverage(memory.CurrentRevision.DisplayContent, compiled.Terms); coverage >= 0.20 {
+		t.Fatalf("fixture literal coverage = %.3f, want below the lookup selection floor", coverage)
+	}
+	response, err := repository.SearchMemories(context.Background(), selectionSearchParams(query, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Memory.MemoryID != memory.MemoryID {
+		t.Fatalf("keyword results = %+v", response.Results)
+	}
+	if response.Results[0].KeywordRelevance == nil {
+		t.Fatalf("keyword candidate missing normalized relevance: %+v", response.Results[0])
+	}
+	if len(response.Context.Items) != 1 || response.Context.Items[0].MemoryID != memory.MemoryID {
+		t.Fatalf("low-coverage keyword candidate was not selected: %+v", response.Context.Items)
 	}
 }
 
