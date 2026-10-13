@@ -34,6 +34,11 @@ jobs:
         with:
           version: 0.13.0
 
+      - name: Install SQLite headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsqlite3-dev
+
       - name: Download dependencies
         run: go mod download
 
@@ -59,6 +64,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.number }}"
+          # sqlite-vec's cgo bindings need sqlite3.h; zig's sysroot does not
+          # include the host's, so pass an explicit include directory.
+          sqliteinc="$RUNNER_TEMP/sqliteinc"
+          mkdir -p "$sqliteinc"
+          cp /usr/include/sqlite3.h "$sqliteinc/"
+          export CGO_CFLAGS="-I$sqliteinc"
           mkdir -p dist build
           for arch in amd64 arm64; do
             case "$arch" in
@@ -78,6 +89,47 @@ jobs:
             ( cd dist && sha256sum "dmem_linux_${arch}.tar.gz" > "dmem_linux_${arch}.tar.gz.sha256" )
           done
           ls -l dist
+
+      - name: Smoke test linux/amd64 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          tar -xzf dist/dmem_linux_amd64.tar.gz -C "$root"
+          mkdir -p "$root/data"
+          chmod 0700 "$root/data"
+          cat > "$root/smoke.toml" <<EOF
+          config_version = 1
+
+          [instance]
+          data_dir = "$root/data"
+          database_filename = "dmem.db"
+
+          [server]
+          shutdown_grace_period = "15s"
+
+          [jobs]
+          worker_count = 1
+          queue_soft_limit = 10
+          queue_hard_limit = 20
+          max_attempts = 3
+          lease_duration = "30s"
+          per_job_timeout = "2m"
+          retry_initial_backoff = "1s"
+          retry_max_backoff = "5m"
+
+          [storage]
+          disk_soft_free_bytes = 1073741824
+          disk_hard_free_bytes = 268435456
+
+          [processing]
+          enabled = false
+
+          [embedding]
+          enabled = false
+          EOF
+          "$root/dmemd" --config "$root/smoke.toml" config validate
+          "$root/dmemd" --config "$root/smoke.toml" init
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
