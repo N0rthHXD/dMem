@@ -89,6 +89,32 @@ cp docs/operations/config.example.toml "${XDG_CONFIG_HOME:-$HOME/.config}/dmem/c
 ./dmemd daemon
 ```
 
+一步安装：从 GitHub 下载与当前架构匹配的预编译发布包（无需 Go 或 C 编译器），
+把 `dmemd` 安装到 `~/.local/bin/dmemd`，把默认配置安装到
+`~/.config/dmem/config.toml`（已存在的配置默认保留，`FORCE=1` 覆盖），校验
+SHA-256，执行 `config validate` 与 `init`，并提示如何把 `~/.local/bin` 加入
+`PATH`：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/N0rthHXD/dMem/main/install.sh | sh
+```
+
+在源码检出目录中运行同一个脚本时会改为本地构建：
+
+```sh
+bash install.sh              # 本地构建安装
+bash install.sh --daemon     # 安装并后台启动守护进程
+```
+
+`make install` 是底层原语，只做构建与拷贝，不做校验或初始化：
+
+```sh
+make install VERSION=0.1.0
+```
+
+发布包由 GitHub Actions（`.github/workflows/release.yml`）在推送 `v*` 标签时
+构建，提供 `linux/amd64` 与 `linux/arm64` 两种归档及配套 SHA-256。
+
 默认配置文件为 `${XDG_CONFIG_HOME:-$HOME/.config}/dmem/config.toml`。使用
 `--config /absolute/path/config.toml` 选择其他实例。该文件决定数据目录与所有
 守护进程设置，是守护进程设置的唯一来源。随仓库提供的示例中 provider 处于禁用

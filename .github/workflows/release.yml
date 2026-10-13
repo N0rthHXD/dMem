@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CGO_ENABLED: "1"
+
+jobs:
+  release:
+    name: Build and publish release assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install zig (C cross-compiler)
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+          case "$version" in
+            v*) ;;
+            *) version="v$version" ;;
+          esac
+          printf 'tag=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'number=%s\n' "${version#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build linux/amd64 and linux/arm64 archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.number }}"
+          mkdir -p dist build
+          for arch in amd64 arm64; do
+            case "$arch" in
+              amd64) target="x86_64-linux-gnu" ;;
+              arm64) target="aarch64-linux-gnu" ;;
+            esac
+            dir="build/dmem_linux_${arch}"
+            mkdir -p "$dir"
+            GOOS=linux GOARCH="$arch" \
+              CC="zig cc -target $target" \
+              CXX="zig c++ -target $target" \
+              go build -trimpath -tags sqlite_fts5 \
+                -ldflags "-s -w -X main.version=$version" \
+                -o "$dir/dmemd" ./cmd/dmemd
+            install -m 0644 packaging/config.toml "$dir/config.toml"
+            tar -C "$dir" -czf "dist/dmem_linux_${arch}.tar.gz" .
+            ( cd dist && sha256sum "dmem_linux_${arch}.tar.gz" > "dmem_linux_${arch}.tar.gz.sha256" )
+          done
+          ls -l dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          generate_release_notes: true
