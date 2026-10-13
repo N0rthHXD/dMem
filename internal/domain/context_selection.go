@@ -8,7 +8,7 @@ import (
 // ContextSelectionVersion identifies the budgeted context-selection contract.
 // It is versioned independently from ranking: a selection change must not be
 // able to replay a cursor or checkpoint bound to a different selection stage.
-const ContextSelectionVersion = "context-selection-v2"
+const ContextSelectionVersion = "context-selection-v3"
 
 // ContextTokenFormatVersion identifies the deterministic context token-estimation
 // format. Retrieval budgets and downstream generation must use the same identity

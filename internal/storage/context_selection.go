@@ -190,9 +190,16 @@ func graphExplanation(paths []domain.GraphPath, signals []domain.GraphSignal) st
 // rather than the fused ranker total, so a legitimate direct match is never
 // discarded merely because rank-local calibration spread same-query results.
 //
-// A search-hint-only keyword match is auxiliary but legitimate, so it receives a
-// bounded relevance above the selection utility floor and below full canonical
-// coverage. Exact canonical matches remain protected and are chosen first.
+// A keyword-channel match is a primary relevance signal even when its literal
+// term coverage is low, for example a natural-language Chinese question that
+// shares only a subject name with the memory. Below the shared hint bound, such
+// a candidate receives 0.5 + 0.5*normalized keyword relevance, so the channel
+// establishes at least the hint-only bound and its rank scales above it.
+// Candidates already above the bound keep their coverage directly: raising
+// them too would turn rank-local BM25 spread into a relevance cliff that the
+// MMR score-discontinuity stop would treat as a quality drop. Exact canonical
+// matches remain protected and are chosen first; calibrated semantic and graph
+// scores still take the maximum.
 func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResult, terms []retrieval.KeywordTerm) float64 {
 	if result.ProtectedPrimary {
 		return 1
@@ -204,6 +211,9 @@ func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResu
 	if result.KeywordHintMatched && relevance < hintSelectionRelevance {
 		relevance = hintSelectionRelevance
 	}
+	if result.KeywordRelevance != nil && relevance < hintSelectionRelevance {
+		relevance = keywordSelectionRelevance(*result.KeywordRelevance)
+	}
 	if result.SemanticScore != nil && *result.SemanticScore > relevance {
 		relevance = *result.SemanticScore
 	}
@@ -213,8 +223,18 @@ func selectionRelevance(revision domain.MemoryRevision, result domain.SearchResu
 	return retrieval.Clamp01(relevance)
 }
 
+// keywordSelectionRelevance maps the ranker's min-max normalized keyword score
+// onto a selection relevance floor. A keyword-channel hit has already been
+// recalled deterministically, so even a zero normalized score keeps it at the
+// hint-only bound instead of letting literal coverage alone discard the whole
+// result set.
+func keywordSelectionRelevance(keywordRelevance float64) float64 {
+	return hintSelectionRelevance + (1-hintSelectionRelevance)*retrieval.Clamp01(keywordRelevance)
+}
+
 // hintSelectionRelevance is the bounded selection relevance granted to a
-// search-hint-only keyword match.
+// search-hint-only keyword match. It is also the base of the keyword-channel
+// relevance floor: any keyword-channel hit keeps at least this relevance.
 const hintSelectionRelevance = 0.5
 
 func isAggregateKind(kind domain.MemoryKind) bool {

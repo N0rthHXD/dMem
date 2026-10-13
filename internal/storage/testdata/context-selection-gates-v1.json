@@ -1,7 +1,7 @@
 {
   "config_version": "context-selection-gates-v1",
   "corpus_version": "context-selection-corpus-v1",
-  "context_selection_version": "context-selection-v2",
+  "context_selection_version": "context-selection-v3",
   "token_format_version": "context-tokens-v1",
   "quality": {
     "minimum_duplicate_rate_reduction": 0.5,

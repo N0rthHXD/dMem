@@ -125,7 +125,7 @@ score = 加权主召回分数 + 有界图谱提升 + 反馈信号 - 惩罚项
 
 ## 上下文选择
 
-`SelectContext`（`context-selection-v2`）在硬预算内做预算化覆盖选择：
+`SelectContext`（`context-selection-v3`）在硬预算内做预算化覆盖选择：
 
 - 使用并查集对重复候选聚类并选择代表项；
 - 使用 MMR 效用平衡相关性与多样性；
@@ -196,7 +196,7 @@ Agent 工具面不暴露内部管理列表，因此不返回 `items` 包裹形�
 | 查询计划/时间 | `query-plan-v2` / `temporal-features-v1` |
 | 排序特征/权重 | `ranking-features-v1` / `ranking-weights-v1` |
 | 排序顺序 | `hint-canonical-v1`（canonical content 匹配先于 hint-only） |
-| 上下文选择 | `context-selection-v2` / `context-tokens-v1` |
+| 上下文选择 | `context-selection-v3` / `context-tokens-v1` |
 | 反馈 | `v2`（90 天窗口，最小支持度 3，半衰期 45 天） |
 | 质量/重复 | `memory-quality-v1` / `duplicate-cluster-v1` |
 
