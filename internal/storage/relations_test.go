@@ -32,7 +32,7 @@ func createRelationProposalTest(t *testing.T, r *Repository, key string, p Creat
 func confirmRelationTest(t *testing.T, r *Repository, key string, p domain.RelationProposal) domain.RelationProposal {
 	t.Helper()
 	review := ReviewRelationProposalParams{ReasonCode: "confirmed"}
-	v, _, err := r.ConfirmRelationProposal(context.Background(), memoryIdentity(key, "/v1/relation-proposals/{proposal_id}/confirm", review), p.ProposalID, review)
+	v, _, _, err := r.ConfirmRelationProposal(context.Background(), memoryIdentity(key, "/v1/relation-proposals/{proposal_id}/confirm", review), p.ProposalID, review)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestDuplicateRelationConfirmConcurrentIdempotency(t *testing.T) {
 	for range 2 {
 		go func() {
 			defer wg.Done()
-			v, _, err := r.ConfirmRelationProposal(context.Background(), identity, p.ProposalID, review)
+			v, _, _, err := r.ConfirmRelationProposal(context.Background(), identity, p.ProposalID, review)
 			results <- v
 			errs <- err
 		}()

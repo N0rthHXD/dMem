@@ -13,7 +13,7 @@ import (
 
 func reviewHandler(t *testing.T, reviews *fakeReviews) *Handler {
 	t.Helper()
-	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: &fakeEvents{}, Reviews: reviews})
+	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: &fakeEvents{}, Reviews: reviews, Memories: &fakeMemories{}, Conflicts: &fakeConflicts{}, Proposals: &fakeProposals{}})
 	if err != nil {
 		t.Fatal(err)
 	}

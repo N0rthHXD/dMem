@@ -10,7 +10,7 @@ import (
 
 func TestBoundaryLogsAccessAndError(t *testing.T) {
 	var buffer bytes.Buffer
-	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: &fakeEvents{}, Reviews: &fakeReviews{}},
+	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: &fakeEvents{}, Reviews: &fakeReviews{}, Memories: &fakeMemories{}, Conflicts: &fakeConflicts{}, Proposals: &fakeProposals{}},
 		WithLogger(slog.New(slog.NewJSONHandler(&buffer, nil))))
 	if err != nil {
 		t.Fatal(err)

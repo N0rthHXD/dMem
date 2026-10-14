@@ -213,7 +213,7 @@ func TestMEMRevisePreservesOldRevisionAndDoesNotAppendStateEvent(t *testing.T) {
 	clock.now = clock.now.Add(time.Minute)
 	validFrom := "2026-08-22T00:00:00Z"
 	params := ReviseMemoryParams{ExpectedRevisionID: oldRevision.RevisionID, Content: "revised searchable content", ValidFrom: &validFrom, Evidence: directEvidence("event-2"), Reason: "correct fact"}
-	revised, replay, err := repository.ReviseMemory(ctx, memoryIdentity("revise", "/v1/memories/{memory_id}/revisions", params), memory.MemoryID, params)
+	revised, _, replay, err := repository.ReviseMemory(ctx, memoryIdentity("revise", "/v1/memories/{memory_id}/revisions", params), memory.MemoryID, params)
 	if err != nil || replay {
 		t.Fatalf("ReviseMemory() = %+v, replay=%t, error=%v", revised, replay, err)
 	}
@@ -283,7 +283,7 @@ func TestMEMRejectedWritesLeaveNoPartialRows(t *testing.T) {
 	for _, test := range invalidRevisions {
 		before := memoryTableCounts(t, repository)
 		params := ReviseMemoryParams{ExpectedRevisionID: test.expectedID, Content: "rejected revision", Evidence: test.evidence, Reason: test.name}
-		_, _, err := repository.ReviseMemory(ctx, memoryIdentity("revise-"+test.name, "/v1/memories/{memory_id}/revisions", params), memory.MemoryID, params)
+		_, _, _, err := repository.ReviseMemory(ctx, memoryIdentity("revise-"+test.name, "/v1/memories/{memory_id}/revisions", params), memory.MemoryID, params)
 		if test.name == "stale" && !errors.Is(err, ErrRevisionConflict) {
 			t.Fatalf("ReviseMemory(stale) error = %v", err)
 		}
@@ -371,13 +371,13 @@ func TestMEMArchiveRemovesSearchAndRestoreCopiesRevision(t *testing.T) {
 	source := created.CurrentRevision
 	clock.now = clock.now.Add(time.Minute)
 	revise := ReviseMemoryParams{ExpectedRevisionID: source.RevisionID, Content: "replacement revision", Evidence: directEvidence("event-2"), Reason: "replacement"}
-	current, _, err := repository.ReviseMemory(ctx, memoryIdentity("lifecycle-revise", "/v1/memories/{memory_id}/revisions", revise), created.MemoryID, revise)
+	current, _, _, err := repository.ReviseMemory(ctx, memoryIdentity("lifecycle-revise", "/v1/memories/{memory_id}/revisions", revise), created.MemoryID, revise)
 	if err != nil {
 		t.Fatal(err)
 	}
 	clock.now = clock.now.Add(time.Minute)
 	archive := ChangeMemoryStateParams{ExpectedRevisionID: current.CurrentRevision.RevisionID, Action: "archive", Reason: "not current"}
-	archived, replay, err := repository.ChangeMemoryState(ctx, memoryIdentity("archive", "/v1/memories/{memory_id}/state", archive), created.MemoryID, archive)
+	archived, _, replay, err := repository.ChangeMemoryState(ctx, memoryIdentity("archive", "/v1/memories/{memory_id}/state", archive), created.MemoryID, archive)
 	if err != nil || replay || archived.CurrentState != "archived" {
 		t.Fatalf("archive = %+v, replay=%t, error=%v", archived, replay, err)
 	}
@@ -392,7 +392,7 @@ func TestMEMArchiveRemovesSearchAndRestoreCopiesRevision(t *testing.T) {
 
 	clock.now = clock.now.Add(time.Minute)
 	restore := ChangeMemoryStateParams{ExpectedRevisionID: archived.CurrentRevision.RevisionID, Action: "restore", RestoreRevisionID: &source.RevisionID, Reason: "restore original"}
-	restored, replay, err := repository.ChangeMemoryState(ctx, memoryIdentity("restore", "/v1/memories/{memory_id}/state", restore), created.MemoryID, restore)
+	restored, _, replay, err := repository.ChangeMemoryState(ctx, memoryIdentity("restore", "/v1/memories/{memory_id}/state", restore), created.MemoryID, restore)
 	if err != nil || replay {
 		t.Fatalf("restore = %+v, replay=%t, error=%v", restored, replay, err)
 	}
@@ -423,7 +423,7 @@ func TestMEMCurrentLifecycleMatchesLatestEventAndNoopIsRecordedWithoutEvent(t *t
 		clock.now = clock.now.Add(time.Second)
 		params := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: action, Reason: action + " reason"}
 		var err error
-		memory, _, err = repository.ChangeMemoryState(ctx, memoryIdentity(fmt.Sprintf("state-%d", i), "/v1/memories/{memory_id}/state", params), memory.MemoryID, params)
+		memory, _, _, err = repository.ChangeMemoryState(ctx, memoryIdentity(fmt.Sprintf("state-%d", i), "/v1/memories/{memory_id}/state", params), memory.MemoryID, params)
 		if err != nil {
 			t.Fatalf("ChangeMemoryState(%s): %v", action, err)
 		}
@@ -440,7 +440,7 @@ func TestMEMCurrentLifecycleMatchesLatestEventAndNoopIsRecordedWithoutEvent(t *t
 	clock.now = clock.now.Add(time.Second)
 	params := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "contest", Reason: "already contested"}
 	identity := memoryIdentity("contest-noop", "/v1/memories/{memory_id}/state", params)
-	noop, replay, err := repository.ChangeMemoryState(ctx, identity, memory.MemoryID, params)
+	noop, _, replay, err := repository.ChangeMemoryState(ctx, identity, memory.MemoryID, params)
 	if err != nil || replay || noop.CurrentState != "contested" {
 		t.Fatalf("noop contest = %+v, replay=%t, error=%v", noop, replay, err)
 	}
@@ -456,7 +456,7 @@ func TestMEMCurrentLifecycleMatchesLatestEventAndNoopIsRecordedWithoutEvent(t *t
 		t.Fatalf("noop idempotency/audits = %d/%d", idempotency, audits)
 	}
 	before := memoryTableCounts(t, repository)
-	replayed, replay, err := repository.ChangeMemoryState(ctx, identity, memory.MemoryID, params)
+	replayed, _, replay, err := repository.ChangeMemoryState(ctx, identity, memory.MemoryID, params)
 	if err != nil || !replay || !reflect.DeepEqual(replayed, noop) {
 		t.Fatalf("replayed noop = %+v, replay=%t, error=%v", replayed, replay, err)
 	}
@@ -476,14 +476,14 @@ func TestCorpusGenerationAdvancesOnlyWithCommittedProjectionChanges(t *testing.T
 		t.Fatalf("generation after create = %d, %v", generation, err)
 	}
 	invalid := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "invalid", Evidence: directEvidence("missing-event"), Reason: "rollback"}
-	if _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("generation-invalid", "/v1/memories/{memory_id}/revisions", invalid), memory.MemoryID, invalid); !errors.Is(err, ErrInvalidEvidence) {
+	if _, _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("generation-invalid", "/v1/memories/{memory_id}/revisions", invalid), memory.MemoryID, invalid); !errors.Is(err, ErrInvalidEvidence) {
 		t.Fatalf("invalid revise error = %v", err)
 	}
 	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {
 		t.Fatalf("generation after rollback = %d, %v", generation, err)
 	}
 	noop := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "confirm", Reason: "already active"}
-	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("generation-noop", "/v1/memories/{memory_id}/state", noop), memory.MemoryID, noop); err != nil {
+	if _, _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("generation-noop", "/v1/memories/{memory_id}/state", noop), memory.MemoryID, noop); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.store.reader.QueryRow(`SELECT generation FROM corpus_metadata WHERE singleton=1`).Scan(&generation); err != nil || generation != 2 {
@@ -504,7 +504,7 @@ func TestMEMConcurrentReviseHasOneWinnerAndNoPartialLoser(t *testing.T) {
 			defer workers.Done()
 			params := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: fmt.Sprintf("racing revision %d", i), Evidence: directEvidence(eventID), Reason: "race"}
 			<-start
-			_, _, err := repository.ReviseMemory(context.Background(), memoryIdentity(fmt.Sprintf("race-%d", i), "/v1/memories/{memory_id}/revisions", params), memory.MemoryID, params)
+			_, _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity(fmt.Sprintf("race-%d", i), "/v1/memories/{memory_id}/revisions", params), memory.MemoryID, params)
 			results <- err
 		}(i, eventID)
 	}
@@ -554,7 +554,7 @@ func TestMEMInjectedFailuresRollbackCreateReviseAndRestore(t *testing.T) {
 		before := memoryTableCounts(t, repository)
 		runtime.failAt = runtime.id + 2
 		params := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "not committed", Evidence: directEvidence("event-2"), Reason: "fault"}
-		if _, _, err := repository.ReviseMemory(ctx, memoryIdentity("fault-revise", "/v1/memories/{memory_id}", params), memory.MemoryID, params); err == nil {
+		if _, _, _, err := repository.ReviseMemory(ctx, memoryIdentity("fault-revise", "/v1/memories/{memory_id}", params), memory.MemoryID, params); err == nil {
 			t.Fatal("ReviseMemory() succeeded with injected failure")
 		}
 		if after := memoryTableCounts(t, repository); !reflect.DeepEqual(after, before) {
@@ -566,14 +566,14 @@ func TestMEMInjectedFailuresRollbackCreateReviseAndRestore(t *testing.T) {
 		repository, runtime := newMemoryTestRepository(t)
 		memory := createTestMemory(t, repository, "fault-restore-create")
 		archive := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "archive", Reason: "archive"}
-		memory, _, err := repository.ChangeMemoryState(ctx, memoryIdentity("fault-restore-archive", "/v1/memories/{memory_id}/state", archive), memory.MemoryID, archive)
+		memory, _, _, err := repository.ChangeMemoryState(ctx, memoryIdentity("fault-restore-archive", "/v1/memories/{memory_id}/state", archive), memory.MemoryID, archive)
 		if err != nil {
 			t.Fatal(err)
 		}
 		before := memoryTableCounts(t, repository)
 		runtime.failAt = runtime.id + 5
 		restore := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "restore", RestoreRevisionID: &memory.CurrentRevision.RevisionID, Reason: "fault"}
-		if _, _, err := repository.ChangeMemoryState(ctx, memoryIdentity("fault-restore", "/v1/memories/{memory_id}/state", restore), memory.MemoryID, restore); err == nil {
+		if _, _, _, err := repository.ChangeMemoryState(ctx, memoryIdentity("fault-restore", "/v1/memories/{memory_id}/state", restore), memory.MemoryID, restore); err == nil {
 			t.Fatal("ChangeMemoryState(restore) succeeded with injected failure")
 		}
 		if after := memoryTableCounts(t, repository); !reflect.DeepEqual(after, before) {

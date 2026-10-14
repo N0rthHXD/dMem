@@ -265,7 +265,7 @@ func TestContextSelectionExcludesStaleAggregateByDefault(t *testing.T) {
 	proposal := createAggregateProposalTest(t, repository, "stale-proposal", aggregateProposalParams(aggregateInput(input)))
 	confirmed := confirmAggregateTest(t, repository, "stale-confirm", proposal)
 	revise := ReviseMemoryParams{ExpectedRevisionID: input.CurrentRevision.RevisionID, Content: "changed input", Evidence: directEvidence("event-2"), Reason: "changed"}
-	if _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("stale-revise", "/v1/memories/{memory_id}", revise), input.MemoryID, revise); err != nil {
+	if _, _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("stale-revise", "/v1/memories/{memory_id}", revise), input.MemoryID, revise); err != nil {
 		t.Fatal(err)
 	}
 	if aggregate, err := repository.GetAggregate(context.Background(), *confirmed.ResultMemoryID); err != nil || !aggregate.AggregateStale {

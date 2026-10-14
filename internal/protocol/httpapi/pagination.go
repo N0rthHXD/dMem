@@ -10,9 +10,28 @@ import (
 
 // PageQuery parameter names shared by list routes.
 const (
-	limitQueryParam  = "limit"
-	cursorQueryParam = "cursor"
+	limitQueryParam            = "limit"
+	cursorQueryParam           = "cursor"
+	includeAncestorsQueryParam = "include_ancestors"
 )
+
+// queryBool parses an optional "true"/"false" list filter.
+func queryBool(name, raw string) (bool, error) {
+	switch raw {
+	case "":
+		return false, nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, &requestError{
+			status:  http.StatusUnprocessableEntity,
+			code:    codeInvalidRequest,
+			message: name + " must be true or false",
+		}
+	}
+}
 
 // ParsePageRequest implements the shared pagination convention: an optional
 // integer limit between 1 and 200 (default 50) and an optional opaque cursor of

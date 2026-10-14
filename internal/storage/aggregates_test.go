@@ -28,7 +28,7 @@ func createAggregateProposalTest(t *testing.T, r *Repository, key string, params
 func confirmAggregateTest(t *testing.T, r *Repository, key string, proposal domain.AggregateProposal) domain.AggregateProposal {
 	t.Helper()
 	review := ReviewAggregateProposalParams{ReasonCode: "confirmed"}
-	result, _, err := r.ConfirmAggregateProposal(context.Background(), memoryIdentity(key, "/v1/aggregate-proposals/{proposal_id}/confirm", review), proposal.ProposalID, review)
+	result, _, _, err := r.ConfirmAggregateProposal(context.Background(), memoryIdentity(key, "/v1/aggregate-proposals/{proposal_id}/confirm", review), proposal.ProposalID, review)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestAggregateInputRevisionStateChangedStaleDedupRebuild(t *testing.T) {
 	input := createTestMemory(t, r, "agg-stale")
 	confirmed := confirmAggregateTest(t, r, "agg-stale-confirm", createAggregateProposalTest(t, r, "agg-stale-proposal", aggregateProposalParams(aggregateInput(input))))
 	revise := ReviseMemoryParams{ExpectedRevisionID: input.CurrentRevision.RevisionID, Content: "changed input", Evidence: directEvidence("event-2"), Reason: "changed"}
-	if _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("agg-revise", "/v1/memories/{memory_id}", revise), input.MemoryID, revise); err != nil {
+	if _, _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("agg-revise", "/v1/memories/{memory_id}", revise), input.MemoryID, revise); err != nil {
 		t.Fatal(err)
 	}
 	aggregate, err := r.GetAggregate(context.Background(), *confirmed.ResultMemoryID)
@@ -166,7 +166,7 @@ func TestAggregateTimelineKindBuildsAndStabilizes(t *testing.T) {
 		t.Fatalf("timeline aggregate=%+v err=%v", aggregate, err)
 	}
 	revise := ReviseMemoryParams{ExpectedRevisionID: a.CurrentRevision.RevisionID, Content: "timeline changed input", Evidence: directEvidence("event-2"), Reason: "changed"}
-	if _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("timeline-revise", "/v1/memories/{memory_id}", revise), a.MemoryID, revise); err != nil {
+	if _, _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("timeline-revise", "/v1/memories/{memory_id}", revise), a.MemoryID, revise); err != nil {
 		t.Fatal(err)
 	}
 	aggregate, err = r.GetAggregate(context.Background(), *confirmed.ResultMemoryID)
@@ -187,7 +187,7 @@ func TestAggregateAuthorityCannotBeBypassedByGenericMemoryWrites(t *testing.T) {
 	input := createTestMemory(t, r, "agg-authority")
 	confirmed := confirmAggregateTest(t, r, "agg-authority-confirm", createAggregateProposalTest(t, r, "agg-authority-proposal", aggregateProposalParams(aggregateInput(input))))
 	revise := ReviseMemoryParams{ExpectedRevisionID: *confirmed.ResultRevisionID, Content: "unprovenanced revision", Evidence: directEvidence("event-1"), Reason: "bypass"}
-	if _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("agg-generic-revise", "/v1/memories/{memory_id}", revise), *confirmed.ResultMemoryID, revise); !errors.Is(err, ErrInvalidAggregateProposal) {
+	if _, _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("agg-generic-revise", "/v1/memories/{memory_id}", revise), *confirmed.ResultMemoryID, revise); !errors.Is(err, ErrInvalidAggregateProposal) {
 		t.Fatalf("revise error=%v", err)
 	}
 }

@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"github.com/N0rthHXD/dMem/internal/gateway/conflict"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/gateway/review"
@@ -31,4 +33,10 @@ var (
 	_ policy.Store = (*PolicyCapability)(nil)
 
 	_ review.CandidateStore = (*ReviewCapability)(nil)
+
+	_ review.ProposalStore = (*ProposalCapability)(nil)
+
+	_ memory.Store = (*MemoryCapability)(nil)
+
+	_ conflict.Store = (*ConflictCapability)(nil)
 )

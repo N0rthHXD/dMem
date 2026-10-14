@@ -12,7 +12,9 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/conflict"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/pkg/toolcontract"
@@ -124,10 +126,170 @@ func testCandidate(id string) domain.Candidate {
 	}
 }
 
+type fakeMemories struct {
+	call    gateway.CallContext
+	command any
+	err     error
+}
+
+func (f *fakeMemories) List(_ context.Context, call gateway.CallContext, query memory.ListQuery) (domain.MemoryPage, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return domain.MemoryPage{}, f.err
+	}
+	return domain.MemoryPage{Items: []domain.Memory{testMemory("memory-1")}}, nil
+}
+func (f *fakeMemories) Get(_ context.Context, call gateway.CallContext, query memory.GetQuery) (domain.Memory, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return domain.Memory{}, f.err
+	}
+	return testMemory(query.MemoryID), nil
+}
+func (f *fakeMemories) ListRevisions(_ context.Context, call gateway.CallContext, query memory.MemoryQuery) ([]domain.MemoryRevision, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []domain.MemoryRevision{testMemory(query.MemoryID).CurrentRevision}, nil
+}
+func (f *fakeMemories) ListStateEvents(_ context.Context, call gateway.CallContext, query memory.MemoryQuery) ([]domain.MemoryStateEvent, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []domain.MemoryStateEvent{{StateEventID: "state-event-1", MemoryID: query.MemoryID, RevisionID: "revision-1", OperationID: "op", ToState: "active", Reason: "created", CreatedBy: "operator", CreatedAt: "2026-09-20T10:00:00Z"}}, nil
+}
+func (f *fakeMemories) Revise(_ context.Context, call gateway.CallContext, command memory.ReviseCommand) (memory.WriteResult, error) {
+	f.call, f.command = call, command
+	if f.err != nil {
+		return memory.WriteResult{}, f.err
+	}
+	return memory.WriteResult{WriteResult: gateway.WriteResult{OperationID: "op", Replay: true}, Memory: testMemory(command.MemoryID)}, nil
+}
+func (f *fakeMemories) ChangeState(_ context.Context, call gateway.CallContext, command memory.StateChangeCommand) (memory.WriteResult, error) {
+	f.call, f.command = call, command
+	if f.err != nil {
+		return memory.WriteResult{}, f.err
+	}
+	value := testMemory(command.MemoryID)
+	value.CurrentState = "archived"
+	return memory.WriteResult{WriteResult: gateway.WriteResult{OperationID: "op"}, Memory: value}, nil
+}
+
+func testMemory(id string) domain.Memory {
+	return domain.Memory{
+		MemoryID: id, SpaceID: "scope", Kind: domain.MemoryKindFact, CurrentState: "active", Sensitivity: "normal",
+		CurrentRevision: domain.MemoryRevision{RevisionID: "revision-1", MemoryID: id, Kind: domain.MemoryKindFact,
+			DisplayContent: "content", CanonicalContent: "content", Sensitivity: "normal", Evidence: []domain.RevisionEvidence{}},
+		CreatedAt: "2026-09-20T10:00:00Z", UpdatedAt: "2026-09-20T10:00:00Z",
+	}
+}
+
+type fakeConflicts struct {
+	call    gateway.CallContext
+	command any
+	err     error
+}
+
+func (f *fakeConflicts) List(_ context.Context, call gateway.CallContext, query conflict.ListQuery) (domain.ConflictCasePage, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return domain.ConflictCasePage{}, f.err
+	}
+	return domain.ConflictCasePage{Items: []domain.ConflictCase{testConflictCase("case-1")}}, nil
+}
+func (f *fakeConflicts) Get(_ context.Context, call gateway.CallContext, query conflict.GetQuery) (domain.ConflictCase, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return domain.ConflictCase{}, f.err
+	}
+	return testConflictCase(query.CaseID), nil
+}
+func (f *fakeConflicts) Resolve(_ context.Context, call gateway.CallContext, command conflict.ResolveCommand) (conflict.ResolveResult, error) {
+	f.call, f.command = call, command
+	if f.err != nil {
+		return conflict.ResolveResult{}, f.err
+	}
+	value := testConflictCase(command.CaseID)
+	value.State = "resolved"
+	return conflict.ResolveResult{WriteResult: gateway.WriteResult{OperationID: "op", Replay: true}, Case: value}, nil
+}
+
+func testConflictCase(id string) domain.ConflictCase {
+	return domain.ConflictCase{
+		CaseID: id, SpaceID: "scope", State: "open", OpenedBy: "agent", ProcessingVersion: "test-v1",
+		CreatedAt:    "2026-09-20T10:00:00Z",
+		Participants: []domain.ConflictParticipant{{MemoryID: "memory-1", RevisionID: "revision-1"}, {MemoryID: "memory-2", RevisionID: "revision-2"}},
+		Relations:    []domain.MemoryRelation{},
+	}
+}
+
+type fakeProposals struct {
+	call    gateway.CallContext
+	command any
+	err     error
+}
+
+func (f *fakeProposals) ListProposals(_ context.Context, call gateway.CallContext, query review.ListProposalsQuery) (review.ProposalPage, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return review.ProposalPage{}, f.err
+	}
+	return review.ProposalPage{Items: []review.Proposal{testProposal(query.Kind)}}, nil
+}
+func (f *fakeProposals) GetProposal(_ context.Context, call gateway.CallContext, query review.GetProposalQuery) (review.Proposal, error) {
+	f.call, f.command = call, query
+	if f.err != nil {
+		return review.Proposal{}, f.err
+	}
+	return testProposal(query.Kind), nil
+}
+func (f *fakeProposals) ConfirmProposal(_ context.Context, call gateway.CallContext, command review.ReviewProposalCommand) (review.ProposalReviewResult, error) {
+	f.call, f.command = call, command
+	if f.err != nil {
+		return review.ProposalReviewResult{}, f.err
+	}
+	value := testProposal(command.Kind)
+	if command.Kind == review.ProposalKindEntity && value.Entity != nil {
+		value.Entity.ReviewState = "confirmed"
+	}
+	if command.Kind == review.ProposalKindEvolution && value.Evolution != nil {
+		value.Evolution.ReviewState = "confirmed"
+	}
+	return review.ProposalReviewResult{WriteResult: gateway.WriteResult{OperationID: "op", Replay: true}, Proposal: value}, nil
+}
+func (f *fakeProposals) RejectProposal(_ context.Context, call gateway.CallContext, command review.ReviewProposalCommand) (review.ProposalReviewResult, error) {
+	f.call, f.command = call, command
+	if f.err != nil {
+		return review.ProposalReviewResult{}, f.err
+	}
+	value := testProposal(command.Kind)
+	if command.Kind == review.ProposalKindEntity && value.Entity != nil {
+		value.Entity.ReviewState = "rejected"
+	}
+	return review.ProposalReviewResult{WriteResult: gateway.WriteResult{OperationID: "op"}, Proposal: value}, nil
+}
+
+func testProposal(kind review.ProposalKind) review.Proposal {
+	switch kind {
+	case review.ProposalKindFact:
+		return review.NewFactProposal(domain.FactProposal{ProposalID: "proposal-1", SpaceID: "scope", Predicate: "works_for", ReviewState: "pending", Evidence: []domain.EntityFactEvidence{}, Reviews: []domain.FactProposalReview{}})
+	case review.ProposalKindRelation:
+		return review.NewRelationProposal(domain.RelationProposal{ProposalID: "proposal-1", SpaceID: "scope", RelationType: "supports", ReviewState: "pending", Evidence: []domain.RelationEvidence{}, Reviews: []domain.RelationProposalReview{}})
+	case review.ProposalKindEvolution:
+		return review.NewEvolutionProposal(domain.EvolutionProposal{ProposalID: "proposal-1", SpaceID: "scope", Action: "supplement", ReviewState: "pending", Targets: []domain.EvolutionTarget{{MemoryID: "memory-1", ExpectedRevisionID: "revision-1"}}, Evidence: []domain.RelationEvidence{}, Reviews: []domain.EvolutionReview{}})
+	case review.ProposalKindAggregate:
+		return review.NewAggregateProposal(domain.AggregateProposal{ProposalID: "proposal-1", SpaceID: "scope", AggregateKind: "topic", ReviewState: "pending", Inputs: []domain.AggregateInput{}, Reviews: []domain.AggregateProposalReview{}})
+	default:
+		return review.NewEntityProposal(domain.EntityProposal{ProposalID: "proposal-1", SpaceID: "scope", ProposalKind: "entity", Sensitivity: "normal", ReviewState: "pending", Reviews: []domain.EntityProposalReview{}})
+	}
+}
+
 func testHandler(t *testing.T) (*Handler, *fakeTools, *fakeScopes) {
 	t.Helper()
 	tools, scopes := &fakeTools{}, &fakeScopes{}
-	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes, Events: &fakeEvents{}, Reviews: &fakeReviews{}})
+	handler, err := New(Dependencies{AgentTools: tools, Scopes: scopes, Events: &fakeEvents{}, Reviews: &fakeReviews{}, Memories: &fakeMemories{}, Conflicts: &fakeConflicts{}, Proposals: &fakeProposals{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +310,19 @@ var targetRoutes = []RouteInfo{
 	{Operation: OperationCandidateGet, Method: http.MethodGet, Path: "/v1/candidates/{candidate_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
 	{Operation: review.OperationCandidateConfirm, Method: http.MethodPost, Path: "/v1/candidates/{candidate_id}/confirm", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxCandidateReviewBodyBytes},
 	{Operation: review.OperationCandidateReject, Method: http.MethodPost, Path: "/v1/candidates/{candidate_id}/reject", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxCandidateReviewBodyBytes},
+	{Operation: OperationMemoryList, Method: http.MethodGet, Path: "/v1/memories", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationMemoryGet, Method: http.MethodGet, Path: "/v1/memories/{memory_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationMemoryRevisionList, Method: http.MethodGet, Path: "/v1/memories/{memory_id}/revisions", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationMemoryStateEventList, Method: http.MethodGet, Path: "/v1/memories/{memory_id}/state-events", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: memory.OperationRevise, Method: http.MethodPost, Path: "/v1/memories/{memory_id}/revisions", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxMemoryReviseBodyBytes},
+	{Operation: memory.OperationStateChange, Method: http.MethodPost, Path: "/v1/memories/{memory_id}/state", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxMemoryStateBodyBytes},
+	{Operation: OperationConflictList, Method: http.MethodGet, Path: "/v1/conflicts", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationConflictGet, Method: http.MethodGet, Path: "/v1/conflicts/{case_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: conflict.OperationResolve, Method: http.MethodPost, Path: "/v1/conflicts/{case_id}/resolve", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxConflictResolveBodyBytes},
+	{Operation: OperationProposalList, Method: http.MethodGet, Path: "/v1/proposals", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationProposalGet, Method: http.MethodGet, Path: "/v1/proposals/{proposal_type}/{proposal_id}", Access: AccessRead, Idempotency: IdempotencyNotRequired},
+	{Operation: OperationProposalConfirm, Method: http.MethodPost, Path: "/v1/proposals/{proposal_type}/{proposal_id}/confirm", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxProposalReviewBodyBytes},
+	{Operation: OperationProposalReject, Method: http.MethodPost, Path: "/v1/proposals/{proposal_type}/{proposal_id}/reject", Access: AccessWrite, Idempotency: IdempotencyRequired, MaxBodyBytes: MaxProposalReviewBodyBytes},
 }
 
 func TestRoutesAreExactProviderAndToolSurface(t *testing.T) {
@@ -155,7 +330,7 @@ func TestRoutesAreExactProviderAndToolSurface(t *testing.T) {
 	if got := handler.Routes(); !reflect.DeepEqual(got, targetRoutes) {
 		t.Fatalf("routes = %+v", got)
 	}
-	for _, path := range []string{"/v1/memories/m", "/v1/scopes"} {
+	for _, path := range []string{"/v1/scopes", "/v1/jobs"} {
 		if response := request(t, handler, http.MethodGet, path, "", nil); response.Code != http.StatusNotFound {
 			t.Errorf("%s status = %d", path, response.Code)
 		}
@@ -260,7 +435,7 @@ func TestScopeEnsureResolvesThenCreatesAndScopeGet(t *testing.T) {
 
 func TestEventIngestAndStatusUseProviderRouteSurface(t *testing.T) {
 	events := &fakeEvents{}
-	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: events, Reviews: &fakeReviews{}})
+	handler, err := New(Dependencies{AgentTools: &fakeTools{}, Scopes: &fakeScopes{}, Events: events, Reviews: &fakeReviews{}, Memories: &fakeMemories{}, Conflicts: &fakeConflicts{}, Proposals: &fakeProposals{}})
 	if err != nil {
 		t.Fatal(err)
 	}

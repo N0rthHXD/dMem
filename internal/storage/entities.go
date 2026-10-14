@@ -416,17 +416,17 @@ func (r *Repository) ListEntityProposals(ctx context.Context, f EntityProposalFi
 	return page, nil
 }
 
-func (r *Repository) ConfirmEntityProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEntityProposalParams) (domain.EntityProposal, bool, error) {
+func (r *Repository) ConfirmEntityProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEntityProposalParams) (domain.EntityProposal, string, bool, error) {
 	return r.reviewEntityProposal(ctx, identity, id, review, true)
 }
-func (r *Repository) RejectEntityProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEntityProposalParams) (domain.EntityProposal, bool, error) {
+func (r *Repository) RejectEntityProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEntityProposalParams) (domain.EntityProposal, string, bool, error) {
 	return r.reviewEntityProposal(ctx, identity, id, review, false)
 }
 
-func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEntityProposalParams, confirm bool) (domain.EntityProposal, bool, error) {
+func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEntityProposalParams, confirm bool) (domain.EntityProposal, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.EntityProposal{}, false, err
+		return domain.EntityProposal{}, "", false, err
 	}
 	defer tx.Rollback()
 	statusCode := 200
@@ -434,27 +434,31 @@ func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIde
 		statusCode = 201
 	}
 	if status, body, found, e := readIdempotency(ctx, tx, identity); e != nil {
-		return domain.EntityProposal{}, false, e
+		return domain.EntityProposal{}, "", false, e
 	} else if found {
 		var p domain.EntityProposal
 		if status != statusCode || json.Unmarshal([]byte(body), &p) != nil {
-			return p, false, errors.New("invalid stored idempotency response")
+			return p, "", false, errors.New("invalid stored idempotency response")
 		}
-		return p, true, nil
+		operationID, e := readIdempotencyOperation(ctx, tx, identity)
+		if e != nil {
+			return p, "", false, e
+		}
+		return p, operationID, true, nil
 	}
 	p, err := getEntityProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if p.ReviewState != "pending" {
-		return p, false, ErrEntityProposalReviewed
+		return p, "", false, ErrEntityProposalReviewed
 	}
 	if err = r.requireDiskWritable(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	ids, err := r.newIDs(13)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	operationID, reviewID, auditID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
@@ -469,33 +473,33 @@ func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIde
 			norm := normalizeEntityName(*p.CanonicalName)
 			version := "v1"
 			if _, err = tx.ExecContext(ctx, `INSERT INTO entities(entity_id,space_id,entity_type,canonical_name,normalized_name,normalization_version,state,sensitivity,created_by,processing_version,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',?,?,?,?,?)`, eid, p.SpaceID, *p.EntityType, *p.CanonicalName, norm, version, p.Sensitivity, identity.CallerID, p.ProcessingVersion, now, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO entity_events(entity_event_id,entity_id,operation_id,event_type,to_canonical_name,to_state,normalization_version,reason,created_by,created_at) VALUES (?,?,?,'created',?,'active',?,?,?,?)`, ids[5], eid, operationID, *p.CanonicalName, version, review.ReasonCode, identity.CallerID, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO entity_aliases(alias_id,entity_id,alias,normalized_alias,normalization_version,source,state,created_by,created_at,updated_at) VALUES (?,?,?,?,?,'human_confirmation','active',?,?,?)`, aid, eid, *p.CanonicalName, norm, version, identity.CallerID, now, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO entity_alias_events(alias_event_id,alias_id,operation_id,to_state,reason,created_by,created_at) VALUES (?,?,?,'active',?,?,?)`, ids[6], aid, operationID, review.ReasonCode, identity.CallerID, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			if p.Alias != nil {
 				extraAliasID := ids[7]
 				aliasID = &extraAliasID
 				extraNorm := normalizeEntityName(*p.Alias)
 				if _, err = tx.ExecContext(ctx, `INSERT INTO entity_aliases(alias_id,entity_id,alias,normalized_alias,normalization_version,source,state,created_by,created_at,updated_at) VALUES (?,?,?,?,?,'human_confirmation','active',?,?,?)`, extraAliasID, eid, *p.Alias, extraNorm, *p.NormalizationVersion, identity.CallerID, now, now); err != nil {
-					return p, false, err
+					return p, "", false, err
 				}
 				if _, err = tx.ExecContext(ctx, `INSERT INTO entity_alias_events(alias_event_id,alias_id,operation_id,to_state,reason,created_by,created_at) VALUES (?,?,?,'active',?,?,?)`, ids[8], extraAliasID, operationID, review.ReasonCode, identity.CallerID, now); err != nil {
-					return p, false, err
+					return p, "", false, err
 				}
 			}
 			if p.MentionRevisionID != nil || p.MentionEventID != nil {
 				mid := ids[10]
 				mentionID = &mid
 				if err = insertConfirmedMention(ctx, tx, p, eid, mid, identity.CallerID, now); err != nil {
-					return p, false, err
+					return p, "", false, err
 				}
 			}
 		case "alias":
@@ -504,57 +508,57 @@ func (r *Repository) reviewEntityProposal(ctx context.Context, identity WriteIde
 			aliasID = &aid
 			norm := normalizeEntityName(*p.Alias)
 			if _, err = tx.ExecContext(ctx, `INSERT INTO entity_aliases(alias_id,entity_id,alias,normalized_alias,normalization_version,source,state,created_by,created_at,updated_at) VALUES (?,?,?,?,?,'human_confirmation','active',?,?,?)`, aid, *entityID, *p.Alias, norm, *p.NormalizationVersion, identity.CallerID, now, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO entity_alias_events(alias_event_id,alias_id,operation_id,to_state,reason,created_by,created_at) VALUES (?,?,?,'active',?,?,?)`, ids[5], aid, operationID, review.ReasonCode, identity.CallerID, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 		case "mention":
 			entityID = p.EntityID
 			mid := ids[3]
 			mentionID = &mid
 			if err = insertConfirmedMention(ctx, tx, p, *entityID, mid, identity.CallerID, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 		}
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE entity_proposals SET review_state=?,result_entity_id=?,result_canonical_alias_id=?,result_alias_id=?,result_mention_id=?,reviewed_at=? WHERE proposal_id=? AND review_state='pending'`, toState, entityID, canonicalAliasID, aliasID, mentionID, now, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if !oneRow(updated) {
-		return p, false, ErrEntityProposalReviewed
+		return p, "", false, ErrEntityProposalReviewed
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO entity_proposal_reviews(review_id,proposal_id,operation_id,from_state,to_state,reason_code,note,reviewer_id,result_entity_id,result_canonical_alias_id,result_alias_id,result_mention_id,created_at) VALUES (?,?,?,'pending',?,?,?,?,?,?,?,?,?)`, reviewID, id, operationID, toState, review.ReasonCode, review.Note, identity.CallerID, entityID, canonicalAliasID, aliasID, mentionID, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if confirm {
 		if _, err = enqueueEntityIndexJob(ctx, tx, ids[12], operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE entity_index_metadata SET state='stale',updated_at=? WHERE singleton=1`, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 	}
 	p, err = getEntityProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	body, _ := json.Marshal(p)
 	if err = writeIdempotency(ctx, tx, identity, operationID, statusCode, body, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	action := "reject_entity_proposal"
 	if confirm {
 		action = "confirm_entity_proposal"
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,reason,created_at) VALUES (?,?,?,?,?,'entity_proposal',?,'succeeded',?,?)`, auditID, operationID, identity.RequestID, identity.CallerID, action, id, review.ReasonCode, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if err = tx.Commit(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
-	return p, false, nil
+	return p, operationID, false, nil
 }
 
 func insertConfirmedMention(ctx context.Context, tx *sql.Tx, p domain.EntityProposal, entityID, mentionID, callerID, now string) error {

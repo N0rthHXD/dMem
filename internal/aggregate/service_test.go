@@ -55,10 +55,10 @@ func aggregateTestRepository(t *testing.T) (*storage.Repository, storage.Claimed
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repository.ConfirmAggregateProposal(context.Background(), aggregateIdentity("confirm", "/v1/aggregate-proposals/{proposal_id}/confirm"), proposal.ProposalID, storage.ReviewAggregateProposalParams{ReasonCode: "confirmed"}); err != nil {
+	if _, _, _, err := repository.ConfirmAggregateProposal(context.Background(), aggregateIdentity("confirm", "/v1/aggregate-proposals/{proposal_id}/confirm"), proposal.ProposalID, storage.ReviewAggregateProposalParams{ReasonCode: "confirmed"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repository.ReviseMemory(context.Background(), aggregateIdentity("revise", "/v1/memories/{memory_id}"), memories[0].MemoryID, storage.ReviseMemoryParams{ExpectedRevisionID: memories[0].CurrentRevision.RevisionID, Content: "aggregate-input-0 changed", Evidence: []storage.EvidenceParams{{EventID: event.EventID}}, Reason: "changed"}); err != nil {
+	if _, _, _, err := repository.ReviseMemory(context.Background(), aggregateIdentity("revise", "/v1/memories/{memory_id}"), memories[0].MemoryID, storage.ReviseMemoryParams{ExpectedRevisionID: memories[0].CurrentRevision.RevisionID, Content: "aggregate-input-0 changed", Evidence: []storage.EvidenceParams{{EventID: event.EventID}}, Reason: "changed"}); err != nil {
 		t.Fatal(err)
 	}
 	claim, err := repository.ClaimJob(context.Background(), storage.ClaimJobParams{WorkerID: "aggregate-worker", LeaseDuration: time.Hour})

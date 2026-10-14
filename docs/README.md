@@ -1,9 +1,10 @@
 # dMem 文档
 
 dMem 是一个以 SQLite 为后端的本地 Linux 守护进程。当前产品面包括 Agent Tool Route
-（remember、recall、feedback、forget）、Provider Route 的原始事件处理与候选审核
-对象、受 scope 约束的关键词与语义主召回（叠加门控类型化图谱特征与预算化上下文选择）、
-实体、实体事实与关系、显式冲突演化、反馈驱动排序、经审核的
+（remember、recall、feedback、forget）、Provider Route 的原始事件处理、候选与提案
+审核对象、本地记忆权威管理面（列表、详情、修订与生命周期）、显式冲突的读取与解决、
+受 scope 约束的关键词与语义主召回（叠加门控类型化图谱特征与预算化上下文选择）、
+实体、实体事实与关系、反馈驱动排序、经审核的
 scene/topic/timeline 聚合、决策遥测与 explain 输出、备份与恢复，以及逻辑导入导出。
 
 语义位于协议无关的 Memory Gateway 模块中。当前入站协议适配器是 Agent Tool
@@ -14,10 +15,10 @@ MCP 服务器复用 `pkg/client` 薄 application client。`internal/server` 是�
 授权仍属后续独立工作。Provider Route 已在 Phase 5 收敛为显式
 `[processing].enabled`/`[embedding].enabled` 加 `POST /v1/events` 入口。
 
-Phase 7 删除了没有生产消费者的 `memory`、`feedback`、`knowledge` 网关模块、
-consolidation 入口服务及其存储适配器。记忆权威写入、反馈追加、逻辑遗忘与审核
-不变量全部由 Agent Tool Route 的单一原子 application 面与存储层触发器承担；不存在
-并行的旧写入入口。
+Phase 7 删除了没有生产消费者的 `feedback` 与 `knowledge` 网关模块、consolidation
+入口服务及其存储适配器。记忆权威写入、反馈追加、逻辑遗忘与审核不变量全部由
+Agent Tool Route 的单一原子 application 面与存储层触发器承担；管理面阶段重建的
+`memory` 模块只提供有界读取与围栏修订/生命周期写，不恢复旧直接写入入口。
 
 Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新的数据目录，而不是
 复用不兼容的数据库。
@@ -71,7 +72,7 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 当散文描述与可执行契约冲突时，以可执行契约为准：
 
 - [HTTP REST+JSON 契约](api/http-rest-contract.md) 描述当前
-  `internal/protocol/httpapi` 实现。当前十三条路由是**已实现行为**，不是冻结契约，
+  `internal/protocol/httpapi` 实现。当前二十六条路由是**已实现行为**，不是冻结契约，
   也不构成外部兼容性承诺；项目发布前路径与 DTO 仍可调整。
 - [SQLite Schema v1](storage/schema-v1.sql) 定义新数据库初始化，并由
   `internal/storage` 内嵌并校验一致。

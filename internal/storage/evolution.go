@@ -348,18 +348,18 @@ func exactEvolutionTargets(expected, actual []domain.EvolutionTarget) bool {
 	return true
 }
 
-func (r *Repository) RejectEvolutionProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEvolutionProposalParams) (domain.EvolutionProposal, bool, error) {
+func (r *Repository) RejectEvolutionProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEvolutionProposalParams) (domain.EvolutionProposal, string, bool, error) {
 	return r.reviewEvolutionProposal(ctx, identity, id, review, false)
 }
 
-func (r *Repository) ConfirmEvolutionProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEvolutionProposalParams) (domain.EvolutionProposal, bool, error) {
+func (r *Repository) ConfirmEvolutionProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEvolutionProposalParams) (domain.EvolutionProposal, string, bool, error) {
 	return r.reviewEvolutionProposal(ctx, identity, id, review, true)
 }
 
-func (r *Repository) reviewEvolutionProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEvolutionProposalParams, confirm bool) (domain.EvolutionProposal, bool, error) {
+func (r *Repository) reviewEvolutionProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewEvolutionProposalParams, confirm bool) (domain.EvolutionProposal, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.EvolutionProposal{}, false, err
+		return domain.EvolutionProposal{}, "", false, err
 	}
 	defer tx.Rollback()
 	status := 200
@@ -367,60 +367,64 @@ func (r *Repository) reviewEvolutionProposal(ctx context.Context, identity Write
 		status = 201
 	}
 	if s, b, found, e := readIdempotency(ctx, tx, identity); e != nil {
-		return domain.EvolutionProposal{}, false, e
+		return domain.EvolutionProposal{}, "", false, e
 	} else if found {
 		var v domain.EvolutionProposal
 		if s != status || json.Unmarshal([]byte(b), &v) != nil {
-			return v, false, errors.New("invalid stored idempotency response")
+			return v, "", false, errors.New("invalid stored idempotency response")
 		}
-		return v, true, nil
+		operationID, e := readIdempotencyOperation(ctx, tx, identity)
+		if e != nil {
+			return v, "", false, e
+		}
+		return v, operationID, true, nil
 	}
 	p, err := getEvolutionProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if p.ReviewState != "pending" {
-		return p, false, ErrEvolutionReviewed
+		return p, "", false, ErrEvolutionReviewed
 	}
 	if confirm && !exactEvolutionTargets(review.ExpectedTargets, p.Targets) {
-		return p, false, ErrRevisionConflict
+		return p, "", false, ErrRevisionConflict
 	}
 	if confirm && p.Action == "replacement" && (review.ReplacementMode == nil || !contains([]string{"same_memory_revision", "new_memory"}, *review.ReplacementMode)) {
-		return p, false, ErrInvalidEvolutionProposal
+		return p, "", false, ErrInvalidEvolutionProposal
 	}
 	if confirm && p.Action != "replacement" && review.ReplacementMode != nil {
-		return p, false, ErrInvalidEvolutionProposal
+		return p, "", false, ErrInvalidEvolutionProposal
 	}
 	if err = r.requireDiskWritable(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if confirm {
 		for _, target := range p.Targets {
 			var revision, space, state string
 			var frozen bool
 			if err = tx.QueryRowContext(ctx, `SELECT current_revision_id,space_id,current_state,frozen FROM memories WHERE memory_id=?`, target.MemoryID).Scan(&revision, &space, &state, &frozen); err != nil || space != p.SpaceID || state == "deleted" || state == "retracted" {
-				return p, false, ErrRevisionConflict
+				return p, "", false, ErrRevisionConflict
 			}
 			if revision != target.ExpectedRevisionID {
-				return p, false, ErrRevisionConflict
+				return p, "", false, ErrRevisionConflict
 			}
 			if frozen {
-				return p, false, fmt.Errorf("%w: %w", ErrRevisionConflict, ErrFrozenRevision)
+				return p, "", false, fmt.Errorf("%w: %w", ErrRevisionConflict, ErrFrozenRevision)
 			}
 		}
 		for _, evidence := range p.Evidence {
 			if err = validateRelationEvidence(ctx, tx, p.SpaceID, evidence); err != nil {
-				return p, false, ErrInvalidEvolutionProposal
+				return p, "", false, ErrInvalidEvolutionProposal
 			}
 		}
 	}
 	operationID, auditID, err := nextTwoIDs(r)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	reviewID, err := r.runtime.ID()
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	now := formatTime(r.runtime.Now())
 	toState := "rejected"
@@ -437,47 +441,47 @@ func (r *Repository) reviewEvolutionProposal(ctx context.Context, identity Write
 			refs, err = r.confirmEvolutionConflict(ctx, tx, p, operationID, identity.CallerID, now)
 		}
 		if err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE evolution_proposals SET review_state=?,reviewed_at=? WHERE proposal_id=? AND review_state='pending'`, toState, now, id)
 	if err != nil || !oneRow(res) {
 		if err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
-		return p, false, ErrEvolutionReviewed
+		return p, "", false, ErrEvolutionReviewed
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO evolution_proposal_reviews(review_id,proposal_id,operation_id,from_state,to_state,replacement_mode,reason_code,note,reviewer_id,created_at) VALUES (?,?,?,'pending',?,?,?,?,?,?)`, reviewID, id, operationID, toState, review.ReplacementMode, review.ReasonCode, review.Note, identity.CallerID, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	for _, ref := range refs {
 		refID, e := r.runtime.ID()
 		if e != nil {
-			return p, false, e
+			return p, "", false, e
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO evolution_result_refs(result_ref_id,review_id,result_type,result_id,created_at) VALUES (?,?,?,?,?)`, refID, reviewID, ref.ResultType, ref.ResultID, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 	}
 	p, err = getEvolutionProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	body, _ := json.Marshal(p)
 	if err = writeIdempotency(ctx, tx, identity, operationID, status, body, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	action := "reject_evolution_proposal"
 	if confirm {
 		action = "confirm_evolution_proposal"
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,reason,created_at) VALUES (?,?,?,?,?,'evolution_proposal',?,'succeeded',?,?)`, auditID, operationID, identity.RequestID, identity.CallerID, action, id, review.ReasonCode, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if err = tx.Commit(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
-	return p, false, nil
+	return p, operationID, false, nil
 }
 
 func revisionEvidenceFromEvolution(items []domain.RelationEvidence) []EvidenceParams {

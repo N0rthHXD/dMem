@@ -328,18 +328,18 @@ func (r *Repository) ListAggregateProposals(ctx context.Context, f AggregateProp
 	return page, err
 }
 
-func (r *Repository) ConfirmAggregateProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewAggregateProposalParams) (domain.AggregateProposal, bool, error) {
+func (r *Repository) ConfirmAggregateProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewAggregateProposalParams) (domain.AggregateProposal, string, bool, error) {
 	return r.reviewAggregateProposal(ctx, identity, id, review, true)
 }
 
-func (r *Repository) RejectAggregateProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewAggregateProposalParams) (domain.AggregateProposal, bool, error) {
+func (r *Repository) RejectAggregateProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewAggregateProposalParams) (domain.AggregateProposal, string, bool, error) {
 	return r.reviewAggregateProposal(ctx, identity, id, review, false)
 }
 
-func (r *Repository) reviewAggregateProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewAggregateProposalParams, confirm bool) (domain.AggregateProposal, bool, error) {
+func (r *Repository) reviewAggregateProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewAggregateProposalParams, confirm bool) (domain.AggregateProposal, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.AggregateProposal{}, false, err
+		return domain.AggregateProposal{}, "", false, err
 	}
 	defer tx.Rollback()
 	status := 200
@@ -347,25 +347,32 @@ func (r *Repository) reviewAggregateProposal(ctx context.Context, identity Write
 		status = 201
 	}
 	if result, replay, e := replayAggregateProposal(ctx, tx, identity, status); e != nil || replay {
-		return result, replay, e
+		if e != nil {
+			return domain.AggregateProposal{}, "", false, e
+		}
+		operationID, e := readIdempotencyOperation(ctx, tx, identity)
+		if e != nil {
+			return domain.AggregateProposal{}, "", false, e
+		}
+		return result, operationID, true, nil
 	}
 	p, err := getAggregateProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if p.ReviewState != "pending" {
-		return p, false, ErrAggregateProposalReviewed
+		return p, "", false, ErrAggregateProposalReviewed
 	}
 	if err = r.requireDiskWritable(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if confirm {
 		if err = validatePreparedAggregateInputs(ctx, tx, p.SpaceID, p.Inputs); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		for _, input := range p.Inputs {
 			if input.Sensitivity == "sensitive" && p.Sensitivity != "sensitive" {
-				return p, false, ErrInvalidAggregateProposal
+				return p, "", false, ErrInvalidAggregateProposal
 			}
 		}
 	}
@@ -374,14 +381,14 @@ func (r *Repository) reviewAggregateProposal(ctx context.Context, identity Write
 		for _, input := range p.Inputs {
 			var count int
 			if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_evidence WHERE revision_id=?`, input.RevisionID).Scan(&count); err != nil || count == 0 {
-				return p, false, ErrInvalidAggregateProposal
+				return p, "", false, ErrInvalidAggregateProposal
 			}
 			evidenceCount += count
 		}
 	}
 	ids, err := r.newIDs(12 + len(p.Inputs)*4 + evidenceCount)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	operationID, reviewID, auditID := ids[0], ids[1], ids[2]
 	now, toState := formatTime(r.runtime.Now()), "rejected"
@@ -392,27 +399,27 @@ func (r *Repository) reviewAggregateProposal(ctx context.Context, identity Write
 		idx += 3
 		memoryID, revisionID, toState = &mid, &rid, "confirmed"
 		if _, err = tx.ExecContext(ctx, `INSERT INTO memories(memory_id,space_id,current_revision_id,current_state,frozen,sensitivity,created_at,updated_at) VALUES (?,?,?,'active',0,?,?,?)`, mid, p.SpaceID, rid, p.Sensitivity, now, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		processor := p.ProcessorIdentity
 		revision, revisionErr := revisionFromTextInput(rid, mid, nil, nil, p.AggregateKind, p.Content, p.ValidFrom, p.ValidUntil, nil, p.Sensitivity, identity.CallerID, p.ProcessingVersion, &processor, now)
 		if revisionErr != nil {
-			return p, false, revisionErr
+			return p, "", false, revisionErr
 		}
 		if err = insertRevision(ctx, tx, revision); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		seenEvents := map[string]bool{}
 		for _, input := range p.Inputs {
 			rows, e := tx.QueryContext(ctx, `SELECT event_id,role,start_offset,end_offset FROM memory_evidence WHERE revision_id=? ORDER BY evidence_id`, input.RevisionID)
 			if e != nil {
-				return p, false, e
+				return p, "", false, e
 			}
 			for rows.Next() {
 				var evidence EvidenceParams
 				if e = rows.Scan(&evidence.EventID, &evidence.Role, &evidence.StartOffset, &evidence.EndOffset); e != nil {
 					rows.Close()
-					return p, false, e
+					return p, "", false, e
 				}
 				key := evidence.EventID + ":-"
 				if evidence.StartOffset != nil {
@@ -421,7 +428,7 @@ func (r *Repository) reviewAggregateProposal(ctx context.Context, identity Write
 				if !seenEvents[key] {
 					if err = insertEvidence(ctx, tx, rid, []EvidenceParams{evidence}, []string{ids[idx]}, now); err != nil {
 						rows.Close()
-						return p, false, err
+						return p, "", false, err
 					}
 					idx++
 					seenEvents[key] = true
@@ -430,18 +437,18 @@ func (r *Repository) reviewAggregateProposal(ctx context.Context, identity Write
 			rows.Close()
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) VALUES (?,?,?, ?,NULL,'active',NULL,0,?,?,?)`, ids[idx], mid, rid, operationID, review.ReasonCode, identity.CallerID, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		idx++
 		if err = r.upsertMemoryProjection(ctx, tx, mid, rid, p.SpaceID, "active", now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO aggregate_descriptors(aggregate_id,memory_id,aggregate_kind,policy_version,processing_version,sensitivity,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)`, descriptorID, mid, p.AggregateKind, p.PolicyVersion, p.ProcessingVersion, p.Sensitivity, identity.CallerID, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		_, snapshot := aggregateFingerprint(p.Inputs)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO aggregate_freshness(aggregate_id,revision_id,state,input_fingerprint,input_snapshot_json,stale_reasons_json,generation,checked_at,updated_at) VALUES (?,?,'fresh',?,?,'[]',1,?,?)`, descriptorID, rid, p.InputFingerprint, snapshot, now, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		for _, input := range p.Inputs {
 			relationID, relationStateID, relationEvidenceID := ids[idx], ids[idx+1], ids[idx+2]
@@ -449,56 +456,56 @@ func (r *Repository) reviewAggregateProposal(ctx context.Context, identity Write
 			hashValue := sha256.Sum256([]byte("derived_from\x00" + rid + "\x00" + input.RevisionID))
 			hash := hex.EncodeToString(hashValue[:])
 			if _, err = tx.ExecContext(ctx, `INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,state,source,specification_hash,created_by,processing_version,created_at,updated_at) VALUES (?,?, 'derived_from',?,?,?,?,'active','human_confirmation',?,?,?,?,?)`, relationID, p.SpaceID, mid, rid, input.MemoryID, input.RevisionID, hash, identity.CallerID, p.ProcessingVersion, now, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO relation_state_events(state_event_id,relation_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,NULL,'active',?,?,?)`, relationStateID, relationID, operationID, review.ReasonCode, identity.CallerID, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			end := utf8.RuneCountInString(input.Content)
 			if end < 1 {
-				return p, false, ErrInvalidAggregateProposal
+				return p, "", false, ErrInvalidAggregateProposal
 			}
 			if _, err = tx.ExecContext(ctx, `INSERT INTO relation_evidence(evidence_id,relation_id,evidence_type,memory_id,revision_id,start_offset,end_offset,created_by,created_at) VALUES (?,?,'revision_range',?,?,0,?,?,?)`, relationEvidenceID, relationID, input.MemoryID, input.RevisionID, end, identity.CallerID, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 		}
 		if _, err = enqueueRelationIndexJob(ctx, tx, ids[idx], operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		idx++
 		if _, err = tx.ExecContext(ctx, `UPDATE relation_index_metadata SET state='stale',updated_at=? WHERE singleton=1`, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE aggregate_proposals SET review_state=?,result_memory_id=?,result_revision_id=?,reviewed_at=? WHERE proposal_id=? AND review_state='pending'`, toState, memoryID, revisionID, now, id)
 	if err != nil || !oneRow(res) {
 		if err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
-		return p, false, ErrAggregateProposalReviewed
+		return p, "", false, ErrAggregateProposalReviewed
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO aggregate_proposal_reviews(review_id,proposal_id,operation_id,from_state,to_state,reason_code,note,reviewer_id,memory_id,revision_id,created_at) VALUES (?,?,?,'pending',?,?,?,?,?,?,?)`, reviewID, id, operationID, toState, review.ReasonCode, review.Note, identity.CallerID, memoryID, revisionID, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	p, err = getAggregateProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	body, _ := json.Marshal(p)
 	if err = writeIdempotency(ctx, tx, identity, operationID, status, body, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	action := "reject_aggregate_proposal"
 	if confirm {
 		action = "confirm_aggregate_proposal"
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,reason,created_at) VALUES (?,?,?,?,?,'aggregate_proposal',?,'succeeded',?,?)`, auditID, operationID, identity.RequestID, identity.CallerID, action, id, review.ReasonCode, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if err = tx.Commit(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
-	return p, false, nil
+	return p, operationID, false, nil
 }
 
 func (r *Repository) markDependentAggregatesStale(ctx context.Context, tx *sql.Tx, inputMemoryID, now string) error {

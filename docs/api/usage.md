@@ -45,10 +45,26 @@ Agent 宿主有两种接入方式：直接使用 application HTTP API，或只�
 | `GET /v1/candidates/{candidate_id}` | `review.candidate_get` | 返回单个候选及其修订、证据与审核记录。 |
 | `POST /v1/candidates/{candidate_id}/confirm` | `review.candidate_confirm` | 确认候选；确定性整合决定创建/附加记忆或归约为拒绝。 |
 | `POST /v1/candidates/{candidate_id}/reject` | `review.candidate_reject` | 拒绝候选，不写入记忆权威。 |
+| `GET /v1/memories` | `memory.list` | 按 scope 与生命周期状态分页列出记忆权威。 |
+| `GET /v1/memories/{memory_id}` | `memory.get` | 返回记忆详情，含当前修订、证据、冲突引用与聚合新鲜度。 |
+| `GET /v1/memories/{memory_id}/revisions` | `memory.revision_list` | 返回不可变修订历史。 |
+| `GET /v1/memories/{memory_id}/state-events` | `memory.state_event_list` | 返回仅追加的生命周期事件。 |
+| `POST /v1/memories/{memory_id}/revisions` | `memory.revise` | 在期望修订围栏下追加一条替代修订。 |
+| `POST /v1/memories/{memory_id}/state` | `memory.state_change` | 应用一次生命周期变更（confirm/contest/archive/restore/retract/freeze/unfreeze/delete）。 |
+| `GET /v1/proposals` | `review.proposal_list` | 按类型与审核状态分页列出图谱、演化与聚合提案。 |
+| `GET /v1/proposals/{proposal_type}/{proposal_id}` | `review.proposal_get` | 返回单个提案及其证据与审核记录。 |
+| `POST /v1/proposals/{proposal_type}/{proposal_id}/confirm` | 按类型 `review.<type>_confirm` | 确认提案；存储层审核状态机物化权威。 |
+| `POST /v1/proposals/{proposal_type}/{proposal_id}/reject` | 按类型 `review.<type>_reject` | 拒绝提案，不物化权威。 |
+| `GET /v1/conflicts` | `conflict.list` | 按 scope 与状态分页列出显式冲突用例。 |
+| `GET /v1/conflicts/{case_id}` | `conflict.get` | 返回单个冲突用例及其参与方与解决记录。 |
+| `POST /v1/conflicts/{case_id}/resolve` | `conflict.resolve` | 在期望参与方围栏下解决冲突，保留双方历史。 |
 
-前七条属于 Agent Tool Route，其后六条属于 Provider Route，只有启用
-`[processing].enabled` 时才会创建 `extract_memory` job。完整 DTO、输入边界与状态码
-见 [Application HTTP 契约](http-rest-contract.md)。
+前七条属于 Agent Tool Route，接下来六条属于 Provider Route，只有启用
+`[processing].enabled` 时才会创建 `extract_memory` job。记忆权威管理、提案审核与
+冲突管理（第 14–26 条）是本地管理面：它们不进入 MCP 工具集合，不调用模型
+provider，但读取或修改的是同一份记忆权威，并遵守相同的修订围栏、幂等写身份与审计
+规则。完整 DTO、输入边界与状态码见
+[Application HTTP 契约](http-rest-contract.md)。
 
 ## 记忆提交语义
 
@@ -92,12 +108,12 @@ Tool Route commit 不创建 `extract_memory` 或 `extract_graph` job。
 
 ## 契约之外的操作
 
-作业控制、索引重建、配置重载、图谱维护以及更广泛的管理接口不属于 Agent 协议。
-原始事件摄取由独立的 Provider Route 入口 `POST /v1/events` 承担：启用 processing
-时它创建持久抽取 job，禁用时只把事件保留为 `stored`，不创建模型 job；事件状态通过
-`GET /v1/events/{event_id}` 查询。候选审核入口 `/v1/candidates` 与其 confirm/reject
-子资源属于 Provider Route 管理面，也不进入 Agent 工具集合；图谱/聚合提案审核与
-冲突解决仍只有存储层能力，没有协议入口。逻辑导出/导入与备份/恢复不是 HTTP 操作，
+作业控制、索引重建、配置重载、图谱/实体/事实/关系的浏览与维护不属于本契约。原始
+事件摄取由独立的 Provider Route 入口 `POST /v1/events` 承担：启用 processing 时它
+创建持久抽取 job，禁用时只把事件保留为 `stored`，不创建模型 job；事件状态通过
+`GET /v1/events/{event_id}` 查询。候选审核入口 `/v1/candidates`、记忆权威管理入口
+`/v1/memories`、提案审核入口 `/v1/proposals` 与冲突管理入口 `/v1/conflicts` 属于
+本地管理面，也不进入 Agent 工具集合。逻辑导出/导入与备份/恢复不是 HTTP 操作，
 参见 [逻辑可移植性](../storage/logical-portability.md) 与
 [运维手册](../operations/runbook.md)。
 

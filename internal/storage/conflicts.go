@@ -136,58 +136,62 @@ func (r *Repository) ListConflictCases(ctx context.Context, f ConflictCaseFilter
 	return page, nil
 }
 
-func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity, id string, p ResolveConflictParams) (domain.ConflictCase, bool, error) {
+func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity, id string, p ResolveConflictParams) (domain.ConflictCase, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.ConflictCase{}, false, err
+		return domain.ConflictCase{}, "", false, err
 	}
 	defer tx.Rollback()
 	if s, b, found, e := readIdempotency(ctx, tx, identity); e != nil {
-		return domain.ConflictCase{}, false, e
+		return domain.ConflictCase{}, "", false, e
 	} else if found {
 		var v domain.ConflictCase
 		if s != 200 || json.Unmarshal([]byte(b), &v) != nil {
-			return v, false, errors.New("invalid stored idempotency response")
+			return v, "", false, errors.New("invalid stored idempotency response")
 		}
-		return v, true, nil
+		operationID, e := readIdempotencyOperation(ctx, tx, identity)
+		if e != nil {
+			return v, "", false, e
+		}
+		return v, operationID, true, nil
 	}
 	c, err := getConflictCase(ctx, tx, id)
 	if err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	if c.State != "open" {
-		return c, false, ErrConflictResolved
+		return c, "", false, ErrConflictResolved
 	}
 	jobsBefore, err := resolutionJobIDs(ctx, tx)
 	if err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	if !contains([]string{"keep_both", "dismiss", "revise_one", "supersede", "reconcile"}, p.ResolutionType) {
-		return c, false, ErrUnsupportedAction
+		return c, "", false, ErrUnsupportedAction
 	}
 	actual := make([]domain.EvolutionTarget, len(c.Participants))
 	for i, v := range c.Participants {
 		actual[i] = domain.EvolutionTarget{MemoryID: v.MemoryID, ExpectedRevisionID: v.RevisionID}
 	}
 	if !exactEvolutionTargets(p.ExpectedTargets, actual) {
-		return c, false, ErrRevisionConflict
+		return c, "", false, ErrRevisionConflict
 	}
 	if err = validateConflictResolutionParams(p, actual); err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	for _, target := range actual {
 		var revision, space string
 		var frozen bool
 		if err = tx.QueryRowContext(ctx, `SELECT current_revision_id,space_id,frozen FROM memories WHERE memory_id=?`, target.MemoryID).Scan(&revision, &space, &frozen); err != nil || revision != target.ExpectedRevisionID || space != c.SpaceID {
-			return c, false, ErrRevisionConflict
+			return c, "", false, ErrRevisionConflict
 		}
 		if frozen {
-			return c, false, errors.Join(ErrRevisionConflict, ErrFrozenRevision)
+			return c, "", false, errors.Join(ErrRevisionConflict, ErrFrozenRevision)
 		}
 	}
 	ids, err := r.newIDs(3)
 	if err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	operationID, eventID, auditID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
@@ -200,7 +204,7 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 		newMemory := p.ResolutionType == "supersede" && *p.ReplacementMode == "new_memory"
 		created, memoryID, revisionID, e := r.createConflictResolutionMemory(ctx, tx, c, p, *p.SelectedTarget, newMemory, operationID, identity.CallerID, now)
 		if e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		refs = append(refs, created...)
 		if !newMemory {
@@ -209,7 +213,7 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 		if p.ResolutionType == "supersede" {
 			relationRefs, e := r.createResolutionRelation(ctx, tx, c.SpaceID, memoryID, revisionID, p.SelectedTarget.MemoryID, p.SelectedTarget.ExpectedRevisionID, operationID, identity.CallerID, p.Reason, now)
 			if e != nil {
-				return c, false, e
+				return c, "", false, e
 			}
 			refs = append(refs, relationRefs...)
 		}
@@ -217,13 +221,13 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 	if p.ResolutionType == "reconcile" {
 		created, memoryID, revisionID, e := r.createConflictResolutionMemory(ctx, tx, c, p, actual[0], true, operationID, identity.CallerID, now)
 		if e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		refs = append(refs, created...)
 		for _, target := range actual {
 			relationRefs, e := r.createResolutionRelation(ctx, tx, c.SpaceID, memoryID, revisionID, target.MemoryID, target.ExpectedRevisionID, operationID, identity.CallerID, p.Reason, now)
 			if e != nil {
-				return c, false, e
+				return c, "", false, e
 			}
 			refs = append(refs, relationRefs...)
 		}
@@ -235,18 +239,18 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 	for _, target := range actual {
 		var other int
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM conflict_case_participants cp JOIN conflict_cases cc ON cc.case_id=cp.case_id WHERE cp.memory_id=? AND cp.revision_id=? AND cc.state='open' AND cc.case_id<>?`, target.MemoryID, target.ExpectedRevisionID, id).Scan(&other); err != nil {
-			return c, false, err
+			return c, "", false, err
 		}
 		if other > 0 {
 			continue
 		}
 		state, ok := p.ResultStates[target.MemoryID]
 		if !ok || !contains([]string{"active", "archived", "contested", "superseded"}, state) {
-			return c, false, ErrInvalidStateTransition
+			return c, "", false, ErrInvalidStateTransition
 		}
 		var from string
 		if err = tx.QueryRowContext(ctx, `SELECT current_state FROM memories WHERE memory_id=?`, target.MemoryID).Scan(&from); err != nil {
-			return c, false, err
+			return c, "", false, err
 		}
 		if from == state {
 			continue
@@ -255,26 +259,26 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 		res, e := tx.ExecContext(ctx, `UPDATE memories SET current_state=?,updated_at=? WHERE memory_id=? AND current_revision_id=?`, state, now, target.MemoryID, revisionID)
 		if e != nil || !oneRow(res) {
 			if e != nil {
-				return c, false, e
+				return c, "", false, e
 			}
-			return c, false, ErrRevisionConflict
+			return c, "", false, ErrRevisionConflict
 		}
 		stateID, e := r.runtime.ID()
 		if e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		if _, e = tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id,memory_id,revision_id,operation_id,from_state,to_state,from_frozen,to_frozen,reason,created_by,created_at) SELECT ?,memory_id,current_revision_id,?,?,?,frozen,frozen,?,?,? FROM memories WHERE memory_id=?`, stateID, operationID, from, state, p.Reason, identity.CallerID, now, target.MemoryID); e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		m, e := getMemory(ctx, tx, target.MemoryID, false)
 		if e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		if e = r.upsertMemoryProjection(ctx, tx, m.MemoryID, m.CurrentRevision.RevisionID, m.SpaceID, state, now); e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		if e = r.markDependentAggregatesStale(ctx, tx, target.MemoryID, now); e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		refs = append(refs, domain.EvolutionResultRef{ResultType: "state_event", ResultID: stateID}, domain.EvolutionResultRef{ResultType: "projection", ResultID: target.MemoryID})
 	}
@@ -282,15 +286,15 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 		for _, relation := range c.Relations {
 			stateID, e := r.runtime.ID()
 			if e != nil {
-				return c, false, e
+				return c, "", false, e
 			}
 			res, e := tx.ExecContext(ctx, `UPDATE memory_relations SET state='dismissed',updated_at=? WHERE relation_id=? AND state='active'`, now, relation.RelationID)
 			if e != nil {
-				return c, false, e
+				return c, "", false, e
 			}
 			if oneRow(res) {
 				if _, e = tx.ExecContext(ctx, `INSERT INTO relation_state_events(state_event_id,relation_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,'active','dismissed',?,?,?)`, stateID, relation.RelationID, operationID, p.Reason, identity.CallerID, now); e != nil {
-					return c, false, e
+					return c, "", false, e
 				}
 				refs = append(refs, domain.EvolutionResultRef{ResultType: "state_event", ResultID: stateID})
 			}
@@ -298,7 +302,7 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 	}
 	jobsAfter, err := resolutionJobIDs(ctx, tx)
 	if err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	for jobID := range jobsAfter {
 		if !jobsBefore[jobID] {
@@ -308,12 +312,12 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 	res, err := tx.ExecContext(ctx, `UPDATE conflict_cases SET state=?,closed_at=? WHERE case_id=? AND state='open'`, toState, now, id)
 	if err != nil || !oneRow(res) {
 		if err != nil {
-			return c, false, err
+			return c, "", false, err
 		}
-		return c, false, ErrConflictResolved
+		return c, "", false, ErrConflictResolved
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO conflict_resolution_events(resolution_event_id,case_id,operation_id,resolution_type,from_state,to_state,reason,resolved_by,created_at) VALUES (?,?,?,?,'open',?,?,?,?)`, eventID, id, operationID, p.ResolutionType, toState, p.Reason, identity.CallerID, now); err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	seenRefs := map[domain.EvolutionResultRef]bool{}
 	for _, ref := range refs {
@@ -323,27 +327,27 @@ func (r *Repository) ResolveConflict(ctx context.Context, identity WriteIdentity
 		seenRefs[ref] = true
 		refID, e := r.runtime.ID()
 		if e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 		if _, e = tx.ExecContext(ctx, `INSERT INTO conflict_resolution_result_refs(result_ref_id,resolution_event_id,result_type,result_id,created_at) VALUES (?,?,?,?,?)`, refID, eventID, ref.ResultType, ref.ResultID, now); e != nil {
-			return c, false, e
+			return c, "", false, e
 		}
 	}
 	c, err = getConflictCase(ctx, tx, id)
 	if err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	body, _ := json.Marshal(c)
 	if err = writeIdempotency(ctx, tx, identity, operationID, 200, body, now); err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,reason,created_at) VALUES (?,?,?,?,'resolve_conflict','conflict_case',?,'succeeded',?,?)`, auditID, operationID, identity.RequestID, identity.CallerID, id, p.Reason, now); err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
 	if err = tx.Commit(); err != nil {
-		return c, false, err
+		return c, "", false, err
 	}
-	return c, false, nil
+	return c, operationID, false, nil
 }
 
 func resolutionJobIDs(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {

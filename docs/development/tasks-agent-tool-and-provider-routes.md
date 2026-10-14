@@ -775,6 +775,74 @@ Phase 7 记录的“审核只有存储层消费者、没有协议入口”缺口
 - 下一阶段前置条件：若需要图谱/聚合/冲突审核入口，应按同一“gateway 模块 +
   storage 适配器 + 协议路由”模式扩展，并保持候选与提案共享同一审核状态机语义。
 
+## Phase 9：本地记忆管理面
+
+Phase 8 的下一阶段前置条件在本阶段落地：管理面按同一“gateway 模块 + storage 适配器
++ 协议路由”模式扩展，并保持候选与提案共享同一审核状态机语义。范围限定为记忆权威
+管理、图谱/演化/聚合提案审核与冲突解决；作业控制、索引重建、配置重载与图谱浏览
+仍不在范围内。
+
+### 任务
+
+- [x] 新增 `internal/gateway/memory`：记忆列表/详情/修订历史/状态事件读取，以及
+      `memory.revise` 与 `memory.state_change` 两个围栏写。
+- [x] 新增 `internal/gateway/conflict`：冲突用例列表/详情读取与 `conflict.resolve`。
+- [x] 扩展 `internal/gateway/review`：实体/事实/关系/演化/聚合提案的
+      list/get/confirm/reject，演化确认支持 `expected_targets`、
+      `replacement_mode` 与 `supersede_targets`。
+- [x] 新增 HTTP 路由 `/v1/memories`（4 读 2 写）、`/v1/proposals`（2 读 2 写）与
+      `/v1/conflicts`（2 读 1 写），全部使用协议本地 DTO，不进入 MCP 工具集合。
+- [x] 存储层让 `ReviseMemory`、`ChangeMemoryState`、`ResolveConflict` 与全部
+      `Review*Proposal` 返回持久 operation ID，修复协议响应缺少 `operation_id` 的
+      同类缺陷。
+- [x] 新增适配器 `MemoryCapability`、`ConflictCapability`、`ProposalCapability`
+      与编译期端口断言。
+- [x] 单元、适配器、HTTP 与 daemon 集成测试；文档同步。
+
+### 完成条件
+
+- 记忆权威可从 HTTP 列表、读取、修订与变更生命周期，并保持修订围栏、审计与幂等；
+- 图谱/演化/聚合提案可从 HTTP 审核，确认物化权威、拒绝不写权威；
+- 冲突用例可从 HTTP 读取与解决，保持双方历史；
+- 管理面继续无认证边界（与 events/候选审核一致），文档明确回环与网络边缘要求。
+
+### Phase 9 实施记录
+
+- 状态：completed
+- 完成日期：2026-10-14
+- 主要变更：
+  - `internal/gateway/memory`：`List`/`Get`/`ListRevisions`/`ListStateEvents` 与
+    `Revise`/`ChangeState`；证据省略时继承当前修订证据，显式空数组被拒绝；
+    `Get` 始终解析逻辑删除记忆；生命周期 action 封闭为八种。
+  - `internal/gateway/conflict`：`List`/`Get`/`Resolve`，校验解决类型、期望参与方、
+    结果状态与破坏性输入形状。
+  - `internal/gateway/review`：新增 `ProposalService` 与 `ProposalStore`，按类型发布
+    `review.<type>_confirm`/`review.<type>_reject` 操作名；候选面不变。
+  - `internal/storage`：`gateway_memory.go`、`gateway_conflict.go`、
+    `gateway_proposal.go` 三个 capability；`ReviseMemory`、`ChangeMemoryState`、
+    `ResolveConflict`、`Confirm*/Reject*Proposal` 十个方法返回 operation ID，
+    重放路径读取持久 operation ID。
+  - `internal/protocol/httpapi`：新增 `memories.go`、`proposals.go`、`conflicts.go`
+    协议本地 DTO 与 13 条路由；`Dependencies` 增加三个消费者自有接口。
+  - `internal/daemon`：组装三个新 gateway 服务；新增
+    `TestManagementSurfaceClosesMemoryAdministrationLoop` 与
+    `TestManagementSurfaceExposesProposalAndConflictQueues`。
+- 验证命令：
+  - `gofmt -l internal pkg cmd`（无输出）；
+  - `CGO_ENABLED=1 go test -tags sqlite_fts5 ./...`；
+  - `CGO_ENABLED=1 go test -race -tags sqlite_fts5 ./internal/gateway/... ./internal/protocol/httpapi ./internal/daemon ./internal/storage`；
+  - `make vet`、`make schema-check`、`make quality`、`make offline-default`、
+    `make config-check`、`make restore-drill`、`make portability-drill`、`make mcp-check`；
+  - 全部通过。
+- 删除内容：无。`memory` 模块以管理面形式重建，不恢复 Phase 7 删除的直接写入入口
+  （`Repository.Remember`/`ForgetMemory`）。
+- 遗留问题：Agent Tool 知识提案（`agent_tool_proposals`）仍只有存储层写入，没有
+  读取、审核或物化入口；作业控制、索引重建、配置重载与图谱/实体/事实/关系浏览仍
+  只有存储层与运维路径；管理面不做 policy 授权（当前实现整体无认证）。
+- 下一阶段前置条件：若开放 Tool 知识提案审核，需要先扩展 schema 的结果引用列
+  （当前 CHECK 只允许 confirmed 行引用记忆修订）并实现确定性物化，再按同一模式
+  新增协议入口。
+
 ## 跨阶段测试矩阵
 
 | 维度 | 必测值 |

@@ -31,7 +31,7 @@ func createEvolutionTest(t *testing.T, r *Repository, key string, p CreateEvolut
 func confirmEvolutionTest(t *testing.T, r *Repository, key string, p domain.EvolutionProposal, mode *string) domain.EvolutionProposal {
 	t.Helper()
 	review := ReviewEvolutionProposalParams{ExpectedTargets: p.Targets, ReplacementMode: mode, ReasonCode: "reviewed"}
-	v, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity(key, "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review)
+	v, _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity(key, "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +72,11 @@ func TestEvolutionConfirmIdempotentReplay(t *testing.T) {
 	p := createEvolutionTest(t, r, "replay-proposal", evolutionParams("supplement", m))
 	review := ReviewEvolutionProposalParams{ExpectedTargets: p.Targets, ReasonCode: "reviewed"}
 	identity := memoryIdentity("evolve-confirm-replay", "/v1/evolution-proposals/{proposal_id}/confirm", review)
-	first, replay, err := r.ConfirmEvolutionProposal(context.Background(), identity, p.ProposalID, review)
+	first, _, replay, err := r.ConfirmEvolutionProposal(context.Background(), identity, p.ProposalID, review)
 	if err != nil || replay {
 		t.Fatal(err)
 	}
-	second, replay, err := r.ConfirmEvolutionProposal(context.Background(), identity, p.ProposalID, review)
+	second, _, replay, err := r.ConfirmEvolutionProposal(context.Background(), identity, p.ProposalID, review)
 	if err != nil || !replay || first.Reviews[0].ReviewID != second.Reviews[0].ReviewID {
 		t.Fatalf("evolution confirmation replay=%v, error=%v", replay, err)
 	}
@@ -109,7 +109,7 @@ func TestEvolutionTransactionFailureLeavesNoAuthority(t *testing.T) {
 	runtime.failAt = runtime.id + 1
 	runtime.mu.Unlock()
 	review := ReviewEvolutionProposalParams{ExpectedTargets: p.Targets, ReasonCode: "reviewed"}
-	if _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("failure-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); err == nil {
+	if _, _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("failure-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); err == nil {
 		t.Fatal("expected injected transaction failure")
 	}
 	got, _ := r.GetEvolutionProposal(context.Background(), p.ProposalID)
@@ -125,7 +125,7 @@ func TestEvolutionContextMemoryWithoutEvidenceRejected(t *testing.T) {
 	p.Evidence = []domain.RelationEvidence{{EvidenceType: "human_confirmation"}}
 	proposal := createEvolutionTest(t, r, "evidence-proposal", p)
 	review := ReviewEvolutionProposalParams{ExpectedTargets: proposal.Targets, ReasonCode: "reviewed"}
-	if _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("evidence-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), proposal.ProposalID, review); !errors.Is(err, ErrInvalidEvidence) {
+	if _, _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("evidence-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), proposal.ProposalID, review); !errors.Is(err, ErrInvalidEvidence) {
 		t.Fatalf("context memory without evidence error=%v, want invalid evidence", err)
 	}
 }
@@ -188,7 +188,7 @@ func TestConflictConcurrentResolutionOneTerminalEvent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _, err := r.ResolveConflict(context.Background(), memoryIdentity("resolution-"+string(rune('a'+i)), "/v1/conflict-cases/{case_id}/resolve", params), caseID, params)
+			_, _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("resolution-"+string(rune('a'+i)), "/v1/conflict-cases/{case_id}/resolve", params), caseID, params)
 			errs <- err
 		}(i)
 	}
@@ -214,11 +214,11 @@ func TestConflictMultiTargetRevisionChangedNoPartialUpdate(t *testing.T) {
 	a, b := createTestMemory(t, r, "stale-a"), createTestMemory(t, r, "stale-b")
 	p := createEvolutionTest(t, r, "stale-conflict", evolutionParams("conflict", a, b))
 	revise := ReviseMemoryParams{ExpectedRevisionID: b.CurrentRevision.RevisionID, Content: "changed", Evidence: directEvidence("event-1"), Reason: "changed"}
-	if _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("stale-revise", "/v1/memories/{memory_id}", revise), b.MemoryID, revise); err != nil {
+	if _, _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("stale-revise", "/v1/memories/{memory_id}", revise), b.MemoryID, revise); err != nil {
 		t.Fatal(err)
 	}
 	review := ReviewEvolutionProposalParams{ExpectedTargets: p.Targets, ReasonCode: "reviewed"}
-	if _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("stale-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); !errors.Is(err, ErrRevisionConflict) {
+	if _, _, _, err := r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("stale-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("changed target revision resolution error=%v, want revision conflict", err)
 	}
 	var cases, relations int
@@ -241,7 +241,7 @@ func TestConflictFrozenParticipantPreservesProposal(t *testing.T) {
 		t.Fatal(err)
 	}
 	review := ReviewEvolutionProposalParams{ExpectedTargets: p.Targets, ReasonCode: "reviewed"}
-	if _, _, err = r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("frozen-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); !errors.Is(err, ErrFrozenRevision) {
+	if _, _, _, err = r.ConfirmEvolutionProposal(context.Background(), memoryIdentity("frozen-confirm", "/v1/evolution-proposals/{proposal_id}/confirm", review), p.ProposalID, review); !errors.Is(err, ErrFrozenRevision) {
 		t.Fatalf("frozen participant resolution error=%v, want frozen memory", err)
 	}
 	got, _ := r.GetEvolutionProposal(context.Background(), p.ProposalID)
@@ -257,7 +257,7 @@ func TestConflictAutomaticDestructiveResolutionUnsupported(t *testing.T) {
 	confirmed := confirmEvolutionTest(t, r, "unsupported-confirm", p, nil)
 	caseID := confirmed.Reviews[0].Results[1].ResultID
 	params := ResolveConflictParams{ResolutionType: "automatic_retract", ExpectedTargets: p.Targets, Reason: "automatic"}
-	if _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("unsupported-resolution", "/v1/conflict-cases/{case_id}/resolve", params), caseID, params); !errors.Is(err, ErrUnsupportedAction) {
+	if _, _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("unsupported-resolution", "/v1/conflict-cases/{case_id}/resolve", params), caseID, params); !errors.Is(err, ErrUnsupportedAction) {
 		t.Fatalf("automatic destructive resolution error=%v, want unsupported operation", err)
 	}
 	c, _ := r.GetConflictCase(context.Background(), caseID)
@@ -330,7 +330,7 @@ func TestConflictResolutionTypesMaterializeResults(t *testing.T) {
 			if tt.resolutionType == "reconcile" {
 				params.ResultStates[a.MemoryID], params.ResultStates[b.MemoryID] = "superseded", "superseded"
 			}
-			resolved, replay, err := r.ResolveConflict(context.Background(), memoryIdentity("resolve-"+tt.name, "/v1/conflict-cases/{case_id}/resolve", params), caseID, params)
+			resolved, _, replay, err := r.ResolveConflict(context.Background(), memoryIdentity("resolve-"+tt.name, "/v1/conflict-cases/{case_id}/resolve", params), caseID, params)
 			if err != nil || replay || resolved.State != tt.wantCaseState || resolved.Resolution == nil || resolved.Resolution.ResolutionType != tt.resolutionType {
 				t.Fatalf("resolution=%+v replay=%v err=%v", resolved, replay, err)
 			}
@@ -351,7 +351,7 @@ func TestConflictResolutionTypesMaterializeResults(t *testing.T) {
 					t.Fatalf("replacement parent/time=%q %q %q err=%v", parent, validFrom, validUntil, err)
 				}
 			}
-			second, replay, err := r.ResolveConflict(context.Background(), memoryIdentity("resolve-"+tt.name, "/v1/conflict-cases/{case_id}/resolve", params), caseID, params)
+			second, _, replay, err := r.ResolveConflict(context.Background(), memoryIdentity("resolve-"+tt.name, "/v1/conflict-cases/{case_id}/resolve", params), caseID, params)
 			if err != nil || !replay || second.Resolution == nil || second.Resolution.ResolutionEventID != resolved.Resolution.ResolutionEventID {
 				t.Fatalf("idempotent replay=%v err=%v result=%+v", replay, err, second)
 			}
@@ -363,13 +363,13 @@ func TestConflictResolutionStaleParticipantNoPartial(t *testing.T) {
 	r, _ := newMemoryTestRepository(t)
 	a, b, proposal, caseID := openConflictTest(t, r, "resolution-stale")
 	revise := ReviseMemoryParams{ExpectedRevisionID: b.CurrentRevision.RevisionID, Content: "concurrent change", Evidence: directEvidence("event-1"), Reason: "changed"}
-	if _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("resolution-stale-revise", "/v1/memories/{memory_id}", revise), b.MemoryID, revise); err != nil {
+	if _, _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("resolution-stale-revise", "/v1/memories/{memory_id}", revise), b.MemoryID, revise); err != nil {
 		t.Fatal(err)
 	}
 	content := "must not be written"
 	selected := proposal.Targets[0]
 	params := ResolveConflictParams{ResolutionType: "revise_one", ExpectedTargets: proposal.Targets, SelectedTarget: &selected, ProposedContent: &content, Evidence: conflictResolutionEvidence(), ResultStates: map[string]string{a.MemoryID: "active", b.MemoryID: "active"}, Reason: "reviewed"}
-	if _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("resolution-stale-resolve", "/v1/conflict-cases/{case_id}/resolve", params), caseID, params); !errors.Is(err, ErrRevisionConflict) {
+	if _, _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("resolution-stale-resolve", "/v1/conflict-cases/{case_id}/resolve", params), caseID, params); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("error=%v", err)
 	}
 	var events, written int
@@ -388,7 +388,7 @@ func TestConflictResolutionInjectedFailureNoPartial(t *testing.T) {
 	runtime.mu.Lock()
 	runtime.failAt = runtime.id + 10
 	runtime.mu.Unlock()
-	if _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("resolution-failure-resolve", "/v1/conflict-cases/{case_id}/resolve", params), caseID, params); err == nil {
+	if _, _, _, err := r.ResolveConflict(context.Background(), memoryIdentity("resolution-failure-resolve", "/v1/conflict-cases/{case_id}/resolve", params), caseID, params); err == nil {
 		t.Fatal("expected injected failure")
 	}
 	var memories, revisions, events int

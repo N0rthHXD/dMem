@@ -232,7 +232,7 @@ func TestSemanticLifecycleWithoutSourceChangePreservesEmbeddingAndJobs(t *testin
 	}
 
 	params := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "contest", Reason: "lifecycle only"}
-	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("semantic-lifecycle-contest", "/v1/memories/{memory_id}/state", params), memory.MemoryID, params); err != nil {
+	if _, _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("semantic-lifecycle-contest", "/v1/memories/{memory_id}/state", params), memory.MemoryID, params); err != nil {
 		t.Fatal(err)
 	}
 	var embeddingState, metadataState string
@@ -273,7 +273,7 @@ func TestSemanticRebuildCompletionSchedulesSuccessorForBoundaryWrite(t *testing.
 	}
 
 	params := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "automobile after", Evidence: directEvidence("event-1"), Reason: "completion boundary"}
-	if _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("semantic-completion-write", "/v1/memories/{memory_id}", params), memory.MemoryID, params); err != nil {
+	if _, _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("semantic-completion-write", "/v1/memories/{memory_id}", params), memory.MemoryID, params); err != nil {
 		t.Fatal(err)
 	}
 	var rebuilds int
@@ -341,7 +341,7 @@ func TestSemanticRebuildSearchAndAuthoritativeExclusion(t *testing.T) {
 	configureSemanticTest(t, repository, &semanticTestProvider{})
 	memory := createTestMemory(t, repository, "semantic-create")
 	params := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "automobile handbook", Evidence: directEvidence("event-1"), Reason: "semantic content"}
-	memory, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("semantic-revise", "/v1/memories/{memory_id}", params), memory.MemoryID, params)
+	memory, _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("semantic-revise", "/v1/memories/{memory_id}", params), memory.MemoryID, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestSemanticRebuildSearchAndAuthoritativeExclusion(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "archive", Reason: "test"}
-	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("semantic-archive", "/v1/memories/{memory_id}/state", archive), memory.MemoryID, archive); err != nil {
+	if _, _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("semantic-archive", "/v1/memories/{memory_id}/state", archive), memory.MemoryID, archive); err != nil {
 		t.Fatal(err)
 	}
 	result, err = repository.SearchMemories(context.Background(), SearchParams{Query: "car", SpaceIDs: []string{"space-1"}, States: []string{"active"}, Channels: []string{"semantic"}, Limit: 10, MaxChars: 1000})
@@ -476,7 +476,7 @@ func TestSemanticRebuildRejectsConcurrentRevisionBeforeActivation(t *testing.T) 
 	repository.semanticBuildHook = func() {
 		params := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "concurrent automobile revision", Evidence: directEvidence("event-1"), Reason: "race"}
 		var err error
-		memory, _, err = repository.ReviseMemory(context.Background(), memoryIdentity("semantic-race", "/v1/memories/{memory_id}", params), memory.MemoryID, params)
+		memory, _, _, err = repository.ReviseMemory(context.Background(), memoryIdentity("semantic-race", "/v1/memories/{memory_id}", params), memory.MemoryID, params)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -766,7 +766,7 @@ func TestSemanticRebuildPublishesEmptyVersionAfterLastMemoryArchived(t *testing.
 		t.Fatal(err)
 	}
 	archive := ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "archive", Reason: "empty corpus"}
-	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("empty-index-archive", "/v1/memories/{memory_id}/state", archive), memory.MemoryID, archive); err != nil {
+	if _, _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("empty-index-archive", "/v1/memories/{memory_id}/state", archive), memory.MemoryID, archive); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.RebuildSemantic(context.Background()); err != nil {

@@ -398,7 +398,7 @@ func TestFeedbackNewRevisionDoesNotInheritScore(t *testing.T) {
 	repository, _ := newMemoryTestRepository(t)
 	memory := createTestMemory(t, repository, "feedback-006")
 	appendTestFeedback(t, repository, "caller", "feedback-006-vote", retrievalFeedbackParams(repository, memory, "caller", testQueryHash("inherit"), "useful", "other"))
-	revised, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("feedback-006-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "new revision", Evidence: directEvidence("event-1"), Reason: "new revision"})
+	revised, _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("feedback-006-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "new revision", Evidence: directEvidence("event-1"), Reason: "new revision"})
 	if err != nil {
 		t.Fatal(err)
 	}

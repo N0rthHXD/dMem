@@ -219,7 +219,7 @@ func TestConsolidationConcurrentRevisionChangeRejectsAttach(t *testing.T) {
 	base := createTestMemory(t, repository, "concurrent-base")
 	oldRevision := base.CurrentRevision.RevisionID
 	revise := ReviseMemoryParams{ExpectedRevisionID: oldRevision, Content: "revised content", Evidence: directEvidence("event-2"), Reason: "advance"}
-	if _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("concurrent-revise", "/v1/memories/{memory_id}/revisions", revise), base.MemoryID, revise); err != nil {
+	if _, _, _, err := repository.ReviseMemory(context.Background(), memoryIdentity("concurrent-revise", "/v1/memories/{memory_id}/revisions", revise), base.MemoryID, revise); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := repository.store.writer.BeginTx(context.Background(), nil)

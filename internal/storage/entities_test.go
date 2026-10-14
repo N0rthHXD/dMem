@@ -32,7 +32,7 @@ func confirmEntityTest(t *testing.T, r *Repository, name string) string {
 	p := CreateEntityProposalParams{EventID: "event-1", SpaceID: "space-1", ProposalKind: "entity", EntityType: "person", CanonicalName: name, Sensitivity: "normal", ProcessorIdentity: "processor/test", ProcessingVersion: "entity-v1"}
 	proposal := createEntityProposalTest(t, r, p)
 	review := ReviewEntityProposalParams{ReasonCode: "confirmed"}
-	v, replay, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("confirm-"+name, "confirm", proposal.ID, review), proposal.ID, review)
+	v, _, replay, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("confirm-"+name, "confirm", proposal.ID, review), proposal.ID, review)
 	if err != nil || replay || v.ResultEntityID == nil {
 		t.Fatalf("ConfirmEntityProposal() = %+v, %t, %v", v, replay, err)
 	}
@@ -46,11 +46,11 @@ func TestConfirmEntityProposalAtomic(t *testing.T) {
 	proposal := createEntityProposalTest(t, r, p)
 	review := ReviewEntityProposalParams{ReasonCode: "confirmed"}
 	identity := entityProposalIdentity("confirm-Alice", "confirm", proposal.ID, review)
-	result, replay, err := r.ConfirmEntityProposal(context.Background(), identity, proposal.ID, review)
+	result, _, replay, err := r.ConfirmEntityProposal(context.Background(), identity, proposal.ID, review)
 	if err != nil || replay || result.ResultEntityID == nil || result.ResultCanonicalAliasID == nil || result.ResultAliasID == nil || result.ResultMentionID == nil || len(result.Reviews) != 1 || result.Reviews[0].ResultCanonicalAliasID == nil || *result.Reviews[0].ResultCanonicalAliasID != *result.ResultCanonicalAliasID || result.Reviews[0].ResultAliasID == nil || *result.Reviews[0].ResultAliasID != *result.ResultAliasID || result.Reviews[0].ResultMentionID == nil || *result.Reviews[0].ResultMentionID != *result.ResultMentionID {
 		t.Fatalf("ConfirmEntityProposal() = %+v, %t, %v", result, replay, err)
 	}
-	replayed, replay, err := r.ConfirmEntityProposal(context.Background(), identity, proposal.ID, review)
+	replayed, _, replay, err := r.ConfirmEntityProposal(context.Background(), identity, proposal.ID, review)
 	if err != nil || !replay || replayed.ResultMentionID == nil || *replayed.ResultMentionID != *result.ResultMentionID {
 		t.Fatalf("ConfirmEntityProposal() replay = %+v, %t, %v", replayed, replay, err)
 	}
@@ -88,7 +88,7 @@ func TestEntityAliasCollisionDoesNotMergeIdentity(t *testing.T) {
 	p := CreateEntityProposalParams{EventID: "event-2", SpaceID: "space-1", ProposalKind: "alias", EntityID: &second, Alias: alias, NormalizationVersion: "v1", Sensitivity: "normal", ProcessorIdentity: "processor/test", ProcessingVersion: "entity-v1"}
 	proposal := createEntityProposalTest(t, r, p)
 	review := ReviewEntityProposalParams{ReasonCode: "alias"}
-	if _, _, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("alias-collision", "confirm", proposal.ID, review), proposal.ID, review); err != nil {
+	if _, _, _, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("alias-collision", "confirm", proposal.ID, review), proposal.ID, review); err != nil {
 		t.Fatal(err)
 	}
 	var entityCount int
@@ -126,7 +126,7 @@ func TestEntityStaleRevisionMentionNotRecalled(t *testing.T) {
 	p := CreateEntityProposalParams{EventID: "event-1", SpaceID: "space-1", ProposalKind: "mention", EntityID: &entityID, MentionMemoryID: &memory.MemoryID, MentionRevisionID: &memory.CurrentRevision.RevisionID, StartOffset: &start, EndOffset: &end, MentionType: "explicit", Sensitivity: "normal", ProcessorIdentity: "p", ProcessingVersion: "v"}
 	proposal := createEntityProposalTest(t, r, p)
 	review := ReviewEntityProposalParams{ReasonCode: "mention"}
-	if _, _, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("mention-recall", "confirm", proposal.ID, review), proposal.ID, review); err != nil {
+	if _, _, _, err := r.ConfirmEntityProposal(context.Background(), entityProposalIdentity("mention-recall", "confirm", proposal.ID, review), proposal.ID, review); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.RebuildEntityIndex(context.Background()); err != nil {

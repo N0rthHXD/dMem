@@ -108,7 +108,7 @@ func TestQualityReflectsLifecycleAndDuplicateDensity(t *testing.T) {
 		t.Fatalf("duplicate_density = %v; want > 0", duplicateDensity)
 	}
 	contract := ChangeMemoryStateParams{ExpectedRevisionID: second.CurrentRevision.RevisionID, Action: "contest", Reason: "test"}
-	if _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("quality-contest", "/v1/memories/{memory_id}/state", contract), second.MemoryID, contract); err != nil {
+	if _, _, _, err := repository.ChangeMemoryState(context.Background(), memoryIdentity("quality-contest", "/v1/memories/{memory_id}/state", contract), second.MemoryID, contract); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.RebuildQuality(context.Background()); err != nil {

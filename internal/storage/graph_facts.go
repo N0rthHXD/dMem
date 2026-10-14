@@ -548,17 +548,17 @@ type ReviewFactProposalParams struct {
 	Note       *string
 }
 
-func (r *Repository) ConfirmFactProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewFactProposalParams) (domain.FactProposal, bool, error) {
+func (r *Repository) ConfirmFactProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewFactProposalParams) (domain.FactProposal, string, bool, error) {
 	return r.reviewFactProposal(ctx, identity, id, review, true)
 }
-func (r *Repository) RejectFactProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewFactProposalParams) (domain.FactProposal, bool, error) {
+func (r *Repository) RejectFactProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewFactProposalParams) (domain.FactProposal, string, bool, error) {
 	return r.reviewFactProposal(ctx, identity, id, review, false)
 }
 
-func (r *Repository) reviewFactProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewFactProposalParams, confirm bool) (domain.FactProposal, bool, error) {
+func (r *Repository) reviewFactProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewFactProposalParams, confirm bool) (domain.FactProposal, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.FactProposal{}, false, err
+		return domain.FactProposal{}, "", false, err
 	}
 	defer tx.Rollback()
 	status := 200
@@ -566,68 +566,72 @@ func (r *Repository) reviewFactProposal(ctx context.Context, identity WriteIdent
 		status = 201
 	}
 	if s, b, found, e := readIdempotency(ctx, tx, identity); e != nil {
-		return domain.FactProposal{}, false, e
+		return domain.FactProposal{}, "", false, e
 	} else if found {
 		var p domain.FactProposal
 		if s != status || json.Unmarshal([]byte(b), &p) != nil {
-			return p, false, errors.New("invalid stored idempotency response")
+			return p, "", false, errors.New("invalid stored idempotency response")
 		}
-		return p, true, nil
+		operationID, e := readIdempotencyOperation(ctx, tx, identity)
+		if e != nil {
+			return p, "", false, e
+		}
+		return p, operationID, true, nil
 	}
 	p, err := getFactProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if p.ReviewState != "pending" {
-		return p, false, ErrFactProposalReviewed
+		return p, "", false, ErrFactProposalReviewed
 	}
 	if err = r.requireDiskWritable(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	now := formatTime(r.runtime.Now())
 	if confirm {
 		if err = r.confirmFactProposalTx(ctx, tx, id, identity.CallerID, review.ReasonCode, "", now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 	} else {
 		res, err := tx.ExecContext(ctx, `UPDATE entity_fact_proposals SET review_state='rejected', reviewed_at=? WHERE proposal_id=? AND review_state='pending'`, now, id)
 		if err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		if !oneRow(res) {
-			return p, false, ErrFactProposalReviewed
+			return p, "", false, ErrFactProposalReviewed
 		}
 		reviewID, err := r.runtime.ID()
 		if err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO entity_fact_proposal_reviews(review_id, proposal_id, operation_id, from_state, to_state, reason_code, note, reviewer_id, created_at) VALUES (?,?,?,'pending','rejected',?,?,?,?)`, reviewID, id, p.EventID, review.ReasonCode, review.Note, identity.CallerID, now); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 	}
 	p, err = getFactProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	body, _ := json.Marshal(p)
 	ids, err := r.newIDs(2)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if err = writeIdempotency(ctx, tx, identity, ids[0], status, body, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	action := "reject_fact_proposal"
 	if confirm {
 		action = "confirm_fact_proposal"
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, reason, created_at) VALUES (?,?,?,?,?,'fact_proposal',?,'succeeded',?,?)`, ids[1], ids[0], identity.RequestID, identity.CallerID, action, id, review.ReasonCode, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if err = tx.Commit(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
-	return p, false, nil
+	return p, ids[0], false, nil
 }
 
 // ---- graph index ----

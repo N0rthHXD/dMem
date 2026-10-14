@@ -12,7 +12,9 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/conflict"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 	"github.com/N0rthHXD/dMem/pkg/logging"
@@ -25,6 +27,9 @@ type Handler struct {
 	scopes     ScopeService
 	events     ExtractionService
 	reviews    ReviewService
+	memories   MemoryService
+	conflicts  ConflictService
+	proposals  ProposalService
 
 	routes []route
 	newID  func() string
@@ -55,12 +60,21 @@ func New(deps Dependencies, opts ...Option) (*Handler, error) {
 		return nil, fmt.Errorf("%w: extraction", errMissingDependency)
 	case deps.Reviews == nil:
 		return nil, fmt.Errorf("%w: review", errMissingDependency)
+	case deps.Memories == nil:
+		return nil, fmt.Errorf("%w: memory", errMissingDependency)
+	case deps.Conflicts == nil:
+		return nil, fmt.Errorf("%w: conflict", errMissingDependency)
+	case deps.Proposals == nil:
+		return nil, fmt.Errorf("%w: proposal", errMissingDependency)
 	}
 	h := &Handler{
 		agentTools: deps.AgentTools,
 		scopes:     deps.Scopes,
 		events:     deps.Events,
 		reviews:    deps.Reviews,
+		memories:   deps.Memories,
+		conflicts:  deps.Conflicts,
+		proposals:  deps.Proposals,
 		newID:      newRequestID,
 	}
 	for _, opt := range opts {
@@ -82,10 +96,11 @@ func (h *Handler) Routes() []RouteInfo {
 	return infos
 }
 
-// buildRoutes declares the Agent-neutral surface. Job control, index rebuild,
-// configuration reload, and graph maintenance routes are deliberately absent.
-// Candidate review is a Provider Route management surface: it is reachable over
-// this application adapter but is not part of the Agent Tool contract.
+// buildRoutes declares the Agent-neutral surface. Memory authority
+// administration and candidate review are management surfaces: they are
+// reachable over this application adapter but are not part of the Agent Tool
+// contract. Job control, index rebuild, configuration reload, and graph
+// maintenance routes are deliberately absent.
 func (h *Handler) buildRoutes() []route {
 	return []route{
 		{
@@ -226,6 +241,141 @@ func (h *Handler) buildRoutes() []route {
 				MaxBodyBytes: MaxCandidateReviewBodyBytes,
 			},
 			handle: h.handleRejectCandidate,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationMemoryList,
+				Method:      http.MethodGet,
+				Path:        "/v1/memories",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleListMemories,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationMemoryGet,
+				Method:      http.MethodGet,
+				Path:        "/v1/memories/{memory_id}",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleGetMemory,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationMemoryRevisionList,
+				Method:      http.MethodGet,
+				Path:        "/v1/memories/{memory_id}/revisions",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleListMemoryRevisions,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationMemoryStateEventList,
+				Method:      http.MethodGet,
+				Path:        "/v1/memories/{memory_id}/state-events",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleListMemoryStateEvents,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    memory.OperationRevise,
+				Method:       http.MethodPost,
+				Path:         "/v1/memories/{memory_id}/revisions",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxMemoryReviseBodyBytes,
+			},
+			handle: h.handleReviseMemory,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    memory.OperationStateChange,
+				Method:       http.MethodPost,
+				Path:         "/v1/memories/{memory_id}/state",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxMemoryStateBodyBytes,
+			},
+			handle: h.handleChangeMemoryState,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationConflictList,
+				Method:      http.MethodGet,
+				Path:        "/v1/conflicts",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleListConflicts,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationConflictGet,
+				Method:      http.MethodGet,
+				Path:        "/v1/conflicts/{case_id}",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleGetConflict,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    conflict.OperationResolve,
+				Method:       http.MethodPost,
+				Path:         "/v1/conflicts/{case_id}/resolve",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxConflictResolveBodyBytes,
+			},
+			handle: h.handleResolveConflict,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationProposalList,
+				Method:      http.MethodGet,
+				Path:        "/v1/proposals",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleListProposals,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:   OperationProposalGet,
+				Method:      http.MethodGet,
+				Path:        "/v1/proposals/{proposal_type}/{proposal_id}",
+				Access:      AccessRead,
+				Idempotency: IdempotencyNotRequired,
+			},
+			handle: h.handleGetProposal,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    OperationProposalConfirm,
+				Method:       http.MethodPost,
+				Path:         "/v1/proposals/{proposal_type}/{proposal_id}/confirm",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxProposalReviewBodyBytes,
+			},
+			handle: h.handleConfirmProposal,
+		},
+		{
+			RouteInfo: RouteInfo{
+				Operation:    OperationProposalReject,
+				Method:       http.MethodPost,
+				Path:         "/v1/proposals/{proposal_type}/{proposal_id}/reject",
+				Access:       AccessWrite,
+				Idempotency:  IdempotencyRequired,
+				MaxBodyBytes: MaxProposalReviewBodyBytes,
+			},
+			handle: h.handleRejectProposal,
 		},
 	}
 }

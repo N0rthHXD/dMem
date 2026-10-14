@@ -36,9 +36,9 @@ CGO_ENABLED=1 go test -tags sqlite_fts5 ./internal/domain -run '^$' -fuzz 'FuzzP
   取消、幂等、编排与不变量，尽量不涉及 HTTP 或 SQLite。
 - `internal/gateway/arch_test.go` 强制 gateway 依赖规则：不导入 `net/http`、不
   导入协议包、不导入 storage 或 jobs、不导入兄弟模块，且不导出暴露 `storage.*`
-  选择器的契约。它同时固定当前 gateway 模块清单；Phase 7 删除 `memory`、
-  `feedback`、`knowledge` 与 consolidation 入口服务后，该清单只包含有生产消费者
-  的模块。
+  选择器的契约。它同时固定当前 gateway 模块清单；Phase 7 删除 `feedback` 与
+  `knowledge` 模块后，管理面阶段重建了有生产消费者的 `memory` 模块并新增
+  `conflict` 模块，清单包含九个有生产消费者的模块。
 - `internal/protocol/httpapi` 测试使用 fake gateway 模块，覆盖严格单值 JSON
   解码、DTO 转换、路由一致性（调用方身份与幂等策略）、响应编码、gateway 错误
   映射、panic 恢复、取消与安全错误。
@@ -201,6 +201,16 @@ make mcp-check
 - `internal/protocol/httpapi` 覆盖 `POST /v1/events`、`GET /v1/events/{event_id}`
   以及候选审核路由 `/v1/candidates`、`/v1/candidates/{candidate_id}` 与
   `.../confirm`、`.../reject` 的路由元数据、DTO 映射、未知字段与畸形 body 拒绝。
+- `internal/gateway/memory`、`internal/gateway/conflict` 与
+  `internal/gateway/review` 的提案服务单元测试覆盖输入边界、幂等写身份、证据继承
+  规则与错误映射；`internal/storage/gateway_administration_test.go` 在真实 SQLite
+  上证明三个管理适配器的列表、详情、围栏写与重放都返回持久化的 operation ID。
+- `internal/protocol/httpapi` 的 `memories_test.go`、`proposals_test.go` 与
+  `conflicts_test.go` 覆盖 13 条管理面路由的路由元数据、DTO 映射（`scope_id`
+  重命名、`proposal_type` 判别、演化审核输入）、未知字段拒绝、错误分类与幂等
+  策略；`internal/daemon/management_test.go` 用组装后的运行时驱动完整记忆管理
+  闭环（commit -> list -> revise -> archive -> restore -> state events -> forget）
+  以及提案/冲突队列的端到端接线。
 - `internal/gateway/review` 的 `TestConfirmCandidateReturnsMemoryOnlyWhenConfirmed`
   与 `TestReviewValidatesReasonAndNote` 覆盖候选审核命令校验、幂等写身份与错误映射；
   `internal/storage` 的 `TestReviewCapabilityConfirmAndRejectIsIdempotent` 证明存储

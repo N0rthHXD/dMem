@@ -7,7 +7,9 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/conflict"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/gateway/scope"
 )
@@ -17,11 +19,26 @@ import (
 // stays identical to the module contract. Read operations are not idempotent
 // writes and their names are adapter-declared identifiers.
 const (
-	OperationCapabilities  gateway.OperationName = "agent_tool.capabilities"
-	OperationScopeGet      gateway.OperationName = "scope.get"
-	OperationEventGet      gateway.OperationName = "extraction.event_get"
-	OperationCandidateList gateway.OperationName = "review.candidate_list"
-	OperationCandidateGet  gateway.OperationName = "review.candidate_get"
+	OperationCapabilities         gateway.OperationName = "agent_tool.capabilities"
+	OperationScopeGet             gateway.OperationName = "scope.get"
+	OperationEventGet             gateway.OperationName = "extraction.event_get"
+	OperationCandidateList        gateway.OperationName = "review.candidate_list"
+	OperationCandidateGet         gateway.OperationName = "review.candidate_get"
+	OperationMemoryList           gateway.OperationName = "memory.list"
+	OperationMemoryGet            gateway.OperationName = "memory.get"
+	OperationMemoryRevisionList   gateway.OperationName = "memory.revision_list"
+	OperationMemoryStateEventList gateway.OperationName = "memory.state_event_list"
+	OperationConflictList         gateway.OperationName = "conflict.list"
+	OperationConflictGet          gateway.OperationName = "conflict.get"
+	OperationProposalList         gateway.OperationName = "review.proposal_list"
+	OperationProposalGet          gateway.OperationName = "review.proposal_get"
+	// OperationProposalConfirm and OperationProposalReject name the shared
+	// proposal review routes. The persisted write identity still uses the
+	// family-specific operation name from the review module
+	// (review.entity_confirm, review.fact_confirm, ...), so replay detection is
+	// identical to the module contract.
+	OperationProposalConfirm gateway.OperationName = "review.proposal_confirm"
+	OperationProposalReject  gateway.OperationName = "review.proposal_reject"
 )
 
 // AccessMode classifies a route as a read or a state-changing write.
@@ -54,6 +71,10 @@ const (
 	MaxRecallBodyBytes          int64 = 256 << 10
 	MaxEventIngestBodyBytes     int64 = 1 << 20
 	MaxCandidateReviewBodyBytes int64 = 16 << 10
+	MaxMemoryReviseBodyBytes    int64 = 64 << 10
+	MaxMemoryStateBodyBytes     int64 = 64 << 10
+	MaxConflictResolveBodyBytes int64 = 64 << 10
+	MaxProposalReviewBodyBytes  int64 = 16 << 10
 )
 
 type AgentToolService interface {
@@ -85,6 +106,38 @@ type ReviewService interface {
 	RejectCandidate(context.Context, gateway.CallContext, review.ReviewCandidateCommand) (review.CandidateReviewResult, error)
 }
 
+// MemoryService is the memory authority administration surface. It exposes
+// bounded reads and fenced revision/lifecycle writes; it is absent from the
+// Agent Tool Route, the MCP tool set, and the versioned tool contract.
+type MemoryService interface {
+	List(context.Context, gateway.CallContext, memory.ListQuery) (domain.MemoryPage, error)
+	Get(context.Context, gateway.CallContext, memory.GetQuery) (domain.Memory, error)
+	ListRevisions(context.Context, gateway.CallContext, memory.MemoryQuery) ([]domain.MemoryRevision, error)
+	ListStateEvents(context.Context, gateway.CallContext, memory.MemoryQuery) ([]domain.MemoryStateEvent, error)
+	Revise(context.Context, gateway.CallContext, memory.ReviseCommand) (memory.WriteResult, error)
+	ChangeState(context.Context, gateway.CallContext, memory.StateChangeCommand) (memory.WriteResult, error)
+}
+
+// ConflictService is the conflict administration surface. It lists and reads
+// explicit conflict cases and applies one fenced resolution write; it is absent
+// from the Agent Tool Route, the MCP tool set, and the versioned tool contract.
+type ConflictService interface {
+	List(context.Context, gateway.CallContext, conflict.ListQuery) (domain.ConflictCasePage, error)
+	Get(context.Context, gateway.CallContext, conflict.GetQuery) (domain.ConflictCase, error)
+	Resolve(context.Context, gateway.CallContext, conflict.ResolveCommand) (conflict.ResolveResult, error)
+}
+
+// ProposalService is the proposal review surface of the Provider Route. It
+// lists, reads, confirms, and rejects graph, evolution, and aggregate
+// proposals; it is absent from the Agent Tool Route, the MCP tool set, and the
+// versioned tool contract, and it never reaches a model provider.
+type ProposalService interface {
+	ListProposals(context.Context, gateway.CallContext, review.ListProposalsQuery) (review.ProposalPage, error)
+	GetProposal(context.Context, gateway.CallContext, review.GetProposalQuery) (review.Proposal, error)
+	ConfirmProposal(context.Context, gateway.CallContext, review.ReviewProposalCommand) (review.ProposalReviewResult, error)
+	RejectProposal(context.Context, gateway.CallContext, review.ReviewProposalCommand) (review.ProposalReviewResult, error)
+}
+
 // Dependencies are the gateway module interfaces the adapter depends on. Every
 // field is an interface owned by this package, never a concrete gateway service.
 type Dependencies struct {
@@ -92,6 +145,9 @@ type Dependencies struct {
 	Scopes     ScopeService
 	Events     ExtractionService
 	Reviews    ReviewService
+	Memories   MemoryService
+	Conflicts  ConflictService
+	Proposals  ProposalService
 }
 
 // RouteInfo is the declarative, inspectable metadata of one implemented route.

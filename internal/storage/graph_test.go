@@ -162,7 +162,7 @@ func TestGraphFactSupersedesOlderFactOnNewRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Second revision: Alice is paused -> conflicting fact stays pending review.
-	revised, _, err := r.ReviseMemory(context.Background(), memoryIdentity("fact-evolve-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice is paused", Evidence: directEvidence("event-2"), Reason: "update"}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice is paused", Evidence: directEvidence("event-2"), Reason: "update"})
+	revised, _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("fact-evolve-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice is paused", Evidence: directEvidence("event-2"), Reason: "update"}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "Alice is paused", Evidence: directEvidence("event-2"), Reason: "update"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestGraphFactSupersedesOlderFactOnNewRevision(t *testing.T) {
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("pending fact proposals=%+v err=%v", page, err)
 	}
-	if _, _, err := r.ConfirmFactProposal(context.Background(), memoryIdentity("fact-evolve-confirm", "/v1/fact-proposals/{proposal_id}/confirm", ReviewFactProposalParams{ReasonCode: "updated"}), page.Items[0].ProposalID, ReviewFactProposalParams{ReasonCode: "updated"}); err != nil {
+	if _, _, _, err := r.ConfirmFactProposal(context.Background(), memoryIdentity("fact-evolve-confirm", "/v1/fact-proposals/{proposal_id}/confirm", ReviewFactProposalParams{ReasonCode: "updated"}), page.Items[0].ProposalID, ReviewFactProposalParams{ReasonCode: "updated"}); err != nil {
 		t.Fatal(err)
 	}
 	var active, superseded int
@@ -235,7 +235,7 @@ func TestGraphStaleSourceRevisionRejected(t *testing.T) {
 	memory := createTestMemory(t, r, "graph-stale")
 	claim, input := graphClaimInput(t, r)
 	// Make the revision stale by revising the memory after preparing input.
-	if _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("graph-stale-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "replaced", Evidence: directEvidence("event-2"), Reason: "revise"}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "replaced", Evidence: directEvidence("event-2"), Reason: "revise"}); err != nil {
+	if _, _, _, err := r.ReviseMemory(context.Background(), memoryIdentity("graph-stale-revise", "/v1/memories/{memory_id}/revisions", ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "replaced", Evidence: directEvidence("event-2"), Reason: "revise"}), memory.MemoryID, ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "replaced", Evidence: directEvidence("event-2"), Reason: "revise"}); err != nil {
 		t.Fatal(err)
 	}
 	result := domain.GraphExtractionResult{Code: domain.GraphExtractionExtracted,
@@ -386,7 +386,7 @@ func TestFactProposalConcurrentConfirm(t *testing.T) {
 	results := make(chan error, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			_, _, err := r.ConfirmFactProposal(context.Background(), memoryIdentity("fact-confirm-"+string(rune('a'+i)), "/v1/fact-proposals/{proposal_id}/confirm", review), proposal.ProposalID, review)
+			_, _, _, err := r.ConfirmFactProposal(context.Background(), memoryIdentity("fact-confirm-"+string(rune('a'+i)), "/v1/fact-proposals/{proposal_id}/confirm", review), proposal.ProposalID, review)
 			results <- err
 		}()
 	}

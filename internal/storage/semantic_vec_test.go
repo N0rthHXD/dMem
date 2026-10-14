@@ -335,7 +335,7 @@ func TestSemanticCorpusGenerationAdvancesWithLiveMembership(t *testing.T) {
 	}
 
 	params := ReviseMemoryParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Content: "automobile generation two", Evidence: directEvidence("event-1"), Reason: "generation test"}
-	memory, _, err = repository.ReviseMemory(context.Background(), memoryIdentity("live-generation-revise", "/v1/memories/{memory_id}", params), memory.MemoryID, params)
+	memory, _, _, err = repository.ReviseMemory(context.Background(), memoryIdentity("live-generation-revise", "/v1/memories/{memory_id}", params), memory.MemoryID, params)
 	if err != nil {
 		t.Fatal(err)
 	}

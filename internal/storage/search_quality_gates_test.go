@@ -79,7 +79,7 @@ func searchQualityGateFixture(t *testing.T) (*Repository, searchQualityCorpus, s
 			t.Fatal(err)
 		}
 		if state != "active" {
-			if _, _, err = r.ChangeMemoryState(context.Background(), memoryIdentity(key+"-state", "/v1/memories/{memory_id}/state", state), memory.MemoryID, ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "contest", Reason: "gate conflict"}); err != nil {
+			if _, _, _, err = r.ChangeMemoryState(context.Background(), memoryIdentity(key+"-state", "/v1/memories/{memory_id}/state", state), memory.MemoryID, ChangeMemoryStateParams{ExpectedRevisionID: memory.CurrentRevision.RevisionID, Action: "contest", Reason: "gate conflict"}); err != nil {
 				t.Fatal(err)
 			}
 			memory, err = r.GetMemory(context.Background(), memory.MemoryID)

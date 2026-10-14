@@ -61,11 +61,15 @@ invalid_output 直接终止，避免永久错误被无差别重试。
 > `Decision` 命令）在 Phase 7 被删除。记忆候选的确认与拒绝现在通过
 > `internal/gateway/review` 模块与 HTTP 入口 `/v1/candidates`、
 > `/v1/candidates/{candidate_id}`、`/v1/candidates/{candidate_id}/confirm`、
-> `/v1/candidates/{candidate_id}/reject` 暴露；`internal/gateway/review` 只做输入
-> 校验、幂等写身份与错误映射，审核状态机、整合分类与审计仍由存储层的
-> `Repository.ConfirmCandidate`/`RejectCandidate` 执行。图谱/实体/事实/关系/演化/
-> 聚合提案与冲突解决的审核仍只有存储层方法，没有协议入口。Agent Tool 提交的知识
-> 建议不进入候选表，而是持久化为 `agent_tool_proposals` 审核对象。
+> `/v1/candidates/{candidate_id}/reject` 暴露；实体/事实/关系/演化/聚合提案通过
+> `/v1/proposals` 及其 confirm/reject 子资源暴露；冲突用例通过 `/v1/conflicts`
+> 与 `/v1/conflicts/{case_id}/resolve` 暴露。`internal/gateway/review`、
+> `internal/gateway/memory` 与 `internal/gateway/conflict` 只做输入校验、幂等写身份
+> 与错误映射，审核状态机、整合分类、修订围栏与审计仍由存储层的
+> `Repository.ConfirmCandidate`/`RejectCandidate`、各 `Review*Proposal` 与
+> `ResolveConflict` 执行。Agent Tool 提交的知识建议不进入候选表，而是持久化为
+> `agent_tool_proposals` 审核对象，其审核与物化仍只有存储层写入、没有读取或审核
+> 入口。
 
 | 动作 | 含义 |
 | --- | --- |

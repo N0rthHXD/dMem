@@ -265,17 +265,17 @@ func (r *Repository) ListRelationProposals(ctx context.Context, f RelationPropos
 	return page, nil
 }
 
-func (r *Repository) ConfirmRelationProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewRelationProposalParams) (domain.RelationProposal, bool, error) {
+func (r *Repository) ConfirmRelationProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewRelationProposalParams) (domain.RelationProposal, string, bool, error) {
 	return r.reviewRelationProposal(ctx, identity, id, review, true)
 }
-func (r *Repository) RejectRelationProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewRelationProposalParams) (domain.RelationProposal, bool, error) {
+func (r *Repository) RejectRelationProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewRelationProposalParams) (domain.RelationProposal, string, bool, error) {
 	return r.reviewRelationProposal(ctx, identity, id, review, false)
 }
 
-func (r *Repository) reviewRelationProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewRelationProposalParams, confirm bool) (domain.RelationProposal, bool, error) {
+func (r *Repository) reviewRelationProposal(ctx context.Context, identity WriteIdentity, id string, review ReviewRelationProposalParams, confirm bool) (domain.RelationProposal, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.RelationProposal{}, false, err
+		return domain.RelationProposal{}, "", false, err
 	}
 	defer tx.Rollback()
 	status := 200
@@ -283,27 +283,31 @@ func (r *Repository) reviewRelationProposal(ctx context.Context, identity WriteI
 		status = 201
 	}
 	if s, b, found, e := readIdempotency(ctx, tx, identity); e != nil {
-		return domain.RelationProposal{}, false, e
+		return domain.RelationProposal{}, "", false, e
 	} else if found {
 		var p domain.RelationProposal
 		if s != status || json.Unmarshal([]byte(b), &p) != nil {
-			return p, false, errors.New("invalid stored idempotency response")
+			return p, "", false, errors.New("invalid stored idempotency response")
 		}
-		return p, true, nil
+		operationID, e := readIdempotencyOperation(ctx, tx, identity)
+		if e != nil {
+			return p, "", false, e
+		}
+		return p, operationID, true, nil
 	}
 	p, err := getRelationProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if p.ReviewState != "pending" {
-		return p, false, ErrRelationProposalReviewed
+		return p, "", false, ErrRelationProposalReviewed
 	}
 	if err = r.requireDiskWritable(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	ids, err := r.newIDs(8 + len(p.Evidence))
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	operationID, reviewID, auditID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
@@ -312,58 +316,58 @@ func (r *Repository) reviewRelationProposal(ctx context.Context, identity WriteI
 	if confirm {
 		params := CreateRelationProposalParams{EventID: p.EventID, SpaceID: p.SpaceID, RelationType: p.RelationType, SourceMemoryID: p.SourceMemoryID, SourceRevisionID: p.SourceRevisionID, TargetMemoryID: p.TargetMemoryID, TargetRevisionID: p.TargetRevisionID, Confidence: p.Confidence, Evidence: p.Evidence, ProcessorIdentity: p.ProcessorIdentity, ProcessingVersion: p.ProcessingVersion}
 		if err = validateRelationContext(ctx, tx, params, true); err != nil {
-			return p, false, err
+			return p, "", false, err
 		}
 		var existing string
 		err = tx.QueryRowContext(ctx, `SELECT relation_id FROM memory_relations WHERE relation_type=? AND source_memory_id=? AND source_revision_id=? AND target_memory_id=? AND target_revision_id=? AND specification_hash=?`, p.RelationType, p.SourceMemoryID, p.SourceRevisionID, p.TargetMemoryID, p.TargetRevisionID, p.SpecificationHash).Scan(&existing)
 		if err == nil {
 			relationID = &existing
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return p, false, err
+			return p, "", false, err
 		} else {
 			rid := ids[3]
 			relationID = &rid
 			_, err = tx.ExecContext(ctx, `INSERT INTO memory_relations(relation_id,space_id,relation_type,source_memory_id,source_revision_id,target_memory_id,target_revision_id,state,source,confidence,specification_hash,created_by,processing_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'active','human_confirmation',?,?,?,?,?,?)`, rid, p.SpaceID, p.RelationType, p.SourceMemoryID, p.SourceRevisionID, p.TargetMemoryID, p.TargetRevisionID, p.Confidence, p.SpecificationHash, identity.CallerID, p.ProcessingVersion, now, now)
 			if err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			_, err = tx.ExecContext(ctx, `INSERT INTO relation_state_events(state_event_id,relation_id,operation_id,from_state,to_state,reason,created_by,created_at) VALUES (?,?,?,NULL,'active',?,?,?)`, ids[4], rid, operationID, review.ReasonCode, identity.CallerID, now)
 			if err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			for i, e := range p.Evidence {
 				_, err = tx.ExecContext(ctx, `INSERT INTO relation_evidence(evidence_id,relation_id,evidence_type,event_id,memory_id,revision_id,start_offset,end_offset,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, ids[8+i], rid, e.EvidenceType, e.EventID, e.MemoryID, e.RevisionID, e.StartOffset, e.EndOffset, e.Note, identity.CallerID, now)
 				if err != nil {
-					return p, false, err
+					return p, "", false, err
 				}
 			}
 			if _, err = enqueueRelationIndexJob(ctx, tx, ids[5], operationID, r.processingVersion(), r.maxAttempts, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE relation_index_metadata SET state='stale',generation=generation+1,updated_at=? WHERE singleton=1`, now); err != nil {
-				return p, false, err
+				return p, "", false, err
 			}
 		}
 		toState = "confirmed"
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE relation_proposals SET review_state=?,result_relation_id=?,reviewed_at=? WHERE proposal_id=? AND review_state='pending'`, toState, relationID, now, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if !oneRow(res) {
-		return p, false, ErrRelationProposalReviewed
+		return p, "", false, ErrRelationProposalReviewed
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO relation_proposal_reviews(review_id,proposal_id,operation_id,from_state,to_state,reason_code,note,reviewer_id,relation_id,created_at) VALUES (?,?,?,'pending',?,?,?,?,?,?)`, reviewID, id, operationID, toState, review.ReasonCode, review.Note, identity.CallerID, relationID, now)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	p, err = getRelationProposal(ctx, tx, id)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	body, _ := json.Marshal(p)
 	if err = writeIdempotency(ctx, tx, identity, operationID, status, body, now); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	action := "reject_relation_proposal"
 	if confirm {
@@ -371,12 +375,12 @@ func (r *Repository) reviewRelationProposal(ctx context.Context, identity WriteI
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id,operation_id,request_id,caller_id,action,target_type,target_id,outcome,reason,created_at) VALUES (?,?,?,?,?,'relation_proposal',?,'succeeded',?,?)`, auditID, operationID, identity.RequestID, identity.CallerID, action, id, review.ReasonCode, now)
 	if err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
 	if err = tx.Commit(); err != nil {
-		return p, false, err
+		return p, "", false, err
 	}
-	return p, false, nil
+	return p, operationID, false, nil
 }
 
 func enqueueRelationIndexJob(ctx context.Context, tx *sql.Tx, jobID, operationID, version string, maxAttempts int, now string) (bool, error) {

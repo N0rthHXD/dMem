@@ -539,7 +539,6 @@ func preciseKeywordResults(results []domain.SearchResult, precise map[string]str
 	return filtered
 }
 
-
 func searchScope(ctx context.Context, tx *sql.Tx, starts []string, ancestors bool) ([]string, error) {
 	set := make(map[string]struct{})
 	for _, start := range starts {

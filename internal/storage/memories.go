@@ -124,110 +124,124 @@ func (r *Repository) CreateMemory(ctx context.Context, identity WriteIdentity, p
 	return result, false, nil
 }
 
-func (r *Repository) ReviseMemory(ctx context.Context, identity WriteIdentity, memoryID string, params ReviseMemoryParams) (domain.Memory, bool, error) {
+func (r *Repository) ReviseMemory(ctx context.Context, identity WriteIdentity, memoryID string, params ReviseMemoryParams) (domain.Memory, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	defer tx.Rollback()
 	if result, replay, err := replayMemory(ctx, tx, identity, 200); err != nil || replay {
-		return result, replay, err
+		if err != nil {
+			return domain.Memory{}, "", false, err
+		}
+		operationID, err := readIdempotencyOperation(ctx, tx, identity)
+		if err != nil {
+			return domain.Memory{}, "", false, err
+		}
+		return result, operationID, true, nil
 	}
 	if err := r.requireDiskWritable(); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	current, err := getMemory(ctx, tx, memoryID, false)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if current.CurrentRevision.RevisionID != params.ExpectedRevisionID {
-		return domain.Memory{}, false, ErrRevisionConflict
+		return domain.Memory{}, "", false, ErrRevisionConflict
 	}
 	if current.CurrentState == "deleted" {
-		return domain.Memory{}, false, ErrNotFound
+		return domain.Memory{}, "", false, ErrNotFound
 	}
 	if isAggregateMemory(ctx, tx, current.MemoryID) {
-		return domain.Memory{}, false, ErrInvalidAggregateProposal
+		return domain.Memory{}, "", false, ErrInvalidAggregateProposal
 	}
 	if err := requireSpaceAndEvidence(ctx, tx, current.SpaceID, params.Evidence); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	ids, err := r.newIDs(3 + len(params.Evidence))
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	revisionID, operationID, auditID := ids[0], ids[1], ids[2]
 	now := formatTime(r.runtime.Now())
 	revision, err := revisionFromTextInput(revisionID, memoryID, &params.ExpectedRevisionID, nil, string(current.Kind), params.Content, params.ValidFrom, params.ValidUntil, nil, current.Sensitivity, identity.CallerID, r.processingVersion(), nil, now)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := validateDirectRevision(revision, params.Evidence); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := insertRevision(ctx, tx, revision); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := insertEvidence(ctx, tx, revisionID, params.Evidence, ids[3:], now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE memories SET current_revision_id=?, updated_at=? WHERE memory_id=? AND current_revision_id=?`, revisionID, now, memoryID, params.ExpectedRevisionID)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if count, err := updated.RowsAffected(); err != nil || count != 1 {
 		if err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
-		return domain.Memory{}, false, ErrRevisionConflict
+		return domain.Memory{}, "", false, ErrRevisionConflict
 	}
 	if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, current.SpaceID, current.CurrentState, now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := r.markDependentAggregatesStale(ctx, tx, memoryID, now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	result, err := getMemory(ctx, tx, memoryID, false)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := finishMemoryWrite(ctx, tx, identity, operationID, auditID, "revise_memory", memoryID, params.Reason, 200, result, now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
-	return result, false, nil
+	return result, operationID, false, nil
 }
 
-func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdentity, memoryID string, params ChangeMemoryStateParams) (domain.Memory, bool, error) {
+func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdentity, memoryID string, params ChangeMemoryStateParams) (domain.Memory, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	defer tx.Rollback()
 	if result, replay, err := replayMemory(ctx, tx, identity, 200); err != nil || replay {
-		return result, replay, err
+		if err != nil {
+			return domain.Memory{}, "", false, err
+		}
+		operationID, err := readIdempotencyOperation(ctx, tx, identity)
+		if err != nil {
+			return domain.Memory{}, "", false, err
+		}
+		return result, operationID, true, nil
 	}
 	if err := r.requireDiskWritable(); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	current, err := getMemory(ctx, tx, memoryID, false)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if current.CurrentRevision.RevisionID != params.ExpectedRevisionID {
-		return domain.Memory{}, false, ErrRevisionConflict
+		return domain.Memory{}, "", false, ErrRevisionConflict
 	}
 	toState, toFrozen, noop, err := lifecycleTarget(current.CurrentState, current.Frozen, params.Action)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if params.Action == "restore" && !noop && params.RestoreRevisionID == nil {
-		return domain.Memory{}, false, ErrInvalidStateTransition
+		return domain.Memory{}, "", false, ErrInvalidStateTransition
 	}
 	if isAggregateMemory(ctx, tx, current.MemoryID) && params.Action == "restore" && !noop {
-		return domain.Memory{}, false, ErrInvalidAggregateProposal
+		return domain.Memory{}, "", false, ErrInvalidAggregateProposal
 	}
 	idCount := 2
 	if !noop {
@@ -238,7 +252,7 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 	}
 	ids, err := r.newIDs(idCount)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	operationID, auditID := ids[0], ids[1]
 	now := formatTime(r.runtime.Now())
@@ -248,9 +262,9 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 		source, err := getRevision(ctx, tx, memoryID, *params.RestoreRevisionID)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return domain.Memory{}, false, ErrInvalidStateTransition
+				return domain.Memory{}, "", false, ErrInvalidStateTransition
 			}
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 		revisionID = ids[3]
 		revision = source
@@ -262,53 +276,53 @@ func (r *Repository) ChangeMemoryState(ctx context.Context, identity WriteIdenti
 		revision.ProcessorIdentity = ""
 		revision.CreatedAt = now
 		if err := insertRevision(ctx, tx, revision); err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 		evidence, err := revisionEvidence(ctx, tx, source.RevisionID)
 		if err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 		evidenceIDs, err := r.newIDs(len(evidence))
 		if err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 		if err := insertEvidence(ctx, tx, revisionID, evidenceParams(evidence), evidenceIDs, now); err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 	}
 	if !noop {
 		stateEventID := ids[2]
 		updated, err := tx.ExecContext(ctx, `UPDATE memories SET current_revision_id=?, current_state=?, frozen=?, updated_at=? WHERE memory_id=? AND current_revision_id=?`, revisionID, toState, toFrozen, now, memoryID, params.ExpectedRevisionID)
 		if err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 		if count, err := updated.RowsAffected(); err != nil || count != 1 {
 			if err != nil {
-				return domain.Memory{}, false, err
+				return domain.Memory{}, "", false, err
 			}
-			return domain.Memory{}, false, ErrRevisionConflict
+			return domain.Memory{}, "", false, ErrRevisionConflict
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_state_events(state_event_id, memory_id, revision_id, operation_id, from_state, to_state, from_frozen, to_frozen, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, stateEventID, memoryID, revisionID, operationID, current.CurrentState, toState, current.Frozen, toFrozen, params.Reason, identity.CallerID, now); err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 		if err := r.upsertMemoryProjection(ctx, tx, memoryID, revisionID, current.SpaceID, toState, now); err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 		if err := r.markDependentAggregatesStale(ctx, tx, memoryID, now); err != nil {
-			return domain.Memory{}, false, err
+			return domain.Memory{}, "", false, err
 		}
 	}
 	result, err := getMemory(ctx, tx, memoryID, false)
 	if err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := finishMemoryWrite(ctx, tx, identity, operationID, auditID, params.Action+"_memory", memoryID, params.Reason, 200, result, now); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return domain.Memory{}, false, err
+		return domain.Memory{}, "", false, err
 	}
-	return result, false, nil
+	return result, operationID, false, nil
 }
 
 func lifecycleTarget(state string, frozen bool, action string) (string, bool, bool, error) {

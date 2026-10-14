@@ -27,7 +27,9 @@ import (
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/agenttool"
+	"github.com/N0rthHXD/dMem/internal/gateway/conflict"
 	"github.com/N0rthHXD/dMem/internal/gateway/extraction"
+	"github.com/N0rthHXD/dMem/internal/gateway/memory"
 	"github.com/N0rthHXD/dMem/internal/gateway/policy"
 	gwretrieval "github.com/N0rthHXD/dMem/internal/gateway/retrieval"
 	"github.com/N0rthHXD/dMem/internal/gateway/review"
@@ -231,6 +233,9 @@ func startService(ctx context.Context, cfg config.Config, processor jobs.Process
 		Scopes:     scope.NewService(storage.NewScopeCapability(repository)),
 		Events:     extraction.NewService(storage.NewEventCapability(repository)),
 		Reviews:    review.NewService(storage.NewReviewCapability(repository)),
+		Memories:   memory.NewService(storage.NewMemoryCapability(repository)),
+		Conflicts:  conflict.NewService(storage.NewConflictCapability(repository)),
+		Proposals:  review.NewProposalService(storage.NewProposalCapability(repository)),
 	}, httpapi.WithLogger(d.rootLogger))
 	if err != nil {
 		return nil, err

@@ -345,7 +345,10 @@ dMem Provider Route 保留现有持久异步处理模型，但收敛为显式选
 `POST /v1/events` 摄取，禁用时只以 `stored` 状态保留。候选审核入口
 （`GET /v1/candidates`、`GET /v1/candidates/{candidate_id}`、
 `POST /v1/candidates/{candidate_id}/confirm`、`POST /v1/candidates/{candidate_id}/reject`）
-补齐了 `event -> candidate -> review -> memory` 闭环：
+补齐了 `event -> candidate -> review -> memory` 闭环；管理面阶段又补齐了图谱/演化/
+聚合提案审核入口（`/v1/proposals` 及其 confirm/reject）、冲突管理入口
+（`/v1/conflicts` 与 `/v1/conflicts/{case_id}/resolve`）与记忆权威管理入口
+（`/v1/memories` 的读取、修订与生命周期变更）：
 
 ```text
 raw event
@@ -452,6 +455,9 @@ HTTP 是 client 和 MCP server 共用的 dMem application transport。目标资�
 | raw event ingest | 仅供启用 Provider Route 的原始输入 |
 | operation/event status | 仅在异步 provider 处理需要时查询 |
 | candidate review | Provider Route 候选的 list/get/confirm/reject 审核入口 |
+| proposal review | 实体/事实/关系/演化/聚合提案的 list/get/confirm/reject 审核入口 |
+| conflict administration | 冲突用例的 list/get 与围栏解决入口 |
+| memory administration | 记忆列表、详情、修订历史、状态事件读取与围栏修订/生命周期变更 |
 
 实现阶段可以重新设计路径和 DTO，不以 Phase 2 之前的旧九条 `/v1` 路由为兼容目标。
 应先确定 gateway 命令和版本化 tool schema，再决定 REST 资源形状；MCP 与 HTTP 不得
