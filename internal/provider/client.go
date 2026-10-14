@@ -50,6 +50,8 @@ Every candidate object MUST contain EXACTLY these fields and no others:
 - "confidence": number between 0 and 1 inclusive.
 - "evidence": non-empty array with no duplicate references. Each element has EXACTLY {"evidence_id","event_id","event_time","event_sequence","role","start_offset","end_offset"}. "evidence_id" is a short stable identifier unique within the candidate. "event_id" must be the target event_id or a context event_id present in the input. "role" is "direct", "derived", "temporal_anchor", or "context"; at least one "direct" or "derived" element is required. "start_offset"/"end_offset" are both null for a whole-event citation or both present as 0-based rune offsets with start_offset < end_offset and end_offset within the text length. "event_time" is an optional RFC3339 timestamp and "event_sequence" an optional integer.
 
+Language rules: "display_content" and "canonical_content" must be in the SAME LANGUAGE as the target event content. If the event content is in Chinese, write them in Chinese; if it is in English, write them in English. Preserve all proper nouns in their original form. "canonical_content" is the retrieval form: never translate it, and keep it specific, because single characters or generic words are useless for recall, especially in Chinese. Write "attributes" values in the same language as the content, and set "language" to the language of the statement (for example "en" or "zh").
+
 Do not invent event_id values that were not provided in the input. Do not add any field beyond those listed. Do not request state changes or deletion.`
 
 type ErrorClass string
@@ -378,6 +380,8 @@ Every array may be empty. Do not invent memory ids, revision ids, or entity loca
   - "target_revision_id": string. The current revision id of that context memory.
   - "confidence": number between 0 and 1 inclusive.
 
+Language rules: "canonical_name", "aliases", and "object_literal" must be in the SAME LANGUAGE as the source content. If the source content is in Chinese, write them in Chinese; if it is in English, write them in English. Preserve all proper nouns in their original form; never translate or transliterate a name. "aliases" are recall keys: use short phrases of at least 3 characters each (2 characters are enough for CJK), never single characters or generic words, which are useless for recall, especially in Chinese.
+
 Do not add any field beyond those listed.`
 
 func (c *Client) PreflightGraphExtract(request GraphExtractRequest) error {
@@ -540,7 +544,7 @@ func (c *Client) Build(ctx context.Context, request domain.AggregateProviderInpu
 			maxSensitivity = "sensitive"
 		}
 	}
-	payload := chatRequest{Model: c.model, ResponseFormat: responseFormat{Type: "json_object"}, Messages: []chatMessage{{Role: "system", Content: "Return JSON with content and sensitivity. Summarize only the supplied revisions and do not change source memories."}}}
+	payload := chatRequest{Model: c.model, ResponseFormat: responseFormat{Type: "json_object"}, Messages: []chatMessage{{Role: "system", Content: "Return JSON with content and sensitivity. Summarize only the supplied revisions and do not change source memories. Write content in the SAME LANGUAGE as the source revisions; if they are in Chinese, write in Chinese; if in English, write in English. Preserve all proper nouns in their original form."}}}
 	prompt, _ := json.Marshal(request)
 	payload.Messages = append(payload.Messages, chatMessage{Role: "user", Content: string(prompt)})
 	var response chatResponse
