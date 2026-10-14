@@ -194,9 +194,9 @@ func TestNewSectionsAffectEffectiveIdentity(t *testing.T) {
 	if effectiveIdentity(base) == effectiveIdentity(changed) {
 		t.Fatal("effective identity should change when ranking weights change")
 	}
-	enabled := base
-	enabled.Review.AutoConfirmEnabled = true
-	if effectiveIdentity(base) == effectiveIdentity(enabled) {
+	disabled := base
+	disabled.Review.AutoConfirmEnabled = false
+	if effectiveIdentity(base) == effectiveIdentity(disabled) {
 		t.Fatal("effective identity should change when candidate auto-confirmation changes")
 	}
 }
@@ -204,8 +204,8 @@ func TestNewSectionsAffectEffectiveIdentity(t *testing.T) {
 func TestReviewConfigDefaultsAndBounds(t *testing.T) {
 	t.Parallel()
 	defaults := defaultReviewConfig()
-	if defaults.AutoConfirmEnabled {
-		t.Fatal("candidate auto-confirmation must default to disabled")
+	if !defaults.AutoConfirmEnabled {
+		t.Fatal("candidate auto-confirmation must default to enabled")
 	}
 	if defaults.AutoConfirmVersion == "" || len(defaults.AutoConfirmKinds) == 0 || defaults.AutoConfirmMaxPerSpacePerHour < 1 {
 		t.Fatalf("default review config = %+v; want every bound named", defaults)
@@ -214,8 +214,8 @@ func TestReviewConfigDefaultsAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Review.AutoConfirmEnabled {
-		t.Fatal("a config without a review section must not enable auto-confirmation")
+	if !loaded.Review.AutoConfirmEnabled {
+		t.Fatal("a config without a review section must inherit the enabled default")
 	}
 	if !reflect.DeepEqual(loaded.Review, defaults) {
 		t.Fatalf("review default = %+v; want %+v", loaded.Review, defaults)
@@ -245,6 +245,10 @@ func TestReviewConfigDefaultsAndBounds(t *testing.T) {
 			c.AutoConfirm.Enabled = boolPtr(true)
 			c.AutoConfirm.Kinds = []string{}
 		}, true},
+		{"disabled without kinds", func(c *reviewTable) {
+			c.AutoConfirm.Enabled = boolPtr(false)
+			c.AutoConfirm.Kinds = []string{}
+		}, false},
 		{"empty processing version entry", func(c *reviewTable) { c.AutoConfirm.ProcessingVersions = []string{""} }, true},
 		{"too many processing versions", func(c *reviewTable) {
 			versions := make([]string, maxAutoConfirmProcessingVersions+1)

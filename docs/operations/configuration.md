@@ -182,15 +182,16 @@ embedding provider 使用相同的 `max_egress_input_chars`、`max_response_byte
 
 ### `[review.auto_confirm]`
 
-候选自动确认默认关闭。开启后，满足全部边界的记忆候选（`extract_memory` 产物）在
-抽取提交的同一事务内直接成为权威记忆，审核记录使用系统审核身份
-`system:auto-review-v1`。策略只能发布非破坏性的确定性整合结果（`create`、
-`attach_evidence`）；`refine`、`supersede`、`contest`、`reject` 与 provider 分类
-结果永不自动发布。策略变更只对之后创建的候选生效，不追溯发布已积压的候选。
+候选自动确认默认开启；将 `enabled` 显式设为 `false` 可回到纯人工审核队列。开启时，
+满足全部边界的记忆候选（`extract_memory` 产物）在抽取提交的同一事务内直接成为
+权威记忆，审核记录使用系统审核身份 `system:auto-review-v1`。策略只能发布非破坏性
+的确定性整合结果（`create`、`attach_evidence`）；`refine`、`supersede`、`contest`、
+`reject` 与 provider 分类结果永不自动发布。策略变更只对之后创建的候选生效，不追溯
+发布已积压的候选。
 
 | 键 | 默认 | 规则 |
 | --- | --- | --- |
-| `enabled` | `false` | 显式开启开关。关闭时不读取其余键的语义。 |
+| `enabled` | `true` | 显式开关；设为 `false` 关闭自动确认，关闭时不读取其余键的语义。 |
 | `version` | `auto-review-v1` | 非空，写入审核记录用于归因。 |
 | `min_confidence` | `0.95` | 大于 `0` 且不超过 `1`，为候选修订 `confidence` 的闭区间下限。 |
 | `kinds` | `["fact", "plan", "preference"]` | 封闭集合；取值须是有效记忆 kind，聚合 kind（`scene`、`topic`、`timeline`）永不接受；开启时不得为空。 |
@@ -208,6 +209,13 @@ version = "auto-review-v1"
 min_confidence = 0.95
 kinds = ["fact", "preference", "plan"]
 max_per_space_per_hour = 20
+```
+
+显式关闭：
+
+```toml
+[review.auto_confirm]
+enabled = false
 ```
 
 ### `[semantic]`

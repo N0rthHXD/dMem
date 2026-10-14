@@ -78,7 +78,7 @@ func defaultConsolidationConfig() ConsolidationConfig {
 
 func defaultReviewConfig() ReviewConfig {
 	return ReviewConfig{
-		AutoConfirmEnabled:            false,
+		AutoConfirmEnabled:            true,
 		AutoConfirmVersion:            "auto-review-v1",
 		AutoConfirmMinConfidence:      0.95,
 		AutoConfirmKinds:              []string{"fact", "plan", "preference"},

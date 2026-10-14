@@ -367,12 +367,12 @@ Provider Route 候选审核列表。查询参数：
 `Idempotency-Replayed: true`，不同命令复用同一 key 返回 `409 idempotency_conflict`。
 候选审核不调用模型 provider，也不返回 job 或 provider 请求/响应载荷。
 
-候选默认只能通过上述两条路由结束审核。启用 `[review.auto_confirm]` 后，满足全部
-边界的新候选会在抽取提交时直接进入 `confirmed`，其审核记录的 `reviewer_id` 为
-`system:auto-review-v1`、`reason_code` 为 `auto_review`、`note` 记录策略版本与判定
-阈值，并且候选本身的 `auto_review_version` 记录该策略版本；这样的候选不会出现在
-`review_state=pending` 列表中。策略边界、默认值与限流见
-[配置参考](../operations/configuration.md#reviewauto_confirm)。
+满足 `[review.auto_confirm]` 全部边界的新候选（该策略默认开启）会在抽取提交时直接
+进入 `confirmed`，其审核记录的 `reviewer_id` 为 `system:auto-review-v1`、
+`reason_code` 为 `auto_review`、`note` 记录策略版本与判定阈值，并且候选本身的
+`auto_review_version` 记录该策略版本；这样的候选不会出现在 `review_state=pending`
+列表中。显式关闭该策略后，候选只能通过上述两条路由结束审核。策略边界、默认值与
+限流见 [配置参考](../operations/configuration.md#reviewauto_confirm)。
 
 ## JSON 解码规则
 

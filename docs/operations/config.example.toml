@@ -48,8 +48,10 @@ exact_hash_enabled = true
 same_source_event_cosine = 0.90
 same_subject_kind_cosine = 0.94
 
+# 记忆候选自动确认。满足全部封闭边界的候选在抽取提交时直接发布；设为 false
+# 可回到纯人工审核。
 [review.auto_confirm]
-enabled = false
+enabled = true
 version = "auto-review-v1"
 min_confidence = 0.95
 kinds = ["fact", "preference", "plan"]

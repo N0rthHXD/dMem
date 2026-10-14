@@ -217,13 +217,15 @@ make mcp-check
 - `internal/gateway/review` 的 `TestAutoConfirmPolicyDefaultsToDisabled`、
   `TestAutoConfirmPolicyCanonicalizesTheClosedKindSet`、
   `TestAutoConfirmPolicyValidityBounds`、`TestAutoConfirmScreenEnforcesEveryBound`
-  与 `TestAutoConfirmPublishesOnlyNonDestructiveDeterministicOutcomes` 覆盖策略默认
-  关闭、kind 封闭集合规范化、全部边界校验、静态筛选的每个拒绝原因，以及"只发布
+  与 `TestAutoConfirmPublishesOnlyNonDestructiveDeterministicOutcomes` 覆盖显式关闭
+  或零值策略必须无效（存储以此视为关闭）、kind 封闭集合规范化、全部边界校验、
+  静态筛选的每个拒绝原因，以及"只发布
   `create`/`attach_evidence`、永不发布破坏性动作与 provider 分类结果"的不变量。
 - `internal/config` 的 `TestReviewConfigDefaultsAndBounds` 覆盖 `[review.auto_confirm]`
-  的默认值、kind/版本允许列表、阈值与限流边界，并证明拼写错误在策略关闭时也会被
-  拒绝；`TestAutoConfirmBoundsMatchReviewModule` 防止配置边界与 review 模块发布的
-  边界漂移；`TestNewSectionsAffectEffectiveIdentity` 证明自动确认开关进入
+  的默认值（默认开启）、kind/版本允许列表、阈值与限流边界，并证明拼写错误在策略
+  关闭时也会被拒绝，而显式关闭允许清空 kinds 集合；
+  `TestAutoConfirmBoundsMatchReviewModule` 防止配置边界与 review 模块发布的边界
+  漂移；`TestNewSectionsAffectEffectiveIdentity` 证明自动确认开关进入
   `EffectiveIdentity`，因此一次重载即可生效。
 - `internal/storage` 的
   `TestAutoConfirmPublishesEligibleCandidateWithSystemReviewIdentity` 证明合格候选在
