@@ -3,8 +3,10 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway"
 	"github.com/N0rthHXD/dMem/internal/gateway/review"
 )
@@ -79,6 +81,25 @@ func TestCandidateReviewRoutesUseProviderRouteSurface(t *testing.T) {
 	}
 	if rejected.Memory != nil || rejected.Candidate.ReviewState != "rejected" {
 		t.Fatalf("reject output = %+v", rejected)
+	}
+}
+
+func TestCandidateDTOReportsAutoReviewAttribution(t *testing.T) {
+	t.Parallel()
+	version := "auto-review-v1"
+	automatic, err := json.Marshal(candidateDTO(domain.Candidate{CandidateID: "candidate-auto", ReviewState: "confirmed", AutoReviewVersion: &version}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(automatic), `"auto_review_version":"auto-review-v1"`) {
+		t.Fatalf("automatic candidate JSON = %s; want the policy version", automatic)
+	}
+	human, err := json.Marshal(candidateDTO(domain.Candidate{CandidateID: "candidate-human", ReviewState: "confirmed"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(human), "auto_review_version") {
+		t.Fatalf("human-reviewed candidate JSON = %s; want no automatic attribution", human)
 	}
 }
 

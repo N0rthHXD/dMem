@@ -580,6 +580,9 @@ func (r *Repository) CommitProcessing(ctx context.Context, claim ClaimedJob, inp
 			}
 			idIndex++
 		}
+		if _, err := r.autoConfirmCandidate(ctx, tx, candidateID); err != nil {
+			return err
+		}
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE jobs SET status='succeeded',processor_identity=?,lease_owner=NULL,lease_until=NULL,result_code=?,result_json=?,last_error_code=NULL,last_error_message=NULL,finished_at=? WHERE job_id=? AND status='running' AND lease_owner=? AND lease_generation=? AND lease_until>?`, input.ProcessorIdentity, string(result.Code), string(encoded), now, claim.Job.JobID, claim.LeaseOwner, claim.LeaseGeneration, now)
 	if err != nil {

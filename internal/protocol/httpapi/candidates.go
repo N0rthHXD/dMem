@@ -27,6 +27,7 @@ type candidateOutput struct {
 	Reviews             []domain.CandidateReview  `json:"reviews"`
 	CreatedAt           string                    `json:"created_at"`
 	ReviewedAt          *string                   `json:"reviewed_at,omitempty"`
+	AutoReviewVersion   *string                   `json:"auto_review_version,omitempty"`
 }
 
 type candidateListOutput struct {
@@ -156,5 +157,6 @@ func candidateDTO(value domain.Candidate) candidateOutput {
 		Reviews:             reviews,
 		CreatedAt:           value.CreatedAt,
 		ReviewedAt:          value.ReviewedAt,
+		AutoReviewVersion:   value.AutoReviewVersion,
 	}
 }

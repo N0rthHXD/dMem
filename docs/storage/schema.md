@@ -45,7 +45,7 @@ Schema v1 没有迁移路径。当可执行 schema 变化时，应初始化新�
 
 | 表 | 用途 |
 | --- | --- |
-| `candidates` | 独立审核对象的候选。 |
+| `candidates` | 独立审核对象的候选。`auto_review_version` 记录策略驱动的发布版本：状态 CHECK 要求它只能出现在 `confirmed` 候选上，`pending` 与 `rejected` 必须为 NULL，且取值不得为空字符串，因此自动发布与人工审核在 schema 层即可区分。 |
 | `candidate_evidence` | 候选证据片段。 |
 | `candidate_reviews` | 候选审核记录（仅追加）。 |
 | `consolidation_decisions` | 确定性或 provider 整合决策。 |

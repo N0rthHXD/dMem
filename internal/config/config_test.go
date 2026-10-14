@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -96,6 +97,13 @@ func TestLoadValidComplete(t *testing.T) {
 	}
 	if cfg.EffectiveIdentity == "" {
 		t.Error("EffectiveIdentity should be set")
+	}
+	autoConfirm := cfg.Review
+	if !autoConfirm.AutoConfirmEnabled || autoConfirm.AutoConfirmVersion != "auto-review-v2" || autoConfirm.AutoConfirmMinConfidence != 0.97 || autoConfirm.AutoConfirmMaxPerSpacePerHour != 5 {
+		t.Errorf("review auto confirm = %+v", autoConfirm)
+	}
+	if !reflect.DeepEqual(autoConfirm.AutoConfirmKinds, []string{"fact", "preference"}) {
+		t.Errorf("review kinds = %v", autoConfirm.AutoConfirmKinds)
 	}
 }
 

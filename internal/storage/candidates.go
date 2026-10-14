@@ -41,8 +41,9 @@ type CandidateFilter struct {
 }
 
 type ReviewCandidateParams struct {
-	ReasonCode string
-	Note       *string
+	ReasonCode        string
+	Note              *string
+	AutoReviewVersion *string
 }
 
 func (r *Repository) CreateCandidate(ctx context.Context, params CreateCandidateParams) (domain.Candidate, bool, error) {
@@ -233,7 +234,7 @@ type candidateQueryer interface {
 func getCandidate(ctx context.Context, db candidateQueryer, candidateID string) (domain.Candidate, error) {
 	var result domain.Candidate
 	var encoded string
-	err := db.QueryRowContext(ctx, `SELECT candidate_id, event_id, space_id, structured_revision_json, processor_identity, provider_identity, model_identity, processing_version, specification_hash, review_state, confirmed_memory_id, confirmed_revision_id, created_at, reviewed_at FROM candidates WHERE candidate_id=?`, candidateID).Scan(&result.CandidateID, &result.EventID, &result.SpaceID, &encoded, &result.ProcessorIdentity, &result.ProviderIdentity, &result.ModelIdentity, &result.ProcessingVersion, &result.SpecificationHash, &result.ReviewState, &result.ConfirmedMemoryID, &result.ConfirmedRevisionID, &result.CreatedAt, &result.ReviewedAt)
+	err := db.QueryRowContext(ctx, `SELECT candidate_id, event_id, space_id, structured_revision_json, processor_identity, provider_identity, model_identity, processing_version, specification_hash, review_state, confirmed_memory_id, confirmed_revision_id, created_at, reviewed_at, auto_review_version FROM candidates WHERE candidate_id=?`, candidateID).Scan(&result.CandidateID, &result.EventID, &result.SpaceID, &encoded, &result.ProcessorIdentity, &result.ProviderIdentity, &result.ModelIdentity, &result.ProcessingVersion, &result.SpecificationHash, &result.ReviewState, &result.ConfirmedMemoryID, &result.ConfirmedRevisionID, &result.CreatedAt, &result.ReviewedAt, &result.AutoReviewVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Candidate{}, ErrNotFound
 	}
@@ -295,6 +296,95 @@ func candidateRevision(candidate domain.Candidate, revisionID, memoryID, caller,
 	return revision, nil
 }
 
+type candidateConfirmation struct {
+	candidate domain.Candidate
+	evidence  []EvidenceParams
+	revision  domain.MemoryRevision
+	outcome   consolidationOutcome
+}
+
+type candidateConfirmationResult struct {
+	Memory      domain.Memory
+	OperationID string
+	Status      int
+	Now         string
+}
+
+func (r *Repository) loadCandidateForConfirmation(ctx context.Context, tx *sql.Tx, candidateID string) (domain.Candidate, []EvidenceParams, error) {
+	candidate, err := getCandidate(ctx, tx, candidateID)
+	if err != nil {
+		return domain.Candidate{}, nil, err
+	}
+	if candidate.ReviewState != "pending" {
+		return domain.Candidate{}, nil, ErrCandidateReviewed
+	}
+	evidence := evidenceParams(candidate.Evidence)
+	if err := requireSpaceAndEvidence(ctx, tx, candidate.SpaceID, evidence); err != nil {
+		return domain.Candidate{}, nil, err
+	}
+	return candidate, evidence, nil
+}
+
+func (r *Repository) prepareCandidateConfirmation(ctx context.Context, tx *sql.Tx, candidate domain.Candidate, evidence []EvidenceParams) (candidateConfirmation, error) {
+	classificationRevision := candidate.Revision
+	if classificationRevision.CanonicalHash == "" {
+		classificationRevision.CanonicalHash = canonicalContentHash(classificationRevision.CanonicalContent)
+	}
+	outcome, _, err := r.classifyCandidateForConsolidation(ctx, tx, candidate, classificationRevision)
+	if err != nil {
+		return candidateConfirmation{}, err
+	}
+	return candidateConfirmation{candidate: candidate, evidence: evidence, revision: classificationRevision, outcome: outcome}, nil
+}
+
+func (r *Repository) applyCandidateConfirmation(ctx context.Context, tx *sql.Tx, identity WriteIdentity, prepared candidateConfirmation, params ReviewCandidateParams) (candidateConfirmationResult, error) {
+	candidate, evidence, revision, outcome := prepared.candidate, prepared.evidence, prepared.revision, prepared.outcome
+	candidateID := candidate.CandidateID
+	result, targetMemoryID, targetRevisionID, err := r.applyConsolidation(ctx, tx, identity, candidate, evidence, revision, outcome)
+	if err != nil {
+		return candidateConfirmationResult{}, err
+	}
+	decisionID, operationID, auditID, reviewID, err := r.fourIDs()
+	if err != nil {
+		return candidateConfirmationResult{}, err
+	}
+	now := formatTime(r.runtime.Now())
+	if outcome.Action != domain.ConsolidationReject {
+		outcome.TargetMemoryID, outcome.TargetRevisionID = targetMemoryID, targetRevisionID
+	}
+	if err := r.recordConsolidationDecision(ctx, tx, decisionID, candidate, outcome); err != nil {
+		return candidateConfirmationResult{}, err
+	}
+	status := 201
+	toState := "confirmed"
+	if outcome.Action == domain.ConsolidationReject {
+		status, toState = 200, "rejected"
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE candidates SET review_state=?, confirmed_memory_id=?, confirmed_revision_id=?, reviewed_at=?, auto_review_version=? WHERE candidate_id=? AND review_state='pending'`, toState, nullableConfirmRef(targetMemoryID), nullableConfirmRef(targetRevisionID), now, params.AutoReviewVersion, candidateID)
+	if err != nil {
+		return candidateConfirmationResult{}, err
+	}
+	if count, err := updated.RowsAffected(); err != nil || count != 1 {
+		return candidateConfirmationResult{}, ErrCandidateReviewed
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_reviews(review_id, candidate_id, operation_id, from_state, to_state, reason_code, note, reviewer_id, memory_id, revision_id, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`, reviewID, candidateID, operationID, toState, params.ReasonCode, params.Note, identity.CallerID, nullableConfirmRef(targetMemoryID), nullableConfirmRef(targetRevisionID), now); err != nil {
+		return candidateConfirmationResult{}, err
+	}
+	reason, _ := json.Marshal(map[string]any{
+		"reason": params.ReasonCode, "consolidation_action": outcome.Action,
+		"consolidation_reason": outcome.ReasonCode, "decision_id": decisionID,
+		"target_memory_id": targetMemoryID, "target_revision_id": targetRevisionID,
+	})
+	action := "confirm_candidate"
+	if outcome.Action == domain.ConsolidationReject {
+		action = "reject_candidate"
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, reason, created_at) VALUES (?, ?, ?, ?, ?, 'candidate', ?, 'succeeded', ?, ?)`, auditID, operationID, identity.RequestID, identity.CallerID, action, candidateID, string(reason), now); err != nil {
+		return candidateConfirmationResult{}, err
+	}
+	return candidateConfirmationResult{Memory: result, OperationID: operationID, Status: status, Now: now}, nil
+}
+
 func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentity, candidateID string, params ReviewCandidateParams) (domain.Memory, string, bool, error) {
 	tx, err := r.store.writer.BeginTx(ctx, nil)
 	if err != nil {
@@ -315,78 +405,29 @@ func (r *Repository) ConfirmCandidate(ctx context.Context, identity WriteIdentit
 	if err := r.requireDiskWritable(); err != nil {
 		return domain.Memory{}, "", false, err
 	}
-	candidate, err := getCandidate(ctx, tx, candidateID)
+	candidate, evidence, err := r.loadCandidateForConfirmation(ctx, tx, candidateID)
 	if err != nil {
 		return domain.Memory{}, "", false, err
 	}
-	if candidate.ReviewState != "pending" {
-		return domain.Memory{}, "", false, ErrCandidateReviewed
-	}
-	evidence := evidenceParams(candidate.Evidence)
-	if err := requireSpaceAndEvidence(ctx, tx, candidate.SpaceID, evidence); err != nil {
-		return domain.Memory{}, "", false, err
-	}
-	classificationRevision := candidate.Revision
-	if classificationRevision.CanonicalHash == "" {
-		classificationRevision.CanonicalHash = canonicalContentHash(classificationRevision.CanonicalContent)
-	}
-	outcome, _, err := r.classifyCandidateForConsolidation(ctx, tx, candidate, classificationRevision)
+	prepared, err := r.prepareCandidateConfirmation(ctx, tx, candidate, evidence)
 	if err != nil {
 		return domain.Memory{}, "", false, err
 	}
-	result, targetMemoryID, targetRevisionID, err := r.applyConsolidation(ctx, tx, identity, candidate, evidence, classificationRevision, outcome)
+	applied, err := r.applyCandidateConfirmation(ctx, tx, identity, prepared, params)
 	if err != nil {
 		return domain.Memory{}, "", false, err
 	}
-	decisionID, operationID, auditID, reviewID, err := r.fourIDs()
+	body, err := json.Marshal(applied.Memory)
 	if err != nil {
 		return domain.Memory{}, "", false, err
 	}
-	now := formatTime(r.runtime.Now())
-	if outcome.Action != domain.ConsolidationReject {
-		outcome.TargetMemoryID, outcome.TargetRevisionID = targetMemoryID, targetRevisionID
-	}
-	if err := r.recordConsolidationDecision(ctx, tx, decisionID, candidate, outcome); err != nil {
-		return domain.Memory{}, "", false, err
-	}
-	status := 201
-	toState := "confirmed"
-	if outcome.Action == domain.ConsolidationReject {
-		status, toState = 200, "rejected"
-	}
-	updated, err := tx.ExecContext(ctx, `UPDATE candidates SET review_state=?, confirmed_memory_id=?, confirmed_revision_id=?, reviewed_at=? WHERE candidate_id=? AND review_state='pending'`, toState, nullableConfirmRef(targetMemoryID), nullableConfirmRef(targetRevisionID), now, candidateID)
-	if err != nil {
-		return domain.Memory{}, "", false, err
-	}
-	if count, err := updated.RowsAffected(); err != nil || count != 1 {
-		return domain.Memory{}, "", false, ErrCandidateReviewed
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO candidate_reviews(review_id, candidate_id, operation_id, from_state, to_state, reason_code, note, reviewer_id, memory_id, revision_id, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`, reviewID, candidateID, operationID, toState, params.ReasonCode, params.Note, identity.CallerID, nullableConfirmRef(targetMemoryID), nullableConfirmRef(targetRevisionID), now); err != nil {
-		return domain.Memory{}, "", false, err
-	}
-	body, err := json.Marshal(result)
-	if err != nil {
-		return domain.Memory{}, "", false, err
-	}
-	if err := writeIdempotency(ctx, tx, identity, operationID, status, body, now); err != nil {
-		return domain.Memory{}, "", false, err
-	}
-	reason, _ := json.Marshal(map[string]any{
-		"reason": params.ReasonCode, "consolidation_action": outcome.Action,
-		"consolidation_reason": outcome.ReasonCode, "decision_id": decisionID,
-		"target_memory_id": targetMemoryID, "target_revision_id": targetRevisionID,
-	})
-	action := "confirm_candidate"
-	if outcome.Action == domain.ConsolidationReject {
-		action = "reject_candidate"
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(audit_id, operation_id, request_id, caller_id, action, target_type, target_id, outcome, reason, created_at) VALUES (?, ?, ?, ?, ?, 'candidate', ?, 'succeeded', ?, ?)`, auditID, operationID, identity.RequestID, identity.CallerID, action, candidateID, string(reason), now); err != nil {
+	if err := writeIdempotency(ctx, tx, identity, applied.OperationID, applied.Status, body, applied.Now); err != nil {
 		return domain.Memory{}, "", false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return domain.Memory{}, "", false, err
 	}
-	return result, operationID, false, nil
+	return applied.Memory, applied.OperationID, false, nil
 }
 
 func nullableConfirmRef(value string) any {

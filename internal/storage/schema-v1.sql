@@ -392,9 +392,11 @@ CREATE TABLE candidates (
     confirmed_revision_id TEXT,
     created_at TEXT NOT NULL,
     reviewed_at TEXT,
+    auto_review_version TEXT,
+    CHECK (auto_review_version IS NULL OR length(auto_review_version) > 0),
     CHECK (
-        (review_state = 'pending' AND reviewed_at IS NULL AND confirmed_memory_id IS NULL AND confirmed_revision_id IS NULL) OR
-        (review_state = 'rejected' AND reviewed_at IS NOT NULL AND confirmed_memory_id IS NULL AND confirmed_revision_id IS NULL) OR
+        (review_state = 'pending' AND reviewed_at IS NULL AND confirmed_memory_id IS NULL AND confirmed_revision_id IS NULL AND auto_review_version IS NULL) OR
+        (review_state = 'rejected' AND reviewed_at IS NOT NULL AND confirmed_memory_id IS NULL AND confirmed_revision_id IS NULL AND auto_review_version IS NULL) OR
         (review_state = 'confirmed' AND reviewed_at IS NOT NULL AND confirmed_memory_id IS NOT NULL AND confirmed_revision_id IS NOT NULL)
     ),
     UNIQUE (event_id, processing_version, specification_hash),

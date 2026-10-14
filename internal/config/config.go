@@ -59,6 +59,7 @@ type Config struct {
 	GraphEnabled bool
 
 	Consolidation ConsolidationConfig
+	Review        ReviewConfig
 	Semantic      SemanticConfig
 	Graph         GraphConfig
 	Ranking       RankingConfig

@@ -522,6 +522,7 @@ func (d *Daemon) applySnapshot(ctx context.Context, snapshot, previous *config.S
 		snapshot.Config.Consolidation.SameSubjectKindCosine,
 	)
 	d.repository.SetProcessingGeneration(snapshot.ActivationGeneration, processingPolicyGeneration, snapshot.ProcessingCapability.CompatibilityIdentity)
+	d.repository.SetAutoConfirmPolicy(autoConfirmPolicy(snapshot.Config.Review))
 	d.repository.SetProcessingVersion(config.ProcessingVersionFor(snapshot.Config.ProcessingProvider))
 	d.repository.SetProcessingEnabled(snapshot.ProcessingCapability.Enabled)
 	d.repository.SetGraphExtractionEnabled(snapshot.ProcessingCapability.Enabled && snapshot.Config.GraphEnabled)
@@ -654,6 +655,17 @@ func retrievalContracts(cfg config.Config) (retrieval.Weights, retrieval.Calibra
 		ByQuestionType: map[string]float64{},
 	}
 	return weights, calibration, retrieval.GraphPolicy(cfg.Graph.Policy)
+}
+
+func autoConfirmPolicy(cfg config.ReviewConfig) review.AutoConfirmPolicy {
+	return review.NewAutoConfirmPolicy(
+		cfg.AutoConfirmEnabled,
+		cfg.AutoConfirmVersion,
+		cfg.AutoConfirmMinConfidence,
+		cfg.AutoConfirmKinds,
+		cfg.AutoConfirmProcessingVersions,
+		cfg.AutoConfirmMaxPerSpacePerHour,
+	)
 }
 
 // retrievalPolicyAuthorizer adapts the Policy module's authorization contract to

@@ -48,6 +48,13 @@ exact_hash_enabled = true
 same_source_event_cosine = 0.90
 same_subject_kind_cosine = 0.94
 
+[review.auto_confirm]
+enabled = false
+version = "auto-review-v1"
+min_confidence = 0.95
+kinds = ["fact", "preference", "plan"]
+max_per_space_per_hour = 20
+
 # 语义校准以绝对下限加 top-score 间距取代固定分数地板。
 [semantic]
 calibration_version = "semantic-calibration-v1"

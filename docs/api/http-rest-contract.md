@@ -337,6 +337,9 @@ Provider Route 候选审核列表。查询参数：
 {"items":[{"candidate_id":"candidate-1","event_id":"event-1","scope_id":"project-123","review_state":"pending","revision":{"kind":"fact","display_content":"...","canonical_content":"...","sensitivity":"normal"},"evidence":[],"processor_identity":"processor/test","processing_version":"candidate-v1","specification_hash":"...","reviews":[],"created_at":"2026-09-20T10:00:00Z"}],"next_cursor":null}
 ```
 
+`auto_review_version` 只在候选由 `[review.auto_confirm]` 策略发布时出现，其值是该
+策略的版本；人工审核确认、待审核与已拒绝的候选都不包含该字段。
+
 ### `GET /v1/candidates/{candidate_id}`
 
 响应 `200` 返回单个候选，包含其修订、证据引用、处理 provenance 与审核记录；未知
@@ -363,6 +366,13 @@ Provider Route 候选审核列表。查询参数：
 `404 not_found`。两条路由都是幂等写：相同 `Idempotency-Key` 重放返回首次结果并带
 `Idempotency-Replayed: true`，不同命令复用同一 key 返回 `409 idempotency_conflict`。
 候选审核不调用模型 provider，也不返回 job 或 provider 请求/响应载荷。
+
+候选默认只能通过上述两条路由结束审核。启用 `[review.auto_confirm]` 后，满足全部
+边界的新候选会在抽取提交时直接进入 `confirmed`，其审核记录的 `reviewer_id` 为
+`system:auto-review-v1`、`reason_code` 为 `auto_review`、`note` 记录策略版本与判定
+阈值，并且候选本身的 `auto_review_version` 记录该策略版本；这样的候选不会出现在
+`review_state=pending` 列表中。策略边界、默认值与限流见
+[配置参考](../operations/configuration.md#reviewauto_confirm)。
 
 ## JSON 解码规则
 

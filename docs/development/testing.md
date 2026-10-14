@@ -212,6 +212,40 @@ make mcp-check
 - `TestToolCommitAndProviderEventDoNotDoubleExtractOneSource` 证明同一实例中 Tool
   Route commit 与 Provider Route event 是不同来源，同一来源不会被双重提取。
 
+### 候选自动确认
+
+- `internal/gateway/review` 的 `TestAutoConfirmPolicyDefaultsToDisabled`、
+  `TestAutoConfirmPolicyCanonicalizesTheClosedKindSet`、
+  `TestAutoConfirmPolicyValidityBounds`、`TestAutoConfirmScreenEnforcesEveryBound`
+  与 `TestAutoConfirmPublishesOnlyNonDestructiveDeterministicOutcomes` 覆盖策略默认
+  关闭、kind 封闭集合规范化、全部边界校验、静态筛选的每个拒绝原因，以及"只发布
+  `create`/`attach_evidence`、永不发布破坏性动作与 provider 分类结果"的不变量。
+- `internal/config` 的 `TestReviewConfigDefaultsAndBounds` 覆盖 `[review.auto_confirm]`
+  的默认值、kind/版本允许列表、阈值与限流边界，并证明拼写错误在策略关闭时也会被
+  拒绝；`TestAutoConfirmBoundsMatchReviewModule` 防止配置边界与 review 模块发布的
+  边界漂移；`TestNewSectionsAffectEffectiveIdentity` 证明自动确认开关进入
+  `EffectiveIdentity`，因此一次重载即可生效。
+- `internal/storage` 的
+  `TestAutoConfirmPublishesEligibleCandidateWithSystemReviewIdentity` 证明合格候选在
+  抽取提交的同一事务内发布，审核记录、审计事件、修订 `created_by` 与候选
+  `auto_review_version` 都归因到 `system:auto-review-v1` 及策略版本；
+  `TestAutoConfirmLeavesIneligibleCandidatesPending` 逐项
+  证明关闭、kind、敏感度、置信度、`direct` 证据与处理版本边界都会让候选留在人工
+  队列且不写入任何审核、决策或权威记录；
+  `TestAutoConfirmRefusesDestructiveConsolidationOutcome` 与
+  `TestAutoConfirmPublishesAttachEvidenceOutcome` 区分不可发布与可发布的整合结果；
+  `TestAutoConfirmRateLimitBoundsPublicationsPerSpace` 证明每空间限流生效且不跨空间
+  泄漏；`TestAutoConfirmPolicyChangeDoesNotPublishBacklog` 证明策略变更不追溯发布积压；
+  `TestAutoConfirmPolicyDoesNotBlockHumanReview` 证明人工确认仍可用且不会写入
+  `auto_review_version`。
+- `internal/storage` 的 `TestCandidateAutoReviewVersionIsBoundToConfirmedState`
+  证明 schema 本身围栏化该归因：`pending` 与 `rejected` 候选携带版本会被拒绝，
+  空字符串版本会被拒绝，只有 `confirmed` 候选可以携带或省略版本。
+- `internal/daemon` 的 `TestProviderRouteAutoConfirmPublishesWithoutHumanReview` 用真实
+  SQLite 与进程内 processor 驱动 配置 -> ingest -> job -> 自动确认 -> 召回 全链路，
+  且全程没有任何人工审核调用；`TestAutoConfirmPolicyConversionFollowsConfiguration`
+  证明关闭的配置不会产出有效策略，聚合 kind 会被丢弃。
+
 ### 可选向量增强（Phase 6）
 
 - `internal/config` 的 `TestManager_EmbeddingDimensionChangeIsVisibleToRuntime`

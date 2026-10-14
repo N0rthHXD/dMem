@@ -1026,6 +1026,55 @@ func TestCandidateStructuredRevisionIsRequired(t *testing.T) {
 	}
 }
 
+func TestCandidateAutoReviewVersionIsBoundToConfirmedState(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "candidate-auto-review.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	space, eventID, _, _ := seedContractAuthority(t, store, "candidate-auto-review")
+	insert := `INSERT INTO candidates(candidate_id, event_id, space_id, memory_type, structured_revision_json, processor_identity, processing_version, specification_hash, review_state, confirmed_memory_id, confirmed_revision_id, created_at, reviewed_at, auto_review_version) VALUES (?, ?, ?, 'fact', '{"kind":"fact"}', 'processor', 'v1', ?, ?, ?, ?, 'now', ?, ?)`
+	if err := assertColumns(store, "candidates", map[string]bool{}, map[string]bool{"auto_review_version": false}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.writer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO memories(memory_id, space_id, current_revision_id, current_state, created_at, updated_at) VALUES ('auto-memory', ?, 'auto-revision', 'active', 'now', 'now')`, []any{space}},
+		{`INSERT INTO memory_revisions(revision_id, memory_id, kind, display_content, canonical_content, canonical_hash, sensitivity, specificity, confidence, created_by, processing_version, created_at) VALUES ('auto-revision','auto-memory','fact','content','content','hash-auto','normal',0,0,'processor','v1','now')`, nil},
+	} {
+		if _, err := tx.Exec(statement.query, statement.args...); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]any{
+		"pending with version":  {"pending", nil, nil, nil, "auto-review-v1"},
+		"rejected with version": {"rejected", nil, nil, "now", "auto-review-v1"},
+		"empty version":         {"confirmed", "auto-memory", "auto-revision", "now", ""},
+	} {
+		if _, err := store.writer.Exec(insert, "candidate-"+name, eventID, space, "spec-"+name, args[0], args[1], args[2], args[3], args[4]); err == nil {
+			t.Fatalf("candidates accepted %s", name)
+		}
+	}
+	if _, err := store.writer.Exec(insert, "candidate-human", eventID, space, "spec-human", "confirmed", "auto-memory", "auto-revision", "now", nil); err != nil {
+		t.Fatalf("human confirmation rejected: %v", err)
+	}
+	if _, err := store.writer.Exec(insert, "candidate-auto", eventID, space, "spec-auto", "confirmed", "auto-memory", "auto-revision", "now", "auto-review-v1"); err != nil {
+		t.Fatalf("automatic confirmation rejected: %v", err)
+	}
+}
+
 func assertIndex(t *testing.T, store *Store, table, index string) {
 	t.Helper()
 	rows, err := store.reader.Query(`PRAGMA index_list(` + table + `)`)

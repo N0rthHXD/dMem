@@ -1,6 +1,15 @@
 package config
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/N0rthHXD/dMem/internal/domain"
+)
+
+const (
+	maxAutoConfirmsPerSpacePerHour   = 10000
+	maxAutoConfirmProcessingVersions = 32
+)
 
 // ConsolidationConfig bounds deterministic candidate consolidation.
 type ConsolidationConfig struct {
@@ -9,6 +18,15 @@ type ConsolidationConfig struct {
 	ExactHashEnabled      bool
 	SameSourceEventCosine float64
 	SameSubjectKindCosine float64
+}
+
+type ReviewConfig struct {
+	AutoConfirmEnabled            bool
+	AutoConfirmVersion            string
+	AutoConfirmMinConfidence      float64
+	AutoConfirmKinds              []string
+	AutoConfirmProcessingVersions []string
+	AutoConfirmMaxPerSpacePerHour int
 }
 
 // SemanticConfig bounds semantic calibration of primary recall.
@@ -55,6 +73,17 @@ func defaultConsolidationConfig() ConsolidationConfig {
 		ExactHashEnabled:      true,
 		SameSourceEventCosine: 0.90,
 		SameSubjectKindCosine: 0.94,
+	}
+}
+
+func defaultReviewConfig() ReviewConfig {
+	return ReviewConfig{
+		AutoConfirmEnabled:            false,
+		AutoConfirmVersion:            "auto-review-v1",
+		AutoConfirmMinConfidence:      0.95,
+		AutoConfirmKinds:              []string{"fact", "plan", "preference"},
+		AutoConfirmProcessingVersions: nil,
+		AutoConfirmMaxPerSpacePerHour: 20,
 	}
 }
 
@@ -107,6 +136,62 @@ func buildConsolidationConfig(t consolidationTable) (ConsolidationConfig, error)
 	if c.SameSourceEventCosine > c.SameSubjectKindCosine {
 		return c, newValidationError("config_invalid_value", Diagnostic{Code: "consolidation_threshold_order", Path: "consolidation"})
 	}
+	return c, nil
+}
+
+func buildReviewConfig(t reviewTable) (ReviewConfig, error) {
+	c := defaultReviewConfig()
+	auto := t.AutoConfirm
+	if auto.Enabled != nil {
+		c.AutoConfirmEnabled = *auto.Enabled
+	}
+	if auto.Version != nil {
+		c.AutoConfirmVersion = *auto.Version
+	}
+	if auto.MinConfidence != nil {
+		c.AutoConfirmMinConfidence = *auto.MinConfidence
+	}
+	if auto.Kinds != nil {
+		c.AutoConfirmKinds = auto.Kinds
+	}
+	if auto.ProcessingVersions != nil {
+		c.AutoConfirmProcessingVersions = auto.ProcessingVersions
+	}
+	if auto.MaxPerSpacePerHour != nil {
+		c.AutoConfirmMaxPerSpacePerHour = *auto.MaxPerSpacePerHour
+	}
+	if c.AutoConfirmVersion == "" {
+		return c, newValidationError("config_missing_field", Diagnostic{Code: "config_missing_field", Path: "review.auto_confirm.version"})
+	}
+	if c.AutoConfirmMinConfidence <= 0 || c.AutoConfirmMinConfidence > 1 {
+		return c, newValidationError("config_invalid_value", Diagnostic{Code: "auto_confirm_threshold_out_of_bounds", Path: "review.auto_confirm.min_confidence"})
+	}
+	if c.AutoConfirmMaxPerSpacePerHour < 1 || c.AutoConfirmMaxPerSpacePerHour > maxAutoConfirmsPerSpacePerHour {
+		return c, newValidationError("config_invalid_value", Diagnostic{Code: "auto_confirm_rate_limit_out_of_bounds", Path: "review.auto_confirm.max_per_space_per_hour"})
+	}
+	if len(c.AutoConfirmProcessingVersions) > maxAutoConfirmProcessingVersions {
+		return c, newValidationError("config_invalid_value", Diagnostic{Code: "auto_confirm_version_list_too_long", Path: "review.auto_confirm.processing_versions"})
+	}
+	for _, version := range c.AutoConfirmProcessingVersions {
+		if version == "" {
+			return c, newValidationError("config_invalid_value", Diagnostic{Code: "auto_confirm_version_empty", Path: "review.auto_confirm.processing_versions"})
+		}
+	}
+	seen := make(map[string]bool, len(c.AutoConfirmKinds))
+	for _, kind := range c.AutoConfirmKinds {
+		if !domain.MemoryKind(kind).Valid() || domain.ValidAggregateKind(kind) {
+			return c, newValidationError("config_invalid_value", Diagnostic{Code: "auto_confirm_kind_unsupported", Path: "review.auto_confirm.kinds"})
+		}
+		if seen[kind] {
+			return c, newValidationError("config_invalid_value", Diagnostic{Code: "auto_confirm_kind_duplicate", Path: "review.auto_confirm.kinds"})
+		}
+		seen[kind] = true
+	}
+	if c.AutoConfirmEnabled && len(c.AutoConfirmKinds) == 0 {
+		return c, newValidationError("config_missing_field", Diagnostic{Code: "config_missing_field", Path: "review.auto_confirm.kinds"})
+	}
+	sort.Strings(c.AutoConfirmKinds)
+	sort.Strings(c.AutoConfirmProcessingVersions)
 	return c, nil
 }
 

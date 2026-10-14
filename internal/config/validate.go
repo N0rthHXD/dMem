@@ -86,6 +86,10 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	reviewCfg, err := buildReviewConfig(doc.Review)
+	if err != nil {
+		return Config{}, err
+	}
 	semantic, err := buildSemanticConfig(doc.Semantic)
 	if err != nil {
 		return Config{}, err
@@ -134,6 +138,7 @@ func normalize(doc fileDocument, data []byte) (Config, error) {
 		EmbeddingProvider:   embedding,
 		GraphEnabled:        graphEnabled,
 		Consolidation:       consolidation,
+		Review:              reviewCfg,
 		Semantic:            semantic,
 		Graph:               graph,
 		Ranking:             ranking,

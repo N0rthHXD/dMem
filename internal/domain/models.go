@@ -266,6 +266,7 @@ type Candidate struct {
 	Reviews             []CandidateReview  `json:"reviews"`
 	CreatedAt           string             `json:"created_at"`
 	ReviewedAt          *string            `json:"reviewed_at,omitempty"`
+	AutoReviewVersion   *string            `json:"auto_review_version,omitempty"`
 }
 
 type CandidatePage struct {

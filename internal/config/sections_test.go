@@ -1,7 +1,11 @@
 package config
 
 import (
+	"reflect"
+	"strconv"
 	"testing"
+
+	"github.com/N0rthHXD/dMem/internal/gateway/review"
 )
 
 func strPtr(v string) *string     { return &v }
@@ -189,5 +193,95 @@ func TestNewSectionsAffectEffectiveIdentity(t *testing.T) {
 	changed.Ranking.KeywordWeight += 0.25
 	if effectiveIdentity(base) == effectiveIdentity(changed) {
 		t.Fatal("effective identity should change when ranking weights change")
+	}
+	enabled := base
+	enabled.Review.AutoConfirmEnabled = true
+	if effectiveIdentity(base) == effectiveIdentity(enabled) {
+		t.Fatal("effective identity should change when candidate auto-confirmation changes")
+	}
+}
+
+func TestReviewConfigDefaultsAndBounds(t *testing.T) {
+	t.Parallel()
+	defaults := defaultReviewConfig()
+	if defaults.AutoConfirmEnabled {
+		t.Fatal("candidate auto-confirmation must default to disabled")
+	}
+	if defaults.AutoConfirmVersion == "" || len(defaults.AutoConfirmKinds) == 0 || defaults.AutoConfirmMaxPerSpacePerHour < 1 {
+		t.Fatalf("default review config = %+v; want every bound named", defaults)
+	}
+	loaded, err := Load("testdata/valid/minimal.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Review.AutoConfirmEnabled {
+		t.Fatal("a config without a review section must not enable auto-confirmation")
+	}
+	if !reflect.DeepEqual(loaded.Review, defaults) {
+		t.Fatalf("review default = %+v; want %+v", loaded.Review, defaults)
+	}
+
+	for _, tc := range []struct {
+		name string
+		edit func(*reviewTable)
+		want bool
+	}{
+		{"defaults ok", func(*reviewTable) {}, false},
+		{"enabled with explicit kinds", func(c *reviewTable) {
+			c.AutoConfirm.Enabled = boolPtr(true)
+			c.AutoConfirm.Kinds = []string{"event", "fact"}
+		}, false},
+		{"empty version", func(c *reviewTable) { c.AutoConfirm.Version = strPtr("") }, true},
+		{"confidence above one", func(c *reviewTable) { c.AutoConfirm.MinConfidence = floatPtr(1.5) }, true},
+		{"confidence zero", func(c *reviewTable) { c.AutoConfirm.MinConfidence = floatPtr(0) }, true},
+		{"rate limit zero", func(c *reviewTable) { c.AutoConfirm.MaxPerSpacePerHour = intPtr(0) }, true},
+		{"rate limit above the bound", func(c *reviewTable) {
+			c.AutoConfirm.MaxPerSpacePerHour = intPtr(maxAutoConfirmsPerSpacePerHour + 1)
+		}, true},
+		{"unknown kind", func(c *reviewTable) { c.AutoConfirm.Kinds = []string{"opinion"} }, true},
+		{"aggregate kind", func(c *reviewTable) { c.AutoConfirm.Kinds = []string{"topic"} }, true},
+		{"duplicate kind", func(c *reviewTable) { c.AutoConfirm.Kinds = []string{"fact", "fact"} }, true},
+		{"enabled without kinds", func(c *reviewTable) {
+			c.AutoConfirm.Enabled = boolPtr(true)
+			c.AutoConfirm.Kinds = []string{}
+		}, true},
+		{"empty processing version entry", func(c *reviewTable) { c.AutoConfirm.ProcessingVersions = []string{""} }, true},
+		{"too many processing versions", func(c *reviewTable) {
+			versions := make([]string, maxAutoConfirmProcessingVersions+1)
+			for i := range versions {
+				versions[i] = "version-" + strconv.Itoa(i)
+			}
+			c.AutoConfirm.ProcessingVersions = versions
+		}, true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			table := reviewTable{AutoConfirm: reviewAutoConfirmTable{
+				Enabled:            boolPtr(defaults.AutoConfirmEnabled),
+				Version:            strPtr(defaults.AutoConfirmVersion),
+				MinConfidence:      floatPtr(defaults.AutoConfirmMinConfidence),
+				Kinds:              append([]string(nil), defaults.AutoConfirmKinds...),
+				MaxPerSpacePerHour: intPtr(defaults.AutoConfirmMaxPerSpacePerHour),
+			}}
+			tc.edit(&table)
+			_, err := buildReviewConfig(table)
+			if tc.want && err == nil {
+				t.Fatal("expected rejection")
+			}
+			if !tc.want && err != nil {
+				t.Fatalf("unexpected rejection: %v", err)
+			}
+		})
+	}
+}
+
+func TestAutoConfirmBoundsMatchReviewModule(t *testing.T) {
+	t.Parallel()
+	if maxAutoConfirmsPerSpacePerHour != review.MaxAutoConfirmsPerSpacePerHour {
+		t.Fatalf("rate-limit bound = %d; review module publishes %d", maxAutoConfirmsPerSpacePerHour, review.MaxAutoConfirmsPerSpacePerHour)
+	}
+	if maxAutoConfirmProcessingVersions != review.MaxAutoConfirmVersions {
+		t.Fatalf("version bound = %d; review module publishes %d", maxAutoConfirmProcessingVersions, review.MaxAutoConfirmVersions)
 	}
 }

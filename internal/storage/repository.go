@@ -15,6 +15,7 @@ import (
 
 	"github.com/N0rthHXD/dMem/internal/domain"
 	"github.com/N0rthHXD/dMem/internal/gateway/consolidation"
+	"github.com/N0rthHXD/dMem/internal/gateway/review"
 	"github.com/N0rthHXD/dMem/internal/provider"
 	"github.com/N0rthHXD/dMem/internal/retrieval"
 	"github.com/mattn/go-sqlite3"
@@ -109,6 +110,7 @@ type Repository struct {
 	consolidationSameSourceCosine      float64
 	consolidationSameSubjectKindCosine float64
 	consolidationClassifier            consolidation.Classifier
+	autoConfirmValue                   atomic.Pointer[review.AutoConfirmPolicy]
 }
 
 // SemanticWindowRecall is the optional approximate-nearest-neighbor extension
@@ -293,6 +295,20 @@ func (r *Repository) SetConsolidation(version string, maxCandidates int, exactHa
 	if sameSubjectKindCosine >= 0 && sameSubjectKindCosine <= 1 {
 		r.consolidationSameSubjectKindCosine = sameSubjectKindCosine
 	}
+}
+
+func (r *Repository) SetAutoConfirmPolicy(policy review.AutoConfirmPolicy) {
+	if !policy.Valid() {
+		policy = review.AutoConfirmPolicy{}
+	}
+	r.autoConfirmValue.Store(&policy)
+}
+
+func (r *Repository) autoConfirmPolicy() review.AutoConfirmPolicy {
+	if policy := r.autoConfirmValue.Load(); policy != nil {
+		return *policy
+	}
+	return review.AutoConfirmPolicy{}
 }
 
 func (r *Repository) consolidationRules() consolidationRules {

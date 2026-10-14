@@ -92,3 +92,10 @@ selector = "space_type"
 space_type = "project"
 effect = "allow"
 priority = 100
+
+[review.auto_confirm]
+enabled = true
+version = "auto-review-v2"
+min_confidence = 0.97
+kinds = ["fact", "preference"]
+max_per_space_per_hour = 5

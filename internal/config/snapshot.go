@@ -99,8 +99,18 @@ type RedactedConfig struct {
 	DiskHardFree        uint64             `json:"disk_hard_free_bytes"`
 	ProcessingVersion   string             `json:"processing_version"`
 	GraphEnabled        bool               `json:"graph_enabled"`
+	AutoConfirm         RedactedReview     `json:"review_auto_confirm"`
 	Processing          RedactedCapability `json:"processing"`
 	Embedding           RedactedCapability `json:"embedding"`
+}
+
+type RedactedReview struct {
+	Enabled            bool     `json:"enabled"`
+	Version            string   `json:"version"`
+	MinConfidence      float64  `json:"min_confidence"`
+	Kinds              []string `json:"kinds"`
+	ProcessingVersions []string `json:"processing_versions,omitempty"`
+	MaxPerSpacePerHour int      `json:"max_per_space_per_hour"`
 }
 
 type RedactedCapability struct {
@@ -144,8 +154,16 @@ func (s Snapshot) Redacted() RedactedConfig {
 		DiskHardFree:        s.Config.DiskHardFree,
 		ProcessingVersion:   s.Config.ProcessingVersion,
 		GraphEnabled:        s.Config.GraphEnabled,
-		Processing:          redactCapability(s.ProcessingCapability),
-		Embedding:           redactCapability(s.EmbeddingCapability),
+		AutoConfirm: RedactedReview{
+			Enabled:            s.Config.Review.AutoConfirmEnabled,
+			Version:            s.Config.Review.AutoConfirmVersion,
+			MinConfidence:      s.Config.Review.AutoConfirmMinConfidence,
+			Kinds:              s.Config.Review.AutoConfirmKinds,
+			ProcessingVersions: s.Config.Review.AutoConfirmProcessingVersions,
+			MaxPerSpacePerHour: s.Config.Review.AutoConfirmMaxPerSpacePerHour,
+		},
+		Processing: redactCapability(s.ProcessingCapability),
+		Embedding:  redactCapability(s.EmbeddingCapability),
 	}
 }
 

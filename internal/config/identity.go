@@ -128,6 +128,7 @@ type canonicalConfigStruct struct {
 	EmbeddingProvider   canonicalProvider `json:"embedding_provider"`
 
 	Consolidation ConsolidationConfig `json:"consolidation"`
+	Review        ReviewConfig        `json:"review"`
 	Semantic      SemanticConfig      `json:"semantic"`
 	Graph         GraphConfig         `json:"graph"`
 	Ranking       RankingConfig       `json:"ranking"`
@@ -211,6 +212,7 @@ func canonicalConfig(cfg Config) canonicalConfigStruct {
 		ProcessingProvider:  canonicalProviderConfig(cfg.ProcessingProvider, true),
 		EmbeddingProvider:   canonicalProviderConfig(cfg.EmbeddingProvider, false),
 		Consolidation:       cfg.Consolidation,
+		Review:              cfg.Review,
 		Semantic:            cfg.Semantic,
 		Graph:               cfg.Graph,
 		Ranking:             cfg.Ranking,

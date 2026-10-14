@@ -19,6 +19,7 @@ type fileDocument struct {
 	Processing    processingTable    `toml:"processing"`
 	Embedding     embeddingTable     `toml:"embedding"`
 	Consolidation consolidationTable `toml:"consolidation"`
+	Review        reviewTable        `toml:"review"`
 	Semantic      semanticTable      `toml:"semantic"`
 	Graph         graphTable         `toml:"graph"`
 	Ranking       rankingTable       `toml:"ranking"`
@@ -31,6 +32,19 @@ type consolidationTable struct {
 	ExactHashEnabled      *bool    `toml:"exact_hash_enabled"`
 	SameSourceEventCosine *float64 `toml:"same_source_event_cosine"`
 	SameSubjectKindCosine *float64 `toml:"same_subject_kind_cosine"`
+}
+
+type reviewTable struct {
+	AutoConfirm reviewAutoConfirmTable `toml:"auto_confirm"`
+}
+
+type reviewAutoConfirmTable struct {
+	Enabled            *bool    `toml:"enabled"`
+	Version            *string  `toml:"version"`
+	MinConfidence      *float64 `toml:"min_confidence"`
+	Kinds              []string `toml:"kinds"`
+	ProcessingVersions []string `toml:"processing_versions"`
+	MaxPerSpacePerHour *int     `toml:"max_per_space_per_hour"`
 }
 
 type semanticTable struct {
